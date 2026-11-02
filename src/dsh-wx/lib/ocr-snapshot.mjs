@@ -51,7 +51,7 @@ const cleanRowLabel = (text) => String(text ?? '').trim()
   .replace(/[=|\s]+(?:(?:Yesterday|Today)\s+)?(?:\d{1,2}[:.]\d{2}|(?:[01]\d|2[0-3])[0-5]\d)\s*$/i, '')
   .trim()
 const isNavigation = (text) => /^(?:Weixin|Contacts|Moments|Search|微信|通讯录|朋友圈|搜索)$/i.test(text)
-const isPreview = (text) => /^[^:：]{1,24}[:：]\s*\S/.test(text)
+const isPreview = (text) => /^[^:：]{1,24}[:：]\s*\S/.test(text) || /[，。！？…]/.test(text) || (String(text).match(/[\u3400-\u9fff]/g) || []).length >= 7 || /\[[^\]]+\]/.test(text)
 
 export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
   const sidebarLines = lines.filter((line) => line.left < width * 0.37 && line.top > height * 0.10 && line.top < height * 0.96)
