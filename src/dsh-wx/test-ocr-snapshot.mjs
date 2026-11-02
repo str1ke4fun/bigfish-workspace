@@ -1,5 +1,5 @@
 ﻿import assert from 'node:assert/strict'
-import { groupChatRows, parseTsv, snapshotFromTsv } from './lib/ocr-snapshot.mjs'
+import { groupChatRows, groupTimestampAnchoredRows, parseTsv, snapshotFromTsv } from './lib/ocr-snapshot.mjs'
 
 const word = (page, block, paragraph, line, left, top, width, height, confidence, text) =>
   [5, page, block, paragraph, line, 1, left, top, width, height, confidence, text].join('\t')
@@ -79,5 +79,30 @@ const dmRow = cropSnapshot.rows.find((row) => row.name.replace(/\s/g, '') === 'c
 assert.equal(groupRow?.mention, true, 'cropped sidebar OCR attaches the explicit @ badge to the group title')
 assert.equal(dmRow?.preview, '你能看到测试吗', 'cropped OCR separates the DM name from its preview')
 assert.equal(cropSnapshot.rows.find((row) => row.name === 'File Transfer')?.preview, '验收测试', 'timestamp is removed from a chat title')
+
+const anchoredLines = [
+  // Actual Linux WeChat PSM 6 layout: avatar glyphs precede the title; the time is on its right.
+  word(1, 1, 1, 1, 163, 482, 25, 27, 81, 'a'),
+  word(1, 1, 1, 1, 210, 452, 17, 30, 80, '©'),
+  word(1, 1, 1, 1, 257, 471, 18, 28, 88, '内'), word(1, 1, 1, 1, 288, 472, 18, 27, 94, '部'),
+  word(1, 1, 1, 1, 316, 472, 64, 27, 74, '赤石'), word(1, 1, 1, 1, 379, 448, 16, 63, 74, '群'),
+  word(1, 1, 1, 1, 549, 480, 51, 14, 96, '13:59'),
+  word(1, 1, 1, 2, 250, 520, 47, 22, 94, '[You'), word(1, 1, 1, 2, 310, 524, 58, 14, 96, 'were'),
+  word(1, 1, 1, 2, 379, 518, 141, 24, 96, 'mentioned]'), word(1, 1, 1, 2, 535, 521, 59, 17, 96, 'cat...'),
+  word(1, 1, 1, 3, 249, 612, 45, 20, 92, 'cat'), word(1, 1, 1, 3, 304, 608, 32, 27, 90, '不到'),
+  word(1, 1, 1, 3, 354, 604, 52, 38, 95, 'flag'), word(1, 1, 1, 3, 418, 608, 18, 27, 92, '的'),
+  word(1, 1, 1, 3, 442, 612, 42, 20, 91, 'cat'), word(1, 1, 1, 3, 548, 614, 52, 14, 92, '13:57'),
+  word(1, 1, 1, 4, 254, 653, 30, 21, 93, '你'), word(1, 1, 1, 4, 286, 654, 9, 20, 96, '能'),
+  word(1, 1, 1, 4, 309, 654, 23, 20, 97, '看'), word(1, 1, 1, 4, 338, 653, 14, 21, 97, '到'),
+  word(1, 1, 1, 4, 354, 653, 66, 21, 97, '测试吗'),
+  word(1, 1, 1, 5, 250, 742, 46, 36, 97, 'File'), word(1, 1, 1, 5, 312, 746, 114, 22, 96, 'Transfer'),
+  word(1, 1, 1, 5, 549, 750, 50, 14, 96, '13:52'),
+].join('\n')
+const anchored = groupTimestampAnchoredRows(parseTsv(`header\n${anchoredLines}`, { scale: 2 }), 339, 666)
+assert.deepEqual(anchored.map((row) => row.name), ['内部赤石群', 'cat不到flag的cat', 'File Transfer'],
+  'timestamp-anchored OCR uses title words after avatar icons and excludes preview fragments')
+assert.equal(anchored[0].mention, true, 'the explicit @ badge remains attached to its title row')
+assert.equal(anchored[1].preview, '你能看到测试吗', 'DM preview is grouped below its own title')
+assert.equal(anchored[0].nameConfidence >= 70, true, 'title confidence comes from title glyphs, not avatar or timestamp')
 
 console.log('ocr snapshot: 16 assertions passed')

@@ -83,8 +83,8 @@ case "$cmd" in
     ;;
 
   chats)
-    # 会话列表的结构化 JSON（工作台的候选名单用）
-    bash "$0" tree | node "$(dirname "$0")/chats-json.mjs"
+    # WeChat 的 AT-SPI 树经常为空；工作台白名单候选改从按几何分组的 OCR 读取。
+    bash "$0" ocr | node "$(dirname "$0")/chats-json.mjs"
     ;;
 
   pixhash)

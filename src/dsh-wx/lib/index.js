@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { allowedCurrent, contentDigest, mentionHits, parseTree, sameName, sidebarRegion } from './tree.js'
+import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, sameName, sidebarRegion } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 
@@ -35,7 +35,7 @@ export const name = 'dsh-wx'
 export const inject = ['tools', 'systemPrompt', 'agents']
 
 // 给自测用
-export { parseTree, mentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion, ocrSnapshot }
+export { parseTree, mentionHits, ocrMentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion, ocrSnapshot }
 export { resolveLabel, hitTest, createFreshness }
 
 const SH = fileURLToPath(new URL('./wx.sh', import.meta.url))
@@ -365,7 +365,20 @@ export function apply(ctx, config = {}) {
 
   /** 取快照并对账。疑似落后时，隔一会儿再看一次再下结论。 */
   async function look({ confirm = true } = {}) {
-    let s = await snapshot()
+    let s
+    try {
+      s = await snapshot()
+    } catch (error) {
+      const recovered = await ocrRead()
+      if (!recovered?.parsed?.reliable) throw error
+      s = { raw: '', parsed: recovered.parsed, region: null, hash0: '', hash: '', mouse: '', at: Date.now(), digest: contentDigest(recovered.parsed), source: 'ocr' }
+    }
+    if (!s.parsed?.ok && !s.parsed?.current && !s.parsed?.chats?.length) {
+      try {
+        const recovered = await ocrRead()
+        if (recovered?.parsed?.reliable) s = { ...s, parsed: recovered.parsed, source: 'ocr' }
+      } catch { /* keep the tree response */ }
+    }
     let v = fresh.observe(s)
     if (confirm && v === 'suspect') {
       await sleep(1200)
@@ -557,13 +570,30 @@ export function apply(ctx, config = {}) {
     try {
       const s = await look({ confirm: false }).catch(() => null)
       if (!s) return
-      const parsed = s.parsed
+      let parsed = s.parsed
+      let ocrRecovered = s.source === 'ocr'
+
+      // Linux WeChat can expose a live window while its AT-SPI tree is empty.
+      // Recover only the sidebar @ badge via OCR; never infer the active chat.
+      const treeCount = Number(/元素\s*(\d+)\s*个/.exec(s.raw || '')?.[1] ?? 0)
+      const treeUnavailable = !parsed.ok || (parsed.window?.w >= 400 && treeCount < 5)
+      if (treeUnavailable) {
+        try {
+          const ocr = await ocrRead()
+          if (ocr?.reliable) {
+            parsed = { ...ocr.parsed, window: ocr.parsed.window ?? parsed.window }
+            ocrRecovered = true
+          }
+        } catch (error) {
+          console.log('[dsh-wx] OCR 回退失败: ' + String(error?.message ?? error).slice(0, 120))
+        }
+      }
 
       // 手机端一上线，PC 微信常被踢回登录页：窗口缩成 291x396，侧栏读不到任何会话，
       // 耳朵从此聋掉（日志只写「侧栏 @ 行 0 条」，看着像没人说话）。
       // 2026-10-29 夜里实测：替她点 Log In 会让手机端一直弹登录确认，人被烦死。
       // 所以只记账、不动手——登不登由人决定。
-      if ((parsed.chats?.length ?? 0) === 0 && parsed.window && parsed.window.w < 400) {
+      if (!ocrRecovered && (parsed.chats?.length ?? 0) === 0 && parsed.window && parsed.window.w < 400) {
         if (Date.now() - lastRelogin > 10 * 60_000) {
           lastRelogin = Date.now()
           console.log(`[dsh-wx] 微信在登录页（窗口 ${parsed.window.w}x${parsed.window.h}），等人工登录`)
@@ -574,7 +604,7 @@ export function apply(ctx, config = {}) {
       // 微信主界面的无障碍树会整棵塌掉（窗口还在、只剩 1 个元素），这时耳朵完全聋：
       // 日志只会一直写「侧栏 @ 行 0 条」，看着像没人 @ 她。实测重启 wechat-fish 再点 Log In
       // 就能把树要回来，所以连读 4 轮都读不到就自己重启一次；10 分钟最多一次。
-      {
+      if (!ocrRecovered) {
         const m = /元素\s*(\d+)\s*个/.exec(s.raw || '')
         const elems = m ? Number(m[1]) : 0
         if (parsed.window && parsed.window.w >= 400 && elems < 5) {
@@ -604,7 +634,9 @@ export function apply(ctx, config = {}) {
 
       const trigger = p.trigger.length > 0 ? p.trigger : ['D33p53Ek']
       // 免 @ 名单和允许名单一起交给它：单聊没有「@我」标记，不靠这两条就永远叫不醒她
-      const mentions = mentionHits(parsed, trigger, p.noMentionChats, p.allowChats)
+      const mentions = ocrRecovered
+        ? ocrMentionHits(parsed)
+        : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats)
       // 有人 @ 她 → 这个会话在窗口内可以开口（@ 才回）。挂着的未读 @ 会一直续窗口。
       if (mentions.length > 0) {
         let st = readMentions()
@@ -715,6 +747,7 @@ export function apply(ctx, config = {}) {
       deny(exec)
       if (!policy().enabled) throw new Error(OFF)
       const s = await look()
+      if (s.source === 'ocr') return JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: 'OCR cannot verify the active conversation or authorize sending.' }, null, 2)
       const body = s.raw.length > 12_000 ? s.raw.slice(0, 12_000) + '\n…（已截断）' : s.raw
       // 当前会话的气氛粗判 + 她自己记下的关于这个人的话（没有就是空串）
       let mood = ''
@@ -747,7 +780,7 @@ export function apply(ctx, config = {}) {
 
       let x, y, target = null
       const before = await look()
-      if (!before.parsed.ok) throw new Error('读不到微信窗口。')
+      if (!before.parsed.ok && before.source !== 'ocr') throw new Error('读不到微信窗口。')
       if (label) {
         target = resolveLabel(before.parsed, label)
         if (!target) {
@@ -775,7 +808,7 @@ export function apply(ctx, config = {}) {
       parts.push(target ? `落点：${target.kind === 'chat' ? '会话' : target.kind === 'control' ? '控件' : '消息'}“${target.name}”` : '落点：无可点击元素')
       const cur = after.parsed.current
       if (target?.kind === 'chat' && !fresh.stale) {
-        parts.push(sameName(cur, target.name) ? `当前会话：“${cur}”` : `当前会话：“${cur || '读不到'}”，与目标“${target.name}”不一致`)
+        parts.push(after.source === 'ocr' ? `Selected conversation: ${target.name}; OCR cannot verify the active conversation.` : sameName(cur, target.name) ? `当前会话：“${cur}”` : `当前会话：“${cur || '读不到'}”，与目标“${target.name}”不一致`)
       } else {
         parts.push(`当前会话：“${cur || '读不到'}”`)
       }
@@ -798,12 +831,12 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (args, exec) => {
       deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
       const a = args || {}
       const text = String(a.text ?? '')
       if (!text) throw new Error('wx_type: text 不能为空。')
       if (/[\r\n]/.test(text)) throw new Error('wx_type: 文本含换行，会被拆成多条发送。请去掉换行或分多次发送。')
       if ([...text].length > 500) throw new Error('wx_type: 文本超过 500 字。')
-      if (!policy().enabled) throw new Error(OFF)
       const enter = a.enter === true
 
       // 输入也要过闸：在名单外的会话里打字，会在对方输入框里留下草稿

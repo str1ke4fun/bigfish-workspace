@@ -116,6 +116,22 @@ export function mentionHits(parsed, trigger, exempt = [], allow = []) {
   return out
 }
 
+/** OCR recovery is intentionally narrower than the AT-SPI path: only an
+ * explicit unread @ badge with a confidently read chat name may wake the ear.
+ * It never infers direct messages or triggers from OCR preview text. */
+export function ocrMentionHits(parsed) {
+  return (parsed?.chats ?? [])
+    .filter((chat) => chat.source === 'ocr' && chat.mention === true && Number(chat.nameConfidence) >= 55 &&
+      !/^[\p{P}\p{S}\s]+$/u.test(String(chat.name ?? '')))
+    .map((chat) => ({
+      chat: chat.name,
+      unread: chat.unread,
+      preview: chat.preview,
+      why: '@',
+      key: `${chat.name}|@|${chat.preview}`,
+    }))
+}
+
 /**
  * 「树看到的东西」的摘要：会话列表（顺序、未读、预览）+ 当前会话 + 最后几条消息。
  * 不含时间戳，也不含坐标（窗口一挪坐标全变，但那不代表内容变了）。
