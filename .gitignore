@@ -1,0 +1,48 @@
+# Local recovery evidence and private runtime state (never publish).
+/.tmp/
+/logs/
+/payload/house/
+/payload/recovered/
+/payload/zips/
+/sd/
+/offline/
+/reports/
+# Historical handoff notes include private conversations and account identifiers.
+/payload/docs/
+/交接单.md
+/交接清单.md
+/待排查清单.md
+/离线安装记录-2026-11-01.md
+
+# Credentials and machine-local configuration.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+**/owner.json
+**/policy.json
+**/speech.json
+**/.dsh/
+**/.dsh-fish/
+**/.dsh-wx/
+**/.config/
+
+# Dependencies, generated files and disk/archive images.
+node_modules/
+__pycache__/
+*.py[cod]
+*.log
+*.bak
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.deb
+*.img
+*.vhdx
+*.iso
+.DS_Store
+Thumbs.db

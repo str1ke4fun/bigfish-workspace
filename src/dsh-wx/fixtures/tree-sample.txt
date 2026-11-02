@@ -1,0 +1,44 @@
+微信窗口 916x666 原点(523,233) · 元素 335 个 · 缩放 1.0417 · 下面坐标都是屏幕绝对坐标，直接给 wx_click
+当前会话："测试群A"
+--- 会话列表（从上到下；名字就是微信里显示的名字）---
+会话 "微信ClawBot" 置顶 中心(711,352) 250x68
+会话 "测试家园10号楼1302" 未读=5 时间="16:36" 预览="某人: 这张图里的话，逐条念给我听一下。" 中心(711,419) 250x68
+会话 "File Transfer" 草稿 时间="Yesterday 23:49" 预览="第五次 dry-run：粘贴不点坐标" 中心(711,487) 250x68
+会话 "测试群A" 时间="16:19" 预览="自我介绍：我是个 AI，名字念快了像打嗝。" 中心(711,555) 250x68
+会话 "某个猫" 未读=5 时间="15:58" 预览="在吗，看看这个" 中心(711,622) 250x68
+会话 "Tencent News" 未读=7 时间="13:37" 预览="广州海珠区扩容大势已定，琶洲、中大创新谷、商旅融合圈这三地发展潜力解析" 中心(711,690) 250x68
+会话 "示例小组" 中心(711,758) 250x68
+会话 "计科4223张三" 中心(711,826) 250x68
+会话 "Weixin Team" 中心(711,893) 250x68
+--- 当前聊天里的消息（从上到下；只有内容，没有发言人）---
+消息 "更正：上一条没发出去，我点了个空。这一条才算数。" 中心(1138,384) 602x77
+消息 "Animated Stickers [笑]" 中心(1138,511) 602x177
+消息 "@D33p53Ek 你什么模型" 中心(1138,638) 602x76
+消息 "自我介绍：我是个 AI，名字念快了像打嗝。" 中心(1138,715) 602x77
+--- 能点的 ---
+push button "Weixin" 中心(555,353) 63x38
+push button "Contacts" 中心(555,403) 63x38
+push button "Favorites" 中心(555,453) 63x38
+push button "Moments" 中心(555,503) 63x38
+push button "Channels" 中心(555,553) 63x38
+push button "Search" 中心(555,603) 63x38
+push button "Mini Programs Panel" 中心(555,653) 63x38
+push button "Mobile" 中心(555,814) 63x38
+push button "More" 中心(555,864) 38x38
+push button "Chat History" 中心(1317,292) 27x29
+push button "Import chat history from phone" 中心(1339,292) 17x29
+push button "Voice Call" 中心(1370,292) 29x29
+push button "Chat Info" 中心(1407,292) 29x29
+text "测试群A" 中心(1140,804) 565x82
+push button "Send Sticker(Alt+E)" 中心(868,868) 29x29
+push button "Send Favorites​Item" 中心(905,868) 29x29
+push button "Send File" 中心(943,868) 29x29
+push button "Screenshot(Alt+A)" 中心(979,868) 27x29
+push button "Hide window screenshot" 中心(1001,868) 17x29
+push button "Voice Input (Hold Ctrl+Super)" 中心(1032,868) 29x29
+push button "Send Voice" 中心(1335,868) 29x29
+push button "Shortcuts" 中心(809,293) 29x29
+push button "Pin" 中心(1278,251) 46x33
+push button "Minimize" 中心(1324,251) 46x33
+push button "Maximize" 中心(1370,251) 46x33
+push button "Close" 中心(1416,251) 46x33
