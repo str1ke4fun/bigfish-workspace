@@ -49,7 +49,7 @@ export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
   const sidebarLines = lines.filter((line) => line.left < width * 0.37 && line.top > height * 0.10 && line.top < height * 0.96)
   if (!sidebarLines.length) return []
 
-  const anchors = sidebarLines.filter((line) => line.left >= width * 0.08 && line.left < width * 0.33 &&
+  const anchors = sidebarLines.filter((line) => line.left >= width * 0.08 && line.left < width * 0.33 && line.confidence >= 50 &&
     !isNavigation(line.text) && !isUnread(line.text) && !isMention(line.text) && !isTime(line.text) && !isPreview(line.text))
     .sort((a, b) => a.top - b.top || a.left - b.left)
   const medianHeight = [...anchors.map((line) => line.height)].sort((a, b) => a - b)[Math.floor(anchors.length / 2)] || 14
@@ -73,6 +73,7 @@ export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
     const rowBottom = Math.min(nextTop - medianHeight * 0.2, nameLine.top + rowGap * 1.6)
     const rowLines = sidebarLines.filter((line) => line.top + line.height > rowTop && line.top < rowBottom &&
       line.left >= width * 0.08 && line.left < width * 0.33)
+    if (!rowLines.length) return []
       .sort((a, b) => a.top - b.top || a.left - b.left)
     const rest = rowLines.filter((line) => line !== nameLine)
     const unreadLine = rest.find((line) => isUnread(line.text))
@@ -81,7 +82,7 @@ export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
     const preview = rest.filter((line) => line !== unreadLine && !isMention(line.text) && !isTime(line.text)).map((line) => line.text).join(' ').trim()
     const confidence = Math.round(rowLines.reduce((sum, line) => sum + line.confidence, 0) / rowLines.length)
     return [{
-      name, unread, mention, preview, confidence, lines: rowLines.map((line) => line.text),
+      name, unread, mention, preview, confidence, nameConfidence: Math.round(nameLine.confidence), lines: rowLines.map((line) => line.text),
       box: {
         x: origin.x + Math.min(...rowLines.map((line) => line.left)), y: origin.y + Math.min(...rowLines.map((line) => line.top)),
         w: Math.round(width * 0.37), h: Math.max(...rowLines.map((line) => line.top + line.height)) - Math.min(...rowLines.map((line) => line.top)),

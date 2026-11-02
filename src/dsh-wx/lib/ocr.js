@@ -55,6 +55,7 @@ export function parseOcrChats(rows, { trigger = [] } = {}) {
         ? row.box : { cx: 0, cy: 0, x: 0, y: 0, w: 0, h: 0 },
       source: 'ocr',
       confidence: Number.isFinite(row.confidence) ? row.confidence : null,
+      nameConfidence: Number.isFinite(row.nameConfidence) ? row.nameConfidence : null,
     })
   }
   return out

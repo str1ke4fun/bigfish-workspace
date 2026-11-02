@@ -6,7 +6,7 @@ const scan = ocrSnapshot({
   reliable: true,
   bounds: { x: 10, y: 20, width: 400, height: 800 },
   rows: [
-    { lines: ['项目群', '[2]', '[You were mentioned]', '张三: @大肥鱼 看下'] },
+    { lines: ['项目群', '[2]', '[You were mentioned]', '张三: @大肥鱼 看下'], confidence: 88, nameConfidence: 90 },
     { lines: ['普通群', '[5]', '王五: 今晚吃饭吗'] },
     { lines: ['识别模糊的会话'] },
   ],
@@ -25,10 +25,16 @@ assert.equal(scan.chats[2], undefined)
 
 const badgeWithoutCount = ocrSnapshot({
   ok: true,
-  rows: [{ name: '内部赤石群', lines: ['内部赤石群', '[You were mentioned]', '1359'], unread: 0, mention: true, preview: '', confidence: 80 }],
+  rows: [{ name: '内部赤石群', lines: ['内部赤石群', '[You were mentioned]', '1359'], unread: 0, mention: true, preview: '', confidence: 80, nameConfidence: 62 }],
 })
 assert.deepEqual(mentionHits(badgeWithoutCount, ['D33P533K'], [], []).map((x) => x.chat), ['内部赤石群'],
   'explicit @ badge is enough even when OCR misses the numeric unread count')
+
+const noisyBadge = ocrSnapshot({
+  ok: true,
+  rows: [{ name: 'os', lines: ['os', '[You were mentioned]'], unread: 0, mention: true, confidence: 70, nameConfidence: 38 }],
+})
+assert.equal(mentionHits(noisyBadge, [], [], []).length, 0, 'low-confidence OCR name cannot wake an agent in the wrong chat')
 assert.deepEqual(mentionHits(scan, ['大肥鱼'], [], ['项目群', '普通群']).map((x) => x.chat), ['项目群'])
 
 const triggerOnly = ocrSnapshot({
@@ -41,4 +47,4 @@ assert.equal(mentionHits(triggerOnly, ['大肥鱼'], [], ['项目群']).length, 
 const flat = ocrSnapshot({ ok: true, text: ['项目群', '张三: @大肥鱼'] })
 assert.equal(flat.chats.length, 0, 'flat whole-window OCR is not treated as chat rows')
 
-console.log('ocr adapter: 11 assertions passed')
+console.log('ocr adapter: 12 assertions passed')
