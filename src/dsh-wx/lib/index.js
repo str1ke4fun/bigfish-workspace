@@ -50,6 +50,16 @@ const SPEECH = '/home/str1k3/dsh-plugins/speech/speech.mjs'
 const MEM_LIVE = '/home/str1k3/dsh-plugins/dsh-mem/lib/livewx.js'
 const KEEP = 20
 
+/**
+ * 只有主机亲手打的字才算「主机在说话」。
+ * 宿主还会把 runtime-context / time-context / model-selection / skill-catalog 注入成
+ * user/message，它们不是主机的话。2026-11-02 22:26 重启后的第一轮就踩过：
+ * 运行时快照被记成「主机刚说过话」，微信回复被闸了 30 分钟。
+ */
+export function isHostChatSource(source) {
+  return source?.kind === 'user'
+}
+
 function sh(args, timeout = 30_000) {
   return new Promise((resolve, reject) => {
     execFile('/bin/bash', [SH, ...args], {
@@ -545,7 +555,7 @@ export function apply(ctx, config = {}) {
         if (!id || (id !== wxSessionId && id !== readWxSession())) return
         if (event?.type === 'turn/end') { if (hostState) hostState.active = false; return }
         if (event?.type !== 'user/message') return
-        if (event?.data?.source?.kind === 'time-context') return
+        if (!isHostChatSource(event?.data?.source)) return
         const text = (event?.data?.content ?? []).map((c) => (c && c.type === 'text' ? c.text : '')).join('')
         // 微信通道的通知（含主机手动 poke 的 [微信·主机]）：说明这一轮本来就是为微信开的
         if (/^\s*\[微信/.test(text)) { hostState = null; return }
