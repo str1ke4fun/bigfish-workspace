@@ -6,6 +6,15 @@ set -u
 export DISPLAY="${WX_DISPLAY:-:99}"
 export WX_DISPLAY="$DISPLAY"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
+# 宿主是 systemd 服务时通常没有这两个变量；微信已经挂在用户总线上，
+# 补默认值让无障碍树在任何宿主里都能连上（Desktop 只带了 DBUS，web 两个都没带）。
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/1000/bus}"
+export AT_SPI_BUS_ADDRESS="${AT_SPI_BUS_ADDRESS:-unix:path=/run/user/1000/at-spi/bus}"
+
+# 这个脚本可能通过符号链接被调用（工作台用 ~/dsh-plugins/dsh-wx）。Node 的 ESM
+# 入口守卫比较的是 realpath，而 argv[1] 会保留符号链接路径，导致 ocr-snapshot.mjs /
+# chats-json.mjs 加载后静默不执行（exit 0、无输出）。这里固定用 realpath。
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 # 微信 4.x 在无 GPU 的 Xvfb 上会多留一个渲染不出来的顶层窗（黑框）。
 # 一律按面积取最大的那个当主窗，绝不用 head -1。
@@ -80,12 +89,26 @@ case "$cmd" in
     ;;
 
   ocr)
-    node "$(dirname "$0")/ocr-snapshot.mjs" 2>&1 | head -c 200000
+    node "$LIB_DIR/ocr-snapshot.mjs" 2>&1 | head -c 200000
     ;;
 
   chats)
-    # WeChat 的 AT-SPI 树经常为空；工作台白名单候选改从按几何分组的 OCR 读取。
-    bash "$0" ocr | node "$(dirname "$0")/chats-json.mjs"
+    # 优先用无障碍树：它能给出当前会话名和完整会话列表；树不可用时再退回 OCR。
+    # （OCR 只能按几何分组，未读红点行容易漏，且永远读不到当前会话。）
+    # tree 的输出是给人看的文本，不是 JSON，先交给 chats-json 解析再判断是否可用。
+    tree_out="$(bash "$0" tree 2>/dev/null || true)"
+    tree_json="$(printf '%s' "$tree_out" | node "$LIB_DIR/chats-json.mjs" 2>/dev/null || true)"
+    if printf '%s' "$tree_json" | node -e '
+      let s = ""
+      process.stdin.on("data", (d) => s += d).on("end", () => {
+        try { const j = JSON.parse(s); process.exit(j.ok === true && Array.isArray(j.chats) && j.chats.length > 0 ? 0 : 1) }
+        catch { process.exit(1) }
+      })
+    ' 2>/dev/null; then
+      printf '%s\n' "$tree_json"
+    else
+      bash "$0" ocr | node "$LIB_DIR/chats-json.mjs"
+    fi
     ;;
 
   pixhash)

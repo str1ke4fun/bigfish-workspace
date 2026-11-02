@@ -22,7 +22,7 @@
  */
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, sameName, sidebarRegion } from './tree.js'
@@ -42,6 +42,8 @@ const SH = fileURLToPath(new URL('./wx.sh', import.meta.url))
 const SHOT_DIR = '/home/str1k3/.dsh-fish/home/.wx'
 const POLICY = '/home/str1k3/.dsh-wx/policy.json'
 const HEALTH = '/home/str1k3/.dsh-wx/health.json'
+// 耳朵的流水账：看见什么、投没投进去。只追加，排查时不用靠 grep 宿主日志。
+const INBOX = '/home/str1k3/.dsh-wx/inbound.jsonl'
 const HER_DIR = '/home/str1k3/.dsh-fish/home'
 // 说话频率的判定放在两个通道共用的一个文件里（QQ 那边是 vendor 补丁，用的是同一份）
 const SPEECH = '/home/str1k3/dsh-plugins/speech/speech.mjs'
@@ -85,6 +87,14 @@ function policy() {
   } catch {
     return { enabled: false, allowChats: [], watch: false, trigger: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [] }
   }
+}
+
+/** 耳朵的账本：一行一个事件，只追加。写不进去不影响耳朵。 */
+function logInbound(entry) {
+  try {
+    mkdirSync('/home/str1k3/.dsh-wx', { recursive: true })
+    appendFileSync(INBOX, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n')
+  } catch { /* 记不下不影响用 */ }
 }
 
 /** 只留最近 KEEP 张截图。 */
@@ -373,10 +383,20 @@ export function apply(ctx, config = {}) {
       if (!recovered?.parsed?.reliable) throw error
       s = { raw: '', parsed: recovered.parsed, region: null, hash0: '', hash: '', mouse: '', at: Date.now(), digest: contentDigest(recovered.parsed), source: 'ocr' }
     }
-    if (!s.parsed?.ok && !s.parsed?.current && !s.parsed?.chats?.length) {
+    // 窗口在、会话列表却是空的：这是 AT-SPI 截断的典型样子（树头还在，行没出来）。
+    // 直接拿它去点会话名会报「会话列表：（空）」。隔一会儿再看一次；还空就退 OCR。
+    const emptySidebar = (x) => x?.parsed?.ok && Number(x?.parsed?.window?.w) >= 400 && (x.parsed.chats?.length ?? 0) === 0
+    if (emptySidebar(s)) {
+      await sleep(350)
+      const again = await snapshot().catch(() => null)
+      if (again?.parsed?.ok && (again.parsed.chats?.length ?? 0) > 0) s = again
+    }
+    if ((!s.parsed?.ok && !s.parsed?.current && !s.parsed?.chats?.length) || emptySidebar(s)) {
       try {
         const recovered = await ocrRead()
-        if (recovered?.parsed?.reliable) s = { ...s, parsed: recovered.parsed, source: 'ocr' }
+        if (recovered?.parsed?.reliable && (recovered.parsed.chats?.length ?? 0) > 0) {
+          s = { ...s, parsed: recovered.parsed, source: 'ocr' }
+        }
       } catch { /* keep the tree response */ }
     }
     let v = fresh.observe(s)
@@ -498,6 +518,7 @@ export function apply(ctx, config = {}) {
   let lastSig = null
   let lastNudge = 0
   let lastHeldLog = 0
+  let lastFailLog = 0
   let lastRelogin = 0
   let lastWxRestart = 0
   let blindRounds = 0
@@ -648,6 +669,7 @@ export function apply(ctx, config = {}) {
       if (sig !== lastSig) {
         lastSig = sig
         console.log(`[dsh-wx] 耳朵：侧栏 @ 行 ${now.size} 条${now.size ? ' → ' + [...now.values()].map((m) => m.chat).join('、') : ''}`)
+        logInbound({ type: 'detected', chats: [...now.values()].map((m) => ({ chat: m.chat, why: m.why, unread: m.unread, preview: m.preview, key: m.key })) })
       }
 
       // 调试用：往 ~/.dsh-wx/poke 写一句话，原样递给她，然后删掉。
@@ -706,8 +728,15 @@ export function apply(ctx, config = {}) {
       for (const h of hits) { seen.add(h.key); lastDeliver.set(h.chat, Date.now()) }
       saveSeen()
       console.log('[dsh-wx] 耳朵：已投递（' + (wxSessionId || sid) + '）→ ' + hits.map((h) => h.chat).join('、'))
+      logInbound({ type: 'delivered', session: wxSessionId || sid, chats: hits.map((h) => ({ chat: h.chat, why: h.why, preview: h.preview, key: h.key })) })
     } catch (err) {
-      console.log('[dsh-wx] 耳朵出错: ' + String(err?.message ?? err).slice(0, 160))
+      const msg = String(err?.message ?? err).slice(0, 160)
+      console.log('[dsh-wx] 耳朵出错: ' + msg)
+      // 同一个错误每 30 秒记一次，别让账本被重试刷屏
+      if (Date.now() - lastFailLog > 30_000) {
+        lastFailLog = Date.now()
+        logInbound({ type: 'error', error: msg })
+      }
     } finally {
       busy = false
     }
