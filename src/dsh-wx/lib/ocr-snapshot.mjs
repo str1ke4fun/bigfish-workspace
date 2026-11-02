@@ -115,19 +115,31 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
     const words = Array.isArray(line.words) ? line.words : []
     const time = words.filter((word) => isClockWord(word.text) && word.left >= width * 0.72)
       .sort((a, b) => b.left - a.left)[0]
-    if (!time || line.top < height * 0.10 || line.top > height * 0.96) return []
-    const titleWords = words.filter((word) => word.left >= width * 0.33 && word.left < width * 0.82 &&
+    if (line.top < height * 0.10 || line.top > height * 0.96) return []
+    const titleWords = words.filter((word) => word.left >= width * 0.33 && word.left < width * 0.68 &&
       !isClockWord(word.text) && isNameWord(word.text))
     if (!titleWords.length) return []
     const name = titleWords.map((word) => word.text).join(' ')
       .replace(/(?<=[\u3400-\u9fff])\s+(?=[\p{L}\p{N}])|(?<=[\p{L}\p{N}])\s+(?=[\u3400-\u9fff])/gu, '')
       .replace(/(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, '').trim()
     if (!name || name.length > 80 || /^[\p{P}\p{S}\s]+$/u.test(name)) return []
-    return [{ line, titleWords, name }]
+    const nameConfidence = titleWords.reduce((sum, word) => sum + (Number(word.confidence) || 0), 0) / titleWords.length
+    const anchorConfidence = nameConfidence + (time ? 15 : 0)
+    if (!time) return []
+    if (/\[|\]|\.\.\.|…|:/.test(name) || /^(?:You|were|mentioned|@Me)$/i.test(name)) return []
+    return [{ line, titleWords, name, nameConfidence, anchorConfidence, hasTime: Boolean(time) }]
   }).sort((a, b) => a.line.top - b.line.top)
 
-  return candidates.map((anchor, index) => {
-    const nextTop = candidates[index + 1]?.line.top ?? height * 0.96
+  const deduped = []
+  for (const candidate of candidates) {
+    const previous = deduped.at(-1)
+    if (previous && Math.abs(candidate.line.top - previous.line.top) < 18) {
+      if (candidate.anchorConfidence > previous.anchorConfidence) deduped[deduped.length - 1] = candidate
+    } else deduped.push(candidate)
+  }
+
+  return deduped.map((anchor, index) => {
+    const nextTop = deduped[index + 1]?.line.top ?? height * 0.96
     const rowLines = lines.filter((line) => line.top + line.height > anchor.line.top && line.top < nextTop)
     const rest = rowLines.filter((line) => line !== anchor.line)
     const mention = rest.some((line) => isMention(line.text)) || anchor.line.text.includes('@') ||
@@ -135,13 +147,12 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
     const preview = rest.filter((line) => !isTime(line.text) && !isUnread(line.text))
       .map((line) => line.text.replace(/\[\s*(?:You were mentioned|You were @ed|@Me)\s*\]/ig, ' ').trim())
       .filter(Boolean).join(' ').trim()
-    const confidences = anchor.titleWords.map((word) => word.confidence).filter(Number.isFinite)
-    const nameConfidence = Math.round(confidences.reduce((sum, value) => sum + value, 0) / (confidences.length || 1))
+    const nameConfidence = Math.round(anchor.nameConfidence)
     const left = Math.min(...rowLines.map((line) => line.left))
     const top = Math.min(...rowLines.map((line) => line.top))
     const bottom = Math.max(...rowLines.map((line) => line.top + line.height))
     return {
-      name: anchor.name, unread: 0, mention, preview,
+      name: anchor.name, unread: 0, mention, preview: preview.replace(/\b(?:You|were|mentioned|@ed|@Me)\b/ig, '').trim(),
       confidence: Math.round(rowLines.reduce((sum, line) => sum + line.confidence, 0) / rowLines.length),
       nameConfidence,
       lines: rowLines.map((line) => line.text),
@@ -177,6 +188,7 @@ export function snapshotFromTsv(tsv, bounds, rowOcr = null) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) try {
+  process.env.DISPLAY = process.env.WX_DISPLAY || process.env.DISPLAY || ':99'
   const ids = run('xdotool', ['search', '--name', 'Weixin']).trim().split(/\s+/).filter(Boolean)
   let best = null
   for (const id of ids) {

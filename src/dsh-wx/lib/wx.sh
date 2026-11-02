@@ -4,6 +4,7 @@
 set -u
 
 export DISPLAY="${WX_DISPLAY:-:99}"
+export WX_DISPLAY="$DISPLAY"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
 
 # 微信 4.x 在无 GPU 的 Xvfb 上会多留一个渲染不出来的顶层窗（黑框）。
