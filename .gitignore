@@ -2,6 +2,7 @@
 # Root-level notes are local by default; the project README is public.
 /*.md
 !/README.md
+!/AGENTS.md
 /payload/
 /sandbox/
 # Machine-specific installation, migration and diagnostic scripts stay local.
