@@ -20,6 +20,8 @@ const parsed = parseTsv(tsv)
 assert.equal(parsed.length, 8, 'word boxes combine into OCR lines')
 assert.equal(parsed[0].text, 'Group A', 'words are sorted by x coordinate')
 assert.equal(parseTsv(word(1, 1, 1, 1, 1, 1, 0, 10, 99, 'bad')).length, 0, 'invalid geometry is rejected')
+assert.equal(parseTsv(`header\n${word(1, 1, 1, 1, 160, 240, 80, 36, 99, 'scaled')}`, { scale: 2 })[0].left, 80,
+  'OCR coordinates from a 2x enlarged screenshot map back to window coordinates')
 
 const snap = snapshotFromTsv(tsv, { x: 10, y: 20, width: 800, height: 600 })
 assert.equal(snap.rows.length, 3, 'all grouped sidebar rows are retained, including unread / mention indicators')

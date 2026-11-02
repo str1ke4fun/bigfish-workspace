@@ -9,13 +9,17 @@ const run = (file, args, input) => execFileSync(file, args, {
   stdio: input ? ['pipe', 'pipe', 'ignore'] : ['ignore', 'pipe', 'ignore'],
 })
 
-export function parseTsv(tsv, { minConfidence = 25 } = {}) {
+export function parseTsv(tsv, { minConfidence = 25, scale = 1 } = {}) {
   const lines = new Map()
   for (const raw of String(tsv ?? '').split(/\r?\n/).slice(1)) {
     const c = raw.split('\t')
     if (c.length < 12 || c[0] !== '5' || !c[11]?.trim()) continue
     const confidence = Number(c[10])
-    const [left, top, width, height] = c.slice(6, 10).map(Number)
+    const [rawLeft, rawTop, rawWidth, rawHeight] = c.slice(6, 10).map(Number)
+    const left = rawLeft / scale
+    const top = rawTop / scale
+    const width = rawWidth / scale
+    const height = rawHeight / scale
     if (!Number.isFinite(confidence) || confidence < minConfidence ||
         ![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) continue
     const key = c.slice(1, 5).join(':')
@@ -93,14 +97,15 @@ export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
 }
 
 export function snapshotFromTsv(tsv, bounds) {
-  const lines = parseTsv(tsv)
-  const rows = groupChatRows(lines, bounds.width, bounds.height, { x: bounds.x, y: bounds.y })
-  const messages = lines.filter((line) => line.left > bounds.width * 0.43 && line.top > bounds.height * 0.18 && line.top < bounds.height * 0.92)
-    .map((line) => ({ text: line.text, confidence: Math.round(line.confidence), box: { x: bounds.x + line.left, y: bounds.y + line.top, w: line.width, h: line.height } }))
+  const { ocrScale = 1, ...windowBounds } = bounds
+  const lines = parseTsv(tsv, { scale: ocrScale })
+  const rows = groupChatRows(lines, windowBounds.width, windowBounds.height, { x: windowBounds.x, y: windowBounds.y })
+  const messages = lines.filter((line) => line.left > windowBounds.width * 0.43 && line.top > windowBounds.height * 0.18 && line.top < windowBounds.height * 0.92)
+    .map((line) => ({ text: line.text, confidence: Math.round(line.confidence), box: { x: windowBounds.x + line.left, y: windowBounds.y + line.top, w: line.width, h: line.height } }))
   return {
     ok: true,
     reliable: rows.length > 0,
-    bounds,
+    bounds: windowBounds,
     rows,
     messages,
     lines: lines.map(({ text, left, top, width, height, confidence }) => ({ text, left, top, width, height, confidence: Math.round(confidence) })),
@@ -120,8 +125,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   if (!best) throw new Error('no Weixin window')
   const png = execFileSync('import', ['-window', best.id, 'png:-'], { maxBuffer: 40 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
-  const tsv = run('tesseract', ['stdin', 'stdout', '-l', 'chi_sim+eng', '--psm', '11', 'tsv'], png).toString('utf8')
-  process.stdout.write(JSON.stringify(snapshotFromTsv(tsv, best)) + '\n')
+  const scale = 2
+  const enlarged = run('convert', ['png:-', '-resize', `${scale * 100}%`, 'png:-'], png)
+  const tsv = run('tesseract', ['stdin', 'stdout', '-l', 'chi_sim+eng', '--psm', '6', 'tsv'], enlarged).toString('utf8')
+  process.stdout.write(JSON.stringify(snapshotFromTsv(tsv, { ...best, ocrScale: scale })) + '\n')
 } catch (error) {
   process.stdout.write(JSON.stringify({ ok: false, reliable: false, error: String(error?.message ?? error).slice(0, 160), rows: [], messages: [], text: [] }) + '\n')
 }
