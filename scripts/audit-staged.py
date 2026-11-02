@@ -9,7 +9,7 @@ patterns = {
     'api-key': re.compile(r'\bsk-[A-Za-z0-9_-]{24,}'),
     'cookie-value': re.compile(r'(?i)\b(?:SESSDATA|bili_jct)\s*[=:]\s*[\"\x27]?([A-Za-z0-9%_-]{20,})'),
 }
-paths = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '-z']).decode().split('\0')
+paths = subprocess.check_output(['git', 'diff', '--cached', '--diff-filter=ACMRT', '--name-only', '-z']).decode().split('\0')
 findings = []
 large = []
 for path in filter(None, paths):
