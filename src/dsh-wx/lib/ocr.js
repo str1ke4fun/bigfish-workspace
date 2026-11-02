@@ -39,8 +39,8 @@ export function parseOcrChats(rows, { trigger = [] } = {}) {
     }
     const previewText = clean(row.preview ?? preview.join(' '))
     if (trigger.some((needle) => needle && previewText.includes(String(needle)))) mention = true
-    // Keep mention signal only when there is unread evidence. This avoids
-    // treating old preview text or stale accessibility overlays as a new ping.
+    // An explicit WeChat @ badge is itself unread evidence; OCR often misses
+    // the separate numeric badge, so do not require that second OCR token.
     if (unread === 0 && !mention) continue
     if (!previewText && !mention) continue
     out.push({

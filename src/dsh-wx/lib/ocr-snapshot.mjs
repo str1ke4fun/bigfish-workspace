@@ -39,36 +39,41 @@ export function parseTsv(tsv, { minConfidence = 25 } = {}) {
   })).sort((a, b) => a.top - b.top || a.left - b.left)
 }
 
-const isTime = (text) => /^(?:(?:Yesterday|Today|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+)?\d{1,2}:\d{2}$/i.test(text)
+const isTime = (text) => /^(?:(?:Yesterday|Today|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+)?(?:\d{1,2}:\d{2}|(?:[01]\d|2[0-3])[0-5]\d)$/i.test(text)
 const isUnread = (text) => /^\[?\d{1,3}\]?$/.test(text)
 const isMention = (text) => /\bYou were (?:mentioned|@ed)\b|@Me\b/i.test(text)
 const isNavigation = (text) => /^(?:Weixin|Contacts|Moments|Search|微信|通讯录|朋友圈|搜索)$/i.test(text)
+const isPreview = (text) => /^[^:：]{1,24}[:：]\s*\S/.test(text)
 
 export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
-  const sidebarLines = lines.filter((line) => line.left < width * 0.43 && line.top > height * 0.10 && line.top < height * 0.96)
+  const sidebarLines = lines.filter((line) => line.left < width * 0.37 && line.top > height * 0.10 && line.top < height * 0.96)
   if (!sidebarLines.length) return []
 
-  const medianHeight = [...sidebarLines.map((line) => line.height)].sort((a, b) => a - b)[Math.floor(sidebarLines.length / 2)] || 14
-  const eligible = sidebarLines.filter((line) => !isNavigation(line.text))
-  const gaps = eligible.slice(1).map((line, i) => line.top - (eligible[i].top + eligible[i].height)).filter((gap) => gap > 0)
-  const rowGap = Math.max(medianHeight * 2.0, Math.min(medianHeight * 3.3, [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] || medianHeight * 2.7))
+  const anchors = sidebarLines.filter((line) => line.left >= width * 0.08 && line.left < width * 0.33 &&
+    !isNavigation(line.text) && !isUnread(line.text) && !isMention(line.text) && !isTime(line.text) && !isPreview(line.text))
+    .sort((a, b) => a.top - b.top || a.left - b.left)
+  const medianHeight = [...anchors.map((line) => line.height)].sort((a, b) => a - b)[Math.floor(anchors.length / 2)] || 14
+  const rowGap = Math.max(medianHeight * 1.95, 28)
   const clusters = []
-  for (const line of eligible) {
+  for (const line of anchors) {
     let cluster = clusters.at(-1)
-    if (!cluster || line.top - cluster.at(-1).top > rowGap) {
+    if (!cluster || line.top - cluster[0].top > rowGap) {
       cluster = []
       clusters.push(cluster)
     }
     cluster.push(line)
-    cluster.bottom = Math.max(cluster.bottom ?? 0, line.top + line.height)
   }
 
-  return clusters.flatMap((rowLines) => {
-    rowLines.sort((a, b) => a.top - b.top || a.left - b.left)
-    const nameLine = rowLines.find((line) => !isUnread(line.text) && !isMention(line.text) && !isTime(line.text))
-    if (!nameLine) return []
+  return clusters.flatMap((cluster, index) => {
+    const nameLine = cluster[0]
     const name = nameLine.text.replace(/^\[|\]$/g, '').trim()
     if (!name || name.length > 80) return []
+    const rowTop = nameLine.top - medianHeight * 0.4
+    const nextTop = clusters[index + 1]?.[0].top ?? height * 0.96
+    const rowBottom = Math.min(nextTop - medianHeight * 0.2, nameLine.top + rowGap * 1.6)
+    const rowLines = sidebarLines.filter((line) => line.top + line.height > rowTop && line.top < rowBottom &&
+      line.left >= width * 0.08 && line.left < width * 0.33)
+      .sort((a, b) => a.top - b.top || a.left - b.left)
     const rest = rowLines.filter((line) => line !== nameLine)
     const unreadLine = rest.find((line) => isUnread(line.text))
     const unread = Number(unreadLine?.text.replace(/\D/g, '') || 0)
@@ -79,7 +84,7 @@ export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
       name, unread, mention, preview, confidence, lines: rowLines.map((line) => line.text),
       box: {
         x: origin.x + Math.min(...rowLines.map((line) => line.left)), y: origin.y + Math.min(...rowLines.map((line) => line.top)),
-        w: Math.round(width * 0.43), h: Math.max(...rowLines.map((line) => line.top + line.height)) - Math.min(...rowLines.map((line) => line.top)),
+        w: Math.round(width * 0.37), h: Math.max(...rowLines.map((line) => line.top + line.height)) - Math.min(...rowLines.map((line) => line.top)),
         cx: origin.x + Math.round(width * 0.20), cy: origin.y + Math.round((Math.min(...rowLines.map((line) => line.top)) + Math.max(...rowLines.map((line) => line.top + line.height))) / 2),
       },
     }]

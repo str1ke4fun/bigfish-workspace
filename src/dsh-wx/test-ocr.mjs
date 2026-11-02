@@ -22,6 +22,13 @@ assert.equal(scan.chats[0].mention, true)
 assert.equal(scan.chats[0].unread, 2)
 assert.equal(scan.chats[0].source, 'ocr')
 assert.equal(scan.chats[2], undefined)
+
+const badgeWithoutCount = ocrSnapshot({
+  ok: true,
+  rows: [{ name: '内部赤石群', lines: ['内部赤石群', '[You were mentioned]', '1359'], unread: 0, mention: true, preview: '', confidence: 80 }],
+})
+assert.deepEqual(mentionHits(badgeWithoutCount, ['D33P533K'], [], []).map((x) => x.chat), ['内部赤石群'],
+  'explicit @ badge is enough even when OCR misses the numeric unread count')
 assert.deepEqual(mentionHits(scan, ['大肥鱼'], [], ['项目群', '普通群']).map((x) => x.chat), ['项目群'])
 
 const triggerOnly = ocrSnapshot({
@@ -34,4 +41,4 @@ assert.equal(mentionHits(triggerOnly, ['大肥鱼'], [], ['项目群']).length, 
 const flat = ocrSnapshot({ ok: true, text: ['项目群', '张三: @大肥鱼'] })
 assert.equal(flat.chats.length, 0, 'flat whole-window OCR is not treated as chat rows')
 
-console.log('ocr adapter: 10 assertions passed')
+console.log('ocr adapter: 11 assertions passed')
