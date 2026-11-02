@@ -46,6 +46,10 @@ export function parseTsv(tsv, { minConfidence = 25, scale = 1 } = {}) {
 const isTime = (text) => /^(?:(?:Yesterday|Today|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+)?(?:\d{1,2}:\d{2}|(?:[01]\d|2[0-3])[0-5]\d)$/i.test(text)
 const isUnread = (text) => /^\[?\d{1,3}\]?$/.test(text)
 const isMention = (text) => /\bYou were (?:mentioned|@ed)\b|@Me\b/i.test(text)
+const cleanRowLabel = (text) => String(text ?? '').trim()
+  .replace(/^[|>®©•\s]+/, '')
+  .replace(/[=|\s]+(?:(?:Yesterday|Today)\s+)?(?:\d{1,2}[:.]\d{2}|(?:[01]\d|2[0-3])[0-5]\d)\s*$/i, '')
+  .trim()
 const isNavigation = (text) => /^(?:Weixin|Contacts|Moments|Search|微信|通讯录|朋友圈|搜索)$/i.test(text)
 const isPreview = (text) => /^[^:：]{1,24}[:：]\s*\S/.test(text)
 
@@ -54,7 +58,7 @@ export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
   if (!sidebarLines.length) return []
 
   const anchors = sidebarLines.filter((line) => line.left >= width * 0.08 && line.left < width * 0.33 && line.confidence >= 50 &&
-    !isNavigation(line.text) && !isUnread(line.text) && !isMention(line.text) && !isTime(line.text) && !isPreview(line.text))
+    !isNavigation(cleanRowLabel(line.text)) && !isUnread(line.text) && !isMention(line.text) && !isTime(line.text) && !isPreview(cleanRowLabel(line.text)))
     .sort((a, b) => a.top - b.top || a.left - b.left)
   const medianHeight = [...anchors.map((line) => line.height)].sort((a, b) => a - b)[Math.floor(anchors.length / 2)] || 14
   const rowGap = Math.max(medianHeight * 1.95, 28)
@@ -70,7 +74,7 @@ export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
 
   return clusters.flatMap((cluster, index) => {
     const nameLine = cluster[0]
-    const name = nameLine.text.replace(/^\[|\]$/g, '').trim()
+    const name = cleanRowLabel(nameLine.text).replace(/^\[|\]$/g, '').trim()
     if (!name || name.length > 80) return []
     const rowTop = nameLine.top - medianHeight * 0.4
     const nextTop = clusters[index + 1]?.[0].top ?? height * 0.96
@@ -96,10 +100,13 @@ export function groupChatRows(lines, width, height, origin = { x: 0, y: 0 }) {
   })
 }
 
-export function snapshotFromTsv(tsv, bounds) {
+export function snapshotFromTsv(tsv, bounds, rowOcr = null) {
   const { ocrScale = 1, ...windowBounds } = bounds
   const lines = parseTsv(tsv, { scale: ocrScale })
-  const rows = groupChatRows(lines, windowBounds.width, windowBounds.height, { x: windowBounds.x, y: windowBounds.y })
+  const rowLines = rowOcr?.tsv
+    ? parseTsv(rowOcr.tsv, { scale: rowOcr.scale ?? ocrScale }).map((line) => ({ ...line, left: line.left + (rowOcr.offsetX ?? 0) }))
+    : lines
+  const rows = groupChatRows(rowLines, windowBounds.width, windowBounds.height, { x: windowBounds.x, y: windowBounds.y })
   const messages = lines.filter((line) => line.left > windowBounds.width * 0.43 && line.top > windowBounds.height * 0.18 && line.top < windowBounds.height * 0.92)
     .map((line) => ({ text: line.text, confidence: Math.round(line.confidence), box: { x: windowBounds.x + line.left, y: windowBounds.y + line.top, w: line.width, h: line.height } }))
   return {
@@ -128,7 +135,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const scale = 2
   const enlarged = run('convert', ['png:-', '-resize', `${scale * 100}%`, 'png:-'], png)
   const tsv = run('tesseract', ['stdin', 'stdout', '-l', 'chi_sim+eng', '--psm', '6', 'tsv'], enlarged).toString('utf8')
-  process.stdout.write(JSON.stringify(snapshotFromTsv(tsv, { ...best, ocrScale: scale })) + '\n')
+  const cropX = Math.round(best.width * 0.12)
+  const cropWidth = Math.round(best.width * 0.24)
+  const sidebar = run('convert', ['png:-', '-crop', `${cropWidth}x${best.height}+${cropX}+0`, '+repage', '-resize', `${scale * 100}%`, 'png:-'], png)
+  const rowTsv = run('tesseract', ['stdin', 'stdout', '-l', 'chi_sim+eng', '--psm', '6', 'tsv'], sidebar).toString('utf8')
+  process.stdout.write(JSON.stringify(snapshotFromTsv(tsv, { ...best, ocrScale: scale }, { tsv: rowTsv, scale, offsetX: cropX })) + '\n')
 } catch (error) {
   process.stdout.write(JSON.stringify({ ok: false, reliable: false, error: String(error?.message ?? error).slice(0, 160), rows: [], messages: [], text: [] }) + '\n')
 }

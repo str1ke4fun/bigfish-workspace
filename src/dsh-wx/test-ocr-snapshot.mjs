@@ -62,4 +62,22 @@ assert.equal(liveRows.find((row) => row.name.includes('内部赤石群'))?.menti
 assert.equal(liveRows.find((row) => row.name.includes('cat'))?.preview, '你能看到测试吗', 'DM preview stays with the DM, not the right pane')
 assert.ok(!liveRows.some((row) => row.name === '过' || row.name === 'print('), 'avatar and message-pane OCR are excluded from chat names')
 
-console.log('ocr snapshot: 13 assertions passed')
+const cropLines = [
+  word(1, 1, 1, 1, 60, 471, 110, 28, 95, '内部赤石群'), word(1, 1, 1, 1, 328, 480, 52, 14, 90, '13:59'),
+  word(1, 1, 1, 2, 30, 520, 260, 24, 95, '[You were mentioned]'),
+  word(1, 1, 1, 3, 30, 607, 220, 32, 95, 'cat 不到 flag 的 cat'), word(1, 1, 1, 3, 328, 614, 52, 14, 90, '13.57'),
+  word(1, 1, 1, 4, 30, 653, 170, 22, 95, '你能看到测试吗'),
+  word(1, 1, 1, 5, 30, 745, 160, 24, 95, 'File Transfer'), word(1, 1, 1, 5, 328, 750, 52, 14, 90, '13:52'),
+  word(1, 1, 1, 6, 30, 789, 260, 22, 95, '验收测试'),
+  word(1, 1, 1, 7, 28, 879, 190, 24, 95, 'Tencent News'), word(1, 1, 1, 7, 328, 886, 52, 14, 90, '13:44'),
+  word(1, 1, 1, 8, 30, 925, 300, 22, 95, '中央定调，延迟退休过渡期结…'),
+].join('\n')
+const cropSnapshot = snapshotFromTsv(`header\n${cropLines}`, { x: 261, y: 117, width: 916, height: 666 },
+  { tsv: `header\n${cropLines}`, scale: 2, offsetX: 110 })
+const groupRow = cropSnapshot.rows.find((row) => row.name === '内部赤石群')
+const dmRow = cropSnapshot.rows.find((row) => row.name.replace(/\s/g, '') === 'cat不到flag的cat')
+assert.equal(groupRow?.mention, true, 'cropped sidebar OCR attaches the explicit @ badge to the group title')
+assert.equal(dmRow?.preview, '你能看到测试吗', 'cropped OCR separates the DM name from its preview')
+assert.equal(cropSnapshot.rows.find((row) => row.name === 'File Transfer')?.preview, '验收测试', 'timestamp is removed from a chat title')
+
+console.log('ocr snapshot: 16 assertions passed')
