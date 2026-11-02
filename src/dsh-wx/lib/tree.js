@@ -99,7 +99,11 @@ export function mentionHits(parsed, trigger, exempt = [], allow = []) {
     const byTrigger = c.unread > 0 && trigger.some((t) => t && c.preview.includes(t))
     const byExempt = c.unread > 0 && inList(exempt, c.name)
     const byDM = c.unread > 0 && !byExempt && looksDM(c) && inList(allow, c.name)
+    // OCR may confirm an explicit unread @ badge or trigger text, but uncertain
+    // OCR must never widen the single-chat / exempt-chat automatic reply rules.
+    const ocrConfirmed = c.source === 'ocr' && c.mention && c.unread > 0
     if (!c.mention && !byTrigger && !byExempt && !byDM) continue
+    if (c.source === 'ocr' && !ocrConfirmed) continue
     out.push({
       chat: c.name,
       unread: c.unread,

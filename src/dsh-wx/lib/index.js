@@ -26,6 +26,7 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync }
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, parseTree, sameName, sidebarRegion } from './tree.js'
+import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 
 export const name = 'dsh-wx'
@@ -34,7 +35,7 @@ export const name = 'dsh-wx'
 export const inject = ['tools', 'systemPrompt', 'agents']
 
 // 给自测用
-export { parseTree, mentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion }
+export { parseTree, mentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion, ocrSnapshot }
 export { resolveLabel, hitTest, createFreshness }
 
 const SH = fileURLToPath(new URL('./wx.sh', import.meta.url))
@@ -352,6 +353,14 @@ export function apply(ctx, config = {}) {
     }
     const mouse = await run(['mouse'], 5_000).catch(() => '')
     return { raw, parsed, region, hash0: region && prevRegion && JSON.stringify(region) === JSON.stringify(prevRegion) ? hash0 : '', hash, mouse, at: Date.now(), digest: contentDigest(parsed) }
+  }
+
+  async function ocrRead() {
+    const raw = await run(['ocr'], 60_000)
+    let data
+    try { data = JSON.parse(raw) } catch { throw new Error('OCR 返回了无效 JSON') }
+    const parsed = ocrSnapshot(data, { trigger: policy().trigger })
+    return { ...data, parsed }
   }
 
   /** 取快照并对账。疑似落后时，隔一会儿再看一次再下结论。 */
@@ -826,6 +835,20 @@ export function apply(ctx, config = {}) {
           : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
       try { feed?.noteOut({ chat: second.chat, text, receipt: receipt.replace(/^回执：/, ''), sent: inMsgs || inPreview ? true : 'unconfirmed' }) } catch { /* ignore */ }
       return `已输入 ${[...text].length} 字并回车。当前会话：“${second.chat}”。${receipt}` + fresh.notice()
+    },
+  })
+
+  reg({
+    name: 'wx_ocr',
+    description: '只读 OCR 观察微信窗口，返回侧栏识别行和消息区文字。OCR 不证明当前会话，不能用作发送授权。',
+    parameters: { type: 'object', properties: {} },
+    output: textOut,
+    isConcurrencySafe: () => true,
+    execute: async (_args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const data = await ocrRead()
+      return JSON.stringify(data, null, 2).slice(0, 24_000)
     },
   })
 

@@ -78,6 +78,10 @@ case "$cmd" in
     node wx-elements.mjs 2>&1 | head -c 200000
     ;;
 
+  ocr)
+    node "$(dirname "$0")/ocr-snapshot.mjs" 2>&1 | head -c 200000
+    ;;
+
   chats)
     # 会话列表的结构化 JSON（工作台的候选名单用）
     bash "$0" tree | node "$(dirname "$0")/chats-json.mjs"
