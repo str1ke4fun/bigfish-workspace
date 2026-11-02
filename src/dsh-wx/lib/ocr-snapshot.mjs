@@ -125,7 +125,8 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
     if (!name || name.length > 80 || /^[\p{P}\p{S}\s]+$/u.test(name)) return []
     const nameConfidence = titleWords.reduce((sum, word) => sum + (Number(word.confidence) || 0), 0) / titleWords.length
     const anchorConfidence = nameConfidence + (time ? 15 : 0)
-    if (!time) return []
+    if (!time && nameConfidence < 85) return []
+    if (!time && /^(?:你|能|看|到|测试|吗|我|需要|重新|集结|部队)/.test(name)) return []
     if (/\[|\]|\.\.\.|…|:/.test(name) || /^(?:You|were|mentioned|@Me)$/i.test(name)) return []
     return [{ line, titleWords, name, nameConfidence, anchorConfidence, hasTime: Boolean(time) }]
   }).sort((a, b) => a.line.top - b.line.top)
@@ -140,7 +141,8 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
 
   return deduped.map((anchor, index) => {
     const nextTop = deduped[index + 1]?.line.top ?? height * 0.96
-    const rowLines = lines.filter((line) => line.top + line.height > anchor.line.top && line.top < nextTop)
+    const rowLines = lines.filter((line) => line.top + line.height > anchor.line.top - 12 &&
+      line.top < Math.min(nextTop, anchor.line.top + 48) && line.left < width * 0.62)
     const rest = rowLines.filter((line) => line !== anchor.line)
     const mention = rest.some((line) => isMention(line.text)) || anchor.line.text.includes('@') ||
       lines.some((line) => line.left > width * 0.43 && Math.abs(line.top - anchor.line.top) < 38 && /\bYou were (?:mentioned|@ed)\b|@Me/i.test(line.text))
