@@ -157,4 +157,76 @@ await t('调试记录只有查询摘要和命中 id，不含消息正文；不�
   assert.equal(events, '')
 })
 
+console.log('目录与最近上下文')
+await t('目录给了 chatId 就用目录的；私聊消息归到会话名', async () => {
+  const c = make({
+    resolveChat: (name) => (name === '大白饭' ? { chatId: 'c_dir_dm', isDM: true, displayName: '大白饭' } : null),
+  })
+  const r = c.ingest({
+    chat: '大白饭', preview: '在吗', why: 'dm',
+    inbound: [{ text: '在吗' }],
+  })
+  assert.equal(r.task.chatId, 'c_dir_dm')
+  assert.equal(c.ledger.recent('c_dir_dm', 5)[0].sender, '大白饭')
+  assert.equal(c.ledger.recent('c_dir_dm', 5)[0].senderConfidence, 'high')
+})
+await t('群聊：预览能读出谁说的，只给最后一条，medium', async () => {
+  const c = make()
+  c.capture({
+    chat: '测试群A',
+    preview: '甲: 明天几点出发',
+    messages: [{ text: '别的话' }, { text: '明天几点出发' }],
+  })
+  const docs = c.ledger.recent(c.ledger.chats()[0], 5)
+  assert.equal(docs[0].sender, null)
+  assert.equal(docs[1].sender, '甲')
+  assert.equal(docs[1].senderConfidence, 'medium')
+})
+await t('recentContext 只取当前会话、按时间正序，并过 sanitize', async () => {
+  const c = make({ sanitize: (t) => (String(t).includes('秘密') ? { text: '', dropped: 1 } : { text: String(t), dropped: 0 }) })
+  c.capture({ chat: '测试群A', chatId: 'c_a', messages: [
+    { sender: '甲', text: '第一句', at: '2026-11-03T01:00:00Z' },
+    { sender: '乙', text: '第二句', at: '2026-11-03T02:00:00Z' },
+    { sender: null, direction: 'out', text: '我回的', at: '2026-11-03T03:00:00Z' },
+  ] })
+  c.capture({ chat: '测试群B', chatId: 'c_b', messages: [{ sender: '丙', text: '别的群', at: '2026-11-03T03:30:00Z' }] })
+  const r = c.recentContext({ chat: '测试群A', chatId: 'c_a', limit: 5 })
+  assert.equal(r.ok, true)
+  assert.equal(r.lines.length, 3)
+  assert.match(r.lines[0], /甲：第一句/)
+  assert.match(r.lines[2], /大肥鱼：我回的/)
+  assert.doesNotMatch(r.text, /别的群/)
+})
+await t('摘要进检索：只命中本会话的摘要卡，来源标成摘要', async () => {
+  const d = dir()
+  const c = createContextStore({ dir: d, now: () => T, log: () => {} })
+  const a = c.ingest({ chat: '测试群A', preview: '在吗', why: '@' })
+  c.capture({ chat: '测试群A', messages: [{ sender: '甲', text: '别的话' }] })
+  const { writeDailySummaries } = await import('./lib/summaries.js')
+  writeDailySummaries({
+    dir: join(d, 'summaries'),
+    now: () => T,
+    chats: [{
+      chatId: a.task.chatId, chatName: '测试群A',
+      docs: [{ msgId: 'm_s1', chatId: a.task.chatId, sender: '甲', kind: 'text', direction: 'in', text: '量子力学讨论', at: '2026-11-02T10:00:00Z' }],
+    }],
+  })
+  const r = await c.contextForTask({ taskId: a.task.taskId, query: '量子力学' })
+  assert.equal(r.ok, true)
+  assert.equal(r.shown, 1)
+  assert.match(r.text, /摘要/)
+  assert.match(r.text, /量子力学讨论/)
+})
+await t('维护：过期台账归档，旧天写摘要，归档后还能查', async () => {
+  const d = dir()
+  const c = createContextStore({ dir: d, now: () => T, retentionDays: 30, log: () => {} })
+  const a = c.ingest({ chat: '测试群A', preview: '在吗', why: '@' })
+  c.capture({ chat: '测试群A', messages: [{ sender: '甲', text: '很久以前的话', at: '2026-07-01T10:00:00Z' }] })
+  const r = c.maintain()
+  assert.equal(r.archive.archived.length, 1)
+  assert.ok(r.summaries.written.some((x) => x.day === '2026-07-01'))
+  const again = await c.contextForTask({ taskId: a.task.taskId, query: '很久以前' })
+  assert.match(again.text, /很久以前的话/)
+})
+
 console.log(`\n${n} 项通过`)

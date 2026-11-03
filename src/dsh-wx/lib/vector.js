@@ -125,7 +125,7 @@ export function createVectorProvider({
     if (!cfg) return null
     const body = JSON.stringify({ model: cfg.model || 'default', input: texts })
     const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
+    const timer = setTimeout(() => ctrl.abort(), Number(cfg.timeoutMs) || REQUEST_TIMEOUT_MS)
     try {
       const res = await fetchImpl(cfg.url + '/embed', {
         method: 'POST',

@@ -20,6 +20,7 @@
  *
  * 底层是 wx.sh（Xvfb :99 + xdotool + import + CU）。
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -30,6 +31,9 @@ import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
 import { createContextStore } from './context.js'
+import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
+import { createSessionPool } from './sessions.js'
+import { requesterOf, samePreviewText } from './speaker.js'
 import { createVectorProvider } from './vector.js'
 
 export const name = 'dsh-wx'
@@ -274,21 +278,23 @@ function promptText() {
   return [
     '## 微信通道（dsh-wx）',
     '',
-    '微信里的动作通过 9 个工具完成，没有 shell：',
-    '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。坐标是屏幕绝对坐标，可直接给 wx_click。消息列表没有发言人。',
+    '微信里的动作通过 10 个工具完成，没有 shell：',
+    '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。坐标是屏幕绝对坐标，可直接给 wx_click。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
     '- wx_click：点击。label 可填会话名或按钮名；也可填 x/y。返回里会写落点是什么、点完当前会话是什么。',
     '- wx_type：输入文字，enter=true 时回车发送。发送前核对当前会话是否在允许名单内；发送后回报消息是否出现在列表末尾。文本不能含换行。',
     '- wx_key：按键。Return 视同发送，同样核对。',
     '- wx_see：截图存档。当前模型不支持图像输入，读不了截图。',
     '- wx_ocr：只读 OCR。OCR 不证明当前会话，不能当发送授权。',
     '- wx_send：直接发到指定会话。它自己点开会话、点输入框、输入、回车，并核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话有效。带上 task_id 时，回执确认后会把这次回复记到任务上。',
-    '- wx_context：在「当前任务自己的会话」里查上下文。给 task_id，可选 query，或按时间翻页（before/limit）。只返回最多 5 条引用卡片，带发言人（读不出来的写「发言人未识别」）、时间、匹配原因和置信度；不会跨会话查，也不会把查询写进记忆。',
+    '- wx_context：在「当前任务自己的会话」里查上下文。给 task_id，可选 query，或按时间翻页（before/limit）。只返回最多 5 条引用卡片，带发言人（读不出来的写「发言人未识别」）、时间、匹配原因和置信度；原文和每日摘要一起查，不会跨会话查，也不会把查询写进记忆。',
+    '- wx_task_snooze：把任务推迟几分钟再提醒。现在回不了、但不是不用回时用；推迟期间不再催。',
     '- wx_task_done：把一条任务标记为完成。发了一条回复不等于完成；确实答完、不用再跟进时才用。',
     '',
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
     '- 界面会变，以每次工具的返回为准。返回里带“[提示]”的，按提示处理。',
-    '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。',
+    '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。通知里带「刚才」的那几行是台账里的最近消息，不是新消息。',
+    '- `[微信·逾期]` 是催办：先去那个会话回；现在回不了就用 wx_task_snooze 推迟，不用回了就用 wx_task_done 说明原因。',
     '- 对话框里不带 `[微信]` 的话，是主机在跟你说话：他问什么，就在对话框里答什么。这一轮不去 wx_peek 翻别的会话，不把答案发到微信，也不顺手去处理微信里别人的事——哪怕你之前看到过相关的群。只有他明说“发给谁/回她/跟谁说”，才动微信。',
     '- 微信里有人等着，也是主机这件事答完以后的事；答完他没吩咐，再决定要不要看。',
     '- 通知里的「任务：t_…」是这个请求在任务板上的 id。往那个会话发回复时把 task_id 交给 wx_send；需要看前文就带同一个 task_id 用 wx_context。',
@@ -305,9 +311,11 @@ function promptText() {
 
 // 耳朵递话的格式：会话名和内容必须分开写。
 // 以前是「名字：内容」一行，她会照着这个格式回，把会话名当成话的一部分写出来。
-export function formatEarNote(hits, allowChats = [], tasks = null) {
+export function formatEarNote(hits, allowChats = [], tasks = null, extra = {}) {
   const kindOf = (why) => (why === 'exempt' ? '单聊（免 @ 白名单）' : why === 'dm' ? '单聊' : why === 'name' ? '群里叫了你的名字' : '群里 @ 你')
   const taskOf = (chat) => (tasks instanceof Map ? tasks.get(chat) : null)
+  const whoOf = (chat) => (extra?.requester instanceof Map ? extra.requester.get(chat) : null)
+  const recentOf = (chat) => (extra?.recent instanceof Map ? extra.recent.get(chat) : null)
   const body = hits.map((h, i) => {
     const lines = [
       `${i + 1}) 会话名：${h.chat}`,
@@ -315,8 +323,18 @@ export function formatEarNote(hits, allowChats = [], tasks = null) {
       `   未读：${h.unread || 0} 条`,
       `   最后一条内容（侧栏预览，不是全文）：「${h.preview.slice(0, 120)}」`,
     ]
+    const who = whoOf(h.chat)
+    if (who?.name) {
+      const sure = who.confidence === 'low' ? '（不太确定）' : who.confidence === 'medium' ? '（据侧栏预览）' : ''
+      lines.push(`   谁：${who.name}${sure}`)
+    }
     const task = taskOf(h.chat)
     if (task?.taskId) lines.push(`   任务：${task.taskId}（未回）`)
+    const recent = recentOf(h.chat)
+    if (Array.isArray(recent) && recent.length) {
+      lines.push('   刚才（台账，最近几条）：')
+      for (const line of recent.slice(-6)) lines.push(`     - ${String(line).slice(0, 160)}`)
+    }
     return lines.join('\n')
   })
   return [
@@ -330,19 +348,83 @@ export function formatEarNote(hits, allowChats = [], tasks = null) {
 // ---------------------------------------------------------------- 插件主体
 export function apply(ctx, config = {}) {
   const display = String(config.display || ':99')
-  const run = (args, timeout) => {
+
+  // GUI 单写者：微信只有一个窗口、一只手。读屏、点击、打字、目录滚动都串行，
+  // 否则两个循环会在「点开会话」和「读当前会话」之间互相插队。
+  // AsyncLocalStorage 让同一条调用链内的嵌套加锁直通，不会自己等自己。
+  const guiCtx = new AsyncLocalStorage()
+  let guiTail = Promise.resolve()
+  const withGuiLock = (fn) => {
+    if (guiCtx.getStore() === 'gui') return fn()
+    const exec = () => guiCtx.run('gui', fn)
+    const p = guiTail.then(exec, exec)
+    guiTail = p.then(() => {}, () => {})
+    return p
+  }
+  const run = (args, timeout) => withGuiLock(() => {
     process.env.WX_DISPLAY = display
     return sh(args, timeout)
-  }
+  })
 
   const disposers = []
-  const reg = (tool) => disposers.push(ctx.tools.register(tool))
+  const reg = (tool) => {
+    const execute = tool.execute
+    disposers.push(ctx.tools.register({
+      ...tool,
+      execute: (...a) => withGuiLock(() => execute(...a)),
+    }))
+  }
 
   // ---- 定时提醒：一次性许可 + 「最近把谁叫醒过」 ----
   // 许可只管「到点时允许往这一个会话发一次」；它不放宽允许名单，也不改频率。
   const permitStore = createPermitStore({
     log: (m) => console.log('[dsh-wx] 提醒许可：' + m),
   })
+
+  // ---- 会话目录 / 多会话 ----
+  // 目录是派生索引：侧栏每见到一次就合并一次；全量滚动扫描每 10 分钟一次。
+  // chatId 一旦分配就不换，台账、任务、向量缓存都靠它对齐。
+  const directory = createDirectory({
+    log: (m) => console.log('[dsh-wx] 会话目录：' + String(m ?? '').slice(0, 160)),
+  })
+  const sessions = createSessionPool({
+    log: (m) => console.log('[dsh-wx] 会话池：' + String(m ?? '').slice(0, 160)),
+  })
+  const knownNames = () => {
+    const p = policy()
+    return [...p.allowChats, ...p.noMentionChats]
+  }
+  const resolveChat = (name) => {
+    const e = directory.entry(name)
+    if (!e) return null
+    return { chatId: e.chatId, isDM: e.kind === 'dm', displayName: e.fullName || e.displayName }
+  }
+  /** 能当发送目标的规范名：只有 exact / resolved；其余原样返回，交给上层拒绝。 */
+  const canonicalName = (name) => {
+    const e = directory.entry(name)
+    if (e && (e.nameConfidence === 'exact' || e.nameConfidence === 'resolved') && e.fullName) return e.fullName
+    return String(name ?? '').trim()
+  }
+  let lastDirSig = ''
+  let lastDirMerge = 0
+  /** 合并一页侧栏；内容没变就不写盘。 */
+  const mergeDirectory = (parsed, source = 'tree') => {
+    const chats = parsed?.chats ?? []
+    if (!chats.length) return null
+    const sig = JSON.stringify([parsed.current ?? '', chats.map((c) => [c.name, c.unread, c.preview])])
+    if (sig === lastDirSig && Date.now() - lastDirMerge < 60_000) return null
+    lastDirSig = sig
+    lastDirMerge = Date.now()
+    try {
+      return directory.merge({
+        chats, current: String(parsed.current ?? ''), source,
+        knownNames: knownNames(), directNames: policy().noMentionChats,
+      })
+    } catch (err) {
+      console.log('[dsh-wx] 会话目录合并失败：' + String(err?.message ?? err).slice(0, 120))
+      return null
+    }
+  }
 
   // ---- 任务板 / 会话台账 / 上下文检索 ----
   // 台账只记「看到的原始消息」，不是她的记忆；记忆仍然只由 dsh-fish 的 growth_commit 写。
@@ -364,15 +446,26 @@ export function apply(ctx, config = {}) {
   const contextStore = createContextStore({
     sanitize: sanitizeForHer,
     vectorProvider: (req) => vectorProvider.provider(req),
+    resolveChat,
     log: (m, err) => console.log('[dsh-wx] 上下文：' + String(m ?? '') + (err ? '（' + String(err?.message ?? err).slice(0, 120) + '）' : '')),
   })
+  // 她自己发出去、回执确认过的原文。发言人归因只认这批，绝不从正文猜。
+  const outbox = []
+  const noteOutbox = (chat, text) => {
+    outbox.push({ chat: String(chat ?? ''), text: String(text ?? ''), at: Date.now() })
+    if (outbox.length > 40) outbox.splice(0, outbox.length - 40)
+  }
+  const outboxFor = (chat) => outbox.filter((x) => sameName(x.chat, chat)).slice(-20)
+
   let captureWarned = false
-  /** 把当前打开会话的消息区记进台账。树没有发言人和时间，就不猜：留空、标低置信。 */
+  /** 把当前打开会话的消息区记进台账。发言人和方向按 speaker.js 的证据分层。 */
   const captureCurrent = (s) => {
     try {
       if (!s?.parsed?.ok || s.source === 'ocr') return
       const chat = String(s.parsed.current ?? '').trim()
       if (!chat) return
+      const entry = directory.entry(chat)
+      const row = (s.parsed.chats ?? []).find((c) => sameName(c.name, chat)) ?? null
       const messages = (s.parsed.messages ?? [])
         .map((m) => String(m?.text ?? '').trim())
         .filter(Boolean)
@@ -387,7 +480,14 @@ export function apply(ctx, config = {}) {
           source: 'tree',
         }))
       if (!messages.length) return
-      contextStore.capture({ chat, messages, source: 'tree' })
+      contextStore.capture({
+        chat,
+        messages,
+        source: 'tree',
+        preview: row?.preview ?? entry?.lastPreview ?? '',
+        isDM: entry?.kind === 'dm' ? true : null,
+        outbox: outboxFor(chat),
+      })
     } catch (err) {
       if (!captureWarned) {
         captureWarned = true
@@ -598,6 +698,7 @@ export function apply(ctx, config = {}) {
       treeSince = Date.now()
     }
     writeHealth()
+    mergeDirectory(s.parsed, s.source === 'ocr' ? 'ocr' : 'tree')
     if (capture) captureCurrent(s)
     return s
   }
@@ -776,7 +877,7 @@ export function apply(ctx, config = {}) {
    * 把一句话发到指定会话。永不自己吞错：发不出去就抛，让调用方如实说。
    * permit 存在时只绕过 @ / 主机闸；允许名单、说话频率、当前会话核对都照走。
    */
-  async function sendToChat({ chat, text, permit = '' } = {}) {
+  async function sendToChat({ chat, text, permit = '', taskId = '' } = {}) {
     const p = policy()
     if (!p.enabled) throw new Error(OFF)
     const want = String(chat ?? '').trim()
@@ -894,10 +995,12 @@ export function apply(ctx, config = {}) {
     // 回执确认了才落台账：没看到就不假装发过。
     let outMsgId = ''
     if (inMsgs || inPreview) {
+      noteOutbox(allowed.chat, body)
       try {
         const captured = contextStore.capture({
           chat: allowed.chat,
           source: 'sent',
+          taskId,
           messages: [{
             sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
             text: body, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
@@ -949,6 +1052,8 @@ export function apply(ctx, config = {}) {
   let lastHeldLog = 0
   let lastFailLog = 0
   let lastRelogin = 0
+  let lastScanAt = 0
+  let scanning = false
   const lastDeliver = new Map() // 会话 → 上次投递时间，防她跟自己的回声互相触发
 
   /**
@@ -965,11 +1070,16 @@ export function apply(ctx, config = {}) {
     try { writeFileSync(WX_STATE, JSON.stringify({ sessionId, at: new Date().toISOString() }, null, 2)) } catch { /* 存不下也不致命 */ }
   }
   let wxSessionId = readWxSession()
+  // 会话池里记着主会话绑定的群；宿主换过会话 id 时同步一次，别让两本账对不上。
+  if (wxSessionId) {
+    const st = sessions.stats()
+    if (st.mainChatId && st.mainSessionId !== wxSessionId) sessions.assignMain(st.mainChatId, wxSessionId, st.mainChatName)
+  }
   {
     const offHost = ctx.on?.('session/event', (session, event) => {
       try {
         const id = session?.header?.id ?? session?.id
-        if (!id || (id !== wxSessionId && id !== readWxSession())) return
+        if (!id || !isWxSession(id)) return
         if (event?.type === 'turn/end') { if (hostState) hostState.active = false; return }
         if (event?.type !== 'user/message') return
         if (!isHostChatSource(event?.data?.source)) return
@@ -995,8 +1105,57 @@ export function apply(ctx, config = {}) {
     if (!id) throw new Error('宿主建了会话但没给 id')
     wxSessionId = id
     saveWxSession(id)
+    const st = sessions.stats()
+    if (st.mainChatId) sessions.assignMain(st.mainChatId, id, st.mainChatName)
     console.log('[dsh-wx] 微信会话：' + id)
     return id
+  }
+
+  /** 一个群一个会话：主会话管第一个群，其余按 chatId 分配 worker；满了回落主会话。 */
+  const sessionForChat = async (chatName, chatId) => {
+    const main = await ensureWxSession()
+    const st = sessions.stats()
+    if (!st.mainChatId) {
+      sessions.assignMain(chatId, main, chatName)
+      return main
+    }
+    if (st.mainChatId === chatId) return main
+    const existing = sessions.sessionFor(chatId)
+    if (existing) return existing
+    const sc = controller()
+    if (!sc?.create) return main
+    if (sessions.list().length >= sessions.limit - 1) return main
+    try {
+      const created = await sc.create({ cwd: HER_DIR })
+      const id = String(created?.sessionId ?? created?.id ?? '')
+      if (!id) return main
+      const r = sessions.assign(chatId, id, chatName)
+      if (!r.ok) return main
+      console.log('[dsh-wx] 会话池：' + chatName + ' → ' + id)
+      return id
+    } catch (err) {
+      console.log('[dsh-wx] 会话池建 worker 失败，回落主会话：' + String(err?.message ?? err).slice(0, 120))
+      return main
+    }
+  }
+
+  /** 投递到指定的群会话；会话没了就清映射、重试主会话。 */
+  const deliverToChat = async (chatName, chatId, text) => {
+    const sid = await sessionForChat(chatName, chatId)
+    try {
+      await deliver(sid, text)
+      return sid
+    } catch (err) {
+      if (!/not-found|unknown session|no such session/i.test(String(err?.message ?? err))) throw err
+      sessions.remove(chatId)
+      if (sid === wxSessionId) {
+        wxSessionId = ''
+        saveWxSession('')
+      }
+      const main = await ensureWxSession()
+      await deliver(main, text)
+      return main
+    }
   }
   const early = setTimeout(() => {
     ensureWxSession().catch((e) => console.log('[dsh-wx] 还建不了微信会话（下一轮再试）：' + String(e?.message ?? e).slice(0, 120)))
@@ -1010,13 +1169,130 @@ export function apply(ctx, config = {}) {
     content: [{ type: 'text', text }],
   }, new AbortController().signal)
 
+  /** chatId → 目录里的全名；目录还没记住就空。 */
+  const chatNameOfId = (chatId) => {
+    const id = String(chatId ?? '').trim()
+    if (!id) return ''
+    const e = directory.all().find((x) => x.chatId === id)
+    return e?.fullName || e?.displayName || ''
+  }
+
+  /**
+   * 侧栏跨页扫描：只滚列表，不点开会话。滚完回到顶部，下一轮重新对账。
+   * 有草稿时不扫（滚动可能把草稿弄丢）。
+   */
+  const scanDirectoryNow = async () => {
+    if (scanning) return { ok: false, why: 'already-scanning' }
+    scanning = true
+    try {
+      const res = await scanSidebar({
+        read: async () => {
+          const s = await snapshot({ pixels: false }).catch(() => null)
+          return s?.parsed?.ok ? { ok: true, parsed: s.parsed } : { ok: false }
+        },
+        scroll: ({ x, y, direction, times }) => run(['scroll', String(x), String(y), direction, String(times)], 15_000),
+        sleep,
+        maxPages: 8,
+      })
+      if (!res.ok) return res
+      const merged = mergeScanned(res.chats)
+      directory.merge({
+        chats: merged, current: '', source: 'scan',
+        knownNames: knownNames(), directNames: policy().noMentionChats,
+      })
+      fresh.reset('目录扫描滚动了侧栏，旧基线作废')
+      console.log(`[dsh-wx] 目录扫描：${res.pages} 页、${merged.length} 个会话（${res.reason}）`)
+      logInbound({ type: 'directory-scan', pages: res.pages, chats: merged.length, reason: res.reason, complete: res.complete })
+      return res
+    } finally {
+      scanning = false
+    }
+  }
+
+  // 逾期提醒节奏：建任务后 15 分钟第一次，之后 +45 分钟、+3 小时；第三次后卡住等人工。
+  const REMIND_NEXT_MS = { 1: 45 * 60_000, 2: 3 * 3600_000, 3: 60_000 }
+  let reminderBusy = false
+  let lastMaintainAt = 0
+  const overdueText = (t, level) => {
+    const waited = Math.max(0, Date.now() - Date.parse(String(t.updatedAt || t.createdAt || '')) / 1)
+    const mins = Math.round(waited / 60_000)
+    const howLong = mins < 60 ? `${mins} 分钟` : `${Math.floor(mins / 60)} 小时`
+    return [
+      `[微信·逾期] 「${t.chatName || chatNameOfId(t.chatId) || t.chatId}」还有一件事没处理（第 ${level} 次提醒，已等 ${howLong}）`,
+      `   任务：${t.taskId}`,
+      `   谁：${t.requester?.name || '发言人未识别'}${t.reason ? `（${t.reason}）` : ''}`,
+      `   最后一条：「${String(t.lastText ?? '').slice(0, 120)}」`,
+      '   要么去回，要么用 wx_task_snooze 推迟，确实不用回就用 wx_task_done 说明原因。',
+    ].join('\n')
+  }
+
+  /**
+   * 逾期泵：每分钟看一次。只催她，不替她发；投递失败不记提醒，下一分钟再来。
+   */
+  const reminderPump = async () => {
+    if (reminderBusy || hostBusy()) return
+    const p = policy()
+    if (!p.enabled || p.watch === false) return
+    const due = contextStore.board.overdueReminders({ maxLevel: 3 })
+    if (!due.length) return
+    reminderBusy = true
+    try {
+      for (const t of due) {
+        const chat = canonicalName(t.chatName || chatNameOfId(t.chatId))
+        if (!chat) continue
+        const level = Math.min(3, (Number(t.overdueCount) || 0) + 1)
+        try {
+          await deliverToChat(chat, t.chatId, overdueText(t, level))
+        } catch (err) {
+          console.log('[dsh-wx] 逾期提醒投不进去（' + chat + '）：' + String(err?.message ?? err).slice(0, 120))
+          continue
+        }
+        // 提醒本身也算叫了她一次：这个会话的 @ 窗口重新打开，才允许回。
+        saveMentions(grant(readMentions(), chat, Date.now()))
+        noteRecent([chat])
+        const next = new Date(Date.now() + (REMIND_NEXT_MS[level] ?? REMIND_NEXT_MS[3])).toISOString()
+        contextStore.board.markReminded(t.taskId, { level, nextCheckAt: next, note: `第 ${level} 次逾期提醒` })
+        if (level >= 3) {
+          contextStore.board.block(t.taskId, { why: '连续多次逾期提醒后仍未处理', uncertain: true })
+        }
+        console.log(`[dsh-wx] 逾期提醒 ${level}/3 → ${chat}（${t.taskId}）`)
+        logInbound({ type: 'overdue-reminded', taskId: t.taskId, chatId: t.chatId, chat, level })
+      }
+    } finally {
+      reminderBusy = false
+    }
+  }
+
+  /** 每小时最多一次：台账归档 + 昨天的摘要。失败只记日志。 */
+  const maintain = () => {
+    if (Date.now() - lastMaintainAt < 3600_000) return
+    lastMaintainAt = Date.now()
+    try {
+      const r = contextStore.maintain()
+      if (r.archive.archived.length || r.summaries.written.length) {
+        console.log(`[dsh-wx] 维护：归档 ${r.archive.archived.length} 个文件、摘要 ${r.summaries.written.length} 天`)
+      }
+    } catch (err) {
+      console.log('[dsh-wx] 维护失败：' + String(err?.message ?? err).slice(0, 120))
+    }
+  }
+
   // ---- 对 dsh-fish 暴露的服务 ----
   // 她自己的插件（dsh-fish）不能直接碰 wx.sh，只能通过这个窄接口拿许可 / 问名单。
   // 发送仍然由 wx_send 走上面的 CUA 流程；fish 拿不到点、打字的原语。
   const isWxSession = (id) => {
     const s = String(id ?? '')
     if (!s) return false
-    return s === wxSessionId || s === readWxSession()
+    if (s === wxSessionId || s === readWxSession()) return true
+    return sessions.sessionIds().includes(s)
+  }
+  /** 某个微信会话负责哪个群；主会话负责池里记的那个群，worker 负责自己那个。 */
+  const chatNameOfSession = (sessionId) => {
+    const sid = String(sessionId ?? '')
+    if (!sid) return ''
+    const st = sessions.stats()
+    if (st.mainSessionId && sid === st.mainSessionId) return st.mainChatName || ''
+    return sessions.list().find((w) => w.sessionId === sid)?.chatName || ''
   }
   const canSend = (chat) => canSendWithPolicy(policy(), chat)
   const wxService = {
@@ -1026,7 +1302,9 @@ export function apply(ctx, config = {}) {
     inboxSummary: (opts) => contextStore.summary(opts),
     inbox: () => contextStore.inbox(),
     isWxSession: (sessionId) => isWxSession(sessionId),
-    currentChat: (sessionId) => (isWxSession(sessionId) ? recentChats().at(-1) ?? '' : ''),
+    currentChat: (sessionId) => (isWxSession(sessionId)
+      ? (chatNameOfSession(sessionId) || recentChats().at(-1) || '')
+      : ''),
     isRecentChat: (sessionId, chat, withinMs) => isWxSession(sessionId) && isRecentChat(chat, withinMs),
     grantReminder: ({ id, chat, text, sessionId, dueAt, ttlMs } = {}) => {
       if (!isWxSession(sessionId)) return { ok: false, why: '定时提醒只能在微信这条会话里定。' }
@@ -1092,6 +1370,13 @@ export function apply(ctx, config = {}) {
 
       // 树没连上、OCR 也没读到会话行：这一轮没有可看的东西，等树恢复/下一轮。
       if (!tree.ok && !ocrRecovered) return
+      // 每 10 分钟把侧栏从头滚到尾一次，补齐当前页看不到的会话和全名。
+      if (!ocrRecovered && Date.now() - lastScanAt > 10 * 60_000) {
+        lastScanAt = Date.now()
+        await scanDirectoryNow().catch((err) => {
+          console.log('[dsh-wx] 目录扫描失败：' + String(err?.message ?? err).slice(0, 120))
+        })
+      }
       // 树落后时试一次无副作用的"滚一下"逼它刷新；最多一分钟一次
       if (fresh.stale && Date.now() - lastNudge > 60_000 && parsed.chats.length >= 3) {
         lastNudge = Date.now()
@@ -1106,9 +1391,11 @@ export function apply(ctx, config = {}) {
 
       const trigger = p.trigger.length > 0 ? p.trigger : ['D33p53Ek']
       // 免 @ 名单和允许名单一起交给它：单聊没有「@我」标记，不靠这两条就永远叫不醒她
-      const mentions = ocrRecovered
+      const mentionsRaw = ocrRecovered
         ? ocrMentionHits(parsed)
         : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats)
+      // 截断名解析到全名后再记 @ 窗口和任务，否则发送闸会拿两个不同的键互相比。
+      const mentions = mentionsRaw.map((m) => ({ ...m, chat: canonicalName(m.chat) }))
       // 有人 @ 她 → 这个会话在窗口内可以开口（@ 才回）。挂着的未读 @ 会一直续窗口。
       if (mentions.length > 0) {
         let st = readMentions()
@@ -1165,34 +1452,56 @@ export function apply(ctx, config = {}) {
         return
       }
       // 投不进微信自己的会话就不投、不记账，下一轮再试：宁可晚，也不串通道
-      const sid = await ensureWxSession()
+      await ensureWxSession()
       if (Date.now() - lastAt < 15_000) return
       lastAt = Date.now()
       // 先入池、再叫醒：投递失败下一轮还会重投，任务按预览去重，不会越积越多。
+      // 每个群各自投到自己那个会话；主会话管第一个群，其余按 chatId 分配 worker。
       const tasks = new Map()
+      const reqs = new Map()
+      const recents = new Map()
+      const ids = new Map()
       for (const h of hits) {
+        const chat = canonicalName(h.chat)
+        const chatId = directory.idFor(chat)
+        ids.set(h.key, chatId)
+        const entry = directory.entry(chat)
+        const isDM = entry?.kind === 'dm' ? true : null
+        const who = requesterOf({ chat, isDM: isDM === true, preview: h.preview })
+        if (who?.name) reqs.set(chat, who)
         try {
-          const r = contextStore.ingest({ chat: h.chat, preview: h.preview, why: h.why })
-          if (r.ok && r.task) tasks.set(h.chat, r.task)
+          const r = contextStore.ingest({ chat, chatId, preview: h.preview, why: h.why, isDM })
+          if (r.ok && r.task) tasks.set(chat, r.task)
         } catch (err) {
           console.log('[dsh-wx] 入池失败（不影响这次投递）：' + String(err?.message ?? err).slice(0, 120))
         }
+        try {
+          const rec = contextStore.recentContext({ chat, chatId, limit: 6, hours: 6 })
+          if (rec.ok && rec.lines.length) recents.set(chat, rec.lines)
+        } catch { /* 前文读不到就只发预览 */ }
       }
-      const note = formatEarNote(hits, p.allowChats, tasks)
-      try {
-        await deliver(sid, note)
-      } catch (err) {
-        if (!/not-found|unknown session|no such session/i.test(String(err?.message ?? err))) throw err
-        wxSessionId = ''
-        saveWxSession('')
-        await deliver(await ensureWxSession(), note)
+
+      const sentChats = []
+      for (const h of hits) {
+        const chat = canonicalName(h.chat)
+        const chatId = ids.get(h.key)
+        const note = formatEarNote([{ ...h, chat }], p.allowChats, tasks, { requester: reqs, recent: recents })
+        try {
+          const sid = await deliverToChat(chat, chatId, note)
+          sentChats.push(chat)
+          // 投成功才记账：失败下一轮还投，不会丢这条 @
+          seen.add(h.key)
+          lastDeliver.set(chat, Date.now())
+          console.log('[dsh-wx] 耳朵：已投递（' + sid + '）→ ' + chat)
+          logInbound({ type: 'delivered', session: sid, chatId, chat, why: h.why, preview: h.preview, key: h.key })
+        } catch (err) {
+          console.log('[dsh-wx] 耳朵：投递失败（' + chat + '）：' + String(err?.message ?? err).slice(0, 160))
+          logInbound({ type: 'deliver-failed', chatId, chat, why: h.why, error: String(err?.message ?? err).slice(0, 160) })
+        }
       }
-      // 投成功才记账：失败下一轮还投，不会丢这条 @
-      for (const h of hits) { seen.add(h.key); lastDeliver.set(h.chat, Date.now()) }
+      if (!sentChats.length) return
       saveSeen()
-      noteRecent(hits.map((h) => h.chat))
-      console.log('[dsh-wx] 耳朵：已投递（' + (wxSessionId || sid) + '）→ ' + hits.map((h) => h.chat).join('、'))
-      logInbound({ type: 'delivered', session: wxSessionId || sid, chats: hits.map((h) => ({ chat: h.chat, why: h.why, preview: h.preview, key: h.key })) })
+      noteRecent(sentChats)
     } catch (err) {
       const msg = String(err?.message ?? err).slice(0, 160)
       console.log('[dsh-wx] 耳朵出错: ' + msg)
@@ -1208,8 +1517,16 @@ export function apply(ctx, config = {}) {
 
   const timer = setInterval(ear, Math.max(3, Number(config.pollSeconds) || 5) * 1000)
   timer.unref?.()
+  const remindTimer = setInterval(() => {
+    reminderPump().catch((err) => console.log('[dsh-wx] 逾期泵出错：' + String(err?.message ?? err).slice(0, 120)))
+  }, 60_000)
+  remindTimer.unref?.()
+  const maintainTimer = setInterval(maintain, 15 * 60_000)
+  maintainTimer.unref?.()
+  const maintainEarly = setTimeout(maintain, 120_000)
+  maintainEarly.unref?.()
 
-  console.log(`[dsh-wx] mounted (display=${display}, tools=9, policy=${POLICY})`)
+  console.log(`[dsh-wx] mounted (display=${display}, tools=10, policy=${POLICY})`)
 
   // ---------------------------------------------------------------- 工具
   reg({
@@ -1363,6 +1680,7 @@ export function apply(ctx, config = {}) {
           : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
       try { feed?.noteOut({ chat: second.chat, text, receipt: receipt.replace(/^回执：/, ''), sent: inMsgs || inPreview ? true : 'unconfirmed' }) } catch { /* ignore */ }
       if (inMsgs || inPreview) {
+        noteOutbox(second.chat, text)
         try {
           contextStore.capture({
             chat: second.chat,
@@ -1410,6 +1728,7 @@ export function apply(ctx, config = {}) {
         chat: a.chat,
         text: a.text,
         permit: String(a.permit ?? '').trim(),
+        taskId,
       }))
       let taskLine = ''
       if (task) {
@@ -1452,6 +1771,31 @@ export function apply(ctx, config = {}) {
       })
       if (!r.ok) throw new Error(r.why)
       return r.text + '\n（只查这个任务自己的会话；查询不写进记忆。）'
+    },
+  })
+
+  reg({
+    name: 'wx_task_snooze',
+    description: '把一条微信任务推迟一段时间再提醒。用于现在回不了、但不是不用回的情况。推迟期间不再催；到点会重新提醒。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: '任务 id。' },
+        minutes: { type: 'number', description: '推迟多少分钟，默认 15。' },
+      },
+      required: ['task_id'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      const a = args || {}
+      const taskId = String(a.task_id ?? '').trim()
+      if (!taskId) throw new Error('wx_task_snooze: 需要 task_id。')
+      const minutes = Math.max(1, Math.min(24 * 60, Number(a.minutes) || 15))
+      const r = contextStore.snooze({ taskId, minutes })
+      if (!r?.ok) throw new Error(r?.why || '任务没记上。')
+      return `任务「${taskId}」推迟 ${minutes} 分钟，到点再提醒。`
     },
   })
 
@@ -1521,6 +1865,9 @@ export function apply(ctx, config = {}) {
 
   return () => {
     try { clearInterval(timer) } catch { /* ignore */ }
+    try { clearInterval(remindTimer) } catch { /* ignore */ }
+    try { clearInterval(maintainTimer) } catch { /* ignore */ }
+    try { clearTimeout(maintainEarly) } catch { /* ignore */ }
     try { clearTimeout(early) } catch { /* ignore */ }
     try { off?.() } catch { /* ignore */ }
     for (const d of disposers) {

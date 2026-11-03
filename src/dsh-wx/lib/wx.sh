@@ -143,6 +143,27 @@ case "$cmd" in
     echo "滚了一下 ($x,$y)"
     ;;
 
+  scroll)
+    # 只滚鼠标停的位置，不点开会话：目录扫描靠它翻侧栏。
+    x="${1:?要 x}"; y="${2:?要 y}"; dir="${3:-down}"; times="${4:-5}"
+    case "$dir" in
+      up) btn=4 ;;
+      down) btn=5 ;;
+      *) echo "scroll: direction 只能是 up/down" >&2; exit 64 ;;
+    esac
+    p=$(pick) || { echo "找不到微信窗口" >&2; exit 2; }
+    id=$(printf '%s' "$p" | awk '{print $1}')
+    xdotool windowfocus "$id" 2>/dev/null || true
+    xdotool mousemove "$x" "$y"
+    i=0
+    while [ "$i" -lt "$times" ]; do
+      xdotool click "$btn" 2>/dev/null
+      sleep 0.06
+      i=$((i + 1))
+    done
+    echo "滚了 $dir x$times ($x,$y)"
+    ;;
+
   clicklabel)
     want="${1:?要一个标签}"
     cd /home/str1k3/cu-test 2>/dev/null || { echo "没有 ~/cu-test" >&2; exit 2; }
@@ -253,7 +274,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|atspi|bus-start|restart}" >&2
+    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|restart}" >&2
     exit 64
     ;;
 esac

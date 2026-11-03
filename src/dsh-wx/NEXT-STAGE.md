@@ -20,25 +20,28 @@
 
 关于第 3 条：参考项目是 Python + Qwen3 + FAISS，而本插件**零依赖**。落实方式改为「A 档纯 JS 检索默认可用 + B 档本地向量侧车可选增强」，不把 Python / 模型变成安装前提。详见 §6.3。
 
-### 0.1 已落地 / 未落地（2026-11-03）
+### 0.1 已落地（2026-11-03）
 
-已落地并由测试覆盖：
+全部由测试覆盖；`cd src/dsh-wx && node --test` 为 20 个测试文件全绿。
 
-- 任务板 `lib/tasks.js`：只追加的 `tasks.jsonl`，入站去重、状态迁移、租约、逾期。
-- 会话台账 `lib/ledger.js`：按会话 + 月份的只追加台账，滚动窗口按内容序列去重。
-- A 档检索 `lib/retrieval.js`：中文二元组 + BM25 + 时间/同线加成，卡片格式与预算。
-- B 档侧车 `lib/vector.js`：只读 `~/.dsh-wx/context.json`、只连本机地址、超时与 10 分钟熔断，失败静默退回 A 档。
-- 窄接口 `lib/context.js`：`task_id` 绑定会话，`wx_context` 无 `chat_id`；查询日志只记 hash/命中 id，不写 `events.jsonl`。
-- 工具：`wx_context`、`wx_task_done`、`wx_send(task_id)`；`her_inbox`；任务摘要进 system prompt；耳注带上任务 id。
-- 入站预览只建任务，不冒充消息正文写进台账；真正消息由看屏时的消息区捕获。
+- 任务板 `lib/tasks.js`：只追加的 `tasks.jsonl`，入站去重、状态迁移、租约、逾期、逾期提醒计数与下次检查时间。
+- 会话台账 `lib/ledger.js`：按会话 + 月份的只追加台账，滚动窗口按内容序列去重；读取时自动合并 `ledger/archive/`。
+- A 档检索 `lib/retrieval.js`：中文二元组 + BM25 + 时间/同线加成，卡片格式与预算；摘要文档单独标来源。
+- B 档侧车 `lib/vector.js` + `sidecar/`：只读 `~/.dsh-wx/context.json`、只连本机地址、可配 0.5–30 秒超时与 10 分钟熔断，失败静默退回 A 档。Windows 侧 `embed_server.py` 提供 `/health`、`/embed`；WSL 侧 `forward.mjs` 把 `127.0.0.1:8731` 转到 Windows 网关。模型与启动方式见 `sidecar/README.md`。
+- 窄接口 `lib/context.js`：`task_id` 绑定会话，`wx_context` 无 `chat_id`；查询日志只记 hash/命中 id，不写 `events.jsonl`；`recentContext()` 自动带当前会话最近几条。
+- 完整会话目录 `lib/directory.js`：侧栏滚动枚举、跨页合并去重、截断名全名解析、稳定 chatId（截断名先发 `c_tmp_…`，解析后沿用）；耳朵每 10 分钟主动扫一次目录。
+- 发言人归因 `lib/speaker.js`：结构化发送人 > 私聊对方 = 会话名 > 侧栏预览最后一条（medium）> 出站回执 > 未知；只按证据归因，不从正文猜。
+- 分层存储 `lib/archive.js` + `lib/summaries.js`：L0 原始台账；L1 超过保留期的月份归档（复制 → 校验行数与 sha → 移走，不删除）；L2 每日确定性摘要（参与者、关键词、提问），摘要进检索；每小时维护任务串起来。
+- 多会话并行 `lib/sessions.js` + `lib/index.js`：一个群绑定一个 session，主会话 + 有上限的 worker，满了回落主会话；GUI 用 `AsyncLocalStorage` 可重入锁保证单写者；发送失败会清理映射并重建主会话。
+- 逾期主动提醒：到点后按 15 分钟 / 1 小时 / 4 小时三级催办，催办时续上提及窗口；连续三次仍不处理后 `block` 并标 `uncertain`，不偷偷结束；`wx_task_snooze` 可推迟 1–1440 分钟。
+- 自动补任务与对账：耳朵把侧栏未读与任务板对齐；同一预览不重复建任务，入站消息在拿到正文后才落台账。
+- 工具：`wx_context`、`wx_task_done`、`wx_task_snooze`、`wx_send(task_id)`；`her_inbox`；任务摘要进 system prompt；耳注带上任务 id、请求人和最近台账。
 
-仍未落地（按 §9 排期）：
+运行时注意事项：
 
-- 完整会话目录：滚动枚举侧栏、长名字解析、跨页稳定 chatId。
-- 发言人归因：当前消息区只有正文，卡片会如实写「发言人未识别」。
-- 分层存储的 L1 归档 / L2 摘要：现在只有 L0 原始台账 + L3 任务卡；没有自动搬移或压缩。
-- 多会话并行：仍是一个微信会话按队列处理；没有多 session 租约消费。
-- 自动补任务（侧栏有未读但任务板没有）与逾期主动提醒。
+- B 档侧车可选。未写 `~/.dsh-wx/context.json`、模型没起或超时，都会静默走 A 档，不影响收发。
+- 侧栏滚动和目录枚举依赖微信窗口焦点与 `wx.sh scroll`；单测只验证解析和合并，不启动 GUI。
+- 多会话并行的上限由 `maxSessions` 控制，默认远小于会话总数；超出后回落到主会话排队。
 
 ## 1. 目标
 
@@ -690,17 +693,17 @@ L2 摘要卡只是「压缩后的台账索引」，属于通道数据，不是�
 - 回了半句后任务仍是 `waiting`，不会被当成 `done`。
 - 逾期任务在工作台可见，并按策略提醒一次；不会无限刷屏。
 
-### 阶段 5：按需并行（P3，暂不做）
+### 阶段 5：按需并行（P3，已落地 2026-11-03）
 
-只有在阶段 1–4 的指标证明「单会话排队是瓶颈」时，才考虑：
+按用户要求先落地，但保留「按需」的开关：
 
-- 一个 chat 一个 session；
-- GUI Actor 单写者；
-- 每 session 绑定 chat；
-- 全局并发上限 2；
-- 记忆单写者、per-session wake。
+- 一个 chat 一个 session（`lib/sessions.js`，映射持久化到 `~/.dsh-wx/sessions.json`）；
+- GUI Actor 单写者（`AsyncLocalStorage` 可重入锁，包住所有工具和 `wx.sh` 原语）；
+- 每 session 绑定 chat，主会话 + 有上限的 worker，满了回落主会话；
+- 全局并发上限由 `maxSessions` 控制；
+- 发送失败清理映射、重建主会话，不把消息留在失效 session 里。
 
-这一阶段的前置条件、风险和收益见上一轮调研结论；本文档不展开实现。
+事件流仍是单写者：查询和收发不写 `events.jsonl`，只有 `growth_commit` 写。
 
 ## 10. 验收标准（整体）
 

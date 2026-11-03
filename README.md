@@ -31,21 +31,15 @@ cd src/dsh-fish
 node --test
 ```
 
-在仓库根目录运行微信及交流频率自测：
+微信通道的单元测试与自测：
 
 ```bash
-node src/dsh-wx/selftest.mjs
-node src/dsh-wx/test-mention.mjs
-node src/dsh-wx/test-mention-hits.mjs
-node src/dsh-wx/test-ear-note.mjs
-node src/dsh-wx/test-speech.mjs
-node src/dsh-wx/test-remind-permit.mjs
-node src/dsh-wx/test-ledger.mjs
-node src/dsh-wx/test-tasks.mjs
-node src/dsh-wx/test-retrieval.mjs
-node src/dsh-wx/test-context.mjs
-node src/dsh-wx/test-vector.mjs
+cd src/dsh-wx
+node --test
+node selftest.mjs
 ```
+
+`node --test` 会跑 `test-*.mjs`，覆盖提及识别、耳朵注记、台账、任务板、检索、目录、发言人归因、归档、摘要、多会话映射和向量侧车。侧车本身需要模型和 GPU 时另行启动，测试只验证协议与回退，不联网。
 
 运行时的记忆、会话、账户凭据和本机运维资料保留在本地，不纳入源码仓库。
 

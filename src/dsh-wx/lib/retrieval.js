@@ -229,12 +229,18 @@ export function parseVectorConfig(raw) {
   }
   const dim = Number(emb.dim)
   if (!Number.isInteger(dim) || dim < 8 || dim > 8192) return { ok: false, why: 'embedding.dim 不像向量维度' }
+  // 首次请求可能包含模型预热/批量嵌入；允许配置 0.5–30 秒，默认仍由调用方决定。
+  const timeoutMs = emb.timeoutMs === undefined ? 0 : Number(emb.timeoutMs)
+  if (timeoutMs && (!Number.isFinite(timeoutMs) || timeoutMs < 500 || timeoutMs > 30_000)) {
+    return { ok: false, why: 'embedding.timeoutMs 需要在 500–30000 之间' }
+  }
   return {
     ok: true,
     config: {
       url: url.toString().replace(/\/$/, ''),
       model: String(emb.model ?? ''),
       dim,
+      timeoutMs,
     },
   }
 }
@@ -282,13 +288,18 @@ export function formatCards(hits, {
     const body = String(clean?.text ?? '').trim()
     if (!body) continue
     const n = cards.length + 1
-    const who = doc.sender || (doc.direction === 'out' ? '大肥鱼（发出）' : '发言人未识别')
+    // L2 摘要不是原文，也不是某个人的发言：来源和说话人都要标清楚，别冒充台账里的原话。
+    const isSummary = doc.kind === 'summary' || doc.source === 'summary'
+    const who = isSummary
+      ? '每日摘要'
+      : (doc.sender || (doc.direction === 'out' ? '大肥鱼（发出）' : '发言人未识别'))
     const header = `[上下文 ${n}/${rows.length}] ${chatNameOf(doc) || '（会话名未知）'}｜${who}｜${timeText(doc.at)}`
     const reasons = [...new Set(hit.reasons ?? [])].join(' + ') || '相关'
+    const source = isSummary ? `摘要 ${doc.msgId ?? '（无 id）'}` : `台账 ${doc.msgId ?? '（无 id）'}`
     const card = [
       header,
       `「${cut(body, CARD_TEXT_MAX)}」`,
-      `匹配：${reasons}；来源：台账 ${doc.msgId ?? '（无 id）'}；置信度：${confidenceText(doc)}`,
+      `匹配：${reasons}；来源：${source}；置信度：${confidenceText(doc)}`,
     ].join('\n')
     const size = [...card].length
     if (cards.length > 0 && used + size > budget) break

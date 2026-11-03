@@ -76,6 +76,14 @@ const timeOf = (rec, fallback = 0) => {
 }
 
 const fileFor = (dir, chatId, month) => join(dir, `${chatId}-${month}.jsonl`)
+const archiveFileFor = (dir, chatId, month) => join(dir, 'archive', `${chatId}-${month}.jsonl`)
+/** 读优先热文件；热文件归档后只在 archive 里。写永远写热文件。 */
+const readFileFor = (dir, chatId, month) => {
+  const hot = fileFor(dir, chatId, month)
+  if (existsSync(hot)) return hot
+  const cold = archiveFileFor(dir, chatId, month)
+  return existsSync(cold) ? cold : hot
+}
 
 const readJsonLines = (file, log) => {
   let raw
@@ -133,15 +141,20 @@ function applyRepairs(records) {
 export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } = {}) {
   const cache = new Map() // chatId -> { docs, keys, keyDoc, loaded }
 
+  /** 热目录 + 归档目录里的月份，合并去重。 */
   const monthsOf = (chatId) => {
-    let files = []
-    try { files = readdirSync(dir) } catch { return [] }
     const prefix = `${chatId}-`
-    return files
-      .filter((f) => f.startsWith(prefix) && f.endsWith('.jsonl'))
-      .map((f) => f.slice(prefix.length, -'.jsonl'.length))
-      .filter((m) => MONTH_RE.test(m))
-      .sort()
+    const months = new Set()
+    for (const base of [dir, join(dir, 'archive')]) {
+      let files = []
+      try { files = readdirSync(base) } catch { continue }
+      for (const f of files) {
+        if (!f.startsWith(prefix) || !f.endsWith('.jsonl')) continue
+        const m = f.slice(prefix.length, -'.jsonl'.length)
+        if (MONTH_RE.test(m)) months.add(m)
+      }
+    }
+    return [...months].sort()
   }
 
   const load = (chatId, { force = false } = {}) => {
@@ -150,7 +163,7 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
     const hit = cache.get(id)
     if (hit?.loaded && !force) return hit
     const records = []
-    for (const m of monthsOf(id)) records.push(...readJsonLines(fileFor(dir, id, m), log))
+    for (const m of monthsOf(id)) records.push(...readJsonLines(readFileFor(dir, id, m), log))
     const docs = applyRepairs(records).sort((a, b) => (timeOf(a) - timeOf(b)) || (Number(a.seq) || 0) - (Number(b.seq) || 0))
     const keyDoc = new Map()
     const keys = new Set()
@@ -193,8 +206,10 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
         sender: raw.sender === null || raw.sender === undefined ? null : str(raw.sender) || null,
       })
     }
+    // 重叠对齐只看「类型 + 正文」，不看发言人：发言人是从侧栏预览补出来的，
+    // 同一屏第二次读到时置信度可能从 unknown 变成 medium。若把 sender 算进去，
+    // 最后一条一旦补上发言人就会整屏对不上，重复入账。正文相同才是同一条。
     const sameContent = (a, b) => !!a && !!b
-      && (a.sender ?? null) === (b.sender ?? null)
       && (a.kind ?? 'text') === (b.kind ?? 'text')
       && normalizeText(a.text) === normalizeText(b.text)
     const tail = state.docs.slice(-Math.max(1, cand.length))
@@ -327,6 +342,25 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
     return { ok: true, targetMsgId: target }
   }
 
+  /** 所有出现过消息的 chatId（热目录 + 归档目录）。 */
+  function chats() {
+    const ids = new Set()
+    for (const base of [dir, join(dir, 'archive')]) {
+      let files = []
+      try { files = readdirSync(base) } catch { continue }
+      for (const f of files) {
+        const m = f.match(/^(.+)-(\d{4})-(\d{2})\.jsonl$/)
+        if (m) ids.add(m[1])
+      }
+    }
+    return [...ids].sort()
+  }
+
+  /** 只读：一个会话的全部文档（按时间正序）。摘要/归档维护用。 */
+  function allDocs(chatId) {
+    return [...load(chatId).docs]
+  }
+
   /** 统计（工作台/自检用）。 */
   function stats(chatId) {
     const state = load(chatId)
@@ -346,5 +380,5 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
     cache.clear()
   }
 
-  return { dir, append, window, recent, searchDocs, repair, stats, load, reset }
+  return { dir, append, window, recent, searchDocs, repair, stats, load, reset, chats, allDocs }
 }

@@ -63,6 +63,8 @@ function blank() {
     nextCheckAt: '',
     lease: null,
     attempts: 0,
+    overdueCount: 0,
+    lastRemindedAt: '',
     notes: [],
     dedupeKeys: [],
     blockedWhy: '',
@@ -112,7 +114,18 @@ function apply(state, rec) {
     if (rec.dedupeKey) t.dedupeKeys.push(str(rec.dedupeKey))
     t.lastInboundMsgId = str(rec.msgId) || t.lastInboundMsgId
     if (rec.text) t.lastText = str(rec.text)
+    if (rec.requester?.name) {
+      t.requester = {
+        name: str(rec.requester.name),
+        kind: str(rec.requester.kind) || t.requester.kind,
+        confidence: str(rec.requester.confidence) || t.requester.confidence,
+      }
+      if (rec.reason) t.reason = str(rec.reason)
+    }
     t.inboundCount += 1
+    // 对方又说话了：未读数变了，重新开始计逾期；提醒计数也重新算。
+    t.overdueCount = 0
+    t.lastRemindedAt = ''
     // 在等对方接话时又来了新话：重新变成要处理；blocked / replying 保持原状态。
     if (t.status === 'waiting') t.status = 'new'
     if (t.status === 'new' && at) t.nextCheckAt = addMinutes(at, DEFAULT_CHECK_MS)
@@ -172,6 +185,16 @@ function apply(state, rec) {
   }
   if (type === 'check') {
     if (rec.nextCheckAt) t.nextCheckAt = str(rec.nextCheckAt)
+    return
+  }
+  if (type === 'remind') {
+    t.overdueCount = Math.max(0, Number(rec.level) || t.overdueCount + 1)
+    t.lastRemindedAt = at
+    if (rec.nextCheckAt) t.nextCheckAt = str(rec.nextCheckAt)
+    if (rec.note) {
+      t.notes.push(str(rec.note).slice(0, 500))
+      if (t.notes.length > 20) t.notes.splice(0, t.notes.length - 20)
+    }
     return
   }
 }
@@ -262,7 +285,10 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
     }
     const active = activeForChat(cid)
     if (active) {
-      const r = commit({ type: 'inbound', taskId: active.taskId, msgId: str(inboundMsgId), text: str(text), dedupeKey: key, at })
+      const r = commit({
+        type: 'inbound', taskId: active.taskId, msgId: str(inboundMsgId), text: str(text),
+        dedupeKey: key, at, requester, reason: str(reason),
+      })
       if (!r.ok) return r
       return { ok: true, added: true, task: states.get(active.taskId) }
     }
@@ -295,7 +321,8 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
     const t = states.get(str(taskId))
     if (!t) return { ok: false, why: '没有这个任务。' }
     const at = str(fields.at) || iso(now())
-    return commit({ type, taskId: t.taskId, at, ...fields })
+    // 先展开 fields 再落 at：fields.at 可能是 undefined，放在后面会把算好的时间盖掉。
+    return commit({ ...fields, type, taskId: t.taskId, at })
   }
 
   /** 领任务。租约过期或同一 owner 可重领。 */
@@ -357,6 +384,33 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
     return transition(taskId, 'check', { nextCheckAt: str(isoAt) })
   }
 
+  /**
+   * 记一次逾期提醒，并把下次检查时间往后推。
+   * level 从 1 开始；到了上限由调用方 block，不在这里偷偷结束任务。
+   */
+  function markReminded(taskId, { level = 1, nextCheckAt = '', note = '', at } = {}) {
+    const t = states.get(str(taskId))
+    if (!t) return { ok: false, why: '没有这个任务。' }
+    if (t.status === 'done') return { ok: false, why: '这个任务已经结束了。' }
+    const next = str(nextCheckAt) || new Date(now() + DEFAULT_CHECK_MS).toISOString()
+    const r = transition(t.taskId, 'remind', {
+      level: Math.max(1, Number(level) || 1), nextCheckAt: next, note: str(note).slice(0, 500), at,
+    })
+    if (!r.ok) return r
+    return { ok: true, task: states.get(t.taskId) }
+  }
+
+  /** 到点还没处理、还没提醒满的任务（blocked 不催）。 */
+  function overdueReminders({ at = now(), maxLevel = 3 } = {}) {
+    return active().filter((t) => {
+      if (t.status === 'blocked' || t.status === 'done') return false
+      if (!UNFINISHED.has(t.status)) return false
+      if (Number(t.overdueCount) >= Math.max(1, Number(maxLevel) || 3)) return false
+      if (!t.nextCheckAt) return true
+      return timeOf(t.nextCheckAt) <= at
+    })
+  }
+
   function get(taskId) {
     const t = states.get(str(taskId))
     return t ? { ...t, requester: { ...t.requester }, notes: [...t.notes], dedupeKeys: [...t.dedupeKeys] } : null
@@ -401,10 +455,10 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
     }
     const status = (t) => {
       if (t.status === 'blocked') return `卡住：${t.blockedWhy || '需要人处理'}`
-      if (t.status === 'waiting') return '在等对方'
+      if (t.status === 'waiting') return timeOf(t.nextCheckAt) <= at ? '在等对方（已到复查时间）' : '在等对方'
       if (t.status === 'replying') return '回了一半'
       if (t.status === 'reading') return '在看'
-      return '未回'
+      return timeOf(t.nextCheckAt) <= at ? '未回（已逾期）' : '未回'
     }
     return rows.map((t) => [
       `- ${t.taskId}｜${t.chatName || t.chatId}｜${who(t)}｜${waited(t)}`,
@@ -435,6 +489,7 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
 
   return {
     file, create, claim, release, reply, done, snooze, block, unblock, note, checkAt,
+    markReminded, overdueReminders,
     get, active, overdue, byChat, summary, stats, reload, activeForChat,
   }
 }
