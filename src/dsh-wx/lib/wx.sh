@@ -228,7 +228,9 @@ case "$cmd" in
     # 这套 Xvfb 没有窗口管理器，弹出窗固定居中叠在主窗上，把左边会话列表整个盖住——
     # 之后点列表的坐标全落在弹出窗里（「读不到当前会话」），截图里主窗被盖住的那块是黑的。
     # 实测：聚焦后 ~120ms 内连点两下会话行就会弹出。这里点它自己的 ✕（和手点一样）关掉，
-    # 关完会话回到主窗里，再 wx_click 会话名即可。名字叫 Weixin/wechat 的大窗是主窗或黑框，不碰。
+    # 关完会话回到主窗里，再 wx_click 会话名即可。
+    # 主窗之外还叫 Weixin/wechat 的大窗是渲染黑框（2026-11-03 登录后出现过 583x458，
+    # 正好盖住聊天区、吃掉点击）；直接 unmap，主窗按面积挑，不会被误伤。
     main=$(pick 2>/dev/null | awk '{print $1}')
     n=0; p=0
     for id in $( (xdotool search --class wechat 2>/dev/null; xdotool search --name '^wechat$' 2>/dev/null) | sort -u); do
@@ -237,7 +239,9 @@ case "$cmd" in
       eval "$g"
       if [ "$((WIDTH * HEIGHT))" -ge 200000 ]; then
         nm=$(xdotool getwindowname "$id" 2>/dev/null)
-        case "$nm" in ""|Weixin|wechat) continue ;; esac
+        case "$nm" in
+          ""|Weixin|wechat) xdotool windowunmap "$id" 2>/dev/null && n=$((n + 1)); continue ;;
+        esac
         [ "$(xwininfo -id "$id" 2>/dev/null | awk '/Map State/{print $3}')" = "IsViewable" ] || continue
         xdotool mousemove "$((X + WIDTH - 25))" "$((Y + 17))" click 1 2>/dev/null && p=$((p + 1))
         sleep 0.6
