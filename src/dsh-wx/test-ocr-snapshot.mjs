@@ -105,4 +105,16 @@ assert.equal(anchored[0].mention, true, 'the explicit @ badge remains attached t
 assert.equal(anchored[1].preview, '你能看到测试吗', 'DM preview is grouped below its own title')
 assert.equal(anchored[0].nameConfidence >= 70, true, 'title confidence comes from title glyphs, not avatar or timestamp')
 
-console.log('ocr snapshot: 16 assertions passed')
+// 侧栏长名字被微信截断成「星晓家园10号楼13...」：末尾省略号不能把整行（连同 @ 徽标）丢掉。
+const truncatedLines = [
+  word(1, 1, 1, 1, 240, 300, 340, 48, 90, '星晓家园10号楼13...'),
+  word(1, 1, 1, 1, 560, 304, 100, 28, 90, '10:20'),
+  word(1, 1, 1, 2, 160, 340, 440, 40, 95, '[You were mentioned] 安卓...'),
+  word(1, 1, 1, 3, 240, 400, 200, 48, 90, '菠萝吹雪'),
+].join('\n')
+const truncated = groupTimestampAnchoredRows(parseTsv(`header\n${truncatedLines}`, { scale: 2 }), 339, 666)
+const truncatedRow = truncated.find((row) => row.name === '星晓家园10号楼13')
+assert.ok(truncatedRow, 'a title ending in an ellipsis is kept without the ellipsis')
+assert.equal(truncatedRow.mention, true, 'the @ badge stays attached to a truncated title row')
+
+console.log('ocr snapshot: 19 assertions passed')

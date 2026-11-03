@@ -76,6 +76,115 @@ export function parseTree(text) {
 /** 名字比较：只做首尾空白和全/半角空格的归一，不做任何"包含"判断。 */
 export const sameName = (a, b) => String(a ?? '').trim().replace(/\s+/g, ' ') === String(b ?? '').trim().replace(/\s+/g, ' ')
 
+/**
+ * 无障碍树的健康状态（只看树本身，不看 OCR 回退）。
+ *   ok      —— 窗口、会话列表都读到了
+ *   partial —— 树头在、窗口在，但会话列表是空的（Qt 无障碍桥没挂上/行被截断）
+ *   down    —— 连树头和窗口都读不到
+ *   login   —— 窗口缩成登录页，需要人工登录；不能自动重启
+ * 重启策略只看这个状态，不拿"当前会话/未读数"猜。
+ */
+export function treeHealth(raw, parsed) {
+  const text = String(raw ?? '')
+  const m = text.match(/元素\s*(\d+)\s*个/)
+  const elements = m ? Number(m[1]) : 0
+  const window = parsed?.window && Number(parsed.window.w) > 0
+    ? { w: Number(parsed.window.w), h: Number(parsed.window.h) }
+    : null
+  const chats = Array.isArray(parsed?.chats) ? parsed.chats.length : 0
+  const header = Boolean(parsed?.ok)
+  let status = 'down'
+  if (header && window && window.w < 400 && chats === 0) status = 'login'
+  else if (header && window && window.w >= 400 && elements < 5) status = 'down'
+  else if (header && window && chats === 0) status = 'partial'
+  else if (header && window) status = 'ok'
+  return { status, ok: status === 'ok', elements, chats, window, header }
+}
+
+/**
+ * OCR 名字对账：微信侧栏会把长名字截断成「星晓家园10号楼13...」，OCR 只能读到前一段。
+ * 只在名单里找到**唯一**一个以它开头的名字时才改写成全名；找不到或撞名就原样返回。
+ * 不做模糊匹配、不做包含匹配——对不上宁可不动，也不把消息递到错的会话。
+ */
+export function reconcileChatName(name, names = []) {
+  const clean = String(name ?? '').trim().replace(/\s+/g, ' ')
+  if (!clean) return ''
+  const list = (names ?? []).map((n) => String(n ?? '').trim()).filter(Boolean)
+  const exact = list.find((n) => sameName(n, clean))
+  if (exact) return exact
+  const base = clean.replace(/\s*(?:\.{2,}|…)\s*$/u, '').trim()
+  if (base.length < 2) return clean
+  const hits = [...new Set(list.filter((n) => String(n).startsWith(base)))]
+  return hits.length === 1 ? hits[0] : clean
+}
+
+/**
+ * 树掉线时该做什么。纯函数，方便列边界。
+ *   phase=init   —— 插件刚挂上：允许先确保无障碍总线，再重启微信（有次数和冷却）
+ *   phase=steady —— 已经见过健康的树：只提醒，不重启
+ * 登录页永远不重启（要人扫码）。
+ */
+export function treeAction({
+  health,
+  phase = 'init',
+  attempts = 0,
+  lastRestartAt = 0,
+  retryAfter = 0,
+  now = Date.now(),
+  maxAttempts = 2,
+  cooldownMs = 45_000,
+} = {}) {
+  const status = health?.status ?? 'down'
+  if (status === 'ok') return { phase: 'steady', status, healthy: true, restart: false, alert: '' }
+  if (status === 'login') {
+    return { phase, status, restart: false, login: true, alert: '微信停在登录页（窗口缩小），需要人工登录；不自动重启' }
+  }
+  // 树头在、只是没有会话行：微信可能停在通讯录/设置页，不是「没连上总线」。
+  // 初始化也不重启，交给 OCR 和提醒；真塌成只剩几个元素（down）才重启。
+  if (status === 'partial') {
+    return {
+      phase,
+      status,
+      restart: false,
+      alert: phase === 'init'
+        ? '无障碍树在，但会话列表读不到（微信可能停在别的页面）；不自动重启，先用 OCR'
+        : '无障碍树不完整（窗口在，会话列表读不到）；按约定使用中不自动重启，只提醒',
+    }
+  }
+  if (phase !== 'init') {
+    return {
+      phase,
+      status,
+      restart: false,
+      alert: '无障碍树掉了（窗口在，元素几乎为空）；按约定使用中不自动重启，只提醒',
+    }
+  }
+  if (attempts >= maxAttempts) {
+    return {
+      phase: 'steady',
+      status,
+      restart: false,
+      exhausted: true,
+      alert: `初始化时微信一直没连上无障碍树，已重启 ${attempts} 次；停止自动重启，只提醒`,
+    }
+  }
+  if (retryAfter > now) {
+    return { phase, status, restart: false, wait: true, retryAfter, alert: '' }
+  }
+  if (lastRestartAt && now - lastRestartAt < cooldownMs) {
+    return { phase, status, restart: false, wait: true, retryAfter: lastRestartAt + cooldownMs, alert: '' }
+  }
+  return {
+    phase,
+    status,
+    restart: true,
+    attempt: attempts + 1,
+    alert: attempts === 0
+      ? '初始化时微信没连上无障碍树：先确认无障碍总线，再重启微信'
+      : `初始化时微信仍没连上无障碍树：重启第 ${attempts + 1} 次`,
+  }
+}
+
 /** 当前会话是不是名单里的某一个。名单里没有、或读不到当前会话，都返回 null。 */
 export function allowedCurrent(parsed, allowChats) {
   if (!parsed?.current) return null

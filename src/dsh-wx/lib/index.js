@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, sameName, sidebarRegion } from './tree.js'
+import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, sameName, sidebarRegion, treeAction, treeHealth } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 
@@ -35,7 +35,7 @@ export const name = 'dsh-wx'
 export const inject = ['tools', 'systemPrompt', 'agents']
 
 // 给自测用
-export { parseTree, mentionHits, ocrMentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion, ocrSnapshot }
+export { parseTree, mentionHits, ocrMentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion, ocrSnapshot, reconcileChatName, treeHealth, treeAction }
 export { resolveLabel, hitTest, createFreshness }
 
 const SH = fileURLToPath(new URL('./wx.sh', import.meta.url))
@@ -348,6 +348,21 @@ export function apply(ctx, config = {}) {
 
   const treeStats = { calls: 0, lastMs: 0, since: Date.now() }
   const fresh = createFreshness((m) => console.log('[dsh-wx] 树：' + m))
+  // 树的重试只发生在插件刚挂上（初始化）这一小段：微信常常比用户级无障碍总线先启动，
+  // Qt 的桥只连一次，总线晚到就永远空树。见过一次健康的树之后就进入 steady：
+  // 使用中再掉只写 health/工作台提醒，绝不自动重启。
+  const TREE_RESTART_MAX = 2
+  const TREE_RESTART_COOLDOWN_MS = 45_000
+  const TREE_RESTART_SETTLE_MS = 45_000
+  let treePhase = 'init'
+  let treeAttempts = 0
+  let treeLastRestartAt = 0
+  // 刚挂上的头 20 秒只观察：微信/宿主可能正在启动，别把正在拉起的进程又杀一遍。
+  let treeRetryAfter = Date.now() + 20_000
+  let treeAlert = ''
+  let treeLast = null
+  let treeStatus = ''
+  let treeSince = Date.now()
 
   /**
    * 取一份快照：像素(前) → 树 → 像素(后) → 鼠标。
@@ -372,14 +387,36 @@ export function apply(ctx, config = {}) {
       lastRegion = region
     }
     const mouse = await run(['mouse'], 5_000).catch(() => '')
-    return { raw, parsed, region, hash0: region && prevRegion && JSON.stringify(region) === JSON.stringify(prevRegion) ? hash0 : '', hash, mouse, at: Date.now(), digest: contentDigest(parsed) }
+    return {
+      raw, parsed, region,
+      hash0: region && prevRegion && JSON.stringify(region) === JSON.stringify(prevRegion) ? hash0 : '',
+      hash, mouse, at: Date.now(), digest: contentDigest(parsed),
+      tree: treeHealth(raw, parsed),
+    }
   }
 
+  let lastReconciled = ''
   async function ocrRead() {
     const raw = await run(['ocr'], 60_000)
     let data
     try { data = JSON.parse(raw) } catch { throw new Error('OCR 返回了无效 JSON') }
     const parsed = ocrSnapshot(data, { trigger: policy().trigger })
+    // 侧栏会把长名字截断（「星晓家园10号楼13...」），OCR 读到的只是前一段。
+    // 在名单里能找到唯一全名时改写成全名，免得 @ 戳和发送闸对到两个不同的键。
+    const p = policy()
+    const names = [...p.allowChats, ...p.noMentionChats]
+    parsed.chats = (parsed.chats ?? []).map((chat) => {
+      if (chat?.source !== 'ocr') return chat
+      const full = reconcileChatName(chat.name, names)
+      return full && !sameName(full, chat.name) ? { ...chat, name: full, ocrName: chat.name } : chat
+    })
+    const fixed = parsed.chats.filter((chat) => chat.ocrName)
+    const note = fixed.map((chat) => `${chat.ocrName}→${chat.name}`).join('、')
+    if (note && note !== lastReconciled) {
+      lastReconciled = note
+      console.log('[dsh-wx] OCR 名字对账：' + note)
+      logInbound({ type: 'ocr-reconciled', chats: fixed.map((chat) => ({ ocr: chat.ocrName, chat: chat.name })) })
+    }
     return { ...data, parsed }
   }
 
@@ -391,7 +428,11 @@ export function apply(ctx, config = {}) {
     } catch (error) {
       const recovered = await ocrRead()
       if (!recovered?.parsed?.reliable) throw error
-      s = { raw: '', parsed: recovered.parsed, region: null, hash0: '', hash: '', mouse: '', at: Date.now(), digest: contentDigest(recovered.parsed), source: 'ocr' }
+      s = {
+        raw: '', parsed: recovered.parsed, region: null, hash0: '', hash: '', mouse: '',
+        at: Date.now(), digest: contentDigest(recovered.parsed), source: 'ocr',
+        tree: treeHealth('', null),
+      }
     }
     // 窗口在、会话列表却是空的：这是 AT-SPI 截断的典型样子（树头还在，行没出来）。
     // 直接拿它去点会话名会报「会话列表：（空）」。隔一会儿再看一次；还空就退 OCR。
@@ -415,6 +456,11 @@ export function apply(ctx, config = {}) {
       s = await snapshot()
       v = fresh.observe(s)
     }
+    treeLast = s.tree ?? treeHealth(s.raw, s.parsed)
+    if (treeLast.status !== treeStatus) {
+      treeStatus = treeLast.status
+      treeSince = Date.now()
+    }
     writeHealth()
     return s
   }
@@ -426,9 +472,96 @@ export function apply(ctx, config = {}) {
         stale: fresh.stale ? { since: new Date(fresh.stale.since).toISOString() } : null,
         treeCalls: treeStats.calls,
         lastTreeMs: treeStats.lastMs,
+        // 工作台据此显示「树掉了/正在重启」；使用中掉树只写这里，不重启。
+        tree: treeLast ? {
+          ...treeLast,
+          phase: treePhase,
+          since: new Date(treeSince).toISOString(),
+          attempts: treeAttempts,
+          lastRestartAt: treeLastRestartAt ? new Date(treeLastRestartAt).toISOString() : null,
+          alert: treeAlert || '',
+        } : null,
         events: fresh.events.slice(-20),
       }, null, 2))
     } catch { /* 写不了不影响用 */ }
+  }
+
+  const jsonLine = (text) => {
+    const line = String(text ?? '').trim().split('\n').filter((l) => l.startsWith('{')).pop()
+    try { return line ? JSON.parse(line) : null } catch { return null }
+  }
+
+  /**
+   * 看一次树并推进状态机。只由耳朵调用：工具调用（wx_peek 等）不触发重启。
+   * 返回 treeAction 的决定，restart=true 时由调用方执行 recoverTree。
+   */
+  function observeTree(s) {
+    const h = s?.tree ?? treeHealth(s?.raw, s?.parsed)
+    treeLast = h
+    if (h.status !== treeStatus) {
+      treeStatus = h.status
+      treeSince = Date.now()
+      if (h.status === 'ok') console.log(`[dsh-wx] 树恢复：${h.elements} 个元素、${h.chats} 个会话`)
+      else console.log(`[dsh-wx] 树状态：${h.status}（元素 ${h.elements}、会话 ${h.chats}）`)
+    }
+    const act = treeAction({
+      health: h,
+      phase: treePhase,
+      attempts: treeAttempts,
+      lastRestartAt: treeLastRestartAt,
+      retryAfter: treeRetryAfter,
+      now: Date.now(),
+      maxAttempts: TREE_RESTART_MAX,
+      cooldownMs: TREE_RESTART_COOLDOWN_MS,
+    })
+    treePhase = act.phase
+    const prevAlert = treeAlert
+    if (act.healthy) {
+      treeAttempts = 0
+      treeRetryAfter = 0
+      treeAlert = ''
+    } else if (act.alert) {
+      treeAlert = act.alert
+      if (treeAlert !== prevAlert) console.log('[dsh-wx] 树：' + treeAlert)
+    }
+    writeHealth()
+    return act
+  }
+
+  /**
+   * 只在初始化阶段执行：先确保用户级无障碍总线存在，再重启微信；
+   * 次数和冷却由 treeAction 控制，用尽后自动转入 steady，只提醒。
+   */
+  async function recoverTree(act) {
+    treeAttempts = Number(act?.attempt) || treeAttempts + 1
+    treeLastRestartAt = Date.now()
+    treeAlert = act?.alert || '初始化时微信没连上无障碍树，准备重启'
+    console.log('[dsh-wx] 树：' + treeAlert)
+    logInbound({ type: 'tree-restart', attempt: treeAttempts, status: treeLast?.status, elements: treeLast?.elements, chats: treeLast?.chats })
+    writeHealth()
+    const bus = await run(['bus-start'], 30_000).then(jsonLine).catch((e) => jsonLine(e?.message))
+    if (!bus?.ok) {
+      treeRetryAfter = Date.now() + TREE_RESTART_COOLDOWN_MS
+      treeAlert = '初始化时读不到无障碍树，而且无障碍总线没起来：先不重启微信，等总线恢复'
+      console.log('[dsh-wx] 树：' + treeAlert)
+      logInbound({ type: 'tree-error', error: treeAlert, bus })
+      writeHealth()
+      return
+    }
+    try {
+      const r = await run(['restart'], 90_000).then(jsonLine).catch((e) => jsonLine(e?.message))
+      if (!r?.ok) throw new Error(r?.error || '重启命令没有返回 ok')
+      treeRetryAfter = Date.now() + TREE_RESTART_SETTLE_MS
+      treeAlert = `初始化时微信没连上无障碍树，已重启微信（${r.oldPid}→${r.pid}），等树恢复`
+      console.log('[dsh-wx] 树：' + treeAlert)
+      logInbound({ type: 'tree-restarted', attempt: treeAttempts, ...r })
+    } catch (error) {
+      treeRetryAfter = Date.now() + TREE_RESTART_COOLDOWN_MS
+      treeAlert = '初始化时微信没连上无障碍树，重启失败：' + String(error?.message ?? error).slice(0, 120)
+      console.log('[dsh-wx] 树：' + treeAlert)
+      logInbound({ type: 'tree-error', error: treeAlert, attempt: treeAttempts })
+    }
+    writeHealth()
   }
 
   // ---- 发送前的闸 ----
@@ -530,8 +663,6 @@ export function apply(ctx, config = {}) {
   let lastHeldLog = 0
   let lastFailLog = 0
   let lastRelogin = 0
-  let lastWxRestart = 0
-  let blindRounds = 0
   const lastDeliver = new Map() // 会话 → 上次投递时间，防她跟自己的回声互相触发
 
   /**
@@ -601,14 +732,20 @@ export function apply(ctx, config = {}) {
     try {
       const s = await look({ confirm: false }).catch(() => null)
       if (!s) return
+      const tree = s.tree ?? treeHealth(s.raw, s.parsed)
+      // 初始化（刚挂上、还没见过健康的树）：总线不在就先拉起总线，再把微信重启一次。
+      // 使用中掉树：observeTree 只写 health/提醒，不返回 restart。
+      const act = observeTree(s)
+      if (act.restart) {
+        await recoverTree(act)
+        return
+      }
       let parsed = s.parsed
       let ocrRecovered = s.source === 'ocr'
 
       // Linux WeChat can expose a live window while its AT-SPI tree is empty.
       // Recover only the sidebar @ badge via OCR; never infer the active chat.
-      const treeCount = Number(/元素\s*(\d+)\s*个/.exec(s.raw || '')?.[1] ?? 0)
-      const treeUnavailable = !parsed.ok || (parsed.window?.w >= 400 && treeCount < 5)
-      if (treeUnavailable) {
+      if (!tree.ok && !ocrRecovered) {
         try {
           const ocr = await ocrRead()
           if (ocr?.reliable) {
@@ -623,34 +760,17 @@ export function apply(ctx, config = {}) {
       // 手机端一上线，PC 微信常被踢回登录页：窗口缩成 291x396，侧栏读不到任何会话，
       // 耳朵从此聋掉（日志只写「侧栏 @ 行 0 条」，看着像没人说话）。
       // 2026-10-29 夜里实测：替她点 Log In 会让手机端一直弹登录确认，人被烦死。
-      // 所以只记账、不动手——登不登由人决定。
-      if (!ocrRecovered && (parsed.chats?.length ?? 0) === 0 && parsed.window && parsed.window.w < 400) {
+      // 所以只记账、不动手——登不登由人决定；treeAction 也明确不重启登录页。
+      if (tree.status === 'login') {
         if (Date.now() - lastRelogin > 10 * 60_000) {
           lastRelogin = Date.now()
-          console.log(`[dsh-wx] 微信在登录页（窗口 ${parsed.window.w}x${parsed.window.h}），等人工登录`)
+          console.log(`[dsh-wx] 微信在登录页（窗口 ${tree.window?.w}x${tree.window?.h}），等人工登录`)
         }
         return
       }
 
-      // 微信主界面的无障碍树会整棵塌掉（窗口还在、只剩 1 个元素），这时耳朵完全聋：
-      // 日志只会一直写「侧栏 @ 行 0 条」，看着像没人 @ 她。实测重启 wechat-fish 再点 Log In
-      // 就能把树要回来，所以连读 4 轮都读不到就自己重启一次；10 分钟最多一次。
-      if (!ocrRecovered) {
-        const m = /元素\s*(\d+)\s*个/.exec(s.raw || '')
-        const elems = m ? Number(m[1]) : 0
-        if (parsed.window && parsed.window.w >= 400 && elems < 5) {
-          blindRounds++
-          if (blindRounds >= 4 && Date.now() - lastWxRestart > 10 * 60_000) {
-            lastWxRestart = Date.now()
-            blindRounds = 0
-            // 不自动重启：重启会把登录态一起丢掉，代价比收益大。只把「树是空的」说清楚，
-            // 让面板上能看出是「微信被踢了」而不是「没人说话」。
-            console.log('[dsh-wx] 无障碍树是空的（只剩 ' + elems + ' 个元素）：界面其实还在，是微信没挂上无障碍总线（多半是它比总线先启动），侧栏读不到。先看一眼截图确认没被踢，再 systemctl restart wechat-fish')
-          }
-          return
-        }
-        blindRounds = 0
-      }
+      // 树没连上、OCR 也没读到会话行：这一轮没有可看的东西，等树恢复/下一轮。
+      if (!tree.ok && !ocrRecovered) return
       // 树落后时试一次无副作用的"滚一下"逼它刷新；最多一分钟一次
       if (fresh.stale && Date.now() - lastNudge > 60_000 && parsed.chats.length >= 3) {
         lastNudge = Date.now()

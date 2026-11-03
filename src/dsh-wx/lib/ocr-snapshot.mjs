@@ -119,15 +119,19 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
     const titleWords = words.filter((word) => word.left >= width * 0.33 && word.left < width * 0.68 &&
       !isClockWord(word.text) && isNameWord(word.text))
     if (!titleWords.length) return []
-    const name = titleWords.map((word) => word.text).join(' ')
+    const rawName = titleWords.map((word) => word.text).join(' ')
       .replace(/(?<=[\u3400-\u9fff])\s+(?=[\p{L}\p{N}])|(?<=[\p{L}\p{N}])\s+(?=[\u3400-\u9fff])/gu, '')
       .replace(/(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, '').trim()
+    // 微信会把侧栏里的长名字截断成「星晓家园10号楼13...」。去掉**末尾**省略号后
+    // 仍按名字处理；中间还有省略号才说明读坏了，丢掉。全名对账在 index.js 的
+    // reconcileChatName 里做（只认唯一前缀，找不到就不改名）。
+    const name = rawName.replace(/\s*(?:\.{2,}|…)\s*$/u, '').trim()
     if (!name || name.length > 80 || /^[\p{P}\p{S}\s]+$/u.test(name)) return []
     const nameConfidence = titleWords.reduce((sum, word) => sum + (Number(word.confidence) || 0), 0) / titleWords.length
     const anchorConfidence = nameConfidence + (time ? 15 : 0)
     if (!time && nameConfidence < 85) return []
     if (!time && /^(?:你|能|看|到|测试|吗|我|需要|重新|集结|部队)/.test(name)) return []
-    if (/\[|\]|\.\.\.|…|:/.test(name) || /^(?:You|were|mentioned|@Me)$/i.test(name)) return []
+    if (/\[|\]|(?:\.{2,}|…)|:/.test(name) || /^(?:You|were|mentioned|@Me)$/i.test(name)) return []
     return [{ line, titleWords, name, nameConfidence, anchorConfidence, hasTime: Boolean(time) }]
   }).sort((a, b) => a.line.top - b.line.top)
 

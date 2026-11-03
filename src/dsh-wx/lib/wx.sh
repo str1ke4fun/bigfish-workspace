@@ -16,6 +16,15 @@ export AT_SPI_BUS_ADDRESS="${AT_SPI_BUS_ADDRESS:-unix:path=/run/user/1000/at-spi
 # chats-json.mjs 加载后静默不执行（exit 0、无输出）。这里固定用 realpath。
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
+# 无障碍总线的 socket：以宿主给的 AT_SPI_BUS_ADDRESS 为准，没有就用 WSL 的默认路径。
+bus_socket() {
+  local a="${AT_SPI_BUS_ADDRESS:-}"
+  case "$a" in
+    unix:path=*) printf '%s' "${a#unix:path=}" ;;
+    *) printf '%s' /run/user/1000/at-spi/bus ;;
+  esac
+}
+
 # 微信 4.x 在无 GPU 的 Xvfb 上会多留一个渲染不出来的顶层窗（黑框）。
 # 一律按面积取最大的那个当主窗，绝不用 head -1。
 pick() {
@@ -140,6 +149,77 @@ case "$cmd" in
     node wx-click-label.mjs "$want" 2>&1 | head -c 4000
     ;;
 
+  atspi)
+    # 只读：无障碍总线的 socket 在不在、用户服务状态。
+    sock=$(bus_socket)
+    if [ -S "$sock" ]; then s=present; else s=missing; fi
+    state=$(systemctl --user is-active at-spi-dbus-bus.service 2>/dev/null || true)
+    printf '{"socket":"%s","socketState":"%s","service":"%s"}\n' "$sock" "$s" "${state:-unknown}"
+    [ "$s" = present ]
+    ;;
+
+  bus-start)
+    # 初始化时用：Qt 的无障碍桥只在启动时连一次总线，所以总线必须先于微信存在。
+    # 这里不碰微信，只把用户级 at-spi 总线拉起来并等 socket 出现（最多 10 秒）。
+    sock=$(bus_socket)
+    started=0
+    if [ ! -S "$sock" ]; then
+      systemctl --user start at-spi-dbus-bus.service >/dev/null 2>&1 && started=1
+      i=0
+      while [ "$i" -lt 50 ]; do
+        [ -S "$sock" ] && break
+        sleep 0.2
+        i=$((i + 1))
+      done
+    fi
+    state=$(systemctl --user is-active at-spi-dbus-bus.service 2>/dev/null || true)
+    if [ -S "$sock" ]; then
+      printf '{"ok":true,"socket":"%s","started":%s,"service":"%s"}\n' "$sock" "$started" "${state:-unknown}"
+    else
+      printf '{"ok":false,"socket":"%s","started":%s,"service":"%s"}\n' "$sock" "$started" "${state:-unknown}" >&2
+      exit 4
+    fi
+    ;;
+
+  restart)
+    # 只重启 wechat-fish.service 自己的主进程，靠 systemd Restart=always 拉回来。
+    # 重启前核实：单元 active、MainPID 存在、comm 确实是微信；不满足就什么都不做。
+    unit="wechat-fish.service"
+    active=$(systemctl is-active "$unit" 2>/dev/null || true)
+    if [ "$active" != active ]; then
+      printf '{"ok":false,"error":"%s 不是 active（%s）"}\n' "$unit" "${active:-unknown}" >&2
+      exit 5
+    fi
+    old=$(systemctl show -p MainPID --value "$unit" 2>/dev/null | tr -d ' ')
+    if [ -z "$old" ] || [ "$old" = 0 ]; then
+      echo '{"ok":false,"error":"拿不到 MainPID"}' >&2
+      exit 5
+    fi
+    comm=$(cat "/proc/$old/comm" 2>/dev/null || true)
+    case "$comm" in
+      wechat|wechat*) ;;
+      *) printf '{"ok":false,"error":"MainPID %s 不是微信（comm=%s）"}\n' "$old" "${comm:-?}" >&2; exit 5 ;;
+    esac
+    kill -TERM "$old" 2>/dev/null || {
+      printf '{"ok":false,"error":"TERM %s 失败"}\n' "$old" >&2; exit 5; }
+    pid=0; i=0
+    while [ "$i" -lt 100 ]; do
+      sleep 0.3
+      pid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null | tr -d ' ')
+      if [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != "$old" ] &&
+         [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ]; then
+        break
+      fi
+      i=$((i + 1))
+    done
+    if [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != "$old" ]; then
+      printf '{"ok":true,"oldPid":%s,"pid":%s,"waitedMs":%s}\n' "$old" "$pid" "$((i * 300))"
+    else
+      printf '{"ok":false,"oldPid":%s,"error":"重启后没等到新的 MainPID"}\n' "$old" >&2
+      exit 6
+    fi
+    ;;
+
   clean)
     # Qt 的浮层（右键菜单/消息工具条）会盖在主窗上面并吃掉点击：
     # 实测它们让「点谁都没反应」。这里只关小的浮层，主窗不碰。
@@ -169,7 +249,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>}" >&2
+    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|atspi|bus-start|restart}" >&2
     exit 64
     ;;
 esac
