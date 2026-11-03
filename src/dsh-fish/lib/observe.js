@@ -52,6 +52,7 @@ import { deriveStatus } from './status.js'
 import { publicOwner, saveOwner, saveAccount } from './owner.js'
 import { createClient } from './bili.js'
 import { historyFromEvents } from './history.js'
+import { footprintFromEvents } from './footprint.js'
 import { runChecks } from './selfcheck.js'
 import { readRestrictState, knownToolNames } from './restrict.js'
 import { riskState, clearRisk } from './risk.js'
@@ -64,6 +65,12 @@ import { checkUpdate, REPO_URL, normalizeVersion } from './update.js'
  * 引导文案：别人第一次装，本机没有现成 cookie。
  * 只写「怎么拿」，不写「拿谁的」——这段会原样显示在设置页上。
  */
+// 评论正文现取缓存（2026-11-03）：工作台点一次「读取正文」才打 B 站，
+// 同一个 rpid 10 分钟内不重复请求。只放内存，不落盘。
+const COMMENT_BODY_TTL_MS = 10 * 60_000
+const COMMENT_BODY_CACHE_MAX = 200
+const commentBodyCache = new Map()
+
 const COOKIE_HINT = [
   '在你的浏览器里登录 B 站 → 按 F12 → Application（应用）→ Cookies → https://www.bilibili.com',
   '找到 SESSDATA 和 bili_jct 这两行，把它们的值复制下来。',
@@ -455,6 +462,46 @@ export function registerObserve(ctx, deps = {}) {
       const groups = historyFromEvents(events, { days })
       const total = groups.reduce((a, g) => a + g.items.length, 0)
       send(res, 200, { days, total, groups })
+    }],
+
+    // 她在 B 站留下的两串足迹（2026-11-03，用户要求）。
+    // 只读事件流：看过的视频（browse / saw / looked / watched 合并去重）
+    // 和发过的评论/回复（comment / creply；正文有 cbody 就用，没有就显示可现取）。
+    ['/footprint', async (req, res) => {
+      const url = new URL(req.url, 'http://x')
+      const days = Math.max(1, Math.min(3650, Number(url.searchParams.get('days')) || 365))
+      const limit = Math.max(1, Math.min(1000, Number(url.searchParams.get('limit')) || 500))
+      const { events } = await readEvents(root)
+      send(res, 200, footprintFromEvents(events, { days, limit }))
+    }],
+
+    // 老评论没有 cbody 时，按 rpid 现取一次正文。
+    // 只接受合法 BV 号 + 正整数 rpid；不接 URL、不接 aid，避免把这里变成任意转发口。
+    ['/comment-body', async (req, res) => {
+      const url = new URL(req.url, 'http://x')
+      const bvid = String(url.searchParams.get('bvid') ?? '').trim()
+      const rpid = Number(url.searchParams.get('rpid')) || 0
+      if (!/^BV[0-9A-Za-z]{10}$/.test(bvid) || !rpid) {
+        return send(res, 400, { error: '参数不对：需要 bvid 和 rpid' })
+      }
+      const key = `${bvid}:${rpid}`
+      const hit = commentBodyCache.get(key)
+      if (hit && Date.now() - hit.at < COMMENT_BODY_TTL_MS) {
+        return send(res, 200, { ok: true, ...hit.data, cached: true })
+      }
+      const ow = await readOwner(root)
+      const client = createClient({ cookie: ow?.cookie || '', log: () => {} })
+      const v = await client.view(bvid)
+      const aid = Number(v?.data?.aid) || 0
+      if (!aid) return send(res, 404, { error: '找不到这个视频' })
+      const d = await client.replyDetail(aid, rpid)
+      if (!d.ok) return send(res, 502, { error: d.message || '没读到这条评论' })
+      const data = { ...d.data, at: d.data?.ctime ? new Date(d.data.ctime * 1000).toISOString() : null }
+      commentBodyCache.set(key, { at: Date.now(), data })
+      while (commentBodyCache.size > COMMENT_BODY_CACHE_MAX) {
+        commentBodyCache.delete(commentBodyCache.keys().next().value)
+      }
+      send(res, 200, { ok: true, ...data })
     }],
 
     // 环境自检：它现在到底能不能工作。`?net=0` 跳过联网（不想碰 B 站时用）。

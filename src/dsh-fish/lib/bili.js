@@ -480,6 +480,32 @@ export function createClient(opts = {}) {
   }
 
   /**
+   * 某条主评论的详情（2026-11-03，工作台足迹用）。
+   *
+   * 为什么需要它：评论正文一直没有落盘，老记录只有 `comment:<日期> <bvid> <rpid>`。
+   * 工作台要显示「她当时说了什么」，只能按 rpid 现取一次。
+   * 只读、走统一的 api 出口（含节流与风控冷却），失败就当这条正文没取到。
+   */
+  async function replyDetail(aid, rpid) {
+    const r = await api('/x/v2/reply/detail', { type: 1, oid: aid, root: rpid })
+    if (!r.ok) return { ...r, data: null }
+    const x = r.data?.root ?? r.data?.reply ?? null
+    if (!x) return { ok: false, code: 'NOT_FOUND', message: '找不到这条评论', data: null }
+    return {
+      ok: true,
+      code: 0,
+      message: 'OK',
+      data: {
+        rpid: Number(x.rpid) || 0,
+        user: x.member?.uname ?? '',
+        text: String(x.content?.message ?? ''),
+        like: Number(x.like) || 0,
+        ctime: Number(x.ctime) || 0,
+      },
+    }
+  }
+
+  /**
    * 弹幕。oid 要传 **cid**（不是 aid，不是 bvid）。
    * 返回 deflate-raw 压缩的 XML，需要手动解压。
    */
@@ -627,6 +653,7 @@ export function createClient(opts = {}) {
     tags,
     replies,
     subReplies,
+    replyDetail,
     replyAdd,
     replyReply,
     me,

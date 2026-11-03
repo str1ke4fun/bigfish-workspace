@@ -140,6 +140,23 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------- 工具
     const esc = (s) => String(s == null ? '' : s)
 
+    /** 事件时间戳（UTC ISO）→ 本机时区的「YYYY-MM-DD HH:MM」。取不到就给空串。 */
+    const fmtWhen = (iso) => {
+      const d = new Date(String(iso ?? ''))
+      if (!Number.isFinite(d.getTime())) return ''
+      const p = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+    }
+
+    /** 播放量：只用于脚注，不参与任何判断。 */
+    const fmtViews = (n) => {
+      const v = Number(n) || 0
+      if (!v) return ''
+      if (v >= 100_000_000) return `${(v / 100_000_000).toFixed(1)} 亿播放`
+      if (v >= 10_000) return `${(v / 10_000).toFixed(1)} 万播放`
+      return `${v} 播放`
+    }
+
     /**
      * 把质量指标渲染成两位小数。
      *
@@ -358,6 +375,15 @@ window.__ModuleLoader__.load({
       const diaryCache = useRef({})
       const diaryLoaded = useRef(false)
       const [, setDiaryTick] = useState(0)
+      // B 站足迹（2026-11-03，用户要求）：看过的视频 + 她发过的评论/回复。
+      // 放在 state 列表最后，避免挪动前面 useState 的下标（测试按 0/9 注入初始值）。
+      const [foot, setFoot] = useState(null)
+      const [footDays, setFootDays] = useState(365)
+      const [footShow, setFootShow] = useState(40)
+      const [footTick, setFootTick] = useState(0)
+      const [footBodies, setFootBodies] = useState({})
+      const [footBodyBusy, setFootBodyBusy] = useState('')
+      const [footBodyErr, setFootBodyErr] = useState({})
 
       // 当前这天的正文没缓存就去取一次（一页一天，不预取；翻回去靠缓存）。
       const diaryDates = diary?.dates ?? []
@@ -382,6 +408,16 @@ window.__ModuleLoader__.load({
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
       }, [zoom])
+
+      // B 站足迹：打开页面取一次，换查询范围或点刷新时再取。
+      // 只读事件流，不联网；评论正文是另外的按需请求。
+      useEffect(() => {
+        let dead = false
+        jget(`/footprint?days=${footDays}`)
+          .then((r) => { if (!dead) setFoot(r) })
+          .catch(() => {})
+        return () => { dead = true }
+      }, [footDays, footTick])
 
       const load = useCallback(async () => {
         setErr('')
@@ -1229,6 +1265,7 @@ window.__ModuleLoader__.load({
         ['grow', '成长'],
         ['home', '住所'],
         ['bili', '上网'],
+        ['foot', 'B站'],
         ['memory', '记忆'],
         ['env', '插件'],
         ['principle', '原理'],
@@ -1244,6 +1281,7 @@ window.__ModuleLoader__.load({
         grow: '怎么长大：时间尺度、每天经历多少、日记、隔几天回头想一次。改这些只会让她变快变慢，不会改变她是什么样。',
         home: '住在哪：工作区、会话、身份文件，以及一键自检。',
         bili: '上网：能不能出门、看多少、看画面、避开什么，以及在评论区说话和登录。',
+        foot: 'B站：她看过哪些视频、在评论区留下过什么。只看，不改。',
         memory: '记忆：一次能背多少、多少条判断被挤出视野，还有信箱。',
         env: '插件：别的插件能往她上下文里塞什么工具，以及为什么默认只放她自己那几个。',
         principle: '原理：两张图讲清她怎么长大、记忆怎么被筛；每条设计从哪条理论来，以及这一套能用在什么场景。',
@@ -1751,6 +1789,106 @@ window.__ModuleLoader__.load({
             : h('p', { className: 'hint', style: { marginTop: '8px' } },
                 `今天：用了 ${browse.usedToday} / ${browse.perDay} 次，一次 ${browse.topN} 条，累计看过 ${browse.lookedCount} 条。`)),
         )
+
+      // ---------------------------- B 站足迹 ----------------------------
+      // 2026-11-03（用户要求）：能看见她看过哪些视频、在评论区说过什么。
+      // 数据全部来自事件流；老评论没有正文时按 rpid 现取一次，不批量扫。
+      const VIA_LABEL = { browse: '刷到', saw: '刷到', look: '点开', watch: '看了画面' }
+      const footViewed = foot?.viewed?.rows ?? []
+      const footComments = foot?.comments?.rows ?? []
+      const footSources = (sources) => [...new Set((Array.isArray(sources) ? sources : [])
+        .map((s) => VIA_LABEL[s]).filter(Boolean))].join(' / ')
+      const footDur = (sec) => {
+        const n = Math.max(0, Math.round(Number(sec) || 0))
+        return n ? `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}` : ''
+      }
+      const footBodyKey = (c) => `${c.bvid}:${c.rpid || c.rootRpid || 0}`
+      const loadFootBody = async (c) => {
+        if (!c?.rpid || c.kind !== 'comment') return
+        const key = footBodyKey(c)
+        setFootBodyBusy(key)
+        setFootBodyErr((prev) => { const n = { ...prev }; delete n[key]; return n })
+        try {
+          const r = await jget(`/comment-body?bvid=${encodeURIComponent(c.bvid)}&rpid=${encodeURIComponent(c.rpid)}`)
+          setFootBodies((prev) => ({ ...prev, [key]: String(r?.text ?? '') }))
+        } catch (e) {
+          setFootBodyErr((prev) => ({ ...prev, [key]: String(e?.message ?? e) }))
+        } finally {
+          setFootBodyBusy('')
+        }
+      }
+      const footPage = h('div', { className: 'page' },
+        groupFull('看过的视频',
+          '她把哪些视频读进了素材里。标题点开是 B 站原视频；老记录只有 BV 号也照样列出来。',
+          h('div', { className: 'row', style: { marginBottom: '10px', flexWrap: 'wrap', gap: '8px' } },
+            h('span', { className: 'dim' }, `共 ${foot?.viewed?.total ?? 0} 条`),
+            h('button', { onClick: () => setFootTick((n) => n + 1) }, '刷新'),
+            h('button', { onClick: () => setTab('bili') }, '上网设置')),
+          h('div', { className: 'grid2', style: { marginBottom: '10px' } },
+            Sel({ label: '查多久的记录', value: footDays,
+              onChange: (v) => { setFootDays(Number(v)); setFootShow(40) },
+              options: [7, 30, 90, 180, 365, 3650],
+              fmt: (v) => (Number(v) === 3650 ? '全部' : `${v} 天`),
+              hint: '只是查询范围，不会删记录。' })),
+          !foot ? h('p', { className: 'empty' }, '读取中…')
+            : !footViewed.length ? h('p', { className: 'empty' }, '还没有看过的记录。等她刷一次 B 站再来。')
+            : h('div', null,
+                h('ul', { style: { listStyle: 'none', padding: 0, margin: 0 } },
+                  footViewed.slice(0, footShow).map((it) => h('li', {
+                    key: it.bvid,
+                    style: { display: 'flex', alignItems: 'flex-start', gap: '10px', marginBottom: '9px' },
+                  },
+                    h('img', {
+                      src: `${API}/cover/${it.bvid}`,
+                      alt: '',
+                      loading: 'lazy',
+                      onError: (e) => { e.currentTarget.style.display = 'none' },
+                      style: { width: '80px', height: '50px', objectFit: 'cover', borderRadius: '4px', flex: '0 0 auto', background: 'rgba(128,128,128,.15)' },
+                    }),
+                    h('div', { style: { flex: '1', minWidth: 0 } },
+                      h('div', { style: { lineHeight: '1.5' } },
+                        h('a', { href: it.url, target: '_blank', rel: 'noreferrer', style: { color: 'inherit' } },
+                          esc(it.title) || it.bvid)),
+                      h('div', { className: 'dim', style: { fontSize: '12px', lineHeight: '1.7' } },
+                        [it.bvid, it.up, footDur(it.duration), fmtViews(it.view), footSources(it.sources), fmtWhen(it.at)]
+                          .filter(Boolean).join(' · ')))))),
+                footViewed.length > footShow
+                  ? h('button', { onClick: () => setFootShow((n) => n + 40) }, `再看 40 条（还有 ${footViewed.length - footShow} 条）`)
+                  : null)),
+
+        groupFull('评论区足迹',
+          '她真正发到 B 站的那些话。旧记录只有 BV 号和评论编号，正文可以按需现取一次。',
+          h('div', { className: 'row', style: { marginBottom: '10px', gap: '8px' } },
+            h('span', { className: 'dim' }, `共 ${foot?.comments?.total ?? 0} 条`)),
+          !foot ? h('p', { className: 'empty' }, '读取中…')
+            : !footComments.length ? h('p', { className: 'empty' }, '她还没在 B 站发过评论。')
+            : h('div', null,
+                footComments.slice(0, footShow).map((c) => {
+                  const key = footBodyKey(c)
+                  const saved = footBodies[key]
+                  const body = c.text ?? (saved === undefined ? null : saved)
+                  const busy = footBodyBusy === key
+                  const err = footBodyErr[key]
+                  return h('div', { key, style: { marginBottom: '12px' } },
+                    h('div', { className: 'dim', style: { fontSize: '12px', lineHeight: '1.7' } },
+                      `${fmtWhen(c.at)} · ${c.kind === 'reply' ? '回复' : '评论'} · ${c.bvid}${c.rpid ? ` · rpid ${c.rpid}` : ''}`),
+                    body
+                      ? h('div', { className: 'said', style: { whiteSpace: 'pre-wrap' } }, esc(body))
+                      : (c.kind === 'comment' && c.rpid
+                          ? h('div', { className: 'row', style: { gap: '8px', alignItems: 'center' } },
+                              h('button', { disabled: busy, onClick: () => loadFootBody(c) }, busy ? '读取中…' : '读取正文'),
+                              h('span', { className: 'dim' }, '这条发在正文记账之前，可以现取一次。'))
+                          : h('div', { className: 'dim' }, '这条回复的正文没有记录。')),
+                    err ? h('p', { className: 'hint' }, `没读到：${err}`) : null,
+                    c.url
+                      ? h('p', { className: 'dim', style: { fontSize: '12px' } },
+                          h('a', { href: c.url, target: '_blank', rel: 'noreferrer', style: { color: 'inherit' } }, '在 B 站打开'))
+                      : null)
+                }),
+                footComments.length > footShow
+                  ? h('button', { onClick: () => setFootShow((n) => n + 40) }, `再看 40 条（还有 ${footComments.length - footShow} 条）`)
+                  : null)),
+      )
 
       // ---------------------------- 记忆 ----------------------------
       const memoryPage = h('div', { className: 'page' },
@@ -2264,6 +2402,7 @@ window.__ModuleLoader__.load({
         showTab('grow') ? growPage : null,
         showTab('home') ? homePage : null,
         showTab('bili') ? biliPage : null,
+        showTab('foot') ? footPage : null,
         showTab('memory') ? memoryPage : null,
         showTab('env') ? envPage : null,
         showTab('principle') ? principlePage : null,

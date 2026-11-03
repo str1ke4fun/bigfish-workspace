@@ -62,7 +62,7 @@ test('页签顺序：插件 → 原理 → 数据', async () => {
   const tabs = cl.match(/const TABS = \[([\s\S]*?)\n {6}\]/)
   assert.ok(tabs, '必须能定位到 TABS')
   const ids = [...tabs[1].matchAll(/\['([a-z]+)', '[^']+'\]/g)].map((m) => m[1])
-  assert.deepEqual(ids, ['now', 'grow', 'home', 'bili', 'memory', 'env', 'principle', 'data'])
+  assert.deepEqual(ids, ['now', 'grow', 'home', 'bili', 'foot', 'memory', 'env', 'principle', 'data'])
   assert.ok(cl.includes("principle: '原理："), 'TAB_HELP 必须有原理页说明')
   assert.ok(cl.includes("showTab('principle') ? principlePage : null"), '必须真的挂上渲染')
   assert.ok(cl.indexOf("showTab('principle')") > cl.indexOf("showTab('env')"), '原理在插件之后')

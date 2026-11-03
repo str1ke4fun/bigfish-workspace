@@ -251,6 +251,15 @@ test('只能评今天真的看过的视频', async () => {
     const good = await postComment({ root, client, bvid: 'BV1', text: '看完了', dateKey: dk })
     assert.equal(good.ok, true)
     assert.equal(good.rpid, 90001)
+
+    // 正文另记一条（2026-11-03）：工作台足迹要显示她当时说了什么。
+    const { events } = await readEvents(root)
+    const body = events.find((e) => String(e.text ?? '').startsWith('cbody:90001 '))
+    assert.ok(body, '发出去的评论正文必须留一条 cbody')
+    const parsed = JSON.parse(String(body.text).slice(String(body.text).indexOf(' ') + 1))
+    assert.equal(parsed.kind, 'comment')
+    assert.equal(parsed.bvid, 'BV1')
+    assert.equal(parsed.text, '看完了')
   })
 })
 
@@ -284,6 +293,16 @@ test('回楼中楼：root 用她的主楼 rpid，parent 用被回复那条', asy
 
     const call = client.calls.find((c) => c[0] === 'replyReply')
     assert.deepEqual(call.slice(1), [1001, 555, 777, '嗯'], 'root=主楼、parent=被回复那条，顺序不能反')
+
+    // 回复正文也记账；creply 末位补上新 rpid（老解析只看前四个 token）。
+    const { events } = await readEvents(root)
+    const creply = events.find((e) => String(e.text ?? '').startsWith('creply:'))
+    assert.match(String(creply.text), / 90002$/, 'creply 末位要有新回复的 rpid')
+    const body = events.find((e) => String(e.text ?? '').startsWith('cbody:90002 '))
+    assert.ok(body, '回出去的正文必须留一条 cbody')
+    const parsed = JSON.parse(String(body.text).slice(String(body.text).indexOf(' ') + 1))
+    assert.equal(parsed.kind, 'reply')
+    assert.equal(parsed.text, '嗯')
   })
 })
 

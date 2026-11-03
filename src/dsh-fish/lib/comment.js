@@ -14,7 +14,9 @@
  *
  * 记账走 meta 事件（只追加，与其它配额同构）：
  *   meta `comment:<日期> <bvid> <rpid>`   —— 她发的评论
- *   meta `creply:<日期> <bvid> <rootRpid> <parentRpid>` —— 她回的楼中楼
+ *   meta `creply:<日期> <bvid> <rootRpid> <parentRpid> [新rpid]` —— 她回的楼中楼
+ *   meta `cbody:<rpid> <json>`           —— 真正发出去的那句话（0.6.2 起；
+ *                                          老记录没有，工作台可按 rpid 现取）
  *   meta `cseen:<日期> <rpid>`           —— 这条回复她看过了（防重复提醒）
  */
 
@@ -238,13 +240,23 @@ export async function postComment(o = {}) {
 
   const r = await client.replyAdd(aid, text)
   if (!r.ok) return { ok: false, why: describe(r) }
+  const rpid = Number(r.data?.rpid) || 0
 
   await appendEvent(
-    { type: 'meta', text: `comment:${dk} ${bvid} ${r.data?.rpid ?? 0}` },
+    { type: 'meta', text: `comment:${dk} ${bvid} ${rpid}` },
     { day: 0, stage: 1, source: 'system' },
     root,
   ).catch(() => {})
-  return { ok: true, rpid: r.data?.rpid ?? 0 }
+  // 正文另记一条（2026-11-03）：工作台要显示「她当时说了什么」。
+  // 只在她真的发出去之后写；JSON 把换行转义掉，保证仍是一行事件。
+  if (rpid) {
+    await appendEvent(
+      { type: 'meta', text: `cbody:${rpid} ${JSON.stringify({ kind: 'comment', bvid, dk, text })}` },
+      { day: 0, stage: 1, source: 'system' },
+      root,
+    ).catch(() => {})
+  }
+  return { ok: true, rpid }
 }
 
 /**
@@ -284,9 +296,10 @@ export async function postReply(o = {}) {
 
   const r = await client.replyReply(aid, mineRow.rpid, parent, text)
   if (!r.ok) return { ok: false, why: describe(r) }
+  const rpid = Number(r.data?.rpid) || 0
 
   await appendEvent(
-    { type: 'meta', text: `creply:${dk} ${mineRow.bvid} ${mineRow.rpid} ${parent}` },
+    { type: 'meta', text: `creply:${dk} ${mineRow.bvid} ${mineRow.rpid} ${parent} ${rpid}` },
     { day: 0, stage: 1, source: 'system' },
     root,
   ).catch(() => {})
@@ -295,7 +308,25 @@ export async function postReply(o = {}) {
     { day: 0, stage: 1, source: 'system' },
     root,
   ).catch(() => {})
-  return { ok: true, rpid: r.data?.rpid ?? 0 }
+  // 回复正文也留一份，工作台足迹才说得清她回了什么（2026-11-03）。
+  if (rpid) {
+    await appendEvent(
+      {
+        type: 'meta',
+        text: `cbody:${rpid} ${JSON.stringify({
+          kind: 'reply',
+          bvid: mineRow.bvid,
+          dk,
+          rootRpid: mineRow.rpid,
+          parentRpid: parent,
+          text,
+        })}`,
+      },
+      { day: 0, stage: 1, source: 'system' },
+      root,
+    ).catch(() => {})
+  }
+  return { ok: true, rpid }
 }
 
 function describe(r) {
