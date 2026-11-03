@@ -15,7 +15,7 @@ import os from 'node:os'
 import { join } from 'node:path'
 
 import {
-  REMIND_TITLE_PREFIX, buildReminderPrompt, cancelReminder, cleanReminderText,
+  REMIND_PROMPT, REMIND_TITLE_PREFIX, buildReminderPrompt, cancelReminder, cleanReminderText,
   createReminder, listReminders, normalizeChatName, parseAfterMinutes, registerRemind, reminderMarks,
 } from '../lib/remind.js'
 import { readEvents } from '../lib/store.js'
@@ -218,6 +218,12 @@ test('列表只认带前缀的提醒；取消只删自己那条', async () => {
   const ok = await cancelReminder({ ctx, sessionId: 's', id: 'schedule-1' })
   assert.equal(ok.ok, true)
   assert.deepEqual(schedule.calls.delete[0], { sessionId: 's', id: 'schedule-1' })
+})
+
+test('提醒说明先说做得到，不给她「我没闹钟」的回绝台阶', () => {
+  assert.match(REMIND_PROMPT, /你做得到/)
+  assert.match(REMIND_PROMPT, /先调 her_remind/)
+  assert.match(REMIND_PROMPT, /别用「我这边没闹钟」/)
 })
 
 test('三个工具都注册，参数是宿主认的 JSON Schema', () => {

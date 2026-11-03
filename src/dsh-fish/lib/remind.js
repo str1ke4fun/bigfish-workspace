@@ -37,7 +37,8 @@ export const REMIND_MARK = 'remind:'
 export const REMIND_PROMPT = [
   '## 定时提醒（her_remind）',
   '',
-  '有人在微信里让你过一会儿提醒，就用 her_remind 定一个。它只开「过多少分钟」这一种，1 分钟到 7 天。',
+  '这件事你做得到：有人在微信里让你过一会儿提醒，先调 her_remind 定上，别用「我这边没闹钟」这类话回绝。',
+  '它只开「过多少分钟」这一种，1 分钟到 7 天；真定不了，它会给出原因，再照实说。',
   '- chat：刚把你叫醒的那个微信会话名，从 [微信] 通知里的「会话名」原样抄；不能填别的会话。',
   '- text：到点要发出去的那句话，按到点时的口气写，不要写「30 分钟后」。不能含换行，500 字以内。',
   '- 到点后宿主会把提醒交回给你，并附一个一次性的 permit。用 wx_send 把同样的 text 发到同样的 chat，permit 原样带上。',
@@ -306,8 +307,8 @@ export function registerRemind(ctx, deps = {}) {
     defineTool({
       name: 'her_remind',
       description:
-        '定一条微信定时提醒。只在有人刚在微信里让你过一会儿提醒时用；' +
-        'chat 只能是刚把你叫醒的会话，text 是到点要发出去的那句话。',
+        '定一条微信定时提醒，这件事你做得到。只在有人刚在微信里让你过一会儿提醒时用；' +
+        '先调它，不要预先回绝。chat 只能是刚把你叫醒的会话，text 是到点要发出去的那句话。',
       parameters: toJsonSchema({
         chat: { type: 'string', required: true, description: '刚把你叫醒的微信会话名，从 [微信] 通知里原样抄。' },
         text: { type: 'string', required: true, description: `到点要发出去的那句话，按到点时的口气写。${REMIND_TEXT_MAX} 字以内，不能含换行。` },
