@@ -19,6 +19,7 @@ import { registerSpeak } from './speak.js'
 import { registerRecall } from './recall.js'
 import { registerWatch } from './watch.js'
 import { registerLetter } from './letter.js'
+import { registerRemind } from './remind.js'
 import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
 import { bootstrapHome, homeStatus, wakeIfBlank } from './home.js'
@@ -33,7 +34,7 @@ import { logBoot, makeLogger } from './log.js'
 export const name = 'dsh-fish'
 
 /** 版本号：只用于日志导出（排查时第一件事是确认跑的是哪一版）。 */
-export const VERSION = '0.6.2'
+export const VERSION = '0.7.0'
 
 // ⚠️ 一个数组写全，不要拆成对象
 // sessionController 只有有人打开工作区界面时才出现；写进 inject 会让整条插件在开机后一直挂着不挂载，
@@ -93,7 +94,7 @@ export function apply(ctx, baseConfig = {}) {
     // 这一步**先于**一切：她得先有个能被你看见的地方，才有"说话"这件事。
     // 失败不致命（宿主的 workspaceRegistry 可能没有），降级成"只有观测台能跟她说话"，
     // 并把原因记下来，而不是静默变成什么都没有。
-    // ---- 工具面收窄：只让她看见自己的 6+1 个工具 ----
+    // ---- 工具面收窄：只让她看见自己的 9+1 个工具 ----
     // 必须**先于** bootstrapHome：她那条会话就是在 bootstrapHome 里被创建的，
     // agent/created 在会话开始跑第一步之前同步串行发出——晚一步就漏掉这一次。
     try {
@@ -162,6 +163,8 @@ export function apply(ctx, baseConfig = {}) {
         () => registerWatch(ctx, { root }),
         // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
         () => registerLetter(ctx, { root }),
+        // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
+        () => registerRemind(ctx, { root, log: (...a) => logger.warn(...a) }),
       ]) {
         try {
           const d = reg()

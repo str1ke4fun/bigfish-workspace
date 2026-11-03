@@ -1,6 +1,6 @@
 {
   "name": "dsh-wx",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "让大肥鱼在微信里说话：看窗口、点、打字、按键。底层是 Xvfb + xdotool + import，不给她 bash。",
   "type": "module",
   "main": "lib/index.js",

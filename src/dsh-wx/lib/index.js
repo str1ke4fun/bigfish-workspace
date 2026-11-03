@@ -28,6 +28,7 @@ import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
+import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -271,14 +272,17 @@ function promptText() {
   return [
     '## 微信通道（dsh-wx）',
     '',
-    '微信里的动作通过 5 个工具完成，没有 shell：',
+    '微信里的动作通过 7 个工具完成，没有 shell：',
     '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。坐标是屏幕绝对坐标，可直接给 wx_click。消息列表没有发言人。',
     '- wx_click：点击。label 可填会话名或按钮名；也可填 x/y。返回里会写落点是什么、点完当前会话是什么。',
     '- wx_type：输入文字，enter=true 时回车发送。发送前核对当前会话是否在允许名单内；发送后回报消息是否出现在列表末尾。文本不能含换行。',
     '- wx_key：按键。Return 视同发送，同样核对。',
     '- wx_see：截图存档。当前模型不支持图像输入，读不了截图。',
+    '- wx_ocr：只读 OCR。OCR 不证明当前会话，不能当发送授权。',
+    '- wx_send：直接发到指定会话。它自己点开会话、点输入框、输入、回车，并核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话有效。',
     '',
-    '- 发送流程：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。',
+    '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
+    '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
     '- 界面会变，以每次工具的返回为准。返回里带“[提示]”的，按提示处理。',
     '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。',
     '- 对话框里不带 `[微信]` 的话，是主机在跟你说话：他问什么，就在对话框里答什么。这一轮不去 wx_peek 翻别的会话，不把答案发到微信，也不顺手去处理微信里别人的事——哪怕你之前看到过相关的群。只有他明说“发给谁/回她/跟谁说”，才动微信。',
@@ -322,6 +326,50 @@ export function apply(ctx, config = {}) {
 
   const disposers = []
   const reg = (tool) => disposers.push(ctx.tools.register(tool))
+
+  // ---- 定时提醒：一次性许可 + 「最近把谁叫醒过」 ----
+  // 许可只管「到点时允许往这一个会话发一次」；它不放宽允许名单，也不改频率。
+  const permitStore = createPermitStore({
+    log: (m) => console.log('[dsh-wx] 提醒许可：' + m),
+  })
+  const RECENT_FILE = '/home/str1k3/.dsh-wx/recent-chats.json'
+  const RECENT_MS = 30 * 60_000
+  let recent = []
+  try {
+    const raw = JSON.parse(readFileSync(RECENT_FILE, 'utf8'))
+    if (Array.isArray(raw)) {
+      recent = raw
+        .map((x) => ({ chat: String(x?.chat ?? '').trim(), at: Number(x?.at) || 0 }))
+        .filter((x) => x.chat && Date.now() - x.at <= RECENT_MS)
+    }
+  } catch { /* 没有就没有：第一次收到微信通知时会写 */ }
+
+  const saveRecent = () => {
+    try {
+      mkdirSync(dirname(RECENT_FILE), { recursive: true })
+      writeFileSync(RECENT_FILE, JSON.stringify(recent), { mode: 0o600 })
+    } catch { /* 记不下不影响这一轮；提醒会因为「最近没叫醒过这个会话」被拒，不会乱发 */ }
+  }
+
+  /** 记下这一轮把哪些会话递给了她。定时提醒只能定到这些会话。 */
+  const noteRecent = (chats, at = Date.now()) => {
+    const map = new Map()
+    for (const x of recent) if (at - x.at <= RECENT_MS) map.set(x.chat, x)
+    for (const c of chats ?? []) {
+      const name = String(c ?? '').trim()
+      if (name) map.set(name, { chat: name, at })
+    }
+    recent = [...map.values()].slice(-20)
+    saveRecent()
+  }
+
+  /** 最近叫醒过她的会话名（去重，最近的在后）。 */
+  const recentChats = (withinMs = RECENT_MS) => {
+    const now = Date.now()
+    return [...new Set(recent.filter((x) => now - x.at <= withinMs).map((x) => x.chat))]
+  }
+
+  const isRecentChat = (chat, withinMs = RECENT_MS) => recentChats(withinMs).some((n) => sameName(n, chat))
 
   // 通道隔离：工具名单是全局的，QQ 会话里也看得到 wx_*。QQ 里的对话不该顺手去操作微信，这里在执行层拦住。
   // （主机自己在 web 界面里和她对话时放行，调试要用。）
@@ -649,6 +697,138 @@ export function apply(ctx, config = {}) {
     if (!v.ok) throw new Error('说话频率：' + v.reason + '。')
   }
 
+  // ---- 高层发送：wx_send 与到点提醒共用 ----
+  // wx_type 依赖「当前焦点已经在输入框」，那是给逐步操作用的。定时提醒到点时
+  // 不能假设窗口正停在哪个会话，所以这里自己点会话、点输入框、核对、再回车。
+  // 所有高层发送串行：两个提醒同时到点时，不能一个在打字、另一个来点会话。
+  let sendLock = Promise.resolve()
+  function withSendLock(fn) {
+    const p = sendLock.then(fn, fn)
+    sendLock = p.then(() => {}, () => {})
+    return p
+  }
+
+  /**
+   * 把一句话发到指定会话。永不自己吞错：发不出去就抛，让调用方如实说。
+   * permit 存在时只绕过 @ / 主机闸；允许名单、说话频率、当前会话核对都照走。
+   */
+  async function sendToChat({ chat, text, permit = '' } = {}) {
+    const p = policy()
+    if (!p.enabled) throw new Error(OFF)
+    const want = String(chat ?? '').trim()
+    const body = String(text ?? '')
+    if (!want) throw new Error('wx_send: chat 不能为空。')
+    if (!body) throw new Error('wx_send: text 不能为空。')
+    if (/[\r\n]/.test(body)) throw new Error('wx_send: 文本含换行，会被拆成多条发送。')
+    if ([...body].length > 500) throw new Error('wx_send: 文本超过 500 字。')
+
+    const allowed = canSendWithPolicy(p, want)
+    if (!allowed.ok) throw new Error(allowed.why)
+
+    const token = String(permit ?? '').trim()
+    if (token) {
+      // 到点提醒：许可绑定会话 + 原文 + 一次性。这里只查，不消费。
+      const v = permitStore.check({ id: token, chat: allowed.chat, text: body })
+      if (!v.ok) throw new Error('提醒许可：' + v.why)
+    }
+
+    let s = await look()
+    if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不发送。')
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+      if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不发送。`)
+      await run(['clean'], 30_000).catch(() => '')
+      fresh.reset()
+      await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+      await sleep(700)
+      s = await look({ confirm: false })
+      if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+      if (!sameName(s.parsed.current, allowed.chat)) {
+        throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不发送。`)
+      }
+    }
+
+    if (!token) {
+      // 许可只免 @ / 主机两道闸；频率和名单仍然要过（频率在回车前只记一次）。
+      const g = await gateSend()
+      if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不发送。`)
+    }
+
+    // 清浮层再重新读一次坐标：点开会话后布局可能变了。
+    await run(['clean'], 30_000).catch(() => '')
+    fresh.reset()
+    s = await look({ confirm: false })
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不发送。' + fresh.notice().trim())
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      throw new Error(`当前会话是「${s.parsed.current || '读不到'}」，不是「${allowed.chat}」，不发送。`)
+    }
+    const focus = findInputBox(s.parsed)
+    if (!focus) throw new Error('找不到输入框，不发送。')
+    await run(['click', String(focus.box.cx), String(focus.box.cy), '1'])
+    await sleep(300)
+    await run(['type', body], 60_000)
+
+    // 回车之前再核对一次：打字期间界面可能切走。
+    await sleep(300)
+    if (token) {
+      const again = permitStore.check({ id: token, chat: allowed.chat, text: body })
+      if (!again.ok) throw new Error('提醒许可：' + again.why)
+      const now = await look({ confirm: false })
+      if (!sameName(now.parsed.current, allowed.chat)) {
+        throw new Error(`打字期间当前会话变成了「${now.parsed.current || '读不到'}」，不发送。`)
+      }
+    } else {
+      const g = await gateSend()
+      if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不发送。`)
+    }
+    // 频率闸只在这里记一次：前面两次核对都不占额度。
+    await speechGate(allowed.chat)
+    // 频率闸可能要等，等完再看一眼当前会话，别在等待期间被切走。
+    if (token) {
+      const still = permitStore.check({ id: token, chat: allowed.chat, text: body })
+      if (!still.ok) throw new Error('提醒许可：' + still.why)
+      const last = await look({ confirm: false })
+      if (!sameName(last.parsed.current, allowed.chat)) {
+        throw new Error(`等待发送期间当前会话变成了「${last.parsed.current || '读不到'}」，不发送。`)
+      }
+    } else {
+      const last = await gateSend()
+      if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
+    }
+
+    try { feed?.willSend(allowed.chat, body) } catch { /* ignore */ }
+    await run(['key', 'Return'])
+    await sleep(900)
+
+    if (token) {
+      const used = permitStore.consume({ id: token, chat: allowed.chat, text: body })
+      if (!used.ok) console.log('[dsh-wx] 提醒许可作废失败：' + used.why)
+    }
+
+    const after = await look({ confirm: false })
+    const typed = body.replace(/\s+/g, ' ').replace(/"/g, '＂')
+    const head = typed.slice(0, 14)
+    const inMsgs = after.parsed.messages.slice(-4).some((m) => m.text.includes(head))
+    const chatRow = after.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+    const inPreview = !!chatRow && chatRow.preview.includes(head.slice(0, 10))
+    const receipt = inMsgs
+      ? '回执：消息已出现在列表末尾。'
+      : inPreview
+        ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
+        : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
+    try {
+      feed?.noteOut({
+        chat: allowed.chat,
+        text: body,
+        receipt: receipt.replace(/^回执：/, ''),
+        sent: inMsgs || inPreview ? true : 'unconfirmed',
+      })
+    } catch { /* ignore */ }
+    return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed' }
+  }
+
   // 说明只挂她一个 agent：会话 cwd 就是她的屋子
   const off = ctx.on?.('agent/created', ({ agent } = {}) => {
     try {
@@ -750,6 +930,38 @@ export function apply(ctx, config = {}) {
     content: [{ type: 'text', text }],
   }, new AbortController().signal)
 
+  // ---- 对 dsh-fish 暴露的服务 ----
+  // 她自己的插件（dsh-fish）不能直接碰 wx.sh，只能通过这个窄接口拿许可 / 问名单。
+  // 发送仍然由 wx_send 走上面的 CUA 流程；fish 拿不到点、打字的原语。
+  const isWxSession = (id) => {
+    const s = String(id ?? '')
+    if (!s) return false
+    return s === wxSessionId || s === readWxSession()
+  }
+  const canSend = (chat) => canSendWithPolicy(policy(), chat)
+  const wxService = {
+    policy,
+    canSend,
+    recentChats,
+    currentChat: (sessionId) => (isWxSession(sessionId) ? recentChats().at(-1) ?? '' : ''),
+    isRecentChat: (sessionId, chat, withinMs) => isWxSession(sessionId) && isRecentChat(chat, withinMs),
+    grantReminder: ({ id, chat, text, sessionId, dueAt, ttlMs } = {}) => {
+      if (!isWxSession(sessionId)) return { ok: false, why: '定时提醒只能在微信这条会话里定。' }
+      const c = canSend(chat)
+      if (!c.ok) return c
+      if (!isRecentChat(c.chat)) {
+        return { ok: false, why: `最近把你叫醒的会话里没有「${c.chat}」，不能往那里定提醒。` }
+      }
+      return permitStore.grant({ id, chat: c.chat, text, sessionId, dueAt, ttlMs })
+    },
+    revokeReminder: (id) => permitStore.revoke(id),
+    sendReminder: (req) => withSendLock(() => sendToChat(req)),
+  }
+  const wxProvided = provideWxService(ctx, wxService)
+  if (wxProvided.ok) console.log('[dsh-wx] 已向 dsh-fish 暴露 wx 服务')
+  else console.log('[dsh-wx] wx 服务没挂上：' + wxProvided.why)
+  if (typeof wxProvided.dispose === 'function') disposers.push(wxProvided.dispose)
+
   const ear = async () => {
     if (busy) return
     const p = policy()
@@ -836,6 +1048,8 @@ export function apply(ctx, config = {}) {
         rmSync(POKE, { force: true })
         // 手动叫醒也算一次 @：poke 里点到的会话照样可以开口
         saveMentions(grantMentioned(readMentions(), poke, p.allowChats, Date.now()))
+        // poke 里点到的允许会话，同样算「最近叫醒过」；她随后说「提醒我」时才有目标。
+        noteRecent(p.allowChats.filter((n) => String(poke).includes(n)))
         await deliver(await ensureWxSession(), `[微信·主机] ${poke}`)
         console.log('[dsh-wx] 耳朵：主机塞了一句进去 → ' + poke.slice(0, 60))
         return
@@ -883,6 +1097,7 @@ export function apply(ctx, config = {}) {
       // 投成功才记账：失败下一轮还投，不会丢这条 @
       for (const h of hits) { seen.add(h.key); lastDeliver.set(h.chat, Date.now()) }
       saveSeen()
+      noteRecent(hits.map((h) => h.chat))
       console.log('[dsh-wx] 耳朵：已投递（' + (wxSessionId || sid) + '）→ ' + hits.map((h) => h.chat).join('、'))
       logInbound({ type: 'delivered', session: wxSessionId || sid, chats: hits.map((h) => ({ chat: h.chat, why: h.why, preview: h.preview, key: h.key })) })
     } catch (err) {
@@ -901,7 +1116,7 @@ export function apply(ctx, config = {}) {
   const timer = setInterval(ear, Math.max(3, Number(config.pollSeconds) || 5) * 1000)
   timer.unref?.()
 
-  console.log(`[dsh-wx] mounted (display=${display}, tools=5, policy=${POLICY})`)
+  console.log(`[dsh-wx] mounted (display=${display}, tools=7, policy=${POLICY})`)
 
   // ---------------------------------------------------------------- 工具
   reg({
@@ -1055,6 +1270,33 @@ export function apply(ctx, config = {}) {
           : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
       try { feed?.noteOut({ chat: second.chat, text, receipt: receipt.replace(/^回执：/, ''), sent: inMsgs || inPreview ? true : 'unconfirmed' }) } catch { /* ignore */ }
       return `已输入 ${[...text].length} 字并回车。当前会话：“${second.chat}”。${receipt}` + fresh.notice()
+    },
+  })
+
+  reg({
+    name: 'wx_send',
+    description: '把一条文字发到指定的微信会话：自动点开会话、点输入框、输入并回车，再核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话和原文有效。文本不能含换行，500 字以内。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '会话名，与会话列表里的名字完全一致。' },
+        text: { type: 'string', description: '要发送的文字，不能含换行，500 字以内。' },
+        permit: { type: 'string', description: '到点提醒带的一次性许可；普通发送不填。' },
+      },
+      required: ['chat', 'text'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const a = args || {}
+      const r = await withSendLock(() => sendToChat({
+        chat: a.chat,
+        text: a.text,
+        permit: String(a.permit ?? '').trim(),
+      }))
+      return `已发到「${r.chat}」。${r.receipt}` + fresh.notice()
     },
   })
 

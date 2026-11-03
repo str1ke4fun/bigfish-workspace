@@ -22,6 +22,8 @@ import { join } from 'node:path'
 import {
   IDENTITY_ORDER,
   IDENTITY_SECTION,
+  REMIND_ORDER,
+  REMIND_SECTION,
   WAKE_ORDER,
   WAKE_SECTION,
   attachIdentity,
@@ -69,7 +71,7 @@ test('identityText：读到文件内容，改文件后（mtime 变）能拿到�
   assert.equal(identityText(root), '第二版身份')
 })
 
-test('attachIdentity：挂两段——身份 + 这一次的处境（后者平时是空）', () => {
+test('attachIdentity：挂三段——身份 + 这一次的处境（后者平时是空）+ 工具说明', () => {
   resetIdentityCache()
   clearWakeSection()
   const root = tmp()
@@ -80,7 +82,7 @@ test('attachIdentity：挂两段——身份 + 这一次的处境（后者平时
   const agent = { ctx: { systemPrompt: { section: (o) => calls.push(o) } } }
   const r = attachIdentity(agent, root)
   assert.equal(r.ok, true)
-  assert.equal(calls.length, 2, '身份一段 + 处境一段')
+  assert.equal(calls.length, 3, '身份一段 + 处境一段 + 提醒说明一段')
   const sec = calls[0]
   assert.equal(sec.name, IDENTITY_SECTION)
   assert.equal(sec.order, IDENTITY_ORDER)
@@ -97,6 +99,27 @@ test('attachIdentity：挂两段——身份 + 这一次的处境（后者平时
   assert.equal(wake.text(), '第 1 天，你醒了。')
   clearWakeSection()
   assert.equal(wake.text(), '')
+
+  // 第三段：定时提醒的工具说明。固定文本，不随唤醒清空。
+  const remind = calls[2]
+  assert.equal(remind.name, REMIND_SECTION)
+  assert.equal(remind.order, REMIND_ORDER)
+  assert.equal(typeof remind.text, 'function')
+  assert.match(remind.text(), /her_remind/)
+  assert.match(remind.text(), /wx_send/)
+})
+
+test('attachIdentity：不是微信那条会话时，提醒说明返回空串', () => {
+  resetIdentityCache()
+  const root = tmp()
+  fs.mkdirSync(join(root, 'home'), { recursive: true })
+  fs.writeFileSync(selfDocPath(root), '我是她', 'utf8')
+  const calls = []
+  const agent = { ctx: { systemPrompt: { section: (o) => calls.push(o) } } }
+  assert.equal(attachIdentity(agent, root, { canRemind: () => false }).ok, true)
+  assert.equal(calls[2].text(), '')
+  assert.equal(attachIdentity(agent, root, { canRemind: () => true }).ok, true)
+  assert.match(calls[5].text(), /her_remind/)
 })
 
 test('attachIdentity：没有 systemPrompt 时返回 ok:false，不抛', () => {
@@ -126,7 +149,7 @@ test('registerIdentity：只给她那个 agent 挂（按 cwd 判），别人不�
   handler({ agent: { session: { header: { cwd: join(root, 'other') } }, ctx: { systemPrompt: { section: (o) => others.push(o) } } } })
   handler({ agent: { session: { header: { cwd: '' } }, ctx: { systemPrompt: { section: (o) => others.push(o) } } } })
 
-  assert.equal(mine.length, 2, '她那条会话必须挂上（身份 + 处境两段）')
+  assert.equal(mine.length, 3, '她那条会话必须挂上（身份 + 处境 + 提醒说明三段）')
   assert.equal(others.length, 0, '用户自己的会话不许挂')
 })
 

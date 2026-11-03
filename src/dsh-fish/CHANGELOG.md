@@ -1,3 +1,28 @@
+## 0.7.0 — 2026-11-03
+
+**「30 分钟后提醒我」真的能发出来**（用户：「可以，按方案 B 执行」）。
+
+### 鱼侧：her_remind / her_reminders / her_remind_cancel
+
+- 新增 `lib/remind.js`。她不再需要宿主那四个 `schedule_*` 工具：只开「过多少分钟」这一种，范围 1 分钟到 7 天，避免把提醒变成 cron。
+- 正文先过 `guard.js`：多行压成一行，冒充系统指令的行整条拒绝，像凭据的东西不发。微信是私聊，手机号、路径这类隐私红线不套用。
+- 提醒绑定「发起会话 + 刚把她叫醒的微信会话」：`chat` 只能是 `[微信]` 通知里出现过的会话，由 dsh-wx 的最近投递记录校验；定不到别的群。
+- 到点提示里带 `chat / text / permit` 三个可原样照抄的参数；permit 由 dsh-wx 发，一次性、绑原文、绑会话、会过期。定时任务没定上就把许可回滚。
+- 工具说明固定挂在 system prompt 的第三段（`fish:remind`），不进对话历史。
+
+### 微信侧：wx 服务 + wx_send
+
+- dsh-wx 新增 `lib/reminder.js`：许可账本存 `~/.dsh-wx/reminder-permits.json`（0600），重启后仍在；一次性、过期、换会话、换原文都拒。
+- 通过 Cordis `ctx.provide('wx', ...)` 向 dsh-fish 暴露窄接口：`canSend / recentChats / grantReminder / revokeReminder`。fish 拿不到点、打字的 CUA 原语。
+- 新增 `wx_send` 工具：自己点开会话、点输入框、输入、回车、核对回执。普通发送仍过允许名单 / @ / 主机闸；带 permit 时只绕过 @ 与主机闸，名单和说话频率照走。
+- 耳朵投递成功后记下「最近叫醒过哪些会话」（`~/.dsh-wx/recent-chats.json`），供定提醒时校验目标。
+
+### 验证边界
+
+- 回归 671 条全绿（新增 `test/remind.test.mjs`；identity / tools / restrict 的段数与工具数断言同步更新）。
+- dsh-wx 新增 `test-remind-permit.mjs`，13 条断言全过；原有 selftest / mention / ear-note / speech 全过。
+- 未在真机微信里跑完「定提醒 → 30 分钟到点 → wx_send 发出」的端到端；需要重启宿主并让 dsh-wx 重新挂载后才算运行验证。
+
 ## 0.6.2 — 2026-11-03
 
 **工作台多一页「B站」：她看过什么、在评论区说过什么，都能翻到**（用户：「需要你在工作台新增 b 站模块，能否做到查看大肥鱼查看的视频(有 bv 号也可以)，以及她在 b 站发评论的足迹」）。

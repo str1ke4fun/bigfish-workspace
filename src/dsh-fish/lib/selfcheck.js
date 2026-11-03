@@ -210,12 +210,12 @@ export async function runChecks(o = {}) {
 
   // 10. 她手上能用什么（2026-10-24 加，同日改为以 tools.restrict 为准）
   // 用户问：已装插件/技能的工具会不会进她上下文？会不会莫名调工具？
-  // 答：会。实测她那条会话里有 37 个工具，只有 6 个是我们给的。
+  // 答：会。实测她那条会话里有 37 个工具，只有 9 个是我们给的。
   // agent preset 那条路走过三次都失败（会话首行写对了，首轮宿主又改回 standard，
   // 见 docs/B-技术契约.md §24），改用 agent.ctx.tools.restrict() 在 agent/created
   // 里只关她一个。这里报的是**真的挂上没有**，不是“注册了没有”。
   // 2026-10-25：这一项以前看的是**配置里的名单**，于是「工具全都没注册上」也报绿——
-  // 用全新 profile 装 tarball 时正是这样：日志里 6 个工具注册失败，自检还说没问题。
+  // 用全新 profile 装 tarball 时正是这样：日志里 9 个工具注册失败，自检还说没问题。
   // 现在只要有真宿主，就按 registry 里**真的在不在**判断。
   const T = o.tools ?? null
   const notRegistered = T && typeof T.get === 'function' ? FISH_TOOLS.filter((n) => !T.get(n)) : []

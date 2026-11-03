@@ -202,6 +202,7 @@ lib/
   history.js    她看过什么（还原成人能读的历史）
   inbox.js      信箱：把她说过的话聚到一处
   letter.js     her_leave 工具（信箱写入侧）
+  remind.js     her_remind / her_reminders / her_remind_cancel——微信定时提醒
   recall.js     her_recall 工具——她能翻自己的过去
   talkmem.js    换会话时带走的那几句话
   say.js        对话入口：你对她说一句话，她回你
@@ -230,7 +231,7 @@ test/           641 个测试，node --test 全绿
 node --test                     # 在插件目录里跑（不带参数，Node 自己找 test/*.test.mjs）
 ```
 
-不需要装任何依赖：工具注册直接交标准 JSON Schema（`lib/tool.js`），不依赖宿主内部的 `@deepseek-ai/dsh-tools`——那条路只在 `link:` 安装时碰巧走通，npm 安装的插件会因为找到那个包而报 `unsupported JSON schema`，6 个工具全部注册失败。这个 bug 是被一个干净 profile 装出来的，本机用了两个月都没发现。
+不需要装任何依赖：工具注册直接交标准 JSON Schema（`lib/tool.js`），不依赖宿主内部的 `@deepseek-ai/dsh-tools`——那条路只在 `link:` 安装时碰巧走通，npm 安装的插件会因为找到那个包而报 `unsupported JSON schema`，全部工具注册失败。这个 bug 是被一个干净 profile 装出来的，本机用了两个月都没发现。
 
 ## 安装
 

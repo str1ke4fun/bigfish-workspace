@@ -26,6 +26,7 @@
 
 import { readFileSync, statSync } from 'node:fs'
 import { selfDocPath } from './selfdoc.js'
+import { REMIND_PROMPT } from './remind.js'
 import { isHerAgent } from './restrict.js'
 
 /** 段名与顺序：放在宿主自己的段之后、`complete` 段之前（order 越大越靠后）。 */
@@ -54,6 +55,13 @@ export const IDENTITY_ORDER = 50
  */
 export const WAKE_SECTION = 'fish:wake'
 export const WAKE_ORDER = 8700
+
+/**
+ * 工具说明段：定时提醒怎么用、许可怎么带。
+ * 和身份段分开：身份是"她是谁"，这一段是"手边多了一个动作"。
+ */
+export const REMIND_SECTION = 'fish:remind'
+export const REMIND_ORDER = 8800
 
 /** 这一次唤醒的处境正文；空串表示没有（正常聊天时就是空）。 */
 let wakeText = ''
@@ -109,9 +117,12 @@ export function resetIdentityCache() {
  * 把身份段挂到某个 agent 的 system prompt 上。
  * @param {object} agent
  * @param {string} root
+ * @param {{canRemind?: (agent:object)=>boolean}} [opts]
+ *   canRemind：这条会话是不是微信那条。不是的话，提醒说明返回空串——
+ *   QQ / 网页里的她看不到「去微信发提醒」这段，免得把通道说明带错地方。
  * @returns {{ ok: boolean, why?: string }}
  */
-export function attachIdentity(agent, root) {
+export function attachIdentity(agent, root, { canRemind } = {}) {
   const sp = agent?.ctx?.systemPrompt
   if (!sp || typeof sp.section !== 'function') {
     return { ok: false, why: '宿主的 agent.ctx 上没有 systemPrompt.section（版本不支持）' }
@@ -130,6 +141,12 @@ export function attachIdentity(agent, root) {
       order: WAKE_ORDER,
       text: () => wakeText,
     })
+    // 定时提醒的工具说明。固定文本，不随配置变；只在微信那条会话里出现。
+    sp.section({
+      name: REMIND_SECTION,
+      order: REMIND_ORDER,
+      text: () => (canRemind && !canRemind(agent) ? '' : REMIND_PROMPT),
+    })
     return { ok: true }
   } catch (err) {
     return { ok: false, why: String(err?.message ?? err).slice(0, 200) }
@@ -144,11 +161,22 @@ export function attachIdentity(agent, root) {
  */
 export function registerIdentity(ctx, { root, herDir, log } = {}) {
   const state = { ok: false, applied: 0, why: '' }
+  /** 这条会话是不是 dsh-wx 的微信会话。拿不到服务就先当不是，下一轮再求值。 */
+  const canRemind = (agent) => {
+    try {
+      const id = String(agent?.session?.header?.id ?? agent?.session?.id ?? '')
+      if (!id || id.startsWith('onebot-')) return false
+      const wx = ctx.get?.('wx')
+      return !!wx?.isWxSession?.(id)
+    } catch {
+      return false
+    }
+  }
   const onCreated = ({ agent } = {}) => {
     try {
       if (!herDir) return
       if (!isHerAgent(agent, herDir)) return
-      const r = attachIdentity(agent, root)
+      const r = attachIdentity(agent, root, { canRemind })
       if (r.ok) {
         state.ok = true
         state.applied += 1

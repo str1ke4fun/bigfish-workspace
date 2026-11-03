@@ -39,6 +39,7 @@ node src/dsh-wx/test-mention.mjs
 node src/dsh-wx/test-mention-hits.mjs
 node src/dsh-wx/test-ear-note.mjs
 node src/dsh-wx/test-speech.mjs
+node src/dsh-wx/test-remind-permit.mjs
 ```
 
 运行时的记忆、会话、账户凭据和本机运维资料保留在本地，不纳入源码仓库。

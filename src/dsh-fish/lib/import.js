@@ -244,7 +244,7 @@ export async function applyHandover(text, root, { log, source = '' } = {}) {
     }
   }
 
-  // 工具面：并集，不替换。替换会把她自己那 6 个工具从白名单里挤掉。
+  // 工具面：并集，不替换。替换会把她自己那 9 个工具从白名单里挤掉。
   let mergedTools = []
   if (parsed.tools.length) {
     try {

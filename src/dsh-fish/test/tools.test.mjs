@@ -13,7 +13,7 @@
  * 这里守三件事：
  *   1. lib/ 里不许再 import 宿主的 dsh-tools；
  *   2. `defineTool(spec)` 就是恒等（注册时直接交 JSON Schema）；
- *   3. 七个工具定义都长成宿主认的形状（parameters 是 object-rooted JSON Schema、
+ *   3. 九个工具定义都长成宿主认的形状（parameters 是 object-rooted JSON Schema、
  *      output.schema 也是、render / execute 是函数）。
  */
 
@@ -29,6 +29,7 @@ import { registerCapture } from '../lib/capture.js'
 import { registerLetter } from '../lib/letter.js'
 import { registerLook } from '../lib/look.js'
 import { registerRecall } from '../lib/recall.js'
+import { registerRemind } from '../lib/remind.js'
 import { registerSpeak } from '../lib/speak.js'
 import { registerWatch } from '../lib/watch.js'
 import { FISH_TOOLS, HER_TOOLS } from '../lib/restrict.js'
@@ -67,17 +68,18 @@ test('defineTool 是恒等：不编译、不改写', () => {
   assert.equal(defineTool(spec), spec)
 })
 
-test('七个工具定义都长成宿主认的形状', () => {
+test('九个工具定义都长成宿主认的形状', () => {
   const ctx = fakeCtx()
   const deps = { root: ROOT, log: () => {} }
   registerCapture(ctx, deps)
   registerLetter(ctx, deps)
   registerLook(ctx, deps)
   registerRecall(ctx, deps)
+  registerRemind(ctx, deps)
   registerSpeak(ctx, deps)
   registerWatch(ctx, deps)
 
-  assert.equal(ctx.defs.length, 6, '我们自己的工具是 6 个（第 7 个 read_image 是宿主的）')
+  assert.equal(ctx.defs.length, 9, '我们自己的工具是 9 个（外加宿主的 read_image）')
   const names = ctx.defs.map((d) => d.name)
   for (const n of names) assert.ok(FISH_TOOLS.includes(n), `${n} 不在 FISH_TOOLS 里`)
 
