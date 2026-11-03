@@ -63,6 +63,14 @@ export const WAKE_ORDER = 8700
 export const REMIND_SECTION = 'fish:remind'
 export const REMIND_ORDER = 8800
 
+/**
+ * 微信任务摘要段：还没回完的请求。
+ * 和提醒说明分开：提醒是「到点发一条」，任务是「谁在等、回到哪了」。
+ * 没有任务时返回空串（等于不存在），不会每轮都塞一段空标题。
+ */
+export const INBOX_SECTION = 'fish:inbox'
+export const INBOX_ORDER = 8850
+
 /** 这一次唤醒的处境正文；空串表示没有（正常聊天时就是空）。 */
 let wakeText = ''
 
@@ -117,12 +125,13 @@ export function resetIdentityCache() {
  * 把身份段挂到某个 agent 的 system prompt 上。
  * @param {object} agent
  * @param {string} root
- * @param {{canRemind?: (agent:object)=>boolean}} [opts]
+ * @param {{canRemind?: (agent:object)=>boolean, inboxText?: ()=>string}} [opts]
  *   canRemind：这条会话是不是微信那条。不是的话，提醒说明返回空串——
  *   QQ / 网页里的她看不到「去微信发提醒」这段，免得把通道说明带错地方。
+ *   inboxText：还没回完的微信任务摘要；同样是「不在微信那条会话里就不显示」。
  * @returns {{ ok: boolean, why?: string }}
  */
-export function attachIdentity(agent, root, { canRemind } = {}) {
+export function attachIdentity(agent, root, { canRemind, inboxText } = {}) {
   const sp = agent?.ctx?.systemPrompt
   if (!sp || typeof sp.section !== 'function') {
     return { ok: false, why: '宿主的 agent.ctx 上没有 systemPrompt.section（版本不支持）' }
@@ -146,6 +155,16 @@ export function attachIdentity(agent, root, { canRemind } = {}) {
       name: REMIND_SECTION,
       order: REMIND_ORDER,
       text: () => (canRemind && !canRemind(agent) ? '' : REMIND_PROMPT),
+    })
+    // 还没回完的微信任务。没有任务时是空串；同样只在微信那条会话里出现。
+    sp.section({
+      name: INBOX_SECTION,
+      order: INBOX_ORDER,
+      text: () => {
+        if (canRemind && !canRemind(agent)) return ''
+        const body = String(inboxText?.() ?? '').trim()
+        return body ? '## 微信里还没回完的任务\n\n' + body : ''
+      },
     })
     return { ok: true }
   } catch (err) {
@@ -172,11 +191,20 @@ export function registerIdentity(ctx, { root, herDir, log } = {}) {
       return false
     }
   }
+  /** 任务摘要由 dsh-wx 提供；服务没起来或没有任务时就是空串。 */
+  const inboxText = () => {
+    try {
+      const wx = ctx.get?.('wx')
+      return wx?.inboxSummary?.({ max: 5 }) ?? ''
+    } catch {
+      return ''
+    }
+  }
   const onCreated = ({ agent } = {}) => {
     try {
       if (!herDir) return
       if (!isHerAgent(agent, herDir)) return
-      const r = attachIdentity(agent, root, { canRemind })
+      const r = attachIdentity(agent, root, { canRemind, inboxText })
       if (r.ok) {
         state.ok = true
         state.applied += 1

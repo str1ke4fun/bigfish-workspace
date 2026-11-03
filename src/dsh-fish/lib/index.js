@@ -20,6 +20,7 @@ import { registerRecall } from './recall.js'
 import { registerWatch } from './watch.js'
 import { registerLetter } from './letter.js'
 import { registerRemind } from './remind.js'
+import { registerInbox } from './taskinbox.js'
 import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
 import { bootstrapHome, homeStatus, wakeIfBlank } from './home.js'
@@ -28,6 +29,7 @@ import { registerToolRestrict } from './restrict.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
 import { clearWakeSection, registerIdentity } from './identity.js'
+import { looksLikeRewriting, looksLikeSecret, sanitizeForeign, screenOutgoing } from './guard.js'
 
 import { logBoot, makeLogger } from './log.js'
 
@@ -46,6 +48,25 @@ const SEED_KEY = 'seed:'
 export function apply(ctx, baseConfig = {}) {
   const root = baseConfig.root || process.env.DSH_FISH_HOME || rootDir()
   const disposers = []
+
+  // 把过滤能力作为服务暴露给 dsh-wx 这类输入通道：它们不能直接 import 本插件的内部文件，
+  // 但检索结果、外来文本在递给她之前必须过 guard.js。服务不可用时，调用方应整行拦下。
+  try {
+    if (typeof ctx.provide === 'function') {
+      const offGuard = ctx.provide('fishGuard', {
+        sanitizeForeign,
+        looksLikeSecret,
+        looksLikeRewriting,
+        screenOutgoing,
+      })
+      if (typeof offGuard === 'function') disposers.push(offGuard)
+    } else {
+      console.log('[dsh-fish] ctx.provide 不可用，dsh-wx 的检索结果将无法显示原文')
+    }
+  } catch (err) {
+    console.log('[dsh-fish] fishGuard 服务没挂上：' + String(err?.message ?? err).slice(0, 160))
+  }
+
   let scheduler = null
   // 自己的日志（落 ~/.dsh-fish/logs/，带滚动），同时继续转发宿主 logger。
   // 为什么要自己写一份：宿主的 logger 不回读，出事之后现场就没了。
@@ -165,6 +186,8 @@ export function apply(ctx, baseConfig = {}) {
         () => registerLetter(ctx, { root }),
         // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
         () => registerRemind(ctx, { root, log: (...a) => logger.warn(...a) }),
+        // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
+        () => registerInbox(ctx, { log: (...a) => logger.warn(...a) }),
       ]) {
         try {
           const d = reg()

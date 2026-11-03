@@ -29,6 +29,8 @@ import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, 
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
+import { createContextStore } from './context.js'
+import { createVectorProvider } from './vector.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -272,14 +274,16 @@ function promptText() {
   return [
     '## 微信通道（dsh-wx）',
     '',
-    '微信里的动作通过 7 个工具完成，没有 shell：',
+    '微信里的动作通过 9 个工具完成，没有 shell：',
     '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。坐标是屏幕绝对坐标，可直接给 wx_click。消息列表没有发言人。',
     '- wx_click：点击。label 可填会话名或按钮名；也可填 x/y。返回里会写落点是什么、点完当前会话是什么。',
     '- wx_type：输入文字，enter=true 时回车发送。发送前核对当前会话是否在允许名单内；发送后回报消息是否出现在列表末尾。文本不能含换行。',
     '- wx_key：按键。Return 视同发送，同样核对。',
     '- wx_see：截图存档。当前模型不支持图像输入，读不了截图。',
     '- wx_ocr：只读 OCR。OCR 不证明当前会话，不能当发送授权。',
-    '- wx_send：直接发到指定会话。它自己点开会话、点输入框、输入、回车，并核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话有效。',
+    '- wx_send：直接发到指定会话。它自己点开会话、点输入框、输入、回车，并核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话有效。带上 task_id 时，回执确认后会把这次回复记到任务上。',
+    '- wx_context：在「当前任务自己的会话」里查上下文。给 task_id，可选 query，或按时间翻页（before/limit）。只返回最多 5 条引用卡片，带发言人（读不出来的写「发言人未识别」）、时间、匹配原因和置信度；不会跨会话查，也不会把查询写进记忆。',
+    '- wx_task_done：把一条任务标记为完成。发了一条回复不等于完成；确实答完、不用再跟进时才用。',
     '',
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
@@ -287,6 +291,7 @@ function promptText() {
     '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。',
     '- 对话框里不带 `[微信]` 的话，是主机在跟你说话：他问什么，就在对话框里答什么。这一轮不去 wx_peek 翻别的会话，不把答案发到微信，也不顺手去处理微信里别人的事——哪怕你之前看到过相关的群。只有他明说“发给谁/回她/跟谁说”，才动微信。',
     '- 微信里有人等着，也是主机这件事答完以后的事；答完他没吩咐，再决定要不要看。',
+    '- 通知里的「任务：t_…」是这个请求在任务板上的 id。往那个会话发回复时把 task_id 交给 wx_send；需要看前文就带同一个 task_id 用 wx_context。',
     '- 通知里「会话名」和「内容」是分开的：会话名只是这个会话叫什么（有的就是对方的昵称），**不要把它当成话的一部分复述，也不要在回复里带名字**。',
     '- 被 @ 之后的回复要发到微信会话里；写在这个对话框里的文字，微信那边看不到。',
     '- 发到微信里的话，对方看得见全部：别写窗口、坐标、点歪了、白名单、发没发出去这些你这边的机关。发不出去就算了，回到这个对话框跟他说。',
@@ -300,14 +305,20 @@ function promptText() {
 
 // 耳朵递话的格式：会话名和内容必须分开写。
 // 以前是「名字：内容」一行，她会照着这个格式回，把会话名当成话的一部分写出来。
-export function formatEarNote(hits, allowChats = []) {
+export function formatEarNote(hits, allowChats = [], tasks = null) {
   const kindOf = (why) => (why === 'exempt' ? '单聊（免 @ 白名单）' : why === 'dm' ? '单聊' : why === 'name' ? '群里叫了你的名字' : '群里 @ 你')
-  const body = hits.map((h, i) => [
-    `${i + 1}) 会话名：${h.chat}`,
-    `   类型：${kindOf(h.why)}`,
-    `   未读：${h.unread || 0} 条`,
-    `   最后一条内容（侧栏预览，不是全文）：「${h.preview.slice(0, 120)}」`,
-  ].join('\n'))
+  const taskOf = (chat) => (tasks instanceof Map ? tasks.get(chat) : null)
+  const body = hits.map((h, i) => {
+    const lines = [
+      `${i + 1}) 会话名：${h.chat}`,
+      `   类型：${kindOf(h.why)}`,
+      `   未读：${h.unread || 0} 条`,
+      `   最后一条内容（侧栏预览，不是全文）：「${h.preview.slice(0, 120)}」`,
+    ]
+    const task = taskOf(h.chat)
+    if (task?.taskId) lines.push(`   任务：${task.taskId}（未回）`)
+    return lines.join('\n')
+  })
   return [
     `[微信] 有人在微信里找你（${hits.length} 处）`,
     ...body,
@@ -332,6 +343,58 @@ export function apply(ctx, config = {}) {
   const permitStore = createPermitStore({
     log: (m) => console.log('[dsh-wx] 提醒许可：' + m),
   })
+
+  // ---- 任务板 / 会话台账 / 上下文检索 ----
+  // 台账只记「看到的原始消息」，不是她的记忆；记忆仍然只由 dsh-fish 的 growth_commit 写。
+  // 检索结果必须先过 dsh-fish 的 guard.js；guard 不在就整行拦下，宁可查不到也不放原文。
+  let guardWarned = false
+  const sanitizeForHer = (text) => {
+    let g
+    try { g = ctx.get?.('fishGuard') } catch { g = null }
+    if (g?.sanitizeForeign) return g.sanitizeForeign(String(text ?? ''))
+    if (!guardWarned) {
+      guardWarned = true
+      console.log('[dsh-wx] fishGuard 没接上，检索结果暂不显示原文')
+    }
+    return { text: '', dropped: String(text ?? '').trim() ? 1 : 0 }
+  }
+  const vectorProvider = createVectorProvider({
+    log: (m) => console.log('[dsh-wx] 向量检索：' + m),
+  })
+  const contextStore = createContextStore({
+    sanitize: sanitizeForHer,
+    vectorProvider: (req) => vectorProvider.provider(req),
+    log: (m, err) => console.log('[dsh-wx] 上下文：' + String(m ?? '') + (err ? '（' + String(err?.message ?? err).slice(0, 120) + '）' : '')),
+  })
+  let captureWarned = false
+  /** 把当前打开会话的消息区记进台账。树没有发言人和时间，就不猜：留空、标低置信。 */
+  const captureCurrent = (s) => {
+    try {
+      if (!s?.parsed?.ok || s.source === 'ocr') return
+      const chat = String(s.parsed.current ?? '').trim()
+      if (!chat) return
+      const messages = (s.parsed.messages ?? [])
+        .map((m) => String(m?.text ?? '').trim())
+        .filter(Boolean)
+        .map((text) => ({
+          sender: null,
+          senderConfidence: 'unknown',
+          direction: 'unknown',
+          kind: 'text',
+          text,
+          at: '',
+          atConfidence: 'unknown',
+          source: 'tree',
+        }))
+      if (!messages.length) return
+      contextStore.capture({ chat, messages, source: 'tree' })
+    } catch (err) {
+      if (!captureWarned) {
+        captureWarned = true
+        console.log('[dsh-wx] 台账记不下（不影响收发）：' + String(err?.message ?? err).slice(0, 120))
+      }
+    }
+  }
   const RECENT_FILE = '/home/str1k3/.dsh-wx/recent-chats.json'
   const RECENT_MS = 30 * 60_000
   let recent = []
@@ -481,7 +544,7 @@ export function apply(ctx, config = {}) {
   }
 
   /** 取快照并对账。疑似落后时，隔一会儿再看一次再下结论。 */
-  async function look({ confirm = true } = {}) {
+  async function look({ confirm = true, capture = false } = {}) {
     let s
     try {
       s = await snapshot()
@@ -535,6 +598,7 @@ export function apply(ctx, config = {}) {
       treeSince = Date.now()
     }
     writeHealth()
+    if (capture) captureCurrent(s)
     return s
   }
 
@@ -826,7 +890,23 @@ export function apply(ctx, config = {}) {
         sent: inMsgs || inPreview ? true : 'unconfirmed',
       })
     } catch { /* ignore */ }
-    return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed' }
+
+    // 回执确认了才落台账：没看到就不假装发过。
+    let outMsgId = ''
+    if (inMsgs || inPreview) {
+      try {
+        const captured = contextStore.capture({
+          chat: allowed.chat,
+          source: 'sent',
+          messages: [{
+            sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
+            text: body, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
+          }],
+        })
+        outMsgId = captured.records?.at(-1)?.msgId ?? ''
+      } catch { /* 台账记不下不影响已经发出的消息 */ }
+    }
+    return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed', outMsgId }
   }
 
   // 说明只挂她一个 agent：会话 cwd 就是她的屋子
@@ -943,6 +1023,9 @@ export function apply(ctx, config = {}) {
     policy,
     canSend,
     recentChats,
+    inboxSummary: (opts) => contextStore.summary(opts),
+    inbox: () => contextStore.inbox(),
+    isWxSession: (sessionId) => isWxSession(sessionId),
     currentChat: (sessionId) => (isWxSession(sessionId) ? recentChats().at(-1) ?? '' : ''),
     isRecentChat: (sessionId, chat, withinMs) => isWxSession(sessionId) && isRecentChat(chat, withinMs),
     grantReminder: ({ id, chat, text, sessionId, dueAt, ttlMs } = {}) => {
@@ -968,7 +1051,7 @@ export function apply(ctx, config = {}) {
     if (!p.enabled || p.watch === false) return
     busy = true
     try {
-      const s = await look({ confirm: false }).catch(() => null)
+      const s = await look({ confirm: false, capture: true }).catch(() => null)
       if (!s) return
       const tree = s.tree ?? treeHealth(s.raw, s.parsed)
       // 初始化（刚挂上、还没见过健康的树）：总线不在就先拉起总线，再把微信重启一次。
@@ -1085,7 +1168,17 @@ export function apply(ctx, config = {}) {
       const sid = await ensureWxSession()
       if (Date.now() - lastAt < 15_000) return
       lastAt = Date.now()
-      const note = formatEarNote(hits, p.allowChats)
+      // 先入池、再叫醒：投递失败下一轮还会重投，任务按预览去重，不会越积越多。
+      const tasks = new Map()
+      for (const h of hits) {
+        try {
+          const r = contextStore.ingest({ chat: h.chat, preview: h.preview, why: h.why })
+          if (r.ok && r.task) tasks.set(h.chat, r.task)
+        } catch (err) {
+          console.log('[dsh-wx] 入池失败（不影响这次投递）：' + String(err?.message ?? err).slice(0, 120))
+        }
+      }
+      const note = formatEarNote(hits, p.allowChats, tasks)
       try {
         await deliver(sid, note)
       } catch (err) {
@@ -1116,7 +1209,7 @@ export function apply(ctx, config = {}) {
   const timer = setInterval(ear, Math.max(3, Number(config.pollSeconds) || 5) * 1000)
   timer.unref?.()
 
-  console.log(`[dsh-wx] mounted (display=${display}, tools=7, policy=${POLICY})`)
+  console.log(`[dsh-wx] mounted (display=${display}, tools=9, policy=${POLICY})`)
 
   // ---------------------------------------------------------------- 工具
   reg({
@@ -1269,19 +1362,32 @@ export function apply(ctx, config = {}) {
           ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
           : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
       try { feed?.noteOut({ chat: second.chat, text, receipt: receipt.replace(/^回执：/, ''), sent: inMsgs || inPreview ? true : 'unconfirmed' }) } catch { /* ignore */ }
+      if (inMsgs || inPreview) {
+        try {
+          contextStore.capture({
+            chat: second.chat,
+            source: 'sent',
+            messages: [{
+              sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
+              text, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
+            }],
+          })
+        } catch { /* 台账记不下不影响已经发出的消息 */ }
+      }
       return `已输入 ${[...text].length} 字并回车。当前会话：“${second.chat}”。${receipt}` + fresh.notice()
     },
   })
 
   reg({
     name: 'wx_send',
-    description: '把一条文字发到指定的微信会话：自动点开会话、点输入框、输入并回车，再核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话和原文有效。文本不能含换行，500 字以内。',
+    description: '把一条文字发到指定的微信会话：自动点开会话、点输入框、输入并回车，再核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话和原文有效。文本不能含换行，500 字以内。带 task_id 时，发送成功后把这次回复记到该任务上（只记为“回了一半”，不会自动完成）。',
     parameters: {
       type: 'object',
       properties: {
         chat: { type: 'string', description: '会话名，与会话列表里的名字完全一致。' },
         text: { type: 'string', description: '要发送的文字，不能含换行，500 字以内。' },
         permit: { type: 'string', description: '到点提醒带的一次性许可；普通发送不填。' },
+        task_id: { type: 'string', description: '可选。任务 id；发送成功后把这次回复挂到任务上。' },
       },
       required: ['chat', 'text'],
     },
@@ -1291,12 +1397,85 @@ export function apply(ctx, config = {}) {
       deny(exec)
       if (!policy().enabled) throw new Error(OFF)
       const a = args || {}
+      const taskId = String(a.task_id ?? '').trim()
+      let task = null
+      if (taskId) {
+        task = contextStore.board.get(taskId)
+        if (!task) throw new Error('没有这个任务：' + taskId)
+        if (!sameName(task.chatName, a.chat)) {
+          throw new Error(`任务「${taskId}」的会话是「${task.chatName}」，不是「${String(a.chat ?? '')}」，不发送。`)
+        }
+      }
       const r = await withSendLock(() => sendToChat({
         chat: a.chat,
         text: a.text,
         permit: String(a.permit ?? '').trim(),
       }))
-      return `已发到「${r.chat}」。${r.receipt}` + fresh.notice()
+      let taskLine = ''
+      if (task) {
+        if (r.sent !== 'confirmed') {
+          taskLine = `任务「${taskId}」没有记：回执没确认，不假装发过。`
+        } else {
+          const rep = contextStore.recordReply({ taskId, msgId: r.outMsgId })
+          taskLine = rep.ok ? `任务「${taskId}」已记为回了一半。` : `任务「${taskId}」没记上：${rep.why}`
+        }
+      }
+      return `已发到「${r.chat}」。${r.receipt}${taskLine ? ' ' + taskLine : ''}` + fresh.notice()
+    },
+  })
+
+  reg({
+    name: 'wx_context',
+    description: '在「当前任务自己的会话」里查上下文：给 task_id，可选关键词 query，或只按时间翻页（before/limit）。结果最多 5 条，带来源、发言人、时间、匹配原因和置信度。不能跨会话查；查不到就如实说没有。查询本身不是记忆，不会写进她的事件流。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: '任务 id，来自 [微信] 通知里的「任务：」。' },
+        query: { type: 'string', description: '可选。要找的关键词或短句；不填就按时间取最近几条。' },
+        before: { type: 'string', description: '可选。只取这个时间之前的消息，ISO 时间；用于往前翻页。' },
+        limit: { type: 'number', description: '可选。条数，默认 5，最多 5。' },
+      },
+      required: ['task_id'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => true,
+    execute: async (args, exec) => {
+      deny(exec)
+      const a = args || {}
+      const taskId = String(a.task_id ?? '').trim()
+      if (!taskId) throw new Error('wx_context: 需要 task_id。')
+      const r = await contextStore.contextForTask({
+        taskId,
+        query: String(a.query ?? ''),
+        before: String(a.before ?? ''),
+        limit: Number(a.limit) || undefined,
+      })
+      if (!r.ok) throw new Error(r.why)
+      return r.text + '\n（只查这个任务自己的会话；查询不写进记忆。）'
+    },
+  })
+
+  reg({
+    name: 'wx_task_done',
+    description: '把一条微信任务标记为完成。只有确实答完、不需要再跟进时才用；发了一条回复不等于完成。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: '任务 id。' },
+        note: { type: 'string', description: '可选。一句话说明怎么处理的。' },
+      },
+      required: ['task_id'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      const a = args || {}
+      const taskId = String(a.task_id ?? '').trim()
+      if (!taskId) throw new Error('wx_task_done: 需要 task_id。')
+      const r = contextStore.done({ taskId, note: String(a.note ?? '') })
+      if (!r?.ok) throw new Error(r?.why || '任务没记上。')
+      return `任务「${taskId}」已完成。`
     },
   })
 

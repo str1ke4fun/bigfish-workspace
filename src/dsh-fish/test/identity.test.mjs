@@ -22,6 +22,8 @@ import { join } from 'node:path'
 import {
   IDENTITY_ORDER,
   IDENTITY_SECTION,
+  INBOX_ORDER,
+  INBOX_SECTION,
   REMIND_ORDER,
   REMIND_SECTION,
   WAKE_ORDER,
@@ -71,7 +73,7 @@ test('identityText：读到文件内容，改文件后（mtime 变）能拿到�
   assert.equal(identityText(root), '第二版身份')
 })
 
-test('attachIdentity：挂三段——身份 + 这一次的处境（后者平时是空）+ 工具说明', () => {
+test('attachIdentity：挂四段——身份 + 处境 + 提醒说明 + 任务摘要', () => {
   resetIdentityCache()
   clearWakeSection()
   const root = tmp()
@@ -80,9 +82,9 @@ test('attachIdentity：挂三段——身份 + 这一次的处境（后者平时
 
   const calls = []
   const agent = { ctx: { systemPrompt: { section: (o) => calls.push(o) } } }
-  const r = attachIdentity(agent, root)
+  const r = attachIdentity(agent, root, { inboxText: () => 't_1｜测试群A｜未回' })
   assert.equal(r.ok, true)
-  assert.equal(calls.length, 3, '身份一段 + 处境一段 + 提醒说明一段')
+  assert.equal(calls.length, 4, '身份 + 处境 + 提醒说明 + 任务摘要')
   const sec = calls[0]
   assert.equal(sec.name, IDENTITY_SECTION)
   assert.equal(sec.order, IDENTITY_ORDER)
@@ -107,19 +109,31 @@ test('attachIdentity：挂三段——身份 + 这一次的处境（后者平时
   assert.equal(typeof remind.text, 'function')
   assert.match(remind.text(), /her_remind/)
   assert.match(remind.text(), /wx_send/)
+
+  // 第四段：任务摘要。有任务才出标题，没有就是空串。
+  const inbox = calls[3]
+  assert.equal(inbox.name, INBOX_SECTION)
+  assert.equal(inbox.order, INBOX_ORDER)
+  assert.equal(typeof inbox.text, 'function')
+  assert.match(inbox.text(), /t_1/)
+  assert.match(inbox.text(), /还没回完/)
+  assert.equal(attachIdentity(agent, root, { inboxText: () => '' }).ok, true)
+  assert.equal(calls[7].text(), '')
 })
 
-test('attachIdentity：不是微信那条会话时，提醒说明返回空串', () => {
+test('attachIdentity：不是微信那条会话时，提醒说明和任务摘要都返回空串', () => {
   resetIdentityCache()
   const root = tmp()
   fs.mkdirSync(join(root, 'home'), { recursive: true })
   fs.writeFileSync(selfDocPath(root), '我是她', 'utf8')
   const calls = []
   const agent = { ctx: { systemPrompt: { section: (o) => calls.push(o) } } }
-  assert.equal(attachIdentity(agent, root, { canRemind: () => false }).ok, true)
+  assert.equal(attachIdentity(agent, root, { canRemind: () => false, inboxText: () => 't_1' }).ok, true)
   assert.equal(calls[2].text(), '')
-  assert.equal(attachIdentity(agent, root, { canRemind: () => true }).ok, true)
-  assert.match(calls[5].text(), /her_remind/)
+  assert.equal(calls[3].text(), '')
+  assert.equal(attachIdentity(agent, root, { canRemind: () => true, inboxText: () => 't_1' }).ok, true)
+  assert.match(calls[6].text(), /her_remind/)
+  assert.match(calls[7].text(), /t_1/)
 })
 
 test('attachIdentity：没有 systemPrompt 时返回 ok:false，不抛', () => {
@@ -149,8 +163,30 @@ test('registerIdentity：只给她那个 agent 挂（按 cwd 判），别人不�
   handler({ agent: { session: { header: { cwd: join(root, 'other') } }, ctx: { systemPrompt: { section: (o) => others.push(o) } } } })
   handler({ agent: { session: { header: { cwd: '' } }, ctx: { systemPrompt: { section: (o) => others.push(o) } } } })
 
-  assert.equal(mine.length, 3, '她那条会话必须挂上（身份 + 处境 + 提醒说明三段）')
+  assert.equal(mine.length, 4, '她那条会话必须挂上（身份 + 处境 + 提醒说明 + 任务摘要四段）')
   assert.equal(others.length, 0, '用户自己的会话不许挂')
+})
+
+test('registerIdentity：任务摘要从 wx 服务现取', () => {
+  resetIdentityCache()
+  const root = tmp()
+  const herDir = join(root, 'home')
+  fs.mkdirSync(herDir, { recursive: true })
+  fs.writeFileSync(selfDocPath(root), '我是她', 'utf8')
+
+  let handler = null
+  const ctx = {
+    on: (_evt, fn) => { handler = fn; return () => {} },
+    get: (name) => (name === 'wx'
+      ? { isWxSession: () => true, inboxSummary: () => 't_9｜测试群A｜未回' }
+      : undefined),
+  }
+  registerIdentity(ctx, { root, herDir, log: () => {} })
+  const sections = []
+  handler({ agent: { session: { header: { id: 'wx-1', cwd: herDir } }, ctx: { systemPrompt: { section: (o) => sections.push(o) } } } })
+  const inbox = sections.find((s) => s.name === INBOX_SECTION)
+  assert.ok(inbox)
+  assert.match(inbox.text(), /t_9/)
 })
 
 test('registerIdentity：ctx.on 不可用时返回空函数，不抛', () => {

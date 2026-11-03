@@ -55,6 +55,7 @@ export const FISH_TOOLS = Object.freeze([
   'her_remind', // 定一条微信定时提醒
   'her_reminders', // 看还没到点的提醒
   'her_remind_cancel', // 取消一条提醒
+  'her_inbox', // 看微信里还没回完的任务
 ])
 
 /**

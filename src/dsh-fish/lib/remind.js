@@ -44,6 +44,7 @@ export const REMIND_PROMPT = [
   '- 只发这一次：不改字、不换会话、不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
   '- 没被叫醒的会话、没让你提醒的事，不要自己定；也不要拿它当定时刷屏。',
   '- her_reminders 看还没到点的提醒，her_remind_cancel 取消其中一条。',
+  '- her_inbox 看还有哪些微信任务没回完；没有任务时会如实说没有。',
 ].join('\n')
 
 const MINUTE_MS = 60_000

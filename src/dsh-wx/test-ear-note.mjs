@@ -26,4 +26,20 @@ assert.match(note, /不是你该说出口的话/)
 // 没有允许名单时也不能崩
 assert.match(formatEarNote([{ chat: 'x', unread: 0, preview: '', why: 'exempt' }], []), /名单为空/)
 
+// 任务 id 跟着对应会话走；没有任务就不多写一行
+const withTasks = formatEarNote(
+  [
+    { chat: '某个猫', unread: 1, preview: '在吗？', why: 'dm' },
+    { chat: '测试群A', unread: 3, preview: '@大肥鱼 看下这个', why: '@' },
+  ],
+  ['某个猫', '测试群A'],
+  new Map([
+    ['某个猫', { taskId: 't_dm1', chatName: '某个猫' }],
+    ['测试群A', { taskId: 't_g1', chatName: '测试群A' }],
+  ]),
+)
+assert.match(withTasks, /1\) 会话名：某个猫[\s\S]*任务：t_dm1（未回）/)
+assert.match(withTasks, /2\) 会话名：测试群A[\s\S]*任务：t_g1（未回）/)
+assert.doesNotMatch(note, /任务：/)
+
 console.log('formatEarNote: 全部通过')
