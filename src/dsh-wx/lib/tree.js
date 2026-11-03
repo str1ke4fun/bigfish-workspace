@@ -119,6 +119,31 @@ export function reconcileChatName(name, names = []) {
 }
 
 /**
+ * 用 OCR 复核树是不是真的落后：OCR 读的是屏幕，树读的是无障碍层。
+ * 如果 OCR 的行名按顺序都能在树里找到（微信会截断名字，所以允许前缀），
+ * 说明树跟屏幕是一致的，像素差异另有原因（浮层被关掉、悬停高亮、主题）。
+ *
+ * 只在刚判成「落后」时用一次：直接按像素判的"落后"有可能是外部改动造成的假警报，
+ * 而真落后（列表重排/新消息）会让顺序或名字对不上。
+ */
+export function treeMatchesOcr(treeParsed, ocrParsed, { minRows = 3, ratio = 0.6 } = {}) {
+  const tree = (treeParsed?.chats ?? []).map((c) => String(c?.name ?? '').trim()).filter(Boolean)
+  const rows = (ocrParsed?.chats ?? []).map((c) => String(c?.name ?? '').trim()).filter(Boolean)
+  if (tree.length === 0 || rows.length < minRows) return false
+  let cursor = -1
+  let hit = 0
+  for (const row of rows) {
+    for (let i = cursor + 1; i < tree.length; i++) {
+      const name = tree[i]
+      const short = name.length >= row.length ? row : name
+      const prefix = short.length >= 2 && (name.startsWith(row) || row.startsWith(name))
+      if (sameName(name, row) || prefix) { cursor = i; hit++; break }
+    }
+  }
+  return hit >= minRows && hit / rows.length >= ratio
+}
+
+/**
  * 树掉线时该做什么。纯函数，方便列边界。
  *   phase=init   —— 插件刚挂上：允许先确保无障碍总线，再重启微信（有次数和冷却）
  *   phase=steady —— 已经见过健康的树：只提醒，不重启

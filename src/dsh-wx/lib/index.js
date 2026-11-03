@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, sameName, sidebarRegion, treeAction, treeHealth } from './tree.js'
+import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 
@@ -35,7 +35,7 @@ export const name = 'dsh-wx'
 export const inject = ['tools', 'systemPrompt', 'agents']
 
 // 给自测用
-export { parseTree, mentionHits, ocrMentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion, ocrSnapshot, reconcileChatName, treeHealth, treeAction }
+export { parseTree, mentionHits, ocrMentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion, ocrSnapshot, reconcileChatName, treeHealth, treeAction, treeMatchesOcr }
 export { resolveLabel, hitTest, createFreshness }
 
 const SH = fileURLToPath(new URL('./wx.sh', import.meta.url))
@@ -240,7 +240,19 @@ function createFreshness(log = () => {}) {
         return 'stale'
       }
       return 'suspect'
-    },    noteNudge(recovered) { note(recovered ? '滚动列表后树已更新' : '滚动列表后树未更新') },
+    },
+    /** 外部证据（OCR 直接读屏幕）证明树没落后：撤掉判定，下次观察重新立基线。 */
+    agree(msg) {
+      if (!stale && !suspect) return
+      note(msg || '屏幕与树经 OCR 复核一致')
+      stale = null; suspect = null; base = null
+    },
+    /** 我们自己的动作（关浮层、重启微信）改动了屏幕：旧基线作废。 */
+    reset(msg) {
+      if (stale || suspect) note(msg || '自己的操作改动了屏幕，重新对账')
+      stale = null; suspect = null; base = null
+    },
+    noteNudge(recovered) { note(recovered ? '滚动列表后树已更新' : '滚动列表后树未更新') },
     /** 写进工具返回值的提示。没落后就是空串。 */
     notice(now = Date.now()) {
       if (!stale) return ''
@@ -450,11 +462,24 @@ export function apply(ctx, config = {}) {
         }
       } catch { /* keep the tree response */ }
     }
+    const wasStale = Boolean(fresh.stale)
     let v = fresh.observe(s)
     if (confirm && v === 'suspect') {
       await sleep(1200)
       s = await snapshot()
       v = fresh.observe(s)
+    }
+    // 刚被判成「落后」：用 OCR（它读的是屏幕）复核一次。像素变了树没变，
+    // 也可能是我们自己关了浮层、悬停高亮、主题变化——这些树本来就不体现。
+    // OCR 的行和顺序都对得上就撤掉判定；OCR 读不成或对不上（真落后）就保持。
+    if (!wasStale && fresh.stale && s.source !== 'ocr') {
+      try {
+        const ocr = await ocrRead()
+        if ((ocr?.parsed?.reliable ?? ocr?.reliable) && treeMatchesOcr(s.parsed, ocr.parsed)) {
+          const n = ocr.parsed.chats?.length ?? 0
+          fresh.agree(`OCR 复核：屏幕上的 ${n} 行与树内容、顺序一致，撤掉落后判定`)
+        }
+      } catch { /* OCR 不可用时保持落后判定 */ }
     }
     treeLast = s.tree ?? treeHealth(s.raw, s.parsed)
     if (treeLast.status !== treeStatus) {
@@ -533,6 +558,7 @@ export function apply(ctx, config = {}) {
    * 次数和冷却由 treeAction 控制，用尽后自动转入 steady，只提醒。
    */
   async function recoverTree(act) {
+    fresh.reset('微信在重启，屏幕基线作废') // 重启会换窗口，旧像素基线没有意义
     treeAttempts = Number(act?.attempt) || treeAttempts + 1
     treeLastRestartAt = Date.now()
     treeAlert = act?.alert || '初始化时微信没连上无障碍树，准备重启'
@@ -936,6 +962,7 @@ export function apply(ctx, config = {}) {
       const label = String(a.label ?? '').trim()
       if (!policy().enabled) throw new Error(OFF)
       await run(['clean'], 30_000).catch(() => '') // 挡住点击的 Qt 浮层先清掉
+      fresh.reset() // 关浮层会改像素但树不变，旧基线不能再拿来判"落后"
 
       let x, y, target = null
       const before = await look()
@@ -1001,6 +1028,7 @@ export function apply(ctx, config = {}) {
       // 输入也要过闸：在名单外的会话里打字，会在对方输入框里留下草稿
       const first = await gateSend()
       await run(['clean'], 30_000).catch(() => '')
+      fresh.reset() // 关浮层会改像素但树不变，旧基线不能再拿来判"落后"
       await run(['type', text], 60_000)
       if (!enter) return `已输入 ${[...text].length} 字，未发送。当前会话：“${first.chat}”。` + fresh.notice()
 

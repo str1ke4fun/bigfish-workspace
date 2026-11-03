@@ -3,7 +3,7 @@
  * 口径：初始化才允许重启；使用中掉树只提醒；登录页永远不重启。
  */
 import assert from 'node:assert/strict'
-import { reconcileChatName, treeAction, treeHealth } from './lib/tree.js'
+import { reconcileChatName, treeAction, treeHealth, treeMatchesOcr } from './lib/tree.js'
 
 const head = (w, h, n) => `微信窗口 ${w}x${h} 原点(261,117) · 元素 ${n} 个 · 缩放 1.0417`
 const parsed = (w, chats = [], ok = true) => ({ ok, window: { w, h: 666, ox: 261, oy: 117, scale: 1.0417 }, current: '', chats })
@@ -32,6 +32,27 @@ assert.equal(reconcileChatName('星', names), '星') // 太短不猜
 assert.equal(reconcileChatName('', names), '')
 // 名字撞前缀（两个候选）时不许猜
 assert.equal(reconcileChatName('星晓家园10号楼13', ['星晓家园10号楼1302', '星晓家园10号楼1303']), '星晓家园10号楼13')
+
+// ---- treeMatchesOcr ----
+const treeRows = (...names) => ({ chats: names.map((name) => ({ name })) })
+const asTree = treeRows('微信ClawBot', 'File Transfer', '星晓家园10号楼1302', 'cat不到flag的cat', 'Tencent News', '内部赤石群')
+
+// 实测：OCR 只读到 6/9 行，名字还会把时间粘进来、被截断
+const ocrRows = treeRows('微信ClawBot', 'File Transfer Yesterday', '星晓家园10号楼', 'Tencent News')
+assert.equal(treeMatchesOcr(asTree, ocrRows), true)
+
+// 顺序对不上 = 列表重排而树没跟上，是真落后
+assert.equal(treeMatchesOcr(asTree, treeRows('Tencent News', '微信ClawBot', 'File Transfer', '星晓家园10号楼')), false)
+
+// 屏幕上出现了树里没有的会话（新消息把会话顶上来）= 树落后
+assert.equal(treeMatchesOcr(asTree, treeRows('新群A', '新群B', '新群C', '微信ClawBot')), false)
+
+// OCR 行太少或读不成：不下结论
+assert.equal(treeMatchesOcr(asTree, treeRows('微信ClawBot', 'File Transfer')), false)
+assert.equal(treeMatchesOcr(asTree, treeRows()), false)
+assert.equal(treeMatchesOcr(treeRows(), ocrRows), false)
+// 一行能对上、其余是乱码：不够比例
+assert.equal(treeMatchesOcr(asTree, treeRows('微信ClawBot', '??', '###', '...')), false)
 
 // ---- treeAction ----
 const now = 1_800_000_000_000
