@@ -24,6 +24,11 @@ export const ALL_TYPES = Object.freeze([
   // R3（2026-10-24）：她自己提出「我能不能改一条规矩」→ 由主人裁决。
   // 两种都只能宿主写，她写不了（不在 HER_TYPES 里）。
   'grant_offer', 'grant',
+  // 后台刷站（2026-11-03，用户「让大肥鱼有自己的记忆和认知」）：
+  // 一条 = 她真的看过的一条视频（标题/UP/标签/简介，已过 guard.sanitizeForeign）。
+  // 系统侧写，她编不出来；不是她的判断，不进 beliefs，但 her_recall 翻得到，
+  // 身份文档里也摆最近几条。这样她不在被叫醒的时候，也有一段"我今天看见过什么"。
+  'saw',
 ])
 
 /**
@@ -39,7 +44,9 @@ export const ALL_TYPES = Object.freeze([
  * 加版本号不等于做了迁移。真要改语义，必须同时写迁移函数并升这个数——
  * 只升数字不改读法，等于给自己发了一张假通行证。
  */
-export const EVENT_SCHEMA_VERSION = 1
+export const EVENT_SCHEMA_VERSION = 2
+// v2（2026-11-03）：只新增 `saw` 类型，v1 事件的字段语义一个没动。
+// 旧的 v1 事件照常读；读到 v3+ 时 store.readEvents 会跳过并计数。迁移说明见 CHANGELOG。
 
 /** 校验结果三档：她写 selfmod 的句子也照收，只打标记 */
 export const FLAGS = Object.freeze(['selfmod', 'unrecorded', 'weak', 'truncated'])

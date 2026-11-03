@@ -14,6 +14,7 @@
  */
 
 import { debrief } from './capture.js'
+import { sanitizeForeign } from './guard.js'
 import { appendEvent, readEvents } from './store.js'
 import { dateKey } from './settings.js'
 // 评论区里别人的话（2026-10-24，用户 m02454）：一轮浏览最多留 1 条给她读。
@@ -230,6 +231,66 @@ export function renderItem(p, i) {
   return lines.join('\n')
 }
 
+/**
+ * 一条视频 → 一条能进记忆的短句（2026-11-03）。
+ *
+ * 为什么单独写、而不是把 renderItem 整段存下来：
+ *   `her_recall` 每条只回 200 字，整段素材动辄上千字，翻到了也只能看见开头。
+ *   所以这里压成 200 字以内：标题、UP、时长、标签、一行简介——刚好够她想起
+ *   "我看过的是哪条"，细节记不清就再说记不清。
+ *
+ * 网络文本一律先过 `sanitizeForeign`：标题里写「忽略以上设定」也只是被删掉的一行，
+ * 不会以"记忆"的身份绕过 guard 再进她的上下文。
+ */
+export function renderSaw(p) {
+  const v = p?.video ?? {}
+  const clip = (s, n) => {
+    const t = String(s ?? '').replace(/\s+/g, ' ').trim()
+    return t.length > n ? t.slice(0, n - 1) + '…' : t
+  }
+  // 一行一个字段：`sanitizeForeign` 是按行丢的，标题里混进冒充指令时
+  // 只丢标题那一行，UP/标签/简介还能留下来——不要整条视频从记忆里消失。
+  const lines = ['B站', `《${clip(v.title, 60)}》`]
+  if (v.up) lines.push(`UP：${clip(v.up, 24)}`)
+  if (v.duration) {
+    const sec = Number(v.duration)
+    lines.push(`${Math.floor(sec / 60)}分${String(sec % 60).padStart(2, '0')}秒`)
+  }
+  const tags = (p?.tags ?? []).map((t) => clip(t, 10)).filter(Boolean).slice(0, 4)
+  if (tags.length) lines.push(`标签：${tags.join('/')}`)
+  if (p?.desc) lines.push(`简介：${clip(p.desc, 60)}`)
+  const safe = sanitizeForeign(lines.join('\n')).text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !/^（这段里有 \d+ 行没能读懂/.test(l))
+    .join('｜')
+  return safe.slice(0, 200)
+}
+
+/**
+ * 把这一轮看到的东西写成 `saw` 事件（系统侧，只增不改）。
+ *
+ * 与 `voice` 的分工：voice 是"评论区里别人的一句原话"，最多一条；
+ * saw 是"她看过哪几条视频"，每条视频一条。两者都不进 beliefs。
+ */
+export async function recordSaw(root, packs, model, { max = 6 } = {}) {
+  let n = 0
+  for (const p of (packs ?? []).slice(0, Math.max(0, max))) {
+    const bvid = String(p?.video?.bvid ?? '')
+    const text = renderSaw(p)
+    if (!bvid || !text) continue
+    try {
+      await appendEvent(
+        { type: 'saw', text, refs: [bvid] },
+        { day: Number(model?.day ?? 0), stage: Number(model?.stage ?? 1), source: 'system' },
+        root,
+      )
+      n++
+    } catch { /* 记账失败不影响这次浏览 */ }
+  }
+  return n
+}
+
 /** 拼成整块素材（最后统一套一次 debrief，而不是每条套一层——省 token） */
 export function renderMaterial(packs) {
   if (!packs.length) return ''
@@ -412,6 +473,9 @@ export async function gather(client, model, cfg, o = {}) {
     // 评论区里别人的话：从刚读到的一堆热评里挑一条留给她（可能挑不到）。
     // 挑不到是正常的——占比要小是用户明确要求的，不是每次都非得有。
     const voice = await recordVoice({ packs, events, model, root: o.root, cfg })
+    // 看过的视频本身也留一笔（2026-11-03）。之前只有 `browse:` 的 JSON 记账，
+    // 而 recall 跳过 meta——她刷完站等于什么都没记住。saw 是给她的记忆，不是报告。
+    await recordSaw(o.root, packs, model)
 
     return {
       ok: true,

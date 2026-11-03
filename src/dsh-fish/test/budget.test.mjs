@@ -1,8 +1,10 @@
 /**
- * budget.test.mjs —— 单轮回复字数预算（2026-10-25）
+ * budget.test.mjs —— 单轮回复字数预算（2026-10-25，2026-11-03 改默认）
  *
  * 这条设置是**环境参数**，不是人格设置：它只描述"这一轮最多写多少字"，
- * 0 = 提示词里完全不出现任何长度要求（默认）。
+ * 0 = 提示词里完全不出现任何长度要求。
+ * 2026-11-03 起默认 800：用户要「闲聊 3–6 句，正经话题 300–800 字」，
+ * 身份文档负责按话题定长短，预算只兜上限。
  * 守门要点：这段文字不能回到 say.js 的 user 消息里拼身份，
  * 所以它单独放在 lib/budget.js，say.js 只从那儿取。
  */
@@ -15,7 +17,7 @@ import { normalizeConfig } from '../lib/settings.js'
 
 const SRC = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
 
-test('lengthBudget：0 / 负数 / 非数字 → 空串（默认不提任何长度）', () => {
+test('lengthBudget：0 / 负数 / 非数字 → 空串（0 仍表示完全不提长度）', () => {
   assert.equal(lengthBudget(0), '')
   assert.equal(lengthBudget(undefined), '')
   assert.equal(lengthBudget(null), '')
@@ -23,15 +25,18 @@ test('lengthBudget：0 / 负数 / 非数字 → 空串（默认不提任何长�
   assert.equal(lengthBudget('abc'), '')
 })
 
-test('lengthBudget：正数 → 说清字数，并且要求别注水', () => {
+test('lengthBudget：正数 → 说清字数、按话题给长度，并且要求别注水', () => {
   const s = lengthBudget(120)
   assert.ok(s.includes('120 字'), '要说清多少字')
-  assert.ok(s.includes('说重点'), '要压注水')
+  assert.ok(s.includes('正经话题') && s.includes('闲聊'), '要按话题分长短')
+  assert.ok(s.includes('别一句话打发'), '要防止一句打发')
+  assert.ok(s.includes('别为了凑字数'), '要压注水')
   assert.equal(lengthBudget('300'), lengthBudget(300), '字符串数字也应认')
 })
 
-test('配置层：chat.replyChars 有夹值，ui.ownerHintDismissed 布尔化', () => {
-  assert.equal(normalizeConfig({}).chat.replyChars, 0, '默认不限')
+test('配置层：chat.replyChars 默认 800、有夹值，ui.ownerHintDismissed 布尔化', () => {
+  assert.equal(normalizeConfig({}).chat.replyChars, 800, '默认 800（不是说死，是上限）')
+  assert.equal(normalizeConfig({ chat: { replyChars: 0 } }).chat.replyChars, 0, '0 仍然可以显式关掉')
   assert.equal(normalizeConfig({ chat: { replyChars: -5 } }).chat.replyChars, 0)
   assert.equal(normalizeConfig({ chat: { replyChars: 9999 } }).chat.replyChars, 2000)
   assert.equal(normalizeConfig({ chat: { replyChars: 120 } }).chat.replyChars, 120)

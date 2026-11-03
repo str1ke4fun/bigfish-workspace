@@ -256,6 +256,9 @@ export function deriveSelf(events = [], opts = {}) {
   let spokenSinceSeen = false
   let heardSinceWake = false
   let narrations = 0
+  // 后台刷站留下的记忆（2026-11-03）。只进「最近看见过什么」，不进 beliefs：
+  // 看过一条视频不等于她认同它；她要说出口，那句 utterance 才算她的判断。
+  const saw = []
   const tested = new Set()
   /** 每条判断被检验过几次：test / answer / revise 里指向它的次数（P0-2 显著性用） */
   const verifyCount = new Map()
@@ -397,6 +400,16 @@ export function deriveSelf(events = [], opts = {}) {
         break
       }
 
+      case 'saw': {
+        saw.push({
+          id: ev.id,
+          at: ev.ts,
+          text: String(ev.text ?? ''),
+          bvid: (ev.refs ?? [])[0] ?? null,
+        })
+        break
+      }
+
       default:
         break
     }
@@ -477,6 +490,14 @@ export function deriveSelf(events = [], opts = {}) {
    * 于是它会和旧判断打架、会被固化、能进「你有两句话对不上」——
    * 认知循环接在这里，而不是接在"把评论塞进判断列表"上。
    */
+  // 身份文档里「我最近刷到的」只摆 7 天内的三条：再久就不该天天占着她的眼睛。
+  // 更早的没有删，her_recall 仍翻得到（事件流只追加）。
+  const SAW_FRESH_MS = 7 * DAY_MS
+  const freshSaw = saw.filter((s) => {
+    const t = Date.parse(s.at)
+    return Number.isFinite(t) && now - t <= SAW_FRESH_MS
+  })
+
   const voices = evs
     .filter((e) => e.type === 'voice' && String(e.text ?? '').trim())
     .map((e) => {
@@ -603,6 +624,9 @@ export function deriveSelf(events = [], opts = {}) {
     // 她读到过的别人的话（近 5 条）+ 这一次可以摆在眼前的、还没认下的那一条。
     voices: recentVoices,
     freshVoice,
+    // 后台刷站看见过的东西：全部条数 + 最近 7 天的三条（身份文档用）。
+    saw,
+    recentSaw: freshSaw.slice(-3),
     beliefCount: active.length,
     refuted,
     refusals,
@@ -646,6 +670,8 @@ export function deriveSelf(events = [], opts = {}) {
       // 注意「读到」不等于「认同」——不从 voices 推任何判断，判断只来自她说出口的话。
       voices: voices.length,
       voicesEchoed,
+      // 看过的条数（不是认同的条数）。只给观测台/自检看，不进身份文档的数字。
+      saw: saw.length,
     },
     absenceDays,
     narrative,

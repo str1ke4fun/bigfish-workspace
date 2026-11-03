@@ -24,6 +24,7 @@ import { withWake } from './wakewin.js'
 import { detectAbsence } from './absence.js'
 import { createClient } from './bili.js'
 import { gather, browseCountToday, recordBrowse, itemsFromEvents } from './browse.js'
+import { backgroundBrowse } from './browsejob.js'
 import { renderWatchList } from './history.js'
 import { fetchCover, coverLines } from './cover.js'
 import { riskState, browsePlan, noteRisk } from './risk.js'
@@ -113,9 +114,25 @@ export function startScheduler(ctx, deps = {}) {
       // 不写的话那份 system prompt 段会一直停在上一次的值上（她"不知道自己被晾过"）。
       if (absence?.written) await refreshSelfDoc(root, { log })
 
-      const { events } = await readEvents(root)
+      let { events } = await readEvents(root)
       const { config } = await loadConfig(root)
       const dk = dateKey()
+
+      // ---- 后台刷站（2026-11-03）----
+      // 放在唤醒日程之前：她不醒的时候也要有"今天看见过什么"。
+      // 配额与唤醒共用，browsejob 会为还没发生的唤醒留一次。
+      // 用 running 串行化，避免网络慢时两轮刷站叠在一起。
+      running = true
+      try {
+        const bg = await backgroundBrowse({ root, config, events, dk, log, deps })
+        if (bg?.ok) {
+          // 新事件（saw / browse）已经落盘，后面的唤醒配额与身份文档都要读到。
+          events = (await readEvents(root)).events
+          await refreshSelfDoc(root, { log })
+        }
+      } finally {
+        running = false
+      }
 
       // 日程：每天在时间窗内抽一个点。抽到的点已存在（今天已经安排过）就不再改。
       const scheduled = await ensureSchedule(root, config, events, dk)
@@ -261,6 +278,9 @@ export async function lookBeforeWake(root, model, config, dk, deps, log) {
       return empty
     }
     await recordBrowse(root, dk, r.picks, model)
+    // gather 已经把看过的每一条写成 `saw`（browse.recordSaw）。身份文件要跟着更新，
+    // 否则「我最近刷到的」要等到她下一次写判断才出现。
+    await refreshSelfDoc(root, { log })
     return {
       text: r.text,
       intro: '## 你刚醒，屏幕上有人在说话\n这是平台此刻推到你面前的东西。你可以看，也可以不看。',

@@ -14,9 +14,10 @@
  */
 
 import { createClient } from './bili.js'
-import { absorb, renderMaterial, rankVideos, seenBvids, LOOK_BRIEF, WATCH_RULE } from './browse.js'
+import { absorb, renderMaterial, rankVideos, seenBvids, recordSaw, LOOK_BRIEF, WATCH_RULE } from './browse.js'
 import { readEvents, rootDir, appendEvent } from './store.js'
 import { loadConfig } from './settings.js'
+import { refreshSelfDoc } from './selfdoc.js'
 // 评论区里别人的话（2026-10-24，用户 m02454）
 import { recordVoice } from './voices.js'
 import { toJsonSchema } from './toolschema.js'
@@ -108,6 +109,10 @@ export async function lookOnce(o = {}) {
 
     // 评论区里别人的话（2026-10-24，用户 m02454）：她自己去看的时候也可能读到一句。
     const voice = await recordVoice({ packs, events, model: o.model, root, cfg })
+    // 她自己点开看过的东西也进记忆（2026-11-03）：下一次 her_recall 翻得到。
+    await recordSaw(root, packs, o.model)
+    // 身份文件跟着变：否则「我最近刷到的」要等到下次重启/写判断才更新。
+    await refreshSelfDoc(root).catch(() => {})
 
     return {
       ok: true,

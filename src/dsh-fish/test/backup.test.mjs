@@ -159,10 +159,26 @@ test('封存目录名带 pre-restore 前缀，同一秒两次不撞名', async (
   }
 })
 
+test('事件格式版本：读到比本程序新的事件要拒绝，不能装作读懂了', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-newer-'))
+  try {
+    await writeFile(
+      join(root, 'events.jsonl'),
+      '{"id":"ev_01J0000000000000000000000C","v":999,"type":"utterance","text":"未来的话。","ts":"2026-11-03T00:00:00.000Z","day":1,"stage":1}\n',
+    )
+    const r = await readEvents(root)
+    assert.equal(r.events.length, 0)
+    assert.equal(r.newer, 1)
+    assert.equal(r.skipped, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
 test('事件格式版本：新事件带 v，老事件按 v1 读并计数', async () => {
-  assert.equal(EVENT_SCHEMA_VERSION, 1)
+  assert.equal(EVENT_SCHEMA_VERSION, 2)
   const ev = validateEvent({ type: 'utterance', text: '我看见了。' }, { day: 1, stage: 1 })
-  assert.equal(ev.v, 1)
+  assert.equal(ev.v, 2)
 
   const root = await mkdtemp(join(tmpdir(), 'fish-ver-'))
   try {
@@ -181,7 +197,7 @@ test('事件格式版本：新事件带 v，老事件按 v1 读并计数', async
     await appendEvent({ type: 'utterance', text: '新的一句。' }, { day: 1, stage: 1 }, root)
     const r2 = await readEvents(root)
     assert.equal(r2.legacy, 1, '只有那条老的算 legacy')
-    assert.equal(r2.events[1].v, 1)
+    assert.equal(r2.events[1].v, 2)
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }

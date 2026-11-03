@@ -102,6 +102,7 @@ export async function readEvents(root = rootDir()) {
   const events = []
   let skipped = 0
   let legacy = 0
+  let newer = 0
   for (const line of raw.split('\n')) {
     const s = line.trim()
     if (!s) continue
@@ -111,8 +112,13 @@ export async function readEvents(root = rootDir()) {
         // v 字段是 2026-10-25 才加的：更早写的事件没有它，语义就是 v1。
         // 补上再进内存，下游就不用到处写 `ev.v ?? 1`。
         if (!Number.isInteger(ev.v)) {
-          ev.v = EVENT_SCHEMA_VERSION
+          ev.v = 1
           legacy++
+        } else if (ev.v > EVENT_SCHEMA_VERSION) {
+          // 旧程序读到新格式必须拒，否则会静默丢字段、把成长算错。
+          // 不是坏行，单独计数，方便自检说清"这份档来自更新的版本"。
+          newer++
+          continue
         }
         events.push(ev)
       } else skipped++
@@ -121,7 +127,8 @@ export async function readEvents(root = rootDir()) {
     }
   }
   // legacy：这批事件里有多少条是「加版本号之前」写的。备份与自检会显示它。
-  return { events, skipped, legacy }
+  // newer：比本程序新的事件（已跳过），恢复旧版本时不该装作读懂了。
+  return { events, skipped, legacy, newer }
 }
 
 /**

@@ -800,6 +800,12 @@ export function registerObserve(ctx, deps = {}) {
                 echoed: Boolean(model.voices[model.voices.length - 1].echoed),
               }
             : null,
+          // 后台刷站（2026-11-03）：看过几条视频、最近一条是什么。
+          // 「看过」不等于「认同」——她不说不进判断，这里只给事实。
+          saw: model.facts?.saw ?? model.saw?.length ?? 0,
+          sawLast: model.saw?.length
+            ? { at: model.saw[model.saw.length - 1].at, text: model.saw[model.saw.length - 1].text }
+            : null,
           // 立场清单（2026-10-25，用户设计「纵向·立场」）。
           // 四道门走完才可能非零；没走完就是 0，不是"没长出来"，是"还没走到"。
           ...stanceSummary(buildStances(model)),

@@ -1483,7 +1483,7 @@ window.__ModuleLoader__.load({
             TimeRange({ label: '每天几点醒', from: wakeFrom, to: wakeTo, onFrom: setWakeFrom, onTo: setWakeTo,
               hint: '只在这个时段里自己醒。跨零点也可以（比如 22:00 到 02:00）。' }),
             Num({ label: '她一轮最多写多少字', value: replyChars, onChange: setReplyChars, min: 0, max: 2000, unit: '字',
-              hint: '0 = 不限，提示词里完全不提长度，长短由她自己决定。填了就对随后的对话生效。' }))),
+              hint: '默认 800。正经话题写到 300–800 字，闲聊 3–6 句。0 = 不限，提示词里完全不提长度。' }))),
         group('每日事件设置',
           '系统自动随机触发的事件，会让她启动进行思考。太少醒来后主要是自闭和自言自语，太多会流水账',
           h('div', { className: 'grid2' },
@@ -1802,6 +1802,12 @@ window.__ModuleLoader__.load({
                     : ''}`),
                   mem.sections?.voiceLast
                     ? h('div', { className: 'dim' }, `　最近读到：「${mem.sections.voiceLast.text}」${mem.sections.voiceLast.echoed ? '（她认下了）' : ''}`)
+                    : null,
+                  // 后台刷站（2026-11-03）：看过 ≠ 认同。这里只报她见过什么，
+                  // 判断仍然只来自她自己写下的 utterance。
+                  h('div', null, `· 刷到过的视频 ${mem.sections?.saw ?? 0} 条`),
+                  mem.sections?.sawLast
+                    ? h('div', { className: 'dim' }, `　最近看到：${mem.sections.sawLast.text}`)
                     : null,
                   h('div', null, `· 记下的事：${mem.events ?? 0} 条 · 日记 ${mem.diaries ?? 0} 篇`),
                   h('div', null, `· 这条会话：${mem.session?.rotateAfter > 0
