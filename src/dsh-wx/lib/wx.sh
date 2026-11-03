@@ -44,18 +44,24 @@ pick() {
   echo "$best $PX $PY $PW $PH"
 }
 
-# 表情面板是独立的工具窗：WM_NAME 为空、WM_CLASS=wechat、尺寸 485x485。
-# 不能按标题找；按 class 找再按尺寸认，尺寸一变就拒绝沿用旧网格。
+# 表情面板是独立的工具窗：WM_NAME 为空、WM_CLASS=wechat、类型 UTILITY。
+# 不能按标题找；按 class + 空标题 + 类型 + 可见来认，尺寸只用于报告，
+# 扫描器自己会拒绝非 485x485，这样尺寸异常时也能确认“面板确实开着”并关掉。
 panel_find() {
-  local id g
+  local id g name
   local X=0 Y=0 WIDTH=0 HEIGHT=0
   for id in $(xdotool search --class '^wechat$' 2>/dev/null); do
+    name=$(xprop -id "$id" WM_NAME 2>/dev/null | sed -n 's/^[^=]*= //p')
+    [ -z "$name" ] || continue
+    case "$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)" in
+      *UTILITY*) ;;
+      *) continue ;;
+    esac
+    xwininfo -id "$id" 2>/dev/null | grep -q 'Map State: IsViewable' || continue
     g=$(xdotool getwindowgeometry --shell "$id" 2>/dev/null) || continue
     eval "$g"
-    if [ "$WIDTH" -eq 485 ] && [ "$HEIGHT" -eq 485 ]; then
-      echo "$id $X $Y $WIDTH $HEIGHT"
-      return 0
-    fi
+    echo "$id $X $Y $WIDTH $HEIGHT"
+    return 0
   done
   return 1
 }
