@@ -44,6 +44,30 @@ pick() {
   echo "$best $PX $PY $PW $PH"
 }
 
+# 表情面板是独立的工具窗：WM_NAME 为空、WM_CLASS=wechat、尺寸 485x485。
+# 不能按标题找；按 class 找再按尺寸认，尺寸一变就拒绝沿用旧网格。
+panel_find() {
+  local id g
+  local X=0 Y=0 WIDTH=0 HEIGHT=0
+  for id in $(xdotool search --class '^wechat$' 2>/dev/null); do
+    g=$(xdotool getwindowgeometry --shell "$id" 2>/dev/null) || continue
+    eval "$g"
+    if [ "$WIDTH" -eq 485 ] && [ "$HEIGHT" -eq 485 ]; then
+      echo "$id $X $Y $WIDTH $HEIGHT"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 输入栏最左边的表情按钮：相对主窗 (347, 高度-33)。点它是开/关面板的可靠方式；
+# Alt+E 只在面板关着时可靠，面板开着时不会收起。
+emoji_button() {
+  p=$(pick) || return 1
+  set -- $p
+  echo "$(( $2 + 347 )) $(( $3 + $5 - 33 ))"
+}
+
 cmd="${1:-}"; shift || true
 
 case "$cmd" in
@@ -128,6 +152,105 @@ case "$cmd" in
     import -window "$1" -silent png:- 2>/dev/null \
       | convert png:- -crop "${w}x${h}+${x}+${y}" +repage -depth 8 rgb:- 2>/dev/null \
       | md5sum | cut -c1-12
+    ;;
+
+  panel-find)
+    panel_find || exit 1
+    ;;
+
+  panel-open)
+    # 已开着就复用；没开就聚焦主窗按 Alt+E，等独立面板窗出现（最多 2 秒）。
+    if p=$(panel_find); then echo "$p"; exit 0; fi
+    p=$(pick) || { echo "找不到微信窗口" >&2; exit 2; }
+    set -- $p
+    xdotool windowfocus "$1" 2>/dev/null || true
+    xdotool key --clearmodifiers alt+e
+    i=0
+    while [ "$i" -lt 8 ]; do
+      sleep 0.3
+      if p=$(panel_find); then echo "$p"; exit 0; fi
+      i=$((i + 1))
+    done
+    echo "表情面板没有打开" >&2
+    exit 3
+    ;;
+
+  panel-close)
+    if ! p=$(panel_find); then echo "closed"; exit 0; fi
+    # 点输入栏表情按钮切换关闭（Alt+E 只在打开时有效，不能当开关用）。
+    b=$(emoji_button) || { echo "找不到微信窗口" >&2; exit 2; }
+    set -- $b
+    xdotool mousemove "$1" "$2" click 1
+    sleep 0.5
+    if panel_find >/dev/null; then echo "still-open"; exit 1; else echo "closed"; fi
+    ;;
+
+  panel-click)
+    # 坐标相对面板左上角；只用于点页签/安全空白，不点表情格。
+    x="${1:?要 x}"; y="${2:?要 y}"
+    p=$(panel_find) || { echo "面板没开" >&2; exit 2; }
+    set -- $p
+    id=$1; ox=$2; oy=$3
+    xdotool windowfocus "$id" 2>/dev/null || true
+    xdotool mousemove "$((ox + x))" "$((oy + y))" click 1
+    echo "点了面板内 ($x,$y)"
+    ;;
+
+  panel-scroll-up)
+    # 在内容区中央向上滚，回到收藏页顶部；不点任何格子。
+    times="${1:-10}"
+    p=$(panel_find) || { echo "面板没开" >&2; exit 2; }
+    set -- $p
+    id=$1; ox=$2; oy=$3
+    xdotool windowfocus "$id" 2>/dev/null || true
+    xdotool mousemove "$((ox + 242))" "$((oy + 160))"
+    i=0
+    while [ "$i" -lt "$times" ]; do
+      xdotool click 4 2>/dev/null
+      sleep 0.03
+      i=$((i + 1))
+    done
+    echo "面板已滚到顶"
+    ;;
+
+  panel-park)
+    # 鼠标停到面板右下角的空白区（不在任何格子上），避免悬停放大/预览改变截图。
+    p=$(panel_find) || { echo "面板没开" >&2; exit 2; }
+    set -- $p
+    id=$1; ox=$2; oy=$3
+    xdotool windowfocus "$id" 2>/dev/null || true
+    xdotool mousemove "$((ox + 460))" "$((oy + 400))"
+    echo "鼠标已停到面板空白区"
+    ;;
+
+  panel-shot)
+    out="${1:?要输出路径}"
+    mkdir -p "$(dirname "$out")"
+    p=$(panel_find) || { echo "面板没开" >&2; exit 2; }
+    set -- $p
+    import -window "$1" -silent "$out" 2>/dev/null || {
+      echo "面板截图失败（窗口 $1）" >&2; exit 3; }
+    echo "$p"
+    ;;
+
+  panel-gray)
+    # 面板 PNG → 原始灰度字节 → base64（Node 侧不引 PNG 解码依赖）。
+    png="${1:?要 PNG}"
+    convert "$png" -colorspace Gray -depth 8 gray:- 2>/dev/null | base64 -w0
+    ;;
+
+  panel-thumb)
+    # 从面板截图裁一格，缩到 128x128 落盘。
+    png="${1:?要 PNG}"; x="${2:?x}"; y="${3:?y}"; w="${4:?w}"; h="${5:?h}"; out="${6:?out}"
+    mkdir -p "$(dirname "$out")"
+    convert "$png" -crop "${w}x${h}+${x}+${y}" +repage -resize 128x128 "$out" 2>/dev/null \
+      || { echo "缩略图失败" >&2; exit 3; }
+    echo "$out"
+    ;;
+
+  sha256)
+    f="${1:?要文件}"
+    sha256sum "$f" 2>/dev/null | cut -d' ' -f1
     ;;
 
   mouse)
@@ -274,7 +397,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|restart}" >&2
+    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|sha256 <file>}" >&2
     exit 64
     ;;
 esac

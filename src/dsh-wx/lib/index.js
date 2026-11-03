@@ -35,6 +35,9 @@ import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
 import { createSessionPool } from './sessions.js'
 import { requesterOf, samePreviewText } from './speaker.js'
 import { createVectorProvider } from './vector.js'
+import { annotate, loadIndex, saveIndex } from './sticker-index.js'
+import { findStickers, formatFind, formatList, listStickers } from './sticker-query.js'
+import { scanStickers } from './sticker-scan.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -278,7 +281,7 @@ function promptText() {
   return [
     '## 微信通道（dsh-wx）',
     '',
-    '微信里的动作通过 10 个工具完成，没有 shell：',
+    '微信里的动作通过 14 个工具完成，没有 shell：',
     '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。坐标是屏幕绝对坐标，可直接给 wx_click。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
     '- wx_click：点击。label 可填会话名或按钮名；也可填 x/y。返回里会写落点是什么、点完当前会话是什么。',
     '- wx_type：输入文字，enter=true 时回车发送。发送前核对当前会话是否在允许名单内；发送后回报消息是否出现在列表末尾。文本不能含换行。',
@@ -289,6 +292,11 @@ function promptText() {
     '- wx_context：在「当前任务自己的会话」里查上下文。给 task_id，可选 query，或按时间翻页（before/limit）。只返回最多 5 条引用卡片，带发言人（读不出来的写「发言人未识别」）、时间、匹配原因和置信度；原文和每日摘要一起查，不会跨会话查，也不会把查询写进记忆。',
     '- wx_task_snooze：把任务推迟几分钟再提醒。现在回不了、但不是不用回时用；推迟期间不再催。',
     '- wx_task_done：把一条任务标记为完成。发了一条回复不等于完成；确实答完、不用再跟进时才用。',
+    '- wx_sticker_scan：扫描微信收藏表情面板，重建或更新本地索引。只点心形页签，不点任何表情格；会打开再关上表情面板。',
+    '- wx_sticker_list：列出收藏表情索引里的条目、描述和置信度。返回文字，不含图片。',
+    '- wx_sticker_find：按关键词查收藏表情，最多返回 5 个候选，带命中原因和置信度；候选不等于要发。',
+    '- wx_sticker_tag：给某张表情补图上文字、描述或标签，只改本地索引，不改微信收藏本身。',
+    '- 收藏表情目前只能看和查，还不能用表情回复；发送是后续阶段。描述来自面板小图，置信度低时不要当成确定事实。',
     '',
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
@@ -348,6 +356,8 @@ export function formatEarNote(hits, allowChats = [], tasks = null, extra = {}) {
 // ---------------------------------------------------------------- 插件主体
 export function apply(ctx, config = {}) {
   const display = String(config.display || ':99')
+  // 收藏表情索引是派生缓存：默认落在运行数据目录，测试实例可以用 config 指到别处。
+  const stickerDir = String(config.stickerDir || '/home/str1k3/.dsh-wx/stickers')
 
   // GUI 单写者：微信只有一个窗口、一只手。读屏、点击、打字、目录滚动都串行，
   // 否则两个循环会在「点开会话」和「读当前会话」之间互相插队。
@@ -1526,7 +1536,7 @@ export function apply(ctx, config = {}) {
   const maintainEarly = setTimeout(maintain, 120_000)
   maintainEarly.unref?.()
 
-  console.log(`[dsh-wx] mounted (display=${display}, tools=10, policy=${POLICY})`)
+  console.log(`[dsh-wx] mounted (display=${display}, tools=${disposers.length}, policy=${POLICY}, stickers=${stickerDir})`)
 
   // ---------------------------------------------------------------- 工具
   reg({
@@ -1860,6 +1870,134 @@ export function apply(ctx, config = {}) {
       }
       await run(['key', keys])
       return `已按 ${keys}。${where}` + fresh.notice()
+    },
+  })
+
+  // ---- 收藏表情（阶段一：只读扫描 + 检索）----
+  // 索引是派生缓存，不进事件流；扫描只点心形页签，不点任何表情格。
+  const stickerWarnings = (r) => {
+    const out = []
+    if (r.warnings?.includes('thumb-failed')) out.push('有缩略图写入失败，下次扫描会重试')
+    if (r.warnings?.includes('index-recovered')) out.push('索引文件损坏，已按本次扫描重建')
+    if (r.warnings?.includes('grid-full')) out.push('收藏首屏已满，可能还有更多未索引；分页扫描尚未实现')
+    if (!r.closed) out.push('面板没能确认关闭，请人工看一眼')
+    return out
+  }
+
+  reg({
+    name: 'wx_sticker_scan',
+    description: '扫描微信收藏表情面板并更新本地索引。只点底部心形页签，不点任何表情格；会打开再关上面板。返回新增/认回/未见数量和警告。',
+    parameters: { type: 'object', properties: {} },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (_args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      let r
+      try {
+        r = await scanStickers({ run, dir: stickerDir, log: (m) => console.log('[dsh-wx] 表情扫描：' + m) })
+      } catch (err) {
+        const extra = []
+        if (err?.panelShot) extra.push(`截图：${err.panelShot}`)
+        if (err?.closed === false) extra.push('面板可能还开着，请人工看一眼')
+        throw new Error([String(err?.message ?? err), ...extra].filter(Boolean).join('；'))
+      }
+      const warn = stickerWarnings(r)
+      return [
+        `收藏表情扫描完成：共 ${r.total} 张（新增 ${r.added}，认回 ${r.matched}，本轮没看到 ${r.stale}）。`,
+        r.closed ? '面板已关闭。' : '',
+        ...warn.map((x) => `注意：${x}。`),
+      ].filter(Boolean).join('\n')
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_list',
+    description: '列出收藏表情索引。返回 id、标签/图上文字/描述、置信度、位置和上次看到时间；不含图片。索引为空时提示先扫描。',
+    parameters: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: '最多返回几张，1-50，默认 20' } },
+    },
+    output: textOut,
+    isConcurrencySafe: () => true,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const limit = Number((args || {}).limit ?? 20)
+      const { index, recovered } = loadIndex(stickerDir)
+      const note = recovered ? '索引文件有损坏，无法解析的条目已跳过；建议重新运行 wx_sticker_scan。\n' : ''
+      return note + formatList(index, listStickers(index, { limit }))
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_find',
+    description: '按关键词检索收藏表情，最多返回 5 个候选，带命中原因和置信度。结果只是候选，不等于要发送；描述置信度低时不要当成确定事实。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '关键词，如“牛 收到”“打劫”“猫 无语”' },
+        limit: { type: 'number', description: '最多返回几个候选，1-10，默认 5' },
+      },
+      required: ['query'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => true,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const query = String((args || {}).query ?? '').trim()
+      if (!query) throw new Error('wx_sticker_find: query 不能为空。')
+      const { index, recovered } = loadIndex(stickerDir)
+      const rows = findStickers(index, query, { limit: (args || {}).limit ?? 5 })
+      const note = recovered ? '索引文件有损坏，无法解析的条目已跳过；建议重新运行 wx_sticker_scan。\n' : ''
+      return note + formatFind(index, query, rows)
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_tag',
+    description: '给收藏表情补图上文字、描述或标签（人工或代理标注）。只写本地派生索引，不改微信收藏本身；id 来自 wx_sticker_list 或 wx_sticker_find。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '表情 id，如 st_9edec4f0c8b4a4cc' },
+        text: { type: 'string', description: '图上文字；看不清就不要填' },
+        desc: { type: 'string', description: '画面描述，只写确定的内容' },
+        tags: { type: 'array', items: { type: 'string' }, description: '标签；传了就整组替换' },
+        textConf: { type: 'string', enum: ['high', 'medium', 'low', 'none'] },
+        descConf: { type: 'string', enum: ['high', 'medium', 'low', 'none'] },
+      },
+      required: ['id'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const a = args || {}
+      const id = String(a.id ?? '').trim()
+      if (!id) throw new Error('wx_sticker_tag: id 不能为空。')
+      const patch = {}
+      if (a.text != null) patch.text = String(a.text)
+      if (a.desc != null) patch.desc = String(a.desc)
+      if (a.tags != null) patch.tags = a.tags
+      if (a.textConf != null) patch.textConf = String(a.textConf)
+      if (a.descConf != null) patch.descConf = String(a.descConf)
+      if (a.text == null && a.desc == null && a.tags == null) {
+        throw new Error('wx_sticker_tag: 至少要提供 text、desc、tags 之一。')
+      }
+      patch.source = 'manual'
+      if (patch.text != null && patch.textConf == null) patch.textConf = 'high'
+      if (patch.desc != null && patch.descConf == null) patch.descConf = 'high'
+      const { index } = loadIndex(stickerDir)
+      const { index: next, entry } = annotate(index, id, patch)
+      saveIndex(stickerDir, next)
+      const bits = []
+      if (entry.tags.length) bits.push(`标签：${entry.tags.join('、')}`)
+      if (entry.text) bits.push(`图上文字：${entry.text}`)
+      if (entry.desc) bits.push(`描述：${entry.desc}`)
+      return `已更新 ${entry.id}${bits.length ? '｜' + bits.join('｜') : ''}。`
     },
   })
 
