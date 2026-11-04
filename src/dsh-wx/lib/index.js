@@ -1456,9 +1456,12 @@ export function apply(ctx, config = {}) {
       await withGuiLock(async () => {
         const s = await look({ confirm: false })
         if (!sameName(s?.parsed?.current, cap.chat)) return
+        // 必须用锁内这一屏的新 box 对齐：旧快照的 box 可能已被新消息/滚动挤错位。
+        const messages = normalizeMessages(s.parsed.messages ?? [], { now: Date.now() })
+        if (!messages.length) return
         const d = JSON.parse(await run(['speakers'], 90_000))
         if (!d.ok) return
-        const aligned = alignSpeakers(cap.messages, d.lines, { roster: people })
+        const aligned = alignSpeakers(messages, d.lines, { roster: people })
         for (const name of new Set(aligned.map((a) => a.sender).filter(Boolean))) {
           people.learn({ name, source: 'ocr', chatId: cap.chatId })
         }
