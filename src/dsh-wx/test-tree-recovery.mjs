@@ -139,6 +139,16 @@ const recoverFirst = treeAction({ health: { status: 'down' }, phase: 'recover', 
 assert.equal(recoverFirst.restart, true)
 assert.equal(recoverFirst.attempt, 1)
 assert.match(recoverFirst.alert, /重启后/)
+// 恢复期同样要确认：微信刚被 systemd 拉起时，单次 down 不重启
+const recoverUnconfirmed = treeAction({ health: { status: 'down' }, phase: 'recover', now, statusSince: now - 5_000, confirmMs: 90_000 })
+assert.equal(recoverUnconfirmed.restart, false)
+assert.equal(recoverUnconfirmed.wait, true)
+const recoverAfterLogin = treeAction({
+  health: { status: 'down' }, phase: 'recover', now,
+  statusSince: now - 300_000, lastLoginAt: now - 60_000, loginLatchMs: 300_000,
+})
+assert.equal(recoverAfterLogin.restart, false)
+assert.equal(recoverAfterLogin.wait, true)
 const recoverSettling = treeAction({ health: { status: 'down' }, phase: 'recover', attempts: 1, retryAfter: now + 30_000, now })
 assert.equal(recoverSettling.restart, false)
 assert.equal(recoverSettling.wait, true)
