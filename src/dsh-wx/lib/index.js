@@ -445,6 +445,7 @@ export function apply(ctx, config = {}) {
       return directory.merge({
         chats, current: String(parsed.current ?? ''), source,
         knownNames: knownNames(), directNames: policy().noMentionChats,
+        ignoreChats: policy().ignoreChats,
       })
     } catch (err) {
       console.log('[dsh-wx] 会话目录合并失败：' + String(err?.message ?? err).slice(0, 120))
@@ -489,11 +490,13 @@ export function apply(ctx, config = {}) {
 
   let captureWarned = false
   /** 把当前打开会话的消息区记进台账。发言人和方向按 speaker.js 的证据分层。 */
-  const captureCurrent = (s) => {
+  const captureCurrent = (s, p) => {
     try {
       if (!s?.parsed?.ok || s.source === 'ocr') return
       const chat = String(s.parsed.current ?? '').trim()
       if (!chat) return
+      // 服务号会话不采集：连引用作者都不学，避免把系统消息里出现的人名当成联系人。
+      if (isIgnoredChat(chat, p.ignoreChats)) return
       const entry = directory.entry(chat)
       const row = (s.parsed.chats ?? []).find((c) => sameName(c.name, chat)) ?? null
       const messages = normalizeMessages(s.parsed.messages ?? [], { now: Date.now() })
@@ -508,6 +511,7 @@ export function apply(ctx, config = {}) {
         preview: row?.preview ?? entry?.lastPreview ?? '',
         isDM: entry?.kind === 'dm' ? true : null,
         outbox: outboxFor(chat),
+        ignoreChats: p.ignoreChats,
       })
       // 当前会话的最近一屏留给 maybeOcrCurrent 补发言人用。
       if (captured?.ok) lastCurrentCapture = { chat, chatId: directory.idFor(chat), messages }
@@ -799,7 +803,7 @@ export function apply(ctx, config = {}) {
     }
     writeHealth()
     mergeDirectory(s.parsed, s.source === 'ocr' ? 'ocr' : 'tree')
-    if (capture) captureCurrent(s)
+    if (capture) captureCurrent(s, p)
     return s
   }
 
@@ -1117,6 +1121,7 @@ export function apply(ctx, config = {}) {
           chat: allowed.chat,
           source: 'sent',
           taskId,
+          ignoreChats: p.ignoreChats,
           messages: [{
             sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
             text: body, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
@@ -1317,6 +1322,7 @@ export function apply(ctx, config = {}) {
       directory.merge({
         chats: merged, current: '', source: 'scan',
         knownNames: knownNames(), directNames: policy().noMentionChats,
+        ignoreChats: policy().ignoreChats,
       })
       fresh.reset('目录扫描滚动了侧栏，旧基线作废')
       console.log(`[dsh-wx] 目录扫描：${res.pages} 页、${merged.length} 个会话（${res.reason}）`)
@@ -1446,6 +1452,7 @@ export function apply(ctx, config = {}) {
   async function maybeOcrCurrent(p) {
     const cap = lastCurrentCapture
     if (!cap || !cap.messages?.length) return
+    if (isIgnoredChat(cap.chat, p.ignoreChats)) return
     if (Date.now() - lastCurrentOcrAt < p.capture.ocrEveryMs) return
     if ((treeLast?.status ?? 'down') !== 'ok') return
     // 真正尝试之前就记时间：OCR 失败/超时也不要每轮都重跑。
@@ -1722,12 +1729,15 @@ export function apply(ctx, config = {}) {
 
       const trigger = p.trigger.length > 0 ? p.trigger : ['D33p53Ek']
       // 免 @ 名单和允许名单一起交给它：单聊没有「@我」标记，不靠这两条就永远叫不醒她
-      const baseMentions = ocrRecovered
+      const baseMentions = (ocrRecovered
         ? ocrMentionHits(parsed)
-        : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats)
+        : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats))
+        .filter((m) => !isIgnoredChat(m.chat, p.ignoreChats))
       // 后台采集补扫到的 @ 也参与投递：采集可能已经清掉未读，侧栏会看不到这条。
+      // 服务号即使在旧队列里残留了命中，也不投递。
+      const deliverableCaptureHits = pendingCaptureHits.filter((m) => !isIgnoredChat(m.chat, p.ignoreChats))
       const mergedHits = new Map()
-      for (const m of [...baseMentions, ...pendingCaptureHits]) mergedHits.set(m.key, m)
+      for (const m of [...baseMentions, ...deliverableCaptureHits]) mergedHits.set(m.key, m)
       const mentionsRaw = [...mergedHits.values()]
       // 截断名解析到全名后再记 @ 窗口和任务，否则发送闸会拿两个不同的键互相比。
       const mentions = mentionsRaw.map((m) => ({ ...m, chat: canonicalName(m.chat) }))
@@ -1807,13 +1817,13 @@ export function apply(ctx, config = {}) {
         const who = requesterOf({ chat, isDM: isDM === true, preview: h.preview })
         if (who?.name) reqs.set(chat, who)
         try {
-          const r = contextStore.ingest({ chat, chatId, preview: h.preview, why: h.why, isDM })
+          const r = contextStore.ingest({ chat, chatId, preview: h.preview, why: h.why, isDM, ignoreChats: p.ignoreChats })
           if (r.ok && r.task) tasks.set(chat, r.task)
         } catch (err) {
           console.log('[dsh-wx] 入池失败（不影响这次投递）：' + String(err?.message ?? err).slice(0, 120))
         }
         try {
-          const rec = contextStore.recentContext({ chat, chatId, limit: 6, hours: 6 })
+          const rec = contextStore.recentContext({ chat, chatId, limit: 6, hours: 6, ignoreChats: p.ignoreChats })
           if (rec.ok && rec.lines.length) recents.set(chat, rec.lines)
         } catch { /* 前文读不到就只发预览 */ }
       }
@@ -2035,6 +2045,7 @@ export function apply(ctx, config = {}) {
           contextStore.capture({
             chat: second.chat,
             source: 'sent',
+            ignoreChats: policy().ignoreChats,
             messages: [{
               sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
               text, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
@@ -2118,6 +2129,7 @@ export function apply(ctx, config = {}) {
         query: String(a.query ?? ''),
         before: String(a.before ?? ''),
         limit: Number(a.limit) || undefined,
+        ignoreChats: policy().ignoreChats,
       })
       if (!r.ok) throw new Error(r.why)
       return r.text + '\n（只查这个任务自己的会话；查询不写进记忆。）'

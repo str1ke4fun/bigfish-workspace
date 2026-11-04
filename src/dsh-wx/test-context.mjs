@@ -70,6 +70,84 @@ await t('没有这个任务 → 拒绝', async () => {
   assert.equal(r.ok, false)
 })
 
+console.log('服务号过滤')
+const IGN = ['Service Messages']
+await t('忽略会话 capture 不写台账', async () => {
+  const c = make()
+  const r = c.capture({
+    chat: 'Service Messages',
+    messages: [{ sender: '甲', text: '不该入账' }],
+    ignoreChats: IGN,
+  })
+  assert.equal(r.ok, false)
+  assert.match(r.why, /服务号/)
+  assert.equal(c.ledger.chats().length, 0)
+})
+await t('忽略会话 ingest 不建任务、不落台账', async () => {
+  const c = make()
+  const r = c.ingest({
+    chat: 'Service Messages', preview: '在吗', why: '@',
+    inbound: [{ sender: '甲', text: '在吗' }], ignoreChats: IGN,
+  })
+  assert.equal(r.ok, false)
+  assert.match(r.why, /服务号/)
+  assert.equal(c.board.stats().total, 0)
+  assert.equal(c.ledger.chats().length, 0)
+})
+await t('忽略会话 recentContext 拒绝，返回空行', async () => {
+  const c = make()
+  c.capture({ chat: 'Service Messages', chatId: 'c_ign', messages: [{ sender: '甲', text: '旧记录' }] })
+  const r = c.recentContext({ chat: 'Service Messages', chatId: 'c_ign', ignoreChats: IGN })
+  assert.equal(r.ok, false)
+  assert.deepEqual(r.lines, [])
+  assert.equal(r.text, '')
+})
+await t('忽略会话 contextForTask 拒绝查询', async () => {
+  const c = make()
+  const task = c.board.create({ chatId: 'c_ign', chatName: 'Service Messages', inboundMsgId: '', text: '' }).task
+  c.capture({ chat: 'Service Messages', chatId: 'c_ign', messages: [{ sender: '甲', text: '旧记录' }] })
+  const r = await c.contextForTask({ taskId: task.taskId, query: '旧记录', ignoreChats: IGN })
+  assert.equal(r.ok, false)
+  assert.match(r.why, /服务号/)
+  assert.equal(r.cards.length, 0)
+})
+await t('capturePreview 原有行为不变：忽略会话返回 skipped', async () => {
+  const c = make()
+  const r = c.capturePreview({ chat: 'Service Messages', preview: '系统: 通知', ignoreChats: IGN })
+  assert.equal(r.ok, true)
+  assert.equal(r.added, 0)
+  assert.equal(r.why, 'ignored')
+  assert.equal(c.ledger.chats().length, 0)
+})
+
+console.log('采集去重')
+await t('预览已记过的正文，整屏采集不再重复入账', async () => {
+  const c = make()
+  c.capturePreview({ chat: '测试群A', preview: '甲: 第二句', at: T })
+  const r = c.capture({
+    chat: '测试群A',
+    source: 'capture',
+    messages: [{ text: '第一句', at: new Date(T).toISOString() }, { text: '第二句', at: new Date(T).toISOString() }],
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.added, 1)
+  assert.equal(r.dropped.length, 1)
+  assert.equal(r.dropped[0].text, '第二句')
+  assert.equal(c.ledger.recent(c.ledger.chats()[0], 10).filter((d) => d.text === '第二句').length, 1)
+})
+await t('source:sent 不跑预览去重，照旧入账', async () => {
+  const c = make()
+  c.capturePreview({ chat: '测试群A', preview: '甲: 旧的一句', at: T })
+  const r = c.capture({
+    chat: '测试群A',
+    source: 'sent',
+    messages: [{ direction: 'out', text: '我来了', at: new Date(T).toISOString() }],
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.added, 1)
+  assert.deepEqual(r.dropped, [])
+})
+
 console.log('翻页与结果')
 await t('不给 query 就按时间取最近几条', async () => {
   const c = make()

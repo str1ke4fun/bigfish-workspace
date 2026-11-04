@@ -64,6 +64,16 @@ await t('私聊名单标记 kind=dm；群聊按预览猜 kind', async () => {
   assert.equal(d.entry('大白饭').kind, 'dm')
   assert.equal(d.entry('测试群A').kind, 'group')
 })
+await t('忽略会话只更新元数据，不写预览正文', async () => {
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({
+    chats: [{ name: 'Service Messages', unread: 1, preview: '系统: 不该存' }],
+    ignoreChats: ['Service Messages'],
+  })
+  const e = d.entry('Service Messages')
+  assert.equal(e.lastPreview, '')
+  assert.equal(e.unread, 1)
+})
 await t('未读清零后仍保留最后一次非零未读', async () => {
   const d = createDirectory({ file: file(), now: () => T })
   d.merge({ chats: [{ name: '群A', unread: 3, preview: '张三: hi' }] })

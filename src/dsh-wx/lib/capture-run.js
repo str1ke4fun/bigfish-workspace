@@ -158,17 +158,22 @@ export async function runCapture({
       outbox: io.outboxFor?.(chat) ?? [],
     })
 
-    // 8. 只扫描这次真正新入账的记录，避免旧消息重复叫她。
+    // 8. 扫描这次真正新入账的记录，以及被整屏采集代表的预览记录；
+    //    同一条消息只叫一次，避免预览和正文重复触发。
     if (captured.ok && triggers.length) {
-      for (const record of captured.records ?? []) {
+      const seenMentions = new Set()
+      for (const record of [...(captured.records ?? []), ...(captured.dropped ?? [])]) {
         const text = str(record?.text)
-        if (!text || !triggers.some((t) => text.includes(t))) continue
+        const key = 'capture:' + record?.msgId
+        if (!text || !record?.msgId || seenMentions.has(key)) continue
+        seenMentions.add(key)
+        if (!triggers.some((t) => text.includes(t))) continue
         await io.onMention({
           chat,
           chatId,
           preview: text,
           msgId: record.msgId,
-          key: 'capture:' + record.msgId,
+          key,
           why: '@',
         })
       }

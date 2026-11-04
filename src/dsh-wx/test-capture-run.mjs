@@ -160,6 +160,24 @@ test('6) 正文含 trigger：onMention 调用一次，hit 字段正确', async (
   assert.match(hit.msgId, /^m_/)
 })
 
+test('6b) 被预览代表的消息不再入账，但含触发词仍 onMention 一次', async () => {
+  const contextStore = store()
+  contextStore.capturePreview({ chat: '群A', preview: '甲: 大肥鱼在吗' })
+  const io = ioOf({ read: snap('群A', [msg('普通消息'), msg('大肥鱼在吗')]) })
+
+  const r = await runCapture({
+    job: { chat: '群A' }, io, contextStore, policy: { trigger: ['大肥鱼'] },
+  })
+
+  assert.equal(r.ok, true)
+  assert.equal(r.added, 1)
+  assert.equal(io.calls.mention.length, 1)
+  assert.equal(io.calls.mention[0].preview, '大肥鱼在吗')
+  assert.match(io.calls.mention[0].key, /^capture:m_/)
+  const docs = contextStore.ledger.recent(chatIdFor('群A'), 10)
+  assert.equal(docs.filter((d) => d.text === '大肥鱼在吗').length, 1)
+})
+
 test('7) 回滚后调用 io.scrollDown(parsed, 回滚次数)', async () => {
   const contextStore = store()
   const opened = snap('群A', [msg('最近一条')])
