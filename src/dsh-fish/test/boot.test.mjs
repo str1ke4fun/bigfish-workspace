@@ -28,12 +28,13 @@ async function withRoot(fn) {
 }
 
 /** 假宿主：tools / webServer / connection / sessionController / logger 全套 */
-function fakeCtx({ allow = true, promptImpl } = {}) {
+function fakeCtx({ allow = true, promptImpl, home = true } = {}) {
   const tools = new Map()
   const routes = []
   const prompts = []
   const sessions = new Set()
   const creates = []
+  const workspaces = new Map()
   const ctx = {
     tools: { register: (spec) => { tools.set(spec.name, spec); return () => tools.delete(spec.name) } },
     webServer: { register: (r) => { routes.push(r); return () => {} } },
@@ -45,6 +46,20 @@ function fakeCtx({ allow = true, promptImpl } = {}) {
     logger: { info() {}, warn() {}, error() {} },
     on() {},
     get(key) { return ctx[key] },
+  }
+  // bootstrapHome 现在会等服务晚就绪后最多重试约 15 秒；假宿主必须像个真宿主，
+  // 否则 boot 后面的工具/路由注册会被这段等待拖过各用例的 5 秒窗口。
+  // `home:false` 留给专门测「没有屋子」那条路的用例（手动唤醒的独立会话 id）。
+  if (home) {
+    ctx.workspaceRegistry = {
+      async create(path, title) {
+        const w = { id: `ws-${workspaces.size + 1}`, path, title, sessionIds: [] }
+        workspaces.set(w.id, w)
+        return w
+      },
+      get: (id) => workspaces.get(id) ?? null,
+      list: () => [...workspaces.values()],
+    }
   }
   return { ctx, tools, routes, prompts, sessions, creates }
 }
@@ -402,7 +417,7 @@ test('唤醒消息只剩一句触发语，处境走 system prompt 段不进对�
 test('回归：手动唤醒的 dateKey 是纯日期，不污染 browse/日记/报告', async () => {
   await withRoot(async (root) => {
     await writeConfig(normalizeConfig({}), root)
-    const { ctx, sessions } = fakeCtx()
+    const { ctx, sessions } = fakeCtx({ home: false })
     const r = await wakeNow(ctx, { root })
     assert.equal(r.ok, true, JSON.stringify(r))
     const dk = dateKey()
@@ -432,7 +447,7 @@ test('回归：手动唤醒的 dateKey 是纯日期，不污染 browse/日记/�
 test('她的会话 cwd 是她自己的空房间，不是状态库根目录', async () => {
   await withRoot(async (root) => {
     await writeConfig(normalizeConfig({}), root)
-    const { ctx, creates } = fakeCtx()
+    const { ctx, creates } = fakeCtx({ home: false })
     const r = await wakeNow(ctx, { root })
     assert.equal(r.ok, true, JSON.stringify(r))
     assert.equal(creates.length, 1)

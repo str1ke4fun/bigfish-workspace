@@ -18,6 +18,7 @@ import {
   ensureWorkspace,
   ensureTalkSession,
   bootstrapHome,
+  bootstrapHomeWithRetry,
   homeStatus,
   ensureHomeDir,
   talkSessionId,
@@ -353,4 +354,75 @@ test('观测台的 /home 现读工作区标题，不靠 home.json 的旧值', as
   const src = await readFile(new URL('../lib/observe.js', import.meta.url), 'utf8')
   assert.match(src, /title: wsTitle/, '/home 要带标题')
   assert.match(src, /reg\?\.get\?\.\(h\.wsId\)\?\.title/, '标题要现读，不能记在 home.json 里')
+})
+
+function flakyCtx({ missingRegistryTimes = 0, missingSessionTimes = 0, registry = {} } = {}) {
+  const base = fakeCtx({ registry })
+  const realReg = base.reg
+  const realSc = base.ctx.sessionController
+  // ensureTalkSession 有一层 `?? ctx.sessionController` 回落。假宿主同时挂了直挂属性，
+  // 会让「服务晚出现」永远走不到——这里只留 ctx.get 这一条路。
+  delete base.ctx.sessionController
+  let regCalls = 0
+  let scCalls = 0
+  base.ctx.get = (key) => {
+    if (key === 'workspaceRegistry') {
+      regCalls += 1
+      return regCalls <= missingRegistryTimes ? null : realReg
+    }
+    if (key === 'sessionController') {
+      scCalls += 1
+      return scCalls <= missingSessionTimes ? null : realSc
+    }
+    return undefined
+  }
+  return { ...base, counts: () => ({ regCalls, scCalls }) }
+}
+
+test('workspaceRegistry 晚就绪：bootstrapHomeWithRetry 重试后成功', async () => {
+  const root = await tmpRoot()
+  try {
+    const h = flakyCtx({ missingRegistryTimes: 2 })
+    const r = await bootstrapHomeWithRetry(h.ctx, { root, attempts: 5, delayMs: 1 })
+    assert.equal(r.ok, true, r.why)
+    // 前两次：ensureWorkspace 各读一次 registry（都晚）；成功那次 ensureWorkspace 与
+    // ensureTalkSession 各读一次 → 4 次。方案里写的 3 次漏算了会话这一读。
+    assert.equal(h.counts().regCalls, 4)
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
+})
+
+test('sessionController 晚就绪：bootstrapHomeWithRetry 也会重试', async () => {
+  const root = await tmpRoot()
+  try {
+    const h = flakyCtx({ missingSessionTimes: 2 })
+    const r = await bootstrapHomeWithRetry(h.ctx, { root, attempts: 5, delayMs: 1 })
+    assert.equal(r.ok, true, r.why)
+    assert.equal(h.counts().scCalls, 3)
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
+})
+
+test('非服务缺失类失败不重试', async () => {
+  const root = await tmpRoot()
+  try {
+    const h = flakyCtx({ registry: { createSession: () => { throw new Error('create failed') } } })
+    const r = await bootstrapHomeWithRetry(h.ctx, { root, attempts: 5, delayMs: 1 })
+    assert.equal(r.ok, false)
+    assert.equal(r.retryable, undefined)
+    // 只 bootstrap 一次：ensureWorkspace 与 ensureTalkSession 各读一次 registry。
+    assert.equal(h.counts().regCalls, 2)
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
+})
+
+test('重试等待期间 dispose：停止后续尝试', async () => {
+  const root = await tmpRoot()
+  try {
+    const h = flakyCtx({ missingRegistryTimes: 99 })
+    const ac = new AbortController()
+    const p = bootstrapHomeWithRetry(h.ctx, { root, attempts: 5, delayMs: 50, signal: ac.signal })
+    setTimeout(() => ac.abort(), 10)
+    const r = await p
+    assert.equal(r.ok, false)
+    assert.equal(r.aborted, true)
+    assert.equal(h.counts().regCalls, 1)
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
 })

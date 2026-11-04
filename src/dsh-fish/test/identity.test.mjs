@@ -198,7 +198,7 @@ test('registerIdentity：ctx.on 不可用时返回空函数，不抛', () => {
 test('index.js：先写身份文本、再注册身份段、最后才建屋子', () => {
   const iPre = INDEX.indexOf('await writeSelfDoc(root')
   const iReg = INDEX.indexOf('registerIdentity(ctx')
-  const iHome = INDEX.indexOf('await bootstrapHome(')
+  const iHome = INDEX.indexOf('await bootstrapHomeWithRetry(')
   assert.ok(iPre > 0 && iReg > 0 && iHome > 0)
   assert.ok(iPre < iReg, '文本要先生成，否则她第一轮拿到空串')
   assert.ok(iReg < iHome, '必须早于 bootstrapHome：她那条会话就是在里面创建的')

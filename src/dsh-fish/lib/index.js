@@ -23,7 +23,7 @@ import { registerRemind } from './remind.js'
 import { registerInbox } from './taskinbox.js'
 import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
-import { bootstrapHome, homeStatus, wakeIfBlank } from './home.js'
+import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
 import { registerToolRestrict } from './restrict.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
@@ -48,6 +48,8 @@ const SEED_KEY = 'seed:'
 export function apply(ctx, baseConfig = {}) {
   const root = baseConfig.root || process.env.DSH_FISH_HOME || rootDir()
   const disposers = []
+  // dispose 时用它叫停「等宿主服务就绪」的重试循环，别让插件停用后还在后台醒着。
+  const bootAbort = new AbortController()
 
   // 把过滤能力作为服务暴露给 dsh-wx 这类输入通道：它们不能直接 import 本插件的内部文件，
   // 但检索结果、外来文本在递给她之前必须过 guard.js。服务不可用时，调用方应整行拦下。
@@ -151,10 +153,18 @@ export function apply(ctx, baseConfig = {}) {
 
     let home = { ok: false, why: 'not attempted', wsId: '', sessionId: '' }
     try {
-      home = await bootstrapHome(ctx, { root, preset: config?.tools?.preset ?? '', log: (...a) => logger.info(...a) })
+      home = await bootstrapHomeWithRetry(ctx, {
+        root,
+        preset: config?.tools?.preset ?? '',
+        log: (...a) => logger.info(...a),
+        warn: (...a) => logger.warn(...a),
+        signal: bootAbort.signal,
+      })
     } catch (err) {
       home = { ok: false, why: String(err?.message ?? err).slice(0, 160), wsId: '', sessionId: '' }
     }
+    // 重试期间插件被停用：不继续挂工具、开定时器，静默收尾。
+    if (bootAbort.signal.aborted) return
     if (!home.ok) logger.warn(`[dsh-fish] 屋子没建起来：${home.why}`)
     else {
       // 屋子是空的（上一次开了但从没说过话）时，侧栏不会显示它——见 sessionVisible。
@@ -225,6 +235,7 @@ export function apply(ctx, baseConfig = {}) {
   })
 
   ctx.on?.('dispose', () => {
+    try { bootAbort.abort() } catch { /* ignore */ }
     try { scheduler?.dispose?.() } catch { /* ignore */ }
     try { clearWakeSection() } catch { /* ignore */ }
     for (const d of disposers) { try { d() } catch { /* ignore */ } }
@@ -232,6 +243,7 @@ export function apply(ctx, baseConfig = {}) {
 
   return {
     dispose() {
+      try { bootAbort.abort() } catch { /* ignore */ }
       try { scheduler?.dispose?.() } catch { /* ignore */ }
       try { clearWakeSection() } catch { /* ignore */ }
       for (const d of disposers) { try { d() } catch { /* ignore */ } }
