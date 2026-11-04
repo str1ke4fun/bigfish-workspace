@@ -331,6 +331,14 @@ case "$cmd" in
     fi
     ;;
 
+  pid)
+    # 微信主进程 PID。MainPID 变了 = 微信被重启过；耳朵据此判断
+    # 「重启后无障碍树没回来」（见 tree.js restartEpisode）。
+    pid=$(systemctl show -p MainPID --value wechat-fish.service 2>/dev/null || true)
+    case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+    printf '{"ok":true,"pid":%s,"unit":"wechat-fish.service"}\n' "$pid"
+    ;;
+
   restart)
     # 只重启 wechat-fish.service 自己的主进程，靠 systemd Restart=always 拉回来。
     # 重启前核实：单元 active、MainPID 存在、comm 确实是微信；不满足就什么都不做。
@@ -403,7 +411,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|sha256 <file>}" >&2
+    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|pid|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|sha256 <file>}" >&2
     exit 64
     ;;
 esac

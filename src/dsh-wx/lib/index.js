@@ -26,7 +26,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
+import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
@@ -581,15 +581,18 @@ export function apply(ctx, config = {}) {
 
   const treeStats = { calls: 0, lastMs: 0, since: Date.now() }
   const fresh = createFreshness((m) => console.log('[dsh-wx] 树：' + m))
-  // 树的重试只发生在插件刚挂上（初始化）这一小段：微信常常比用户级无障碍总线先启动，
-  // Qt 的桥只连一次，总线晚到就永远空树。见过一次健康的树之后就进入 steady：
-  // 使用中再掉只写 health/工作台提醒，绝不自动重启。
+  // 树的重试发生在两段：插件刚挂上（init），以及**检测到微信被重启过**（recover）。
+  // 微信常常比用户级无障碍总线先启动，Qt 的桥只连一次，总线晚到就永远空树；
+  // 重启微信（systemd Restart、工作台按钮、手动）也会重演这件事。
+  // 其余使用中掉树只写 health/工作台提醒，绝不自动重启。
   const TREE_RESTART_MAX = 2
   const TREE_RESTART_COOLDOWN_MS = 45_000
   const TREE_RESTART_SETTLE_MS = 45_000
   let treePhase = 'init'
   let treeAttempts = 0
   let treeLastRestartAt = 0
+  // 上一次看到的微信 MainPID；变了 = 它被重启过（0 = 还没读到基线）。
+  let treePid = 0
   // 刚挂上的头 20 秒只观察：微信/宿主可能正在启动，别把正在拉起的进程又杀一遍。
   let treeRetryAfter = Date.now() + 20_000
   let treeAlert = ''
@@ -739,6 +742,12 @@ export function apply(ctx, config = {}) {
     try { return line ? JSON.parse(line) : null } catch { return null }
   }
 
+  /** 微信主进程 PID；读不到就 0（不影响本轮观测）。 */
+  async function readTreePid() {
+    const r = await run(['pid'], 10_000).then(jsonLine).catch(() => null)
+    return Number(r?.pid) > 0 ? Number(r.pid) : 0
+  }
+
   /**
    * 看一次树并推进状态机。只由耳朵调用：工具调用（wx_peek 等）不触发重启。
    * 返回 treeAction 的决定，restart=true 时由调用方执行 recoverTree。
@@ -782,16 +791,17 @@ export function apply(ctx, config = {}) {
    */
   async function recoverTree(act) {
     fresh.reset('微信在重启，屏幕基线作废') // 重启会换窗口，旧像素基线没有意义
+    const when = treePhase === 'recover' ? '微信重启后' : '初始化时'
     treeAttempts = Number(act?.attempt) || treeAttempts + 1
     treeLastRestartAt = Date.now()
-    treeAlert = act?.alert || '初始化时微信没连上无障碍树，准备重启'
+    treeAlert = act?.alert || `${when}微信没连上无障碍树，准备重启`
     console.log('[dsh-wx] 树：' + treeAlert)
     logInbound({ type: 'tree-restart', attempt: treeAttempts, status: treeLast?.status, elements: treeLast?.elements, chats: treeLast?.chats })
     writeHealth()
     const bus = await run(['bus-start'], 30_000).then(jsonLine).catch((e) => jsonLine(e?.message))
     if (!bus?.ok) {
       treeRetryAfter = Date.now() + TREE_RESTART_COOLDOWN_MS
-      treeAlert = '初始化时读不到无障碍树，而且无障碍总线没起来：先不重启微信，等总线恢复'
+      treeAlert = `${when}读不到无障碍树，而且无障碍总线没起来：先不重启微信，等总线恢复`
       console.log('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-error', error: treeAlert, bus })
       writeHealth()
@@ -801,12 +811,12 @@ export function apply(ctx, config = {}) {
       const r = await run(['restart'], 90_000).then(jsonLine).catch((e) => jsonLine(e?.message))
       if (!r?.ok) throw new Error(r?.error || '重启命令没有返回 ok')
       treeRetryAfter = Date.now() + TREE_RESTART_SETTLE_MS
-      treeAlert = `初始化时微信没连上无障碍树，已重启微信（${r.oldPid}→${r.pid}），等树恢复`
+      treeAlert = `${when}微信没连上无障碍树，已重启微信（${r.oldPid}→${r.pid}），等树恢复`
       console.log('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-restarted', attempt: treeAttempts, ...r })
     } catch (error) {
       treeRetryAfter = Date.now() + TREE_RESTART_COOLDOWN_MS
-      treeAlert = '初始化时微信没连上无障碍树，重启失败：' + String(error?.message ?? error).slice(0, 120)
+      treeAlert = `${when}微信没连上无障碍树，重启失败：` + String(error?.message ?? error).slice(0, 120)
       console.log('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-error', error: treeAlert, attempt: treeAttempts })
     }
@@ -1342,8 +1352,23 @@ export function apply(ctx, config = {}) {
       const s = await look({ confirm: false, capture: true }).catch(() => null)
       if (!s) return
       const tree = s.tree ?? treeHealth(s.raw, s.parsed)
+      // 微信被重启过（systemd Restart、工作台按钮、手动）且树没回来：
+      // 「使用中只提醒」不适用——开启一轮有界的「重启后恢复」，由 treeAction 控制次数/冷却。
+      const prevPid = treePid
+      const pid = await readTreePid()
+      const ep = restartEpisode({ prevPid, pid, treeOk: tree.ok, phase: treePhase })
+      if (pid) treePid = pid
+      if (ep.recover) {
+        treePhase = 'recover'
+        treeAttempts = 0
+        treeRetryAfter = Date.now() + TREE_RESTART_SETTLE_MS
+        treeAlert = `微信重启过（${prevPid}→${pid}），等无障碍树恢复`
+        console.log('[dsh-wx] 树：' + treeAlert)
+        logInbound({ type: 'tree-pid-change', from: prevPid, to: pid, status: tree.status })
+        writeHealth()
+      }
       // 初始化（刚挂上、还没见过健康的树）：总线不在就先拉起总线，再把微信重启一次。
-      // 使用中掉树：observeTree 只写 health/提醒，不返回 restart。
+      // 使用中掉树（pid 没变）：observeTree 只写 health/提醒，不返回 restart。
       const act = observeTree(s)
       if (act.restart) {
         await recoverTree(act)

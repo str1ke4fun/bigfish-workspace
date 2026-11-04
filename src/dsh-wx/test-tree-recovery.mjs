@@ -3,7 +3,7 @@
  * 口径：初始化才允许重启；使用中掉树只提醒；登录页永远不重启。
  */
 import assert from 'node:assert/strict'
-import { reconcileChatName, treeAction, treeHealth, treeMatchesOcr } from './lib/tree.js'
+import { reconcileChatName, restartEpisode, treeAction, treeHealth, treeMatchesOcr } from './lib/tree.js'
 
 const head = (w, h, n) => `微信窗口 ${w}x${h} 原点(261,117) · 元素 ${n} 个 · 缩放 1.0417`
 const parsed = (w, chats = [], ok = true) => ({ ok, window: { w, h: 666, ox: 261, oy: 117, scale: 1.0417 }, current: '', chats })
@@ -98,5 +98,37 @@ assert.match(steadyPartial.alert, /不自动重启/)
 const login = treeAction({ health: { status: 'login' }, phase: 'init', now })
 assert.equal(login.restart, false)
 assert.equal(login.login, true)
+
+// ---- 重启后恢复（2026-11-04 用户报：重启微信后树掉了，耳朵只提醒不重试）----
+// MainPID 变了 = 微信被重启过（systemd Restart、工作台按钮、手动都算）。
+const ep0 = restartEpisode({ prevPid: 0, pid: 1234, treeOk: false, phase: 'steady' })
+assert.equal(ep0.changed, false, '第一次读到 pid 只是记基线，不算重启')
+const ep1 = restartEpisode({ prevPid: 1234, pid: 5678, treeOk: false, phase: 'steady' })
+assert.equal(ep1.changed, true)
+assert.equal(ep1.recover, true, '重启后树没回来 → 进入恢复期')
+assert.equal(restartEpisode({ prevPid: 1234, pid: 5678, treeOk: true, phase: 'steady' }).recover, false, '树是好的就不用恢复')
+assert.equal(restartEpisode({ prevPid: 1234, pid: 5678, treeOk: false, phase: 'recover' }).recover, false, '恢复期内再换 pid 不重置次数')
+assert.equal(restartEpisode({ prevPid: 1234, pid: 1234, treeOk: false, phase: 'steady' }).recover, false, 'pid 没变：使用中掉树仍只提醒')
+assert.equal(restartEpisode({ prevPid: 1234, pid: 5678, treeOk: false, phase: 'init' }).recover, false, '初始化自己会重启')
+
+// phase=recover：允许和 init 一样有界重启，但文案说的是「重启后」
+const recoverFirst = treeAction({ health: { status: 'down' }, phase: 'recover', attempts: 0, now })
+assert.equal(recoverFirst.restart, true)
+assert.equal(recoverFirst.attempt, 1)
+assert.match(recoverFirst.alert, /重启后/)
+const recoverSettling = treeAction({ health: { status: 'down' }, phase: 'recover', attempts: 1, retryAfter: now + 30_000, now })
+assert.equal(recoverSettling.restart, false)
+assert.equal(recoverSettling.wait, true)
+const recoverExhausted = treeAction({ health: { status: 'down' }, phase: 'recover', attempts: 2, lastRestartAt: now - 60_000, now })
+assert.equal(recoverExhausted.restart, false)
+assert.equal(recoverExhausted.exhausted, true)
+assert.equal(recoverExhausted.phase, 'steady')
+const recoverPartial = treeAction({ health: { status: 'partial' }, phase: 'recover', now })
+assert.equal(recoverPartial.restart, false, '只是会话列表空，不重启')
+const recoverOk = treeAction({ health: { status: 'ok' }, phase: 'recover', now })
+assert.equal(recoverOk.phase, 'steady')
+assert.equal(recoverOk.healthy, true)
+const recoverLogin = treeAction({ health: { status: 'login' }, phase: 'recover', now })
+assert.equal(recoverLogin.restart, false)
 
 console.log('test-tree-recovery: ok')
