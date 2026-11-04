@@ -157,12 +157,17 @@ function directionOf(line, pane) {
 /**
  * 给一屏消息对齐发言人。返回与 messages 等长同序的新数组，不改输入。
  *
+ * 每条结果都带 `text`（原消息正文），因此可以直接组合：
+ *   `planSpeakerRepairs(alignSpeakers(messages, lines), docs)`
+ * 后者按 `text` 找回台账记录，不需要调用方再手工拼接消息正文。
+ *
  * @param {Array<{text?:string, box?:{x:number,y:number,w:number,h:number}}>} messages
  * @param {Array<{text:string,x:number,y:number,w:number,h:number,conf:number}>} lines 屏幕绝对坐标
- * @param {{roster?:{resolve:(raw:string)=>{name:string,matched:boolean}}, pane?:{left:number,right:number}}} [options]
- * @returns {Array<{sender:string|null, senderConfidence:'medium'|'low'|'unknown', direction:'in'|'out'}>}
+ * @param {{roster?:{resolve:(raw:string)=>{name:string,matched:boolean}}, pane?:{left:number,right:number}}|null} [options]
+ * @returns {Array<{text:string, sender:string|null, senderConfidence:'medium'|'low'|'unknown', direction:'in'|'out'}>}
  */
-export function alignSpeakers(messages, lines, { roster, pane } = {}) {
+export function alignSpeakers(messages, lines, options = {}) {
+  const { roster, pane } = options ?? {}
   const list = Array.isArray(messages) ? messages : []
   const lineList = (Array.isArray(lines) ? lines : []).filter((line) => line && typeof line === 'object')
   const bounds = resolvePane(pane, list)
@@ -170,7 +175,7 @@ export function alignSpeakers(messages, lines, { roster, pane } = {}) {
 
   return list.map((message) => {
     if (!message || typeof message !== 'object') {
-      return { sender: null, senderConfidence: 'unknown', direction: 'in' }
+      return { text: '', sender: null, senderConfidence: 'unknown', direction: 'in' }
     }
     const text = str(message.text)
     const box = message.box && typeof message.box === 'object' ? message.box : null
@@ -180,14 +185,14 @@ export function alignSpeakers(messages, lines, { roster, pane } = {}) {
       const raw = squeeze(nameLine.text)
       const resolved = resolve ? resolve(raw) : null
       if (resolved && resolved.matched) {
-        return { sender: str(resolved.name) || raw, senderConfidence: 'medium', direction: 'in' }
+        return { text, sender: str(resolved.name) || raw, senderConfidence: 'medium', direction: 'in' }
       }
       // 名册不认识也保留 OCR 原文，标 low；不拿 resolve 的返回值硬套。
-      return { sender: raw, senderConfidence: 'low', direction: 'in' }
+      return { text, sender: raw, senderConfidence: 'low', direction: 'in' }
     }
 
     const bodyLine = pickBodyLine(lineList, text, box)
-    return { sender: null, senderConfidence: 'unknown', direction: directionOf(bodyLine, bounds) }
+    return { text, sender: null, senderConfidence: 'unknown', direction: directionOf(bodyLine, bounds) }
   })
 }
 
@@ -196,6 +201,9 @@ const unrecognized = (sender) => sender === null || sender === undefined || send
 /**
  * 把这一屏对齐出来的发言人变成台账 repair。
  * 只补台账里 sender 为空、且这段文本最后一条未识别记录；已有发言人的不覆盖。
+ *
+ * `aligned` 可以直接用 `alignSpeakers(...)` 的返回值：每条结果自带 `text`，
+ * 这里按 `text` 找台账记录，所以两个函数可以不经手工转换直接组合。
  *
  * @param {Array<{text?:string, sender:string|null, senderConfidence?:string}>} aligned
  * @param {Array<{msgId?:string, text?:string, sender?:string|null}>} docs 台账最近记录

@@ -21,7 +21,7 @@ t('名册命中：medium，用名册名字', () => {
     [{ text: '计科 4223 薛长顺', x: 120, y: 105, w: 200, h: 14, conf: 82 }],
     { roster },
   )
-  assert.deepEqual(out[0], { sender: '计科4223薛长顺', senderConfidence: 'medium', direction: 'in' })
+  assert.deepEqual(out[0], { text: '那里润', sender: '计科4223薛长顺', senderConfidence: 'medium', direction: 'in' })
 })
 
 t('没有名册：保留原文、low', () => {
@@ -30,7 +30,7 @@ t('没有名册：保留原文、low', () => {
     [{ text: '某 人', x: 120, y: 105, w: 60, h: 14, conf: 82 }],
     {},
   )
-  assert.deepEqual(out[0], { sender: '某 人', senderConfidence: 'low', direction: 'in' })
+  assert.deepEqual(out[0], { text: '那里润', sender: '某 人', senderConfidence: 'low', direction: 'in' })
 })
 
 t('名册不匹配：仍用原文、low', () => {
@@ -89,7 +89,7 @@ t('右侧对齐、无名字行 → out', () => {
     [{ text: '我自己说的', x: 650, y: 130, w: 100, h: 16, conf: 90 }],
     { pane: { left: 100, right: 800 } },
   )
-  assert.deepEqual(out[0], { sender: null, senderConfidence: 'unknown', direction: 'out' })
+  assert.deepEqual(out[0], { text: '我自己说的', sender: null, senderConfidence: 'unknown', direction: 'out' })
 })
 
 t('文字行在左侧、无名字 → in/unknown', () => {
@@ -118,7 +118,7 @@ t('没有正文匹配行时默认 in/unknown', () => {
     [],
     {},
   )
-  assert.deepEqual(out[0], { sender: null, senderConfidence: 'unknown', direction: 'in' })
+  assert.deepEqual(out[0], { text: '正文', sender: null, senderConfidence: 'unknown', direction: 'in' })
 })
 
 console.log('什么不能当名字')
@@ -180,6 +180,15 @@ t('输出与消息等长同序，坏输入不崩', () => {
   assert.equal(out[2].sender, null)
 })
 
+t('第三个参数传 null 也按空选项处理', () => {
+  const out = alignSpeakers(
+    [{ text: '正文', box: { x: 100, y: 100, w: 600, h: 80 } }],
+    [],
+    null,
+  )
+  assert.deepEqual(out[0], { text: '正文', sender: null, senderConfidence: 'unknown', direction: 'in' })
+})
+
 console.log('台账补发言人')
 t('只补空位：已有发言人的不覆盖', () => {
   const out = planSpeakerRepairs(
@@ -220,6 +229,17 @@ t('同一 msgId 不生成两条', () => {
     [{ msgId: 'a', text: '同一句', sender: null }],
   )
   assert.deepEqual(out, [{ msgId: 'a', sender: '张三', senderConfidence: 'medium' }])
+})
+
+t('alignSpeakers 结果可直接交给 planSpeakerRepairs', () => {
+  const aligned = alignSpeakers(
+    [{ text: '你好', box: { x: 100, y: 100, w: 600, h: 80 } }],
+    [{ text: '张三', x: 120, y: 105, w: 40, h: 14, conf: 90 }],
+    { roster: rosterOf(() => true) },
+  )
+  assert.equal(aligned[0].text, '你好')
+  const repairs = planSpeakerRepairs(aligned, [{ msgId: 'm1', text: '你好', sender: null }])
+  assert.deepEqual(repairs, [{ msgId: 'm1', sender: '张三', senderConfidence: 'medium' }])
 })
 
 console.log(`\n${n} 项通过`)
