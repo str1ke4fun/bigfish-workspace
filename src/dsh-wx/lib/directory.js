@@ -68,6 +68,8 @@ function blankEntry(name, at) {
     lastPreview: '',
     lastSender: null,
     unread: 0,
+    lastNonZeroUnread: 0,
+    lastNonZeroAt: '',
     pinned: false,
     position: 0,
   }
@@ -185,7 +187,11 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
         e.lastPreview = String(row.preview ?? '').slice(0, 240)
         e.lastSender = parsePreviewSender(row.preview).sender ?? e.lastSender ?? null
       }
-      if (row.unread !== undefined) e.unread = Math.max(0, Number(row.unread) || 0)
+      if (row.unread !== undefined) {
+        const u = Math.max(0, Number(row.unread) || 0)
+        e.unread = u
+        if (u > 0) { e.lastNonZeroUnread = u; e.lastNonZeroAt = at }
+      }
       if (row.pinned !== undefined) e.pinned = row.pinned === true
       if (Number.isFinite(Number(row.position))) e.position = Number(row.position)
       dirty = true
