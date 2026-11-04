@@ -20,6 +20,11 @@ const str = (v) => String(v ?? '').trim()
 const PREVIEW_SENDER = /^([^:：\n]{1,24})[:：]\s*(\S[\s\S]*)$/u
 const SYSTEM_PREFIX = /^(?:\[(?:Link|Sticker|Image|File|Voice|Video|Animation|Emoji|图片|表情|文件|语音|视频)\]|系统消息|撤回了一条消息|你撤回了一条消息)$/iu
 
+// 预览头里的时间、星期和提示词，都可能是「名字: 内容」的假象。
+const CLOCK = /^\d{1,2}[:：]\d{2}$/
+const DAY_WORD = /^(?:Yesterday|Today|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|昨天|今天|周[一二三四五六日天]|星期[一二三四五六日天])$/i
+const NOT_NAME = /^(?:注意|提醒|通知|公告|重要|系统|请|大家|各位|友情|温馨|特别|紧急|欢迎)$/u
+
 /** 预览里能不能读出「谁: 什么」。读不出返回空。 */
 export function parsePreviewSender(preview) {
   const raw = str(preview)
@@ -31,6 +36,17 @@ export function parsePreviewSender(preview) {
   if (!who || !body || SYSTEM_PREFIX.test(who)) return { sender: null, text: raw, confidence: 'unknown' }
   // 预览里常见的系统后缀，不算发言人
   if (/^(?:你|You)$/i.test(who)) return { sender: null, text: body, confidence: 'unknown' }
+
+  // 时间头（如「14:02 开会」）的冒号把时间切进了 who，首段也要查。
+  const head = raw.split(/\s+/)[0] ?? ''
+  const nameChars = who.replace(/[\p{P}\p{S}\s]/gu, '')
+  const nameLength = [...who].length
+  if (
+    CLOCK.test(who) || DAY_WORD.test(who) || CLOCK.test(head) || DAY_WORD.test(head)
+    || NOT_NAME.test(who)
+    || !/\p{L}/u.test(nameChars)
+    || nameLength < 1 || nameLength > 24
+  ) return { sender: null, text: raw, confidence: 'unknown' }
   return { sender: who, text: body, confidence: 'medium' }
 }
 
