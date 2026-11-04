@@ -4,5 +4,8 @@ After=network.target dsh-web.service
 
 [Service]
 Type=oneshot
+# 以 root 跑（要 systemctl restart dsh-web），但状态目录属于运行用户：
+# 不设 HOME 会去读 /root/.dsh-wx，永远看不到 health.json。
+Environment=HOME=/home/str1k3
 ExecStart=/usr/local/sbin/fish-watchdog
 Nice=10
