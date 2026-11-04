@@ -141,6 +141,23 @@ test('5) OCR 命中名册：台账带发言人，ocrSenders 返回名字', async
   assert.equal(docs[0].senderConfidence, 'medium')
 })
 
+test('5b) OCR 返回同一屏稳定指纹；换一屏才变', async () => {
+  const people = { resolve: (raw) => ({ name: raw, matched: true }) }
+  const ocr = { lines: [{ text: '张三', x: 120, y: 105, w: 40, h: 14, conf: 90 }] }
+  const run = (text) => runCapture({
+    job: { chat: '群A' },
+    io: ioOf({ read: snap('群A', [msg(text)]), ocr }),
+    contextStore: store(),
+    people,
+  })
+  const a = await run('同一屏')
+  const b = await run('同一屏')
+  const c = await run('换了一屏')
+  assert.match(a.ocrEvidenceKey, /^[0-9a-f]{40}$/)
+  assert.equal(a.ocrEvidenceKey, b.ocrEvidenceKey)
+  assert.notEqual(a.ocrEvidenceKey, c.ocrEvidenceKey)
+})
+
 test('6) 正文含 trigger：onMention 调用一次，hit 字段正确', async () => {
   const contextStore = store()
   const io = ioOf({ read: snap('群A', [msg('大肥鱼在吗'), msg('普通消息')]) })

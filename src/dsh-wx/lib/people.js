@@ -22,6 +22,11 @@ export const PEOPLE_VERSION = 1
 export const DEFAULT_PEOPLE = '/home/str1k3/.dsh-wx/people.json'
 export const MIN_PREFIX = 3
 export const MAX_NAME = 24
+/** 解析短名时允许的最小前缀长度：已知「张三丰」时，「张三」是可信的截断。 */
+export const MIN_RESOLVE_PREFIX = 2
+/** OCR 待确认名字的留存期与数量上限，防止误读长期占内存。 */
+export const PENDING_TTL_MS = 24 * 3600_000
+export const PENDING_MAX = 500
 
 const str = (v) => String(v ?? '').trim()
 const lengthOf = (s) => [...s].length
@@ -114,8 +119,32 @@ function readPeople(file, log) {
  */
 export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}) {
   let people = readPeople(file, log)
-  // OCR 名字可能是误读：同一个新名字见过两次才建档。只活在内存里，不落盘、reload 不保留。
-  const pendingOcr = new Map()
+  // OCR 名字可能是误读：同一个新名字在两个不同「观察」里出现才建档。
+  // 同一屏重复 OCR 是同一个 evidenceKey，最多计一次。只活在内存里，不落盘、reload 不保留。
+  const pendingOcr = new Map() // key -> { evidence:Set<string>, lastAt:number }
+  let pendingSeq = 0
+
+  /** 没有调用方指纹时保留旧行为：每次调用算一次观察，用 chatId:名字 做可读前缀。 */
+  const evidenceFor = (key, chat, evidenceKey) => {
+    const given = str(evidenceKey)
+    if (given) return given
+    pendingSeq += 1
+    return `${chat}:${key}#${pendingSeq}`
+  }
+
+  /** TTL 修剪必须先于记录本次观察，否则旧证据会因为 lastAt 刚被刷新而留下。 */
+  function prunePending(at) {
+    for (const [key, rec] of pendingOcr) {
+      if (at - rec.lastAt > PENDING_TTL_MS) pendingOcr.delete(key)
+    }
+  }
+
+  /** 超过上限时按 lastAt 丢最旧的键。 */
+  function trimPending() {
+    if (pendingOcr.size <= PENDING_MAX) return
+    const oldest = [...pendingOcr.entries()].sort((a, b) => a[1].lastAt - b[1].lastAt)
+    for (let i = 0; i < oldest.length - PENDING_MAX; i++) pendingOcr.delete(oldest[i][0])
+  }
 
   const clone = (e) => ({
     ...e,
@@ -170,11 +199,15 @@ export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}
    *
    * @param {object} req
    * @param {string} req.name 原始名字
-   * @param {string} [req.source] preview / quote / ...
+   * @param {string} [req.source] preview / quote / ocr / ...
    * @param {string} [req.chatId]
+   * @param {string} [req.evidenceKey] 同一屏/同一帧的稳定指纹；OCR 生产调用必须提供
+   * @param {boolean} [req.requireEvidence] 非 OCR 来源也要求两次不同观察
    * @returns {object|null}
    */
-  function learn({ name, source = 'preview', chatId = '' } = {}) {
+  function learn({
+    name, source = 'preview', chatId = '', evidenceKey = '', requireEvidence = false,
+  } = {}) {
     const raw = str(name)
     if (!validName(raw)) return null
 
@@ -211,14 +244,19 @@ export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}
       return clone(e)
     }
 
-    // 尼古称没有字符白名单：OCR 的新名字第一次只记待确认，第二次才建档。
-    // 已匹配到条目的合并（上面）不经过这里；非 OCR 来源直接建档并清掉待确认。
-    if (src === 'ocr') {
-      const seen = (pendingOcr.get(key) ?? 0) + 1
-      if (seen < 2) {
-        pendingOcr.set(key, seen)
-        return null
-      }
+    // 昵称没有字符白名单：OCR 的新名字、或调用方要求证据的名字，
+    // 要在两个不同 evidenceKey 的观察里出现才建档（同一屏重复读到只算一次）。
+    // 已匹配到条目的合并（上面）不经过这里；其余来源直接建档并清掉待确认。
+    if (src === 'ocr' || requireEvidence === true) {
+      const atMs = Number(now()) || Date.now()
+      prunePending(atMs)
+      const evidence = evidenceFor(key, chat, evidenceKey)
+      const pending = pendingOcr.get(key) ?? { evidence: new Set(), lastAt: atMs }
+      pending.evidence.add(evidence)
+      pending.lastAt = atMs
+      pendingOcr.set(key, pending)
+      trimPending()
+      if (pending.evidence.size < 2) return null
       pendingOcr.delete(key)
     } else {
       pendingOcr.delete(key)
@@ -248,8 +286,9 @@ export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}
     const exact = people.find((e) => matches(e, n))
     if (exact) return { name: exact.display, confidence: 'high', matched: true }
 
-    if (lengthOf(n) >= MIN_PREFIX) {
-      const hits = people.filter((e) => e.key.startsWith(n) || n.startsWith(e.key))
+    // 只认「查询是已知名的截断」：更长的未知名字不能并到短名上。
+    if (lengthOf(n) >= MIN_RESOLVE_PREFIX) {
+      const hits = people.filter((e) => e.key !== n && e.key.startsWith(n))
       const keys = new Set(hits.map((e) => e.key))
       if (keys.size === 1) return { name: hits[0].display, confidence: 'medium', matched: true }
     }

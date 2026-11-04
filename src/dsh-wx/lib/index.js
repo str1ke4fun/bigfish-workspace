@@ -32,7 +32,7 @@ import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMent
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
 import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, pauseReason, previewSig, shouldEnqueue } from './capture.js'
 import { createCaptureQueue } from './capture-queue.js'
-import { runCapture } from './capture-run.js'
+import { captureEvidenceKey, runCapture } from './capture-run.js'
 import { createContextStore } from './context.js'
 import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
 import { createPeople } from './people.js'
@@ -1469,8 +1469,9 @@ export function apply(ctx, config = {}) {
         const d = JSON.parse(await run(['speakers'], 90_000))
         if (!d.ok) return
         const aligned = alignSpeakers(messages, d.lines, { roster: people })
+        const evidenceKey = captureEvidenceKey(cap.chatId, aligned)
         for (const name of new Set(aligned.map((a) => a.sender).filter(Boolean))) {
-          people.learn({ name, source: 'ocr', chatId: cap.chatId })
+          people.learn({ name, source: 'ocr', chatId: cap.chatId, evidenceKey })
         }
         // 只追加 repair，不改已有记录；对不上就什么都不写。
         const docs = contextStore.ledger.recent(cap.chatId, 30)
@@ -1617,7 +1618,9 @@ export function apply(ctx, config = {}) {
         log: (m) => console.log('[dsh-wx] 采集：' + String(m ?? '').slice(0, 160)),
       }))
       if (r.ok) {
-        for (const name of r.ocrSenders ?? []) people.learn({ name, source: 'ocr', chatId: jobChatId })
+        for (const name of r.ocrSenders ?? []) {
+          people.learn({ name, source: 'ocr', chatId: jobChatId, evidenceKey: r.ocrEvidenceKey })
+        }
         queue.done(job.chat)
         capturedSinceStart.add(job.chat)
         quietUntil = Date.now() + settings.quietMs

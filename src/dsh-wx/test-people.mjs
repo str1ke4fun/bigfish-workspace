@@ -165,6 +165,73 @@ await t('不同 OCR 名字各自计数、互不影响', async () => {
   assert.equal(pf.all().length, 2)
 })
 
+console.log('证据与待确认修剪')
+await t('同一 evidenceKey 重复 3 次不建档', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  for (let i = 0; i < 3; i++) {
+    assert.equal(pf.learn({ name: '🥰', source: 'ocr', chatId: 'c_1', evidenceKey: 'screen-1' }), null)
+  }
+  assert.equal(pf.entry('🥰'), null)
+  assert.equal(pf.all().length, 0)
+})
+await t('两个不同 evidenceKey 才建档', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  assert.equal(pf.learn({ name: '🥰', source: 'ocr', chatId: 'c_1', evidenceKey: 'screen-1' }), null)
+  const e = pf.learn({ name: '🥰', source: 'ocr', chatId: 'c_1', evidenceKey: 'screen-2' })
+  assert.equal(e.display, '🥰')
+  assert.equal(pf.all().length, 1)
+})
+await t('待确认名字 24 小时后过期', async () => {
+  let clock = T
+  const pf = createPeople({ file: fileOf(dir()), now: () => clock })
+  assert.equal(pf.learn({ name: '李四', source: 'ocr', evidenceKey: 'screen-1' }), null)
+  clock = T + 24 * 3600_000 + 1
+  assert.equal(pf.learn({ name: '李四', source: 'ocr', evidenceKey: 'screen-2' }), null) // 旧证据已过期
+  assert.equal(pf.learn({ name: '李四', source: 'ocr', evidenceKey: 'screen-3' }).display, '李四')
+})
+await t('待确认名字最多 500 个，超出丢最旧', async () => {
+  let clock = T
+  const pf = createPeople({ file: fileOf(dir()), now: () => clock })
+  assert.equal(pf.learn({ name: '旧名字', source: 'ocr', evidenceKey: 'old-1' }), null)
+  clock = T + 1
+  for (let i = 0; i < 500; i++) {
+    assert.equal(pf.learn({ name: '名字' + i, source: 'ocr', evidenceKey: 'e' + i }), null)
+  }
+  // 旧名字是最早的 key，已被挤掉；再看到一次只算第一份证据。
+  assert.equal(pf.learn({ name: '旧名字', source: 'ocr', evidenceKey: 'old-2' }), null)
+  assert.equal(pf.learn({ name: '旧名字', source: 'ocr', evidenceKey: 'old-3' }).display, '旧名字')
+})
+await t('requireEvidence：非 OCR 来源也要两次观察', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  assert.equal(pf.learn({ name: '🥰', source: 'preview', chatId: 'c_1', requireEvidence: true }), null)
+  const e = pf.learn({ name: '🥰', source: 'preview', chatId: 'c_1', requireEvidence: true })
+  assert.equal(e.display, '🥰')
+})
+await t('requireEvidence：同一 evidenceKey 不重复计数', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  const req = { name: '🥰', source: 'preview', chatId: 'c_1', requireEvidence: true, evidenceKey: 'p1' }
+  assert.equal(pf.learn(req), null)
+  assert.equal(pf.learn(req), null)
+  assert.equal(pf.learn({ ...req, evidenceKey: 'p2' }).display, '🥰')
+})
+
+console.log('前缀解析边界')
+await t('更长的未知名字不并到已知短名', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  pf.learn({ name: '张三', source: 'preview' })
+  assert.deepEqual(pf.resolve('张三丰'), { name: '张三丰', confidence: 'low', matched: false })
+  assert.equal(pf.learn({ name: '张三丰', source: 'ocr', evidenceKey: 's1' }), null)
+  assert.equal(pf.all().length, 1)
+  assert.deepEqual(pf.resolve('张三丰'), { name: '张三丰', confidence: 'low', matched: false })
+  assert.equal(pf.learn({ name: '张三丰', source: 'ocr', evidenceKey: 's2' }).display, '张三丰')
+  assert.equal(pf.all().length, 2)
+})
+await t('已知全名时，短名仍是可信截断', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  pf.learn({ name: '张三丰', source: 'preview' })
+  assert.deepEqual(pf.resolve('张三'), { name: '张三丰', confidence: 'medium', matched: true })
+})
+
 console.log('落盘')
 await t('名册文件为 version 1，条目字段严格', async () => {
   const f = fileOf(dir())

@@ -18,6 +18,8 @@
  * 在它末尾与较新一屏开头之间找最长重叠 k，再追加较新一屏的 slice(k)。
  */
 
+import { createHash } from 'node:crypto'
+
 import { chatIdFor } from './ledger.js'
 import { samePreviewText } from './speaker.js'
 import { alignSpeakers } from './speaker-align.js'
@@ -28,6 +30,15 @@ export const DEFAULT_MAX_SCROLL_PAGES = 3
 
 const str = (v) => String(v ?? '').trim()
 const messageOf = (err) => String(err?.message ?? err ?? '未知错误').slice(0, 200)
+
+/**
+ * 同一屏的稳定指纹：chatId + 每条消息正文。
+ * 重复 OCR 同一屏得到同一个 key，换一屏才可能触发第二次确认。
+ */
+export function captureEvidenceKey(chatId, messages = []) {
+  const texts = (Array.isArray(messages) ? messages : []).map((m) => str(m?.text))
+  return createHash('sha1').update(str(chatId) + ':' + texts.join('\u0000')).digest('hex')
+}
 
 /** 去重只看类型 + 正文：发言人可能只在一屏里对齐出来，不能算成不同消息。 */
 const sameContent = (a, b) =>
@@ -66,7 +77,7 @@ function mergeScreens(older, newer) {
  * @param {() => number} [req.now]
  * @param {(line:string, err?:unknown) => void} [req.log]
  * @returns {Promise<{ok:boolean, chat:string, added:number, skipped:number, why?:string,
- *   scrolled:number, restored:boolean, records:object[], ocrSenders:string[]}>}
+ *   scrolled:number, restored:boolean, records:object[], ocrSenders:string[], ocrEvidenceKey:string}>}
  */
 export async function runCapture({
   job = {}, io, contextStore, directory, people, settings, policy, now, log,
@@ -102,6 +113,7 @@ export async function runCapture({
 
     // 4. OCR 只是补充发言人：失败、没行都照常入账。
     let ocrSenders = []
+    let ocrEvidenceKey = ''
     let ocr = null
     try { ocr = await io.ocrSpeakers?.() } catch { ocr = null }
     const lines = Array.isArray(ocr?.lines) ? ocr.lines : []
@@ -114,6 +126,7 @@ export async function runCapture({
           : m
       })
       ocrSenders = [...new Set(aligned.map((a) => a.sender).filter(Boolean))]
+      ocrEvidenceKey = captureEvidenceKey(chatId, aligned)
     }
 
     // 5. 与台账末尾没有重叠才向上补历史；出现重叠、屏没变化、读不到就停。
@@ -202,6 +215,7 @@ export async function runCapture({
       restored,
       records: captured.records ?? [],
       ocrSenders,
+      ocrEvidenceKey,
     }
   } catch (err) {
     return { ok: false, chat, why: messageOf(err) }
