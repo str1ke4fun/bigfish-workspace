@@ -43,6 +43,76 @@ t('名册不匹配：仍用原文、low', () => {
   assert.equal(out[0].senderConfidence, 'low')
 })
 
+// OCR 常把头像图标读成 `+e `、`< ` 之类的前缀。名册里其实有真名，
+// 精确匹配失败时取最后一个空白后的片段再查一次。
+const rosterOfEntries = (entries) => ({
+  resolve: (raw) => (Object.hasOwn(entries, raw)
+    ? { name: entries[raw], matched: true }
+    : { name: raw, matched: false }),
+})
+const nameLineOf = (text) => [{ text, x: 120, y: 105, w: 60, h: 14, conf: 82 }]
+const messageOf = () => [{ text: '正文', box: { x: 100, y: 100, w: 600, h: 80 } }]
+
+t('图标前缀 `+e ` 去掉后再查名册', () => {
+  const out = alignSpeakers(
+    messageOf(),
+    nameLineOf('+e cat不到flag的cat'),
+    { roster: rosterOfEntries({ 'cat不到flag的cat': 'cat不到flag的cat' }) },
+  )
+  assert.equal(out[0].sender, 'cat不到flag的cat')
+  assert.equal(out[0].senderConfidence, 'medium')
+})
+
+t('图标前缀 `< ` 去掉后再查名册', () => {
+  const out = alignSpeakers(
+    messageOf(),
+    nameLineOf('< cat不到flag的cat'),
+    { roster: rosterOfEntries({ 'cat不到flag的cat': 'cat不到flag的cat' }) },
+  )
+  assert.equal(out[0].sender, 'cat不到flag的cat')
+  assert.equal(out[0].senderConfidence, 'medium')
+})
+
+t('tail 也不认识时仍保留 raw、low', () => {
+  const out = alignSpeakers(
+    messageOf(),
+    nameLineOf('+e nobody'),
+    { roster: rosterOfEntries({ 'cat不到flag的cat': 'cat不到flag的cat' }) },
+  )
+  assert.equal(out[0].sender, '+e nobody')
+  assert.equal(out[0].senderConfidence, 'low')
+})
+
+t('精确匹配优先于 tail', () => {
+  const out = alignSpeakers(
+    messageOf(),
+    nameLineOf('cat不到flag的cat'),
+    { roster: rosterOfEntries({ 'cat不到flag的cat': 'cat不到flag的cat' }) },
+  )
+  assert.equal(out[0].sender, 'cat不到flag的cat')
+  assert.equal(out[0].senderConfidence, 'medium')
+})
+
+t('含空格的英文名精确匹配优先，不被 tail 改写', () => {
+  const out = alignSpeakers(
+    messageOf(),
+    nameLineOf('Tina Yu'),
+    { roster: rosterOfEntries({ 'Tina Yu': 'Tina Yu', Yu: '错误的人' }) },
+  )
+  assert.equal(out[0].sender, 'Tina Yu')
+  assert.equal(out[0].senderConfidence, 'medium')
+})
+
+t('tail 命中时采用名册返回的规范名', () => {
+  const out = alignSpeakers(
+    messageOf(),
+    nameLineOf('小红 张三'),
+    { roster: rosterOfEntries({ 张三: '张三丰' }) },
+  )
+  assert.equal(out[0].sender, '张三丰')
+  assert.equal(out[0].senderConfidence, 'medium')
+})
+
 t('名字行不在名字带里不算', () => {
   const out = alignSpeakers(
     [{ text: '正文', box: { x: 100, y: 100, w: 600, h: 80 } }],

@@ -7,7 +7,9 @@
  *   1. 名字行必须落在消息项的顶部 45% 带内，才可能是这条消息的发言人；
  *   2. 时间、贴纸、正文本身都不能冒充名字；
  *   3. 没有名字行时，用正文行的水平位置判断是对方（in）还是她（out）；
- *   4. 读不出就留空，绝不从正文猜人。
+ *   4. OCR 会把头像图标读成 `+e `、`< ` 之类的前缀，精确查不到时用最后一个
+ *      空白后的片段再查一次名册；
+ *   5. 读不出就留空，绝不从正文猜人。
  *
  * 坐标约定：messages[].box 和 lines[] 都是屏幕绝对坐标。
  * `wx-elements.mjs` 已乘过 screenScale()，`ocr-speakers.mjs` 已加过裁剪原点，
@@ -186,6 +188,14 @@ export function alignSpeakers(messages, lines, options = {}) {
       const resolved = resolve ? resolve(raw) : null
       if (resolved && resolved.matched) {
         return { text, sender: str(resolved.name) || raw, senderConfidence: 'medium', direction: 'in' }
+      }
+      // 头像图标常被 OCR 读成 `+e `、`< ` 之类的前缀，真名在最后一个空白之后。
+      // 精确匹配失败时拿这段 tail 再查一次名册；命中才采用，tail 本身也照旧
+      // 走 resolve，防止把任意垃圾后缀当名字。
+      const tail = raw.split(/\s+/u).at(-1) ?? ''
+      const tailResolved = resolve && tail && tail !== raw ? resolve(tail) : null
+      if (tailResolved && tailResolved.matched) {
+        return { text, sender: str(tailResolved.name) || tail, senderConfidence: 'medium', direction: 'in' }
       }
       // 名册不认识也保留 OCR 原文，标 low；不拿 resolve 的返回值硬套。
       return { text, sender: raw, senderConfidence: 'low', direction: 'in' }
