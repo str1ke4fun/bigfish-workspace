@@ -169,6 +169,7 @@ export async function runCapture({
       preview: row?.preview ?? '',
       isDM: directory?.entry?.(chat)?.kind === 'dm' ? true : null,
       outbox: io.outboxFor?.(chat) ?? [],
+      ignoreChats: policy?.ignoreChats ?? [],
     })
 
     // 8. 扫描这次真正新入账的记录，以及被整屏采集代表的预览记录；

@@ -835,7 +835,7 @@ export function apply(ctx, config = {}) {
     }
     writeHealth()
     mergeDirectory(s.parsed, s.source === 'ocr' ? 'ocr' : 'tree')
-    if (capture) captureCurrent(s, p)
+    if (capture) captureCurrent(s, policy())
     return s
   }
 
