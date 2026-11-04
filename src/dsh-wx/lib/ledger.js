@@ -247,6 +247,10 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
         direction: raw.direction === 'out' || raw.direction === 'in' ? raw.direction : 'unknown',
         kind,
         text,
+        quote: raw.quote && typeof raw.quote === 'object'
+          ? { author: str(raw.quote.author), text: normalizeText(raw.quote.text) }
+          : undefined,
+        unreadBefore: Number.isFinite(Number(raw.unreadBefore)) ? Math.max(0, Number(raw.unreadBefore)) : undefined,
         at: str(raw.at) || capturedAt,
         atConfidence: str(raw.atConfidence) || (raw.at ? 'medium' : 'low'),
         capturedAt,

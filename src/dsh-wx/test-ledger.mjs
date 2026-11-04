@@ -63,6 +63,19 @@ t('不同会话互不影响', () => {
   l.append('c1', [{ sender: '甲', text: '同一句' }])
   assert.equal(l.append('c2', [{ sender: '甲', text: '同一句' }]).added, 1)
 })
+t('引用与未读数入账；没有这两个字段就不写键', () => {
+  const d = dir()
+  const l = createLedger({ dir: d, now: () => T })
+  l.append('c_test', [{ sender: '甲', text: '引用测试', quote: { author: '张三', text: '原文' }, unreadBefore: 3 }], { chatName: '测试' })
+  l.append('c_test', [{ sender: '甲', text: '普通消息' }])
+  // 从盘上重读：JSON.stringify 丢掉 undefined，旧记录没有这两个键。
+  const [rec, plain] = createLedger({ dir: d, now: () => T }).recent('c_test', 10)
+  assert.equal(rec.quote.author, '张三')
+  assert.equal(rec.quote.text, '原文')
+  assert.equal(rec.unreadBefore, 3)
+  assert.equal('quote' in plain, false)
+  assert.equal('unreadBefore' in plain, false)
+})
 
 console.log('读')
 t('window：before + limit，按时间正序', () => {
