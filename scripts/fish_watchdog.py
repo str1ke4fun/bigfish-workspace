@@ -9,6 +9,8 @@
 - health.json 缺失或超过 min-age（默认 120s）没更新：
   - Xvfb 或微信不在 active → 先把依赖拉起来（start-deps，600s 限流）。
   - 依赖都在 → 重启宿主（600s 限流，连续 3 次后升到 1800s）。
+- 人工停止（工作台“停止她”）会写 ~/.dsh-wx/hold.json 的 until；
+  在 until 之前宿主不 active / HTTP 不通只等待，不拉起。到期后恢复常驻语义。
 """
 
 import argparse
@@ -27,6 +29,7 @@ from pathlib import Path
 HOME = Path(os.environ.get("FISH_HOME", "/home/str1k3"))
 POLICY = HOME / ".dsh-wx/policy.json"
 HEALTH = HOME / ".dsh-wx/health.json"
+HOLD = HOME / ".dsh-wx/hold.json"
 ACTIONS = HOME / ".dsh-wx/watchdog.json"
 STATE = Path("/run/fish-watchdog/state.json")
 UNIT = "dsh-web.service"
@@ -49,12 +52,14 @@ def next_cooldown(consecutive_restarts: int) -> int:
 
 
 def decide(*, now, policy, health_at, host_state, xvfb_state, wechat_state,
-           min_age=MIN_AGE, host_uptime_sec=999):
+           min_age=MIN_AGE, host_uptime_sec=999, hold_until=None):
     if host_state == "activating":
         return Decision("wait", "host-activating")
     if host_state == "active" and host_uptime_sec < 90:
         return Decision("wait", "host-starting")
     if host_state != "active":
+        if hold_until is not None and now < hold_until:
+            return Decision("wait", "hold")
         return Decision("restart-host", "host-inactive")
     if not (policy.get("enabled") is True and policy.get("watch") is not False):
         return Decision("ok", "watch-off")
@@ -91,6 +96,22 @@ def parse_iso(text):
         return parsed
     except (TypeError, ValueError):
         return None
+
+
+def parse_hold_until(payload):
+    """hold.json 的 until：支持 epoch 秒、epoch 毫秒或 ISO 字符串；无效返回 None。"""
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("until")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        seconds = value / 1000 if value > 10_000_000_000 else value
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    return parse_iso(value)
 
 
 def unit_state(name):
@@ -222,6 +243,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--now")
     parser.add_argument("--health-file", type=Path, default=HEALTH)
+    parser.add_argument("--hold-file", type=Path, default=HOLD)
     parser.add_argument("--policy-file", type=Path, default=POLICY)
     parser.add_argument("--state-file", type=Path, default=STATE)
     parser.add_argument("--actions-file", type=Path, default=ACTIONS)
@@ -236,6 +258,7 @@ def main(argv=None):
     if not isinstance(health, dict):
         health = {}
     health_at = parse_iso(health.get("at"))
+    hold_until = parse_hold_until(read_json(args.hold_file, default=None))
     state = read_state(args.state_file)
 
     host_state = unit_state(UNIT)
@@ -252,6 +275,7 @@ def main(argv=None):
         wechat_state=unit_state(WECHAT_UNIT),
         min_age=args.min_age,
         host_uptime_sec=uptime,
+        hold_until=hold_until,
     )
 
     result, changed = run_action(decision, state, now, args.dry_run)
@@ -274,6 +298,8 @@ def main(argv=None):
         "result": result,
         "host": host_state,
         "hostUptime": round(uptime) if uptime != 999 else None,
+        "holdUntil": (hold_until.isoformat()
+                      if hold_until is not None and now < hold_until else None),
         "healthAge": (round((now - health_at).total_seconds())
                       if health_at else None),
         "consecutiveRestarts": state["consecutiveRestarts"],
