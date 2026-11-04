@@ -122,6 +122,24 @@ await t('空名/超长/换行/冒号不学习', async () => {
   assert.equal(pf.all().length, 0)
 })
 
+await t('OCR 学名只收可行的人名，其他来源不受影响', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  assert.equal(pf.learn({ name: '+e安卓4224柚厨圣', source: 'ocr' }), null)
+  assert.equal(pf.learn({ name: '‘ 安卓4224柚厨圣', source: 'ocr' }), null)
+  assert.equal(pf.learn({ name: '2午安', source: 'ocr' }), null)
+  assert.equal(pf.all().length, 0)
+
+  const clean = pf.learn({ name: '安卓4224柚厨圣', source: 'ocr', chatId: 'c_ocr' })
+  assert.equal(clean.display, '安卓4224柚厨圣')
+  assert.deepEqual(clean.sources, ['ocr'])
+
+  // 同样的带符号名字走 preview 仍按原规则学习。
+  assert.ok(pf.learn({ name: '+e安卓4224柚厨圣', source: 'preview' }))
+  assert.ok(pf.learn({ name: '2午安', source: 'preview' }))
+  assert.ok(pf.learn({ name: '文天聪(w14973)', source: 'preview' }))
+  assert.equal(pf.all().length, 4)
+})
+
 console.log('落盘')
 await t('名册文件为 version 1，条目字段严格', async () => {
   const f = fileOf(dir())

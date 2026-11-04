@@ -64,6 +64,23 @@ function validName(raw) {
   return true
 }
 
+// OCR 常把相邻的符号、空格、未读数字读进名字（`+e…`、`‘ …`、`2午安`）。
+// 这些字符出现在人名里几乎只可能是误读，不能进名册。
+const OCR_BAD_CHARS = /[\s'’‘"“”`´+\-_·|\/\\<>\[\]{}()]/u
+
+/**
+ * OCR 学名比普通来源更严：首字符必须是字母/CJK、至少含一个字母/CJK，
+ * 且不允许空白或常见标点/符号；长度、冒号、换行仍由 validName 把关。
+ */
+function validOcrName(raw) {
+  const s = str(raw)
+  if (!s) return false
+  if (!/^\p{L}/u.test(s)) return false
+  if (!/\p{L}/u.test(s)) return false
+  if (OCR_BAD_CHARS.test(s)) return false
+  return true
+}
+
 function blankPerson({ key, display, at }) {
   return {
     key,
@@ -185,6 +202,8 @@ export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}
     const at = nowIso(now)
     const src = str(source) || 'preview'
     const chat = str(chatId)
+    // OCR 原文先过更严的可行性检查；preview/quote/dm 等来源行为保持不变。
+    if (src === 'ocr' && !validOcrName(raw)) return null
 
     let e = people.find((x) => x.key === key || matches(x, key))
     if (!e && src === 'quote' && lengthOf(key) >= 2) {
