@@ -30,8 +30,11 @@ import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, 
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
+import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, previewSig } from './capture.js'
 import { createContextStore } from './context.js'
 import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
+import { createPeople } from './people.js'
+import { normalizeMessages } from './transcript.js'
 import { createSessionPool } from './sessions.js'
 import { requesterOf, samePreviewText } from './speaker.js'
 import { createVectorProvider } from './vector.js'
@@ -103,9 +106,18 @@ function policy() {
       trigger: Array.isArray(raw.trigger) && raw.trigger.length > 0
         ? raw.trigger.map((s) => String(s))
         : ['@D33p53Ek', 'D33p53Ek'],
+      ignoreChats: Array.isArray(raw.ignoreChats)
+        ? raw.ignoreChats.map((s) => String(s).trim()).filter(Boolean)
+        : DEFAULT_IGNORE_CHATS,
+      capture: captureSettings({ capture: raw.capture, ignoreChats: raw.ignoreChats }),
     }
   } catch {
-    return { enabled: false, allowChats: [], watch: false, trigger: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [] }
+    return {
+      enabled: false, allowChats: [], watch: false, trigger: [], requireMention: true,
+      mentionWindowMinutes: 3, noMentionChats: [],
+      ignoreChats: DEFAULT_IGNORE_CHATS,
+      capture: captureSettings({}),
+    }
   }
 }
 
@@ -281,7 +293,7 @@ function promptText() {
   return [
     '## 微信通道（dsh-wx）',
     '',
-    '微信里的动作通过 14 个工具完成，没有 shell：',
+    '微信里的动作通过 15 个工具完成，没有 shell：',
     '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。坐标是屏幕绝对坐标，可直接给 wx_click。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
     '- wx_click：点击。label 可填会话名或按钮名；也可填 x/y。返回里会写落点是什么、点完当前会话是什么。',
     '- wx_type：输入文字，enter=true 时回车发送。发送前核对当前会话是否在允许名单内；发送后回报消息是否出现在列表末尾。文本不能含换行。',
@@ -290,6 +302,7 @@ function promptText() {
     '- wx_ocr：只读 OCR。OCR 不证明当前会话，不能当发送授权。',
     '- wx_send：直接发到指定会话。它自己点开会话、点输入框、输入、回车，并核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话有效。带上 task_id 时，回执确认后会把这次回复记到任务上。',
     '- wx_context：在「当前任务自己的会话」里查上下文。给 task_id，可选 query，或按时间翻页（before/limit）。只返回最多 5 条引用卡片，带发言人（读不出来的写「发言人未识别」）、时间、匹配原因和置信度；原文和每日摘要一起查，不会跨会话查，也不会把查询写进记忆。',
+    '- wx_history：只读查询微信台账。不传 chat 时列出有记录的非服务会话；传 chat 时查该会话最近的记录，可选 query 关键词和 hours 时间窗。最多 20 条，带发言人、时间、来源和置信度。不建任务、不写事件流。',
     '- wx_task_snooze：把任务推迟几分钟再提醒。现在回不了、但不是不用回时用；推迟期间不再催。',
     '- wx_task_done：把一条任务标记为完成。发了一条回复不等于完成；确实答完、不用再跟进时才用。',
     '- wx_sticker_scan：扫描微信收藏表情面板，重建或更新本地索引。只点心形页签，不点任何表情格；会打开再关上表情面板。',
@@ -459,6 +472,10 @@ export function apply(ctx, config = {}) {
     resolveChat,
     log: (m, err) => console.log('[dsh-wx] 上下文：' + String(m ?? '') + (err ? '（' + String(err?.message ?? err).slice(0, 120) + '）' : '')),
   })
+  // 人物名册是派生索引：只增不删，写坏了按空名册处理，不影响台账。
+  const people = createPeople({
+    log: (m) => console.log('[dsh-wx] 人物名册：' + String(m ?? '').slice(0, 160)),
+  })
   // 她自己发出去、回执确认过的原文。发言人归因只认这批，绝不从正文猜。
   const outbox = []
   const noteOutbox = (chat, text) => {
@@ -476,19 +493,10 @@ export function apply(ctx, config = {}) {
       if (!chat) return
       const entry = directory.entry(chat)
       const row = (s.parsed.chats ?? []).find((c) => sameName(c.name, chat)) ?? null
-      const messages = (s.parsed.messages ?? [])
-        .map((m) => String(m?.text ?? '').trim())
-        .filter(Boolean)
-        .map((text) => ({
-          sender: null,
-          senderConfidence: 'unknown',
-          direction: 'unknown',
-          kind: 'text',
-          text,
-          at: '',
-          atConfidence: 'unknown',
-          source: 'tree',
-        }))
+      const messages = normalizeMessages(s.parsed.messages ?? [], { now: Date.now() })
+      for (const m of messages) {
+        if (m.quote?.author) people.learn({ name: m.quote.author, source: 'quote', chatId: directory.idFor(chat) })
+      }
       if (!messages.length) return
       contextStore.capture({
         chat,
@@ -504,6 +512,51 @@ export function apply(ctx, config = {}) {
         console.log('[dsh-wx] 台账记不下（不影响收发）：' + String(err?.message ?? err).slice(0, 120))
       }
     }
+  }
+
+  // 侧栏预览入账：只读当前列表，不点开、不滚动、不清未读。
+  // 返回本轮每一行的 prevSig/sig，供后台轮转在更新快照前做入队判断。
+  const lastPreviewSig = new Map()
+  let previewWarned = false
+  function recordPreviews(parsed) {
+    const p = policy()
+    let added = 0
+    const rows = []
+    for (const row of parsed?.chats ?? []) {
+      const chat = String(row?.name ?? '').trim()
+      if (!chat) continue
+      const sig = previewSig(row)
+      const prevSig = lastPreviewSig.get(chat) ?? ''
+      rows.push({ chat, row, sig, prevSig })
+      if (row.draft) continue
+      if (isIgnoredChat(chat, p.ignoreChats)) continue
+      const preview = String(row.preview ?? '')
+      if (!preview || prevSig === sig) continue
+      const entry = directory.entry(chat)
+      try {
+        const r = contextStore.capturePreview({
+          chat,
+          chatId: entry?.chatId ?? '',
+          preview,
+          time: String(row.time ?? ''),
+          unread: Number(row.unread) || 0,
+          isDM: entry?.kind === 'dm' ? true : undefined,
+          ignoreChats: p.ignoreChats,
+        })
+        if (r.ok) {
+          added += r.added
+          if (r.sender) people.learn({ name: r.sender, source: entry?.kind === 'dm' ? 'dm' : 'preview', chatId: r.chatId })
+        }
+        lastPreviewSig.set(chat, sig)
+      } catch (err) {
+        if (!previewWarned) {
+          previewWarned = true
+          console.log('[dsh-wx] 预览入账失败（不影响耳朵）：' + String(err?.message ?? err).slice(0, 120))
+        }
+      }
+    }
+    if (added > 0) console.log('[dsh-wx] 采集：预览 +' + added)
+    return { added, rows }
   }
   const RECENT_FILE = '/home/str1k3/.dsh-wx/recent-chats.json'
   const RECENT_MS = 30 * 60_000
@@ -1415,6 +1468,9 @@ export function apply(ctx, config = {}) {
 
       // 树没连上、OCR 也没读到会话行：这一轮没有可看的东西，等树恢复/下一轮。
       if (!tree.ok && !ocrRecovered) return
+      // 只有树健康时才写预览台账：partial/down/login 没有可信数据。
+      // OCR 回退只用于识别 @，不拿它写预览。
+      if (tree.ok && !ocrRecovered) recordPreviews(parsed)
       // 每 10 分钟把侧栏从头滚到尾一次，补齐当前页看不到的会话和全名。
       if (!ocrRecovered && Date.now() - lastScanAt > 10 * 60_000) {
         lastScanAt = Date.now()
@@ -1816,6 +1872,34 @@ export function apply(ctx, config = {}) {
       })
       if (!r.ok) throw new Error(r.why)
       return r.text + '\n（只查这个任务自己的会话；查询不写进记忆。）'
+    },
+  })
+
+  reg({
+    name: 'wx_history',
+    description: '只读查询微信台账：不传 chat 列出有记录的非服务会话；传 chat 按会话名查最近记录，可选 query 关键词和 hours 时间窗。最多 20 条，带发言人、时间、来源和置信度。不建任务、不写事件流。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '可选。会话名；不填则列出有记录的会话。' },
+        query: { type: 'string', description: '可选。要找的关键词或短句。' },
+        hours: { type: 'number', description: '可选。只保留最近多少小时内的记录。' },
+        limit: { type: 'number', description: '可选。最多返回条数，最多 20。' },
+      },
+    },
+    output: textOut,
+    isConcurrencySafe: () => true,
+    execute: async (args, exec) => {
+      deny(exec)
+      const a = args || {}
+      const ignoreChats = policy().ignoreChats
+      const chat = String(a.chat ?? '').trim()
+      const limit = Number(a.limit) || undefined
+      const r = chat
+        ? contextStore.historyForChat({ chat, query: String(a.query ?? ''), hours: Number(a.hours) || 0, limit, ignoreChats })
+        : contextStore.listRecordedChats({ limit, ignoreChats })
+      if (!r.ok) throw new Error(r.why)
+      return r.text
     },
   })
 
