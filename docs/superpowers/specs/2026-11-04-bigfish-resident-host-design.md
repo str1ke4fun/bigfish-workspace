@@ -106,14 +106,37 @@ Windows 登录
 - 从 `~/.dsh/profiles/desktop/package.json` 的 bundles 移除 `dsh-wx`、`dsh-fish`，防止以后误点图标时成为第二个写者。
 - Desktop 的 `dsh.desktopNext*` 字段不动。
 
-### 5.3 切换顺序（避免双写）
+### 5.3 开发与验证环境：dev 优先
+
+所有源码改动和端到端验证先在 `dev` 工作区完成，主工作区不合并未验证的改动。
+
+- dev 工作区：`/home/str1k3/src/bigfish-workspace-dev`，分支 `dev`。
+- 实施前先把 `dev` 快进到 `main`（当前只差文档提交），保证 dev 上有本 spec。
+- `dsh-fish` 的源码改动只改 dev；验证期间只把 web profile 的 `dsh-fish` 链接临时指向 dev 的 `src/dsh-fish`，`dsh-wx` 仍用主工作区版本。
+- 记录并备份两个链接的原始目标，验证结束或回滚时恢复。
+- 只有端到端验证通过、用户确认后，才把 `dev` 合并回 `main`；合并后重新指向主工作区并重启宿主复验一次。
+
+### 5.4 切换顺序（避免双写）
+
+分两阶段，第一阶段不碰生产耳朵：
+
+**阶段 A：不中断的 preset 验证**
+
+- 用 web profile 的副本在空闲端口（如 8712）起临时宿主。
+- 鱼根目录指向临时目录，`dsh-wx` 在临时 profile 中禁用，避免第二个耳朵投递。
+- 目标：证明加载 `@deepseek-ai/dsh-workflow` 后，`standard` preset 能新建会话并完成一轮对话。
+- 不影响 8710、真鱼 `~/.dsh-fish`、Desktop 和当前耳朵。
+- 失败：按第 3 节回退方案处理，先征得用户同意，不进入阶段 B。
+
+**阶段 B：真实切换**
 
 1. 停 Desktop 单元，确认进程退出。
 2. 备份 web/desktop profile 的三个文件。
-3. 改 web profile，改 desktop bundles。
+3. 改 web profile，改 desktop bundles，临时把 `dsh-fish` 链接指向 dev。
 4. `systemctl restart dsh-web.service`。
-5. 验证 web 宿主复用了 `session-0891f0b7`，且没有第二个 `dsh-fish` 进程。
-6. 任何一步失败：按第 12 节回滚，不继续改看门狗。
+5. 验证 web 宿主复用了 `session-0891f0b7`，耳朵持续写 health，且没有第二个 `dsh-fish` 进程。
+6. 验证通过并经用户确认后，合并 `dev` → `main`，把链接恢复指向主工作区，重启宿主复验。
+7. 任何一步失败：按第 12 节回滚，不继续改看门狗。
 
 ## 6. 故障矩阵
 
@@ -233,10 +256,16 @@ Windows 登录
 
 ### 11.1 静态与单元测试
 
-- `src/dsh-fish`：`node --test` 全绿（含新增重试测试）。
+- 在 dev 工作区 `src/dsh-fish`：`node --test` 全绿（含新增重试测试）。
 - `fish-watchdog --dry-run` 在健康状态下输出 `ok`，不执行动作。
 
-### 11.2 切换后功能验证
+### 11.2 阶段 A：临时宿主验证
+
+- 8712 临时宿主启动成功，没有出现 `workflow-ptc … never started`。
+- 用 `standard` preset 新建会话并完成一轮对话。
+- 真鱼 `~/.dsh-fish`、8710、Desktop、当前耳朵都没有被改动。
+
+### 11.3 阶段 B：切换后功能验证
 
 1. `systemctl status dsh-web` 为 active；8710 和 8711 可访问。
 2. `~/.dsh/logs` 或 `dsh-web.log` 出现 `[dsh-wx] mounted`。
@@ -245,7 +274,7 @@ Windows 登录
 5. `pgrep -f 'dsh-fish|host.js'` 只有一个 DSH 宿主；Desktop 进程不存在。
 6. 8711 打开后能看到鱼，能正常对话一轮。
 
-### 11.3 故障演练
+### 11.4 故障演练
 
 - `systemctl kill -s KILL dsh-web`：systemd 拉起，耳朵在 2 个轮询周期内恢复。
 - `kill -STOP <dsh-web 主进程>`：health 停止更新，看门狗在 120–180 秒内重启宿主；`kill -CONT` 后的旧进程不再持有锁。
@@ -258,9 +287,10 @@ Windows 登录
 
 1. `systemctl --user enable --now dsh-desktop-next.service`。
 2. 恢复 `~/.dsh/profiles/web/package.json`、`~/.dsh/profiles/web/cordis.patch.yml`、`~/.dsh/profiles/desktop/package.json` 的备份。
-3. `systemctl restart dsh-web.service`。
-4. 停用并移除 `fish-watchdog.timer` / `fish-watchdog.service`（保留脚本文件）。
-5. 确认 Desktop 重新成为唯一耳朵，web 不再加载 `dsh-wx`。
+3. 把 web profile 的 `dsh-fish` 链接恢复指向主工作区。
+4. `systemctl restart dsh-web.service`。
+5. 停用并移除 `fish-watchdog.timer` / `fish-watchdog.service`（保留脚本文件）。
+6. 确认 Desktop 重新成为唯一耳朵，web 不再加载 `dsh-wx`。
 
 备份放在 `~/.dsh/backups/2026-11-04-resident-host/`，包含原文件和时间戳。
 
