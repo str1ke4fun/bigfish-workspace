@@ -50,15 +50,24 @@
 | `workspaceRegistry` / `sessionController` 在宿主里异步出现，启动瞬间可能还没有 | 2026-11-03 `~/.dsh-fish-web/logs/dsh-fish.log` |
 | 真鱼的会话 `session-0891f0b7`（以及 `session-2d758dc0`）的 `agentPreset` 是 `standard` | 解压会话日志首行 |
 | web 宿主跑 `standard` 会失败：`workflow-ptc … never started` | 2026-11-03 09:48:20 `dsh-fish-web` 日志 |
-| web profile 已安装 `@deepseek-ai/dsh-workflow`（提供 `workflowEngine`）和 `dsh-workflow-ptc`，但没有把引擎加载进 profile | `~/.dsh/profiles/web/package.json`、`node_modules/@deepseek-ai/` |
+| `dsh-web-app` bundle 显式 `disabled: true` 了 `workflow-ptc` 和 `tool-workflow`（rc.5 的 web-app 补丁第 572、575 行） | `/opt/dsh-x64` 内 `@deepseek-ai/dsh-web-app/cordis.patch.yml` |
+| `workflow-ptc` 本身就是 `workflowEngine` 服务的提供者（`PtcWorkflowEngine extends WorkflowEngine`，`WorkflowEngine extends Service`，服务名 `workflowEngine`） | `@deepseek-ai/dsh-workflow/lib/index.js:59-61`、`dsh-workflow-ptc/lib/index.js:591` |
+| `workflow-ptc` 注入的四个服务 `subagents`、`ptcRuntime`、`sandboxPolicy`、`workingDirectory` 都由 `dsh-base` 提供，且 `dsh-web-app` 没有禁用它们 | `@deepseek-ai/dsh-base/cordis.patch.yml:166,243,360,397` |
 | web 自己的鱼屋 `~/.dsh-fish-web` 用 `fish-home` preset，能正常建会话 | `~/.dsh-fish-web/config.json` |
 | 耳朵在当前策略下健康：`tree.status=ok`、9 个聊天、`treeCalls` 持续增长 | `~/.dsh-wx/health.json` |
 
 ### 关键前置问题：真鱼会话的 preset
 
-真鱼的两个会话都固定在 `standard`。web 宿主缺 workflow 引擎，`standard` 建/开会话会失败。因此“把 web 的 `dsh-fish.root` 改到 `~/.dsh-fish`”不能只看配置改对，还必须让 web 宿主能跑 `standard`，否则鱼醒着但没有可用的会话窗口。
+真鱼的两个会话都固定在 `standard`。web 宿主因为 `dsh-web-app` 禁用了 `workflow-ptc` / `tool-workflow`，`standard` 建/开会话会失败。因此“把 web 的 `dsh-fish.root` 改到 `~/.dsh-fish`”不能只看配置改对，还必须让 web 宿主能跑 `standard`，否则鱼醒着但没有可用的会话窗口。
 
-设计采用的主方案：在 web profile 里加载 `@deepseek-ai/dsh-workflow`，让 `standard` 真正可用。若实施时验证失败，回退方案是：保留旧会话文件不动，把 `home.json` 指向一个新的 `fish-home` 会话；这会让对话窗口换新，但事件流、日记和历史会话都保留。**回退方案需要再次征得用户同意后才执行。**
+设计采用的主方案：在 profile 的 `cordis.patch.yml`（它在所有 bundle 之后应用）里把 `workflow-ptc` 和 `tool-workflow` 重新启用：
+
+```yaml
+- { id: workflow-ptc, disabled: false }
+- { id: tool-workflow, disabled: false }
+```
+
+不需要额外 insert 引擎插件——`workflow-ptc` 正是 `workflowEngine` 服务的提供者；它依赖的四个服务在 `dsh-base` 里都有。若实施时验证失败，回退方案是：保留旧会话文件不动，把 `home.json` 指向一个新的 `fish-home` 会话；这会让对话窗口换新，但事件流、日记和历史会话都保留。**回退方案需要再次征得用户同意后才执行。**
 
 ## 4. 目标架构
 
@@ -96,7 +105,7 @@ Windows 登录
 
 - `dsh-fish.root` 从 `/home/str1k3/.dsh-fish-web` 改为 `/home/str1k3/.dsh-fish`。
 - 增加 `dsh-wx` 的配置覆盖：`display: ':99'`（与默认一致，但显式写出）。
-- 增加 `workflow-engine` 的 insert 条目加载 `@deepseek-ai/dsh-workflow`，使 `standard` preset 可用；保留现有的 `preset-fish-home` 克隆，作为 `fish-home` 备用。
+- 增加两条 patch 覆盖，重新启用 `workflow-ptc` 和 `tool-workflow`，使 `standard` preset 可用；保留现有的 `preset-fish-home` 克隆，作为 `fish-home` 备用。
 - 现有 LLM provider、默认模型等配置不动。
 
 ### 5.2 Desktop profile 与单元
@@ -296,7 +305,7 @@ Windows 登录
 
 ## 13. 风险与开放点
 
-- **`standard` 在 web 宿主能否真正跑起来**：这是本设计最大的不确定性。加载 `@deepseek-ai/dsh-workflow` 后需要在实施时先做一次最小验证；失败则按第 3 节的回退方案处理，且回退前征得用户同意。
+- **`standard` 在 web 宿主能否真正跑起来**：这是本设计最大的不确定性。重新启用 `workflow-ptc` / `tool-workflow` 后需要在阶段 A 先做最小验证；失败则按第 3 节的回退方案处理，且回退前征得用户同意。
 - **上游版本升级**：DSH 升级可能改变 preset、bundle 和 `dsh-workflow` 的解析方式；升级后需要重跑第 11 节的验证。
 - **看门狗误判**：耳朵在某些合法长时间操作（例如大批量 OCR）中可能超过 120 秒不写 health。120 秒阈值按 5 秒轮询、24 轮漏写设定；若实测误判，调到 180 秒。
 - **单写者**：只要 Desktop 单元被重新启用，就可能双写。除 profile 移除插件外，不额外做锁级互斥；这是有意的简化。
