@@ -220,13 +220,25 @@ t('正文 ≥4 字时，候选与正文互相包含也不当名字', () => {
   assert.equal(out[0].sender, null)
 })
 
-t('带标点的行不当名字', () => {
-  const out = alignSpeakers(
-    [{ text: '正文', box: { x: 100, y: 100, w: 600, h: 80 } }],
-    [{ text: '张三：你好', x: 120, y: 105, w: 80, h: 14, conf: 90 }],
-    { roster: rosterOf(() => true) },
-  )
-  assert.equal(out[0].sender, null)
+t('标点结尾、纯 emoji、纯数字、词典词昵称都可以当名字', () => {
+  for (const name of ['张三.', '🥰', '123456', '通知']) {
+    const out = alignSpeakers(
+      [{ text: '正文', box: { x: 100, y: 100, w: 600, h: 80 } }],
+      [{ text: name, x: 120, y: 105, w: 60, h: 14, conf: 90 }],
+      { roster: rosterOf(() => true) },
+    )
+    assert.equal(out[0].sender, name)
+  }
+})
+t('时间前缀、系统消息、撤回提示仍不当名字', () => {
+  for (const line of ['14:02 开会', '系统消息', '你撤回了一条消息']) {
+    const out = alignSpeakers(
+      [{ text: '正文', box: { x: 100, y: 100, w: 600, h: 80 } }],
+      [{ text: line, x: 120, y: 105, w: 120, h: 14, conf: 90 }],
+      { roster: rosterOf(() => true) },
+    )
+    assert.equal(out[0].sender, null, line)
+  }
 })
 
 console.log('坐标不二次缩放')

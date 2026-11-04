@@ -38,7 +38,7 @@ import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
 import { createPeople } from './people.js'
 import { normalizeMessages } from './transcript.js'
 import { createSessionPool } from './sessions.js'
-import { requesterOf, samePreviewText } from './speaker.js'
+import { parsePreviewSender, requesterOf, samePreviewText } from './speaker.js'
 import { alignSpeakers, planSpeakerRepairs } from './speaker-align.js'
 import { createVectorProvider } from './vector.js'
 import { annotate, loadIndex, saveIndex } from './sticker-index.js'
@@ -542,6 +542,7 @@ export function apply(ctx, config = {}) {
       if (isIgnoredChat(chat, p.ignoreChats)) continue
       const preview = String(row.preview ?? '')
       if (!preview || prevSig === sig) continue
+      const pv = parsePreviewSender(preview)
       const entry = directory.entry(chat)
       try {
         const r = contextStore.capturePreview({
@@ -555,7 +556,14 @@ export function apply(ctx, config = {}) {
         })
         if (r.ok) {
           added += r.added
-          if (r.sender) people.learn({ name: r.sender, source: entry?.kind === 'dm' ? 'dm' : 'preview', chatId: r.chatId })
+          if (r.sender) {
+            people.learn({
+              name: r.sender,
+              source: entry?.kind === 'dm' ? 'dm' : 'preview',
+              chatId: r.chatId,
+              requireEvidence: pv.needsEvidence,
+            })
+          }
         }
         lastPreviewSig.set(chat, sig)
       } catch (err) {

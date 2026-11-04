@@ -34,21 +34,24 @@ const num = (v) => {
 const MIN_CONF = 50
 const MAX_NAME = 24
 const BODY_PREFIX_MIN = 4
-// 名字行里出现这些标点，多半是正文、时间或「名字：内容」预览，不是群名片。
-const BAD_NAME_PUNCT = /[:：。，,、!！?？]/u
+// 时间行的冒号会切出「14」这样的假名字；整行 time marker 之外还要挡住时间前缀。
+const TIME_PREFIX = /^(?:\d{1,2}[:：]\d{2})/u
 // 微信会把系统提示也画在同一列，整行不是名字。
-const SYSTEM_NAME = /^(?:你)?(?:撤回了一条消息|拍了拍.*|加入了群聊|退出了群聊|修改了群名为.*|以上是打招呼的内容|以下是新消息)$/u
+const SYSTEM_NAME = /^(?:你)?(?:撤回了一条消息|拍了拍.*|加入了群聊|退出了群聊|修改了群名为.*|以上是打招呼的内容|以下是新消息|系统消息)$/u
 
-/** 能不能当群名片：含字母/汉字，无标点，不是时间或占位标记。 */
+/**
+ * 能不能当群名片：长度合适，不是时间或系统提示，也不是正文。
+ * 昵称可以是任意字符串（纯 emoji、纯数字、标点结尾都行），不按字符类别过滤。
+ */
 function plausibleName(raw) {
   const s = squeeze(raw)
   const len = chars(s)
   if (len < 1 || len > MAX_NAME) return false
-  if (BAD_NAME_PUNCT.test(s)) return false
+  if (TIME_PREFIX.test(s)) return false
   if (isTimeMarker(s)) return false
   if (kindOfLabel(s) !== 'text') return false
   if (SYSTEM_NAME.test(s)) return false
-  return /\p{L}/u.test(s)
+  return true
 }
 
 /** 名字候选不能就是这条消息的正文；正文够长时，互相包含也算正文。 */

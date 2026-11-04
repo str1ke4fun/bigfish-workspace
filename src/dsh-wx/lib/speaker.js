@@ -23,31 +23,35 @@ const SYSTEM_PREFIX = /^(?:\[(?:Link|Sticker|Image|File|Voice|Video|Animation|Em
 // 预览头里的时间、星期和提示词，都可能是「名字: 内容」的假象。
 const CLOCK = /^\d{1,2}[:：]\d{2}$/
 const DAY_WORD = /^(?:Yesterday|Today|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|昨天|今天|周[一二三四五六日天]|星期[一二三四五六日天])$/i
-const NOT_NAME = /^(?:注意|提醒|通知|公告|重要|系统|请|大家|各位|友情|温馨|特别|紧急|欢迎)$/u
 
-/** 预览里能不能读出「谁: 什么」。读不出返回空。 */
+/**
+ * 预览里能不能读出「谁: 什么」。读不出返回空。
+ * 昵称不按字符类别或词典过滤：纯 emoji、纯数字也能是发言人，
+ * 只是这种名字要两次不同观察才建档（needsEvidence）。
+ */
 export function parsePreviewSender(preview) {
   const raw = str(preview)
-  if (!raw) return { sender: null, text: '', confidence: 'unknown' }
+  if (!raw) return { sender: null, text: '', confidence: 'unknown', needsEvidence: false }
   const m = raw.match(PREVIEW_SENDER)
-  if (!m) return { sender: null, text: raw, confidence: 'unknown' }
+  if (!m) return { sender: null, text: raw, confidence: 'unknown', needsEvidence: false }
   const who = str(m[1])
   const body = str(m[2])
-  if (!who || !body || SYSTEM_PREFIX.test(who)) return { sender: null, text: raw, confidence: 'unknown' }
+  if (!who || !body || SYSTEM_PREFIX.test(who)) {
+    return { sender: null, text: raw, confidence: 'unknown', needsEvidence: false }
+  }
   // 预览里常见的系统后缀，不算发言人
-  if (/^(?:你|You)$/i.test(who)) return { sender: null, text: body, confidence: 'unknown' }
+  if (/^(?:你|You)$/i.test(who)) {
+    return { sender: null, text: body, confidence: 'unknown', needsEvidence: false }
+  }
 
   // 时间头（如「14:02 开会」）的冒号把时间切进了 who，首段也要查。
   const head = raw.split(/\s+/)[0] ?? ''
-  const nameChars = who.replace(/[\p{P}\p{S}\s]/gu, '')
   const nameLength = [...who].length
   if (
     CLOCK.test(who) || DAY_WORD.test(who) || CLOCK.test(head) || DAY_WORD.test(head)
-    || NOT_NAME.test(who)
-    || !/\p{L}/u.test(nameChars)
     || nameLength < 1 || nameLength > 24
-  ) return { sender: null, text: raw, confidence: 'unknown' }
-  return { sender: who, text: body, confidence: 'medium' }
+  ) return { sender: null, text: raw, confidence: 'unknown', needsEvidence: false }
+  return { sender: who, text: body, confidence: 'medium', needsEvidence: !/\p{L}/u.test(who) }
 }
 
 /** 私聊：侧栏预览通常没有「发送者:」前缀。group 名单只用于展示，不用于发送授权。 */

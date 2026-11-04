@@ -214,6 +214,18 @@ await t('requireEvidence：同一 evidenceKey 不重复计数', async () => {
   assert.equal(pf.learn(req), null)
   assert.equal(pf.learn({ ...req, evidenceKey: 'p2' }).display, '🥰')
 })
+await t('OCR 路径：任意昵称都在第二次证据后建档', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  const names = ['🥰', '123456', '通知', '张三.']
+  for (const name of names) {
+    assert.equal(pf.learn({ name, source: 'ocr', chatId: 'c_ocr', evidenceKey: 'screen-1' }), null)
+  }
+  for (const name of names) {
+    const e = pf.learn({ name, source: 'ocr', chatId: 'c_ocr', evidenceKey: 'screen-2' })
+    assert.equal(e?.display, name)
+  }
+  assert.equal(pf.all().length, names.length)
+})
 
 console.log('前缀解析边界')
 await t('更长的未知名字不并到已知短名', async () => {
