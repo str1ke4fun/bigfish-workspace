@@ -520,6 +520,7 @@ export function apply(ctx, config = {}) {
   let previewWarned = false
   function recordPreviews(parsed) {
     const p = policy()
+    if (p.capture?.preview === false) return { added: 0, rows: [] }
     let added = 0
     const rows = []
     for (const row of parsed?.chats ?? []) {

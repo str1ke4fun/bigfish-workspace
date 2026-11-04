@@ -20,7 +20,7 @@ import { join } from 'node:path'
 
 import { archiveLedger, DEFAULT_RETENTION_DAYS } from './archive.js'
 import { isIgnoredChat } from './capture.js'
-import { chatIdFor, createLedger, dedupeKeyOf, msgIdOf } from './ledger.js'
+import { chatIdFor, createLedger, dedupeKeyOf, msgIdOf, normalizeText } from './ledger.js'
 import { attributeMessages, parsePreviewSender, requesterOf } from './speaker.js'
 import { searchSummaryDocs, writeDailySummaries } from './summaries.js'
 import { createTaskBoard } from './tasks.js'
@@ -38,6 +38,46 @@ export const RECORDED_DEFAULT = 30
 
 const str = (v) => String(v ?? '').trim()
 const identitySanitize = (t) => ({ text: String(t ?? ''), dropped: 0 })
+
+/** 整屏采集与预览记录的去重窗口：预览只是同一句话的另一种来源。 */
+export const PREVIEW_DUPLICATE_WINDOW_MS = 30 * 60_000
+
+/**
+ * 整屏采集前，去掉已经被最近预览记录代表的正文。
+ * 只按归一正文匹配；每条预览记录最多抵消一条消息，预览记录本身不动。
+ *
+ * @param {{messages?:object[], docs?:object[], now?:number, windowMs?:number}} [req]
+ * @returns {{messages:object[], dropped:number}}
+ */
+export function dropPreviewDuplicates({
+  messages = [], docs = [], now = Date.now(), windowMs = PREVIEW_DUPLICATE_WINDOW_MS,
+} = {}) {
+  const cutoff = Number(now) - Math.max(0, Number(windowMs) || 0)
+  const pool = new Map()
+  for (const d of docs ?? []) {
+    if (d?.source !== 'preview') continue
+    const at = Date.parse(String(d.capturedAt ?? d.at ?? ''))
+    if (!Number.isFinite(at) || at < cutoff) continue
+    const key = normalizeText(d.text)
+    if (!key) continue
+    pool.set(key, (pool.get(key) ?? 0) + 1)
+  }
+  if (!pool.size) return { messages: [...(messages ?? [])], dropped: 0 }
+
+  const kept = []
+  let dropped = 0
+  for (const m of messages ?? []) {
+    const key = normalizeText(m?.text)
+    const left = key ? (pool.get(key) ?? 0) : 0
+    if (left > 0) {
+      pool.set(key, left - 1)
+      dropped += 1
+      continue
+    }
+    kept.push(m)
+  }
+  return { messages: kept, dropped }
+}
 
 /** 列表里的时间：简化 ISO，固定宽度，便于扫读。 */
 const listTimeText = (iso) => {
@@ -182,9 +222,18 @@ export function createContextStore({
       outbox,
       now: now(),
     })
+    // 整屏采集时，预览已经记过的同一句话不再从正文重复入账。
+    // 发送回执（source:'sent'）不走这条：她发的话可能与预览同文，仍然要记。
+    const isTree = source === 'tree'
+    const toAppend = isTree
+      ? dropPreviewDuplicates({ messages: attributed, docs: ledger.allDocs(chatId), now: now() }).messages
+      : attributed
     // 只有调用方明确说「这段属于某个任务」时才绑定。把当前会话看到的每条消息
     // 都挂到活动任务上，会让「同一条线」把无关的最近消息也带进检索结果。
-    const r = ledger.append(chatId, attributed, { chatName, source, taskId: str(taskId) })
+    // 整屏对齐忽略预览行，避免预览插进尾部后打断「正文 + 上一条」的去重键。
+    const r = ledger.append(chatId, toAppend, {
+      chatName, source, taskId: str(taskId), ignorePreviewAlignment: isTree,
+    })
     return { ...r, chatId }
   }
 
@@ -236,6 +285,14 @@ export function createContextStore({
         atText = new Date(now()).toISOString()
         atConfidence = 'low'
       }
+    }
+
+    // 未读数变化会改变侧栏指纹，但正文没变时不再追加同一条预览。
+    // 只看紧挨着的上一条：中间隔了别的消息，就是一次新的出现。
+    const last = ledger.recent(chatId, 1)[0] ?? null
+    if (last?.source === 'preview' && normalizeText(last.text) === normalizeText(text) &&
+      (last.sender ?? null) === (sender ?? null)) {
+      return { ok: true, chatId, added: 0, skipped: 1, sender, kind }
     }
 
     const msg = { sender, senderConfidence, direction: 'in', kind, text, at: atText, atConfidence }

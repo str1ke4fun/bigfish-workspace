@@ -110,6 +110,60 @@ await t('服务号预览不入账，旧记录不动', async () => {
   assert.equal(c.ledger.stats(old.chatId).count, 1)
 })
 
+console.log('预览与整屏去重')
+const tree = (chat, texts) => ({
+  chat,
+  source: 'tree',
+  messages: texts.map((text) => ({ text })),
+})
+await t('预览行插在整屏之间：再打开会话不重复记 c，也不重复记预览 g', async () => {
+  const c = make()
+  const first = c.capture(tree('群A', ['a', 'b', 'c', 'd', 'e']))
+  assert.equal(first.added, 5)
+  const p = c.capturePreview({ chat: '群A', preview: '张三: g', time: '14:02' })
+  assert.equal(p.added, 1)
+
+  const second = c.capture(tree('群A', ['c', 'd', 'e', 'f', 'g']))
+  assert.equal(second.added, 1)
+
+  const docs = c.ledger.allDocs(first.chatId)
+  const trees = docs.filter((d) => d.source === 'tree')
+  assert.equal(trees.filter((d) => d.text === 'c').length, 1)
+  assert.equal(trees.filter((d) => d.text === 'g').length, 0)
+  assert.equal(trees.filter((d) => d.text === 'f').length, 1)
+  assert.equal(docs.filter((d) => d.source === 'preview' && d.text === 'g').length, 1)
+})
+await t('没有预览对应时，同一屏里重复的相同正文仍然入账', async () => {
+  const c = make()
+  const first = c.capture(tree('群A', ['a', 'b']))
+  assert.equal(first.added, 2)
+  const second = c.capture(tree('群A', ['a', 'b', 'b', 'c']))
+  assert.equal(second.added, 2)
+  const trees = c.ledger.allDocs(first.chatId).filter((d) => d.source === 'tree')
+  assert.equal(trees.filter((d) => d.text === 'b').length, 2)
+  assert.equal(trees.filter((d) => d.text === 'c').length, 1)
+})
+await t('超过 30 分钟的旧预览不再抵消整屏消息', async () => {
+  const clock = { now: NOW }
+  const c = make({ now: () => clock.now })
+  const p = c.capturePreview({ chat: '群A', preview: '张三: g' })
+  assert.equal(p.added, 1)
+
+  clock.now = NOW + 31 * 60_000
+  const r = c.capture(tree('群A', ['a', 'c', 'd', 'g']))
+  assert.equal(r.added, 4)
+  assert.equal(c.ledger.allDocs(p.chatId).filter((d) => d.source === 'tree' && d.text === 'g').length, 1)
+})
+await t('未读数变化但正文相同：不重复追加预览', async () => {
+  const c = make()
+  const first = c.capturePreview({ chat: '群A', preview: '张三: 在吗', unread: 1 })
+  assert.equal(first.added, 1)
+  const second = c.capturePreview({ chat: '群A', preview: '张三: 在吗', unread: 2, time: '14:05' })
+  assert.equal(second.added, 0)
+  assert.equal(second.skipped, 1)
+  assert.equal(c.ledger.allDocs(first.chatId).length, 1)
+})
+
 console.log('只读历史')
 await t('无 query 取最近；有 query 走词法；hours 按采集时间截断', async () => {
   const c = make()

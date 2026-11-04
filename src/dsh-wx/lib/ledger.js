@@ -183,7 +183,7 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
    *
    * @param {string} chatId
    * @param {Array<object>} messages
-   * @param {{source?:string, chatName?:string, capturedAt?:string, taskId?:string}} [meta]
+   * @param {{source?:string, chatName?:string, capturedAt?:string, taskId?:string, ignorePreviewAlignment?:boolean}} [meta]
    */
   function append(chatId, messages, meta = {}) {
     const id = str(chatId)
@@ -212,7 +212,12 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
     const sameContent = (a, b) => !!a && !!b
       && (a.kind ?? 'text') === (b.kind ?? 'text')
       && normalizeText(a.text) === normalizeText(b.text)
-    const tail = state.docs.slice(-Math.max(1, cand.length))
+    // 整屏采集（tree）可以要求对齐时忽略预览行：预览是侧栏快照，插进整屏序列后
+    // 会打断「正文 + 上一条」的去重键，让同一屏的前几条重复入账。
+    const alignDocs = meta.ignorePreviewAlignment
+      ? state.docs.filter((d) => d?.source !== 'preview')
+      : state.docs
+    const tail = alignDocs.slice(-Math.max(1, cand.length))
     let overlap = 0
     for (let k = Math.min(cand.length, tail.length); k > 0; k--) {
       let ok = true
@@ -223,7 +228,7 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
     }
 
     const pending = []
-    let prev = overlap > 0 ? tail[tail.length - 1] : (state.docs.at(-1) ?? null)
+    let prev = overlap > 0 ? tail[tail.length - 1] : (alignDocs.at(-1) ?? null)
     let skipped = overlap
     let seq = state.docs.at(-1)?.seq ?? 0
 
