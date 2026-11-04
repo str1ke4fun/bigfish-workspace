@@ -235,4 +235,23 @@ await t('reload 丢弃内存状态并重读盘', async () => {
   assert.equal(pf.entry('乙').display, '乙')
 })
 
+await t('reload 清空 OCR 待确认名字', async () => {
+  const f = fileOf(dir())
+  const pf = createPeople({ file: f, now: () => T })
+
+  assert.equal(pf.learn({ name: '李四', source: 'ocr' }), null)
+  assert.equal(pf.all().some((e) => e.display === '李四'), false)
+
+  pf.reload()
+
+  // reload 前的那次 OCR 观察不能算作第二次目击。
+  assert.equal(pf.learn({ name: '李四', source: 'ocr' }), null)
+  assert.equal(pf.all().some((e) => e.display === '李四'), false)
+
+  // reload 后累计两次 OCR 目击仍能建档。
+  const e = pf.learn({ name: '李四', source: 'ocr' })
+  assert.equal(e.display, '李四')
+  assert.equal(pf.all().length, 1)
+})
+
 console.log(`\n${n} 项通过`)

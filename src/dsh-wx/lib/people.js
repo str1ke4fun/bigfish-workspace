@@ -269,6 +269,7 @@ export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}
 
   /** 丢掉内存状态，重新读盘。 */
   function reload() {
+    pendingOcr.clear()
     people = readPeople(file, log)
     return all()
   }
