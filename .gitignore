@@ -6,8 +6,12 @@
 /payload/
 /sandbox/
 # Machine-specific installation, migration and diagnostic scripts stay local.
+# Project ops tooling (watchdog + its systemd unit templates) ships with the repo.
 /scripts/*
 !/scripts/audit-staged.py
+!/scripts/fish_watchdog.py
+!/scripts/test_fish_watchdog.py
+!/scripts/systemd/
 /.tmp/
 /logs/
 /payload/house/
