@@ -1451,17 +1451,23 @@ export function apply(ctx, config = {}) {
     // 真正尝试之前就记时间：OCR 失败/超时也不要每轮都重跑。
     lastCurrentOcrAt = Date.now()
     try {
-      const d = JSON.parse(await run(['speakers'], 90_000))
-      if (!d.ok) return
-      const aligned = alignSpeakers(cap.messages, d.lines, { roster: people })
-      for (const name of new Set(aligned.map((a) => a.sender).filter(Boolean))) {
-        people.learn({ name, source: 'ocr', chatId: cap.chatId })
-      }
-      // 只追加 repair，不改已有记录；对不上就什么都不写。
-      const docs = contextStore.ledger.recent(cap.chatId, 30)
-      for (const fix of planSpeakerRepairs(aligned, docs)) {
-        contextStore.ledger.repair(cap.chatId, { ...fix, why: 'OCR 补发言人' })
-      }
+      // 重读 + OCR + 写入整段持 GUI 锁：从耳朵起始快照到这里可能已经切换过会话，
+      // 只有锁内复核当前会话仍是快照里的那个，OCR 的发言人才能归到它名下。
+      await withGuiLock(async () => {
+        const s = await look({ confirm: false })
+        if (!sameName(s?.parsed?.current, cap.chat)) return
+        const d = JSON.parse(await run(['speakers'], 90_000))
+        if (!d.ok) return
+        const aligned = alignSpeakers(cap.messages, d.lines, { roster: people })
+        for (const name of new Set(aligned.map((a) => a.sender).filter(Boolean))) {
+          people.learn({ name, source: 'ocr', chatId: cap.chatId })
+        }
+        // 只追加 repair，不改已有记录；对不上就什么都不写。
+        const docs = contextStore.ledger.recent(cap.chatId, 30)
+        for (const fix of planSpeakerRepairs(aligned, docs)) {
+          contextStore.ledger.repair(cap.chatId, { ...fix, why: 'OCR 补发言人' })
+        }
+      })
     } catch (err) {
       console.log('[dsh-wx] 采集：当前会话 OCR 失败（' + String(err?.message ?? err).slice(0, 120) + '）')
     }
@@ -1544,8 +1550,12 @@ export function apply(ctx, config = {}) {
    * 空闲且冷却到了就采一个会话。失败只影响这一个会话，不阻塞下一轮。
    */
   async function captureTick({ parsed, p, pendingHits }) {
-    if (!p.capture.rotate) return
     const queue = ensureCaptureQueue(p)
+    if (!p.capture.rotate) {
+      captureHealth = { ...captureHealth, queued: queue.size() }
+      writeHealth()
+      return
+    }
     for (const { chat, row, sig, prevSig } of roundPreview?.rows ?? []) {
       const name = canonicalName(chat) || chat
       const r = shouldEnqueue({
@@ -1559,7 +1569,11 @@ export function apply(ctx, config = {}) {
     }
     roundPreview = null
     // 每 5 秒最多采一个，避免启动初期把队列一次点完。
-    if (Date.now() - lastCaptureAttemptAt < 5000) return
+    if (Date.now() - lastCaptureAttemptAt < 5000) {
+      captureHealth = { ...captureHealth, queued: queue.size() }
+      writeHealth()
+      return
+    }
     const reason = pauseReason({
       policy: p,
       hostBusy: hostBusy(),
@@ -1608,6 +1622,8 @@ export function apply(ctx, config = {}) {
       queue.fail(job.chat)
       captureHealth = { ...captureHealth, lastError: String(err?.message ?? err).slice(0, 160) }
     }
+    // done/fail 都会改队列长度，收尾时重算一次再写盘。
+    captureHealth = { ...captureHealth, queued: queue.size() }
     writeHealth()
   }
 
