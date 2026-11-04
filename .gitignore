@@ -12,6 +12,7 @@
 !/scripts/fish_watchdog.py
 !/scripts/test_fish_watchdog.py
 !/scripts/systemd/
+!/scripts/ops/
 /.tmp/
 /logs/
 /payload/house/

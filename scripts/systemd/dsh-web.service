@@ -1,0 +1,27 @@
+[Unit]
+Description=DSH web (大肥鱼) on WSL :8710
+After=network-online.target xvfb-fish.service wechat-fish.service
+Wants=network-online.target xvfb-fish.service wechat-fish.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=str1k3
+Group=str1k3
+WorkingDirectory=/home/str1k3
+Environment=HOME=/home/str1k3
+Environment=PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=LANG=C.UTF-8
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+ExecStartPre=/usr/bin/truncate -s 0 /home/str1k3/dsh-web.log
+ExecStart=/usr/local/bin/dsh web --no-open --port 8710
+StandardOutput=append:/home/str1k3/dsh-web.log
+StandardError=append:/home/str1k3/dsh-web.log
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

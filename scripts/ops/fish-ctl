@@ -1,0 +1,30 @@
+#!/bin/sh
+# 工作台唯一需要的 root 能力：启停大肥鱼的三个系统单元。
+# 之所以不直接免密 sudo bash/systemctl：那等于给工作台开了整台机器的 root。
+# 这里把动词和单元都写死，sudoers 只放行这一个脚本。
+set -eu
+
+usage() {
+  echo "usage: fish-ctl {start|stop|restart|is-active} UNIT..." >&2
+  echo "units: dsh-web.service xvfb-fish.service wechat-fish.service" >&2
+  exit 64
+}
+
+[ "$#" -ge 2 ] || usage
+verb=$1
+shift
+
+case "$verb" in
+  start|stop|restart|is-active) ;;
+  *) echo "fish-ctl: 拒绝的动作：$verb" >&2; exit 64 ;;
+esac
+
+for unit in "$@"; do
+  case "$unit" in
+    dsh-web.service|xvfb-fish.service|wechat-fish.service) ;;
+    *) echo "fish-ctl: 拒绝的单元：$unit" >&2; exit 64 ;;
+  esac
+done
+
+# 不 exec 到任意 shell；systemctl 的路径写死，避免 PATH 被换。
+exec /usr/bin/systemctl "$verb" "$@"
