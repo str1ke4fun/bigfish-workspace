@@ -198,6 +198,12 @@ await t('limit 切最近几条，1–20 截断', async () => {
   assert.equal(h.shown, 2)
   assert.match(h.text, /第三条/)
   assert.doesNotMatch(h.text, /第一条/)
+
+  for (let i = 0; i < 25; i++) c.capturePreview({ chat: '群A', preview: `甲: 第${i}条`, time: '13:00' })
+  const capped = c.historyForChat({ chat: '群A', limit: 999 })
+  // 卡片受总字数预算限制，但候选窗口本身要按 20 截断。
+  assert.match(capped.text, /\[上下文 1\/20\]/)
+  assert.ok(capped.shown <= 20)
 })
 await t('没有记录 / 没有命中：如实说，不硬凑', async () => {
   const c = make()
@@ -265,6 +271,14 @@ await t('limit 截断列表；空列表给固定文案', async () => {
   assert.equal(empty.shown, 0)
   assert.deepEqual(empty.chats, [])
   assert.equal(empty.text, '还没有任何会话记录。')
+})
+await t('列表模式 limit 与缺省都按 20 截断', async () => {
+  const c = make()
+  for (let i = 0; i < 25; i++) {
+    c.capturePreview({ chat: `群${i}`, preview: `甲: 第${i}条`, at: `2026-11-04T10:${String(i).padStart(2, '0')}:00Z` })
+  }
+  assert.equal(c.listRecordedChats({ limit: 999 }).shown, 20)
+  assert.equal(c.listRecordedChats().shown, 20)
 })
 
 console.log(`\n${n} 项通过`)

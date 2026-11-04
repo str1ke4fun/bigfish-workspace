@@ -33,8 +33,8 @@ export const CANDIDATE_MAX = 20
 export const RECENT_MAX = 20
 export const HISTORY_MAX = 20
 export const HISTORY_RECENT = 8
-export const RECORDED_MAX = 50
-export const RECORDED_DEFAULT = 30
+export const RECORDED_MAX = 20
+export const RECORDED_DEFAULT = 20
 
 const str = (v) => String(v ?? '').trim()
 const identitySanitize = (t) => ({ text: String(t ?? ''), dropped: 0 })
