@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-HOME = Path(os.environ.get("HOME", "/home/str1k3"))
+# 不看 HOME：定时器以 root 跑（HOME=/root），手工 sudo 也一样。
+# 鱼根是部署常量，需要别的路径时用 FISH_HOME 或命令行参数覆盖。
+HOME = Path(os.environ.get("FISH_HOME", "/home/str1k3"))
 POLICY = HOME / ".dsh-wx/policy.json"
 HEALTH = HOME / ".dsh-wx/health.json"
 ACTIONS = HOME / ".dsh-wx/watchdog.json"
