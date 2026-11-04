@@ -122,22 +122,47 @@ await t('空名/超长/换行/冒号不学习', async () => {
   assert.equal(pf.all().length, 0)
 })
 
-await t('OCR 学名只收可行的人名，其他来源不受影响', async () => {
+await t('OCR 任意昵称都可能，但第一次只记待确认', async () => {
   const pf = createPeople({ file: fileOf(dir()), now: () => T })
-  assert.equal(pf.learn({ name: '+e安卓4224柚厨圣', source: 'ocr' }), null)
-  assert.equal(pf.learn({ name: '‘ 安卓4224柚厨圣', source: 'ocr' }), null)
-  assert.equal(pf.learn({ name: '2午安', source: 'ocr' }), null)
+  const names = ['+e安卓4224柚厨圣', '‘ 安卓4224柚厨圣', '2午安', '张三.', '李四，', '阿依古丽·买买提', 'Anne-Marie', "O'Brien"]
+  for (const name of names) assert.equal(pf.learn({ name, source: 'ocr' }), null)
   assert.equal(pf.all().length, 0)
 
-  const clean = pf.learn({ name: '安卓4224柚厨圣', source: 'ocr', chatId: 'c_ocr' })
-  assert.equal(clean.display, '安卓4224柚厨圣')
-  assert.deepEqual(clean.sources, ['ocr'])
+  for (const name of names) {
+    const e = pf.learn({ name, source: 'ocr', chatId: 'c_ocr' })
+    assert.equal(e?.display, name)
+  }
+  assert.equal(pf.all().length, names.length)
+})
 
-  // 同样的带符号名字走 preview 仍按原规则学习。
-  assert.ok(pf.learn({ name: '+e安卓4224柚厨圣', source: 'preview' }))
-  assert.ok(pf.learn({ name: '2午安', source: 'preview' }))
-  assert.ok(pf.learn({ name: '文天聪(w14973)', source: 'preview' }))
-  assert.equal(pf.all().length, 4)
+await t('preview 一次建档并清掉 OCR 待确认', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  assert.equal(pf.learn({ name: '张三.', source: 'ocr' }), null)
+  const e = pf.learn({ name: '张三.', source: 'preview', chatId: 'c_1' })
+  assert.equal(e.display, '张三.')
+  // 已有条目：OCR 再次看到直接合并，不会新建，也不会先返回 null。
+  const merged = pf.learn({ name: '张三.', source: 'ocr' })
+  assert.equal(merged.display, '张三.')
+  assert.deepEqual(merged.sources.sort(), ['ocr', 'preview'])
+  assert.equal(pf.all().length, 1)
+})
+
+await t('已有条目被 OCR 看到立即合并，不用两次', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  pf.learn({ name: '计科4223薛长顺', source: 'preview' })
+  const e = pf.learn({ name: '计科4223薛长顺', source: 'ocr', chatId: 'c_1' })
+  assert.equal(e.display, '计科4223薛长顺')
+  assert.deepEqual(e.sources.sort(), ['ocr', 'preview'])
+})
+
+await t('不同 OCR 名字各自计数、互不影响', async () => {
+  const pf = createPeople({ file: fileOf(dir()), now: () => T })
+  assert.equal(pf.learn({ name: '甲怪', source: 'ocr' }), null)
+  assert.equal(pf.learn({ name: '乙怪', source: 'ocr' }), null)
+  assert.equal(pf.learn({ name: '甲怪', source: 'ocr' }).display, '甲怪')
+  assert.equal(pf.entry('乙怪'), null)
+  assert.equal(pf.learn({ name: '乙怪', source: 'ocr' }).display, '乙怪')
+  assert.equal(pf.all().length, 2)
 })
 
 console.log('落盘')

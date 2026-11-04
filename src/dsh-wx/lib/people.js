@@ -64,23 +64,6 @@ function validName(raw) {
   return true
 }
 
-// OCR 常把相邻的符号、空格、未读数字读进名字（`+e…`、`‘ …`、`2午安`）。
-// 这些字符出现在人名里几乎只可能是误读，不能进名册。
-const OCR_BAD_CHARS = /[\s'’‘"“”`´+\-_·|\/\\<>\[\]{}()]/u
-
-/**
- * OCR 学名比普通来源更严：首字符必须是字母/CJK、至少含一个字母/CJK，
- * 且不允许空白或常见标点/符号；长度、冒号、换行仍由 validName 把关。
- */
-function validOcrName(raw) {
-  const s = str(raw)
-  if (!s) return false
-  if (!/^\p{L}/u.test(s)) return false
-  if (!/\p{L}/u.test(s)) return false
-  if (OCR_BAD_CHARS.test(s)) return false
-  return true
-}
-
 function blankPerson({ key, display, at }) {
   return {
     key,
@@ -131,6 +114,8 @@ function readPeople(file, log) {
  */
 export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}) {
   let people = readPeople(file, log)
+  // OCR 名字可能是误读：同一个新名字见过两次才建档。只活在内存里，不落盘、reload 不保留。
+  const pendingOcr = new Map()
 
   const clone = (e) => ({
     ...e,
@@ -202,8 +187,6 @@ export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}
     const at = nowIso(now)
     const src = str(source) || 'preview'
     const chat = str(chatId)
-    // OCR 原文先过更严的可行性检查；preview/quote/dm 等来源行为保持不变。
-    if (src === 'ocr' && !validOcrName(raw)) return null
 
     let e = people.find((x) => x.key === key || matches(x, key))
     if (!e && src === 'quote' && lengthOf(key) >= 2) {
@@ -226,6 +209,19 @@ export function createPeople({ file = DEFAULT_PEOPLE, now = Date.now, log } = {}
       mergeObservation(e, { chatId: chat, source: src, at })
       save()
       return clone(e)
+    }
+
+    // 尼古称没有字符白名单：OCR 的新名字第一次只记待确认，第二次才建档。
+    // 已匹配到条目的合并（上面）不经过这里；非 OCR 来源直接建档并清掉待确认。
+    if (src === 'ocr') {
+      const seen = (pendingOcr.get(key) ?? 0) + 1
+      if (seen < 2) {
+        pendingOcr.set(key, seen)
+        return null
+      }
+      pendingOcr.delete(key)
+    } else {
+      pendingOcr.delete(key)
     }
 
     e = blankPerson({ key, display, at })
