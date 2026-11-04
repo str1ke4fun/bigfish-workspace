@@ -131,6 +131,10 @@ case "$cmd" in
     node "$LIB_DIR/ocr-snapshot.mjs" 2>&1 | head -c 200000
     ;;
 
+  speakers)
+    node "$LIB_DIR/ocr-speakers.mjs" 2>&1 | head -c 200000
+    ;;
+
   chats)
     # 优先用无障碍树：它能给出当前会话名和完整会话列表；树不可用时再退回 OCR。
     # （OCR 只能按几何分组，未读红点行容易漏，且永远读不到当前会话。）
@@ -411,7 +415,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|pid|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|sha256 <file>}" >&2
+    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|speakers|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|pid|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|sha256 <file>}" >&2
     exit 64
     ;;
 esac
