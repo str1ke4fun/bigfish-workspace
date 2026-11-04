@@ -10,6 +10,7 @@ import {
   shouldEnqueue,
   pauseReason,
 } from './lib/capture.js'
+import { createPreviewRecorder } from './lib/index.js'
 
 let n = 0
 const t = (name, fn) => { fn(); n++; console.log('  ✓ ' + name) }
@@ -72,6 +73,40 @@ t('未读、时间、预览按竖线拼接', () => {
 t('缺字段用空值与 0', () => {
   assert.equal(previewSig({}), '0||')
   assert.equal(previewSig({ unread: 3 }), '3||')
+})
+
+console.log('预览关闭时的轮转')
+t('preview=false 仍返回 rows、不写台账，指纹照常推进', () => {
+  const writes = []
+  const record = createPreviewRecorder({
+    policy: () => ({ capture: { preview: false }, ignoreChats: [] }),
+    contextStore: { capturePreview: (req) => { writes.push(req); return { ok: true, added: 1 } } },
+    directory: { entry: () => ({ chatId: 'c_a', kind: 'group' }) },
+    people: { learn: () => {} },
+  })
+  const parsed = { chats: [{ name: '群A', unread: 0, time: '14:02', preview: '甲: 新消息' }] }
+  const enqueueReq = (row) => ({
+    row: row.row,
+    sig: row.sig,
+    prevSig: row.prevSig,
+    capturedSinceStart: true,
+    lastCaptureAt: 0,
+    now: 1000,
+    cooldownMs: 60000,
+    allowChats: ['群A'],
+    ignoreChats: [],
+  })
+
+  const first = record(parsed)
+  assert.equal(first.added, 0)
+  assert.equal(first.rows.length, 1)
+  assert.notEqual(first.rows[0].prevSig, first.rows[0].sig)
+  assert.deepEqual(shouldEnqueue(enqueueReq(first.rows[0])), { enqueue: true, reason: 'changed' })
+
+  const second = record(parsed)
+  assert.equal(second.rows[0].prevSig, second.rows[0].sig)
+  assert.deepEqual(shouldEnqueue(enqueueReq(second.rows[0])), { enqueue: false, reason: 'unchanged' })
+  assert.equal(writes.length, 0)
 })
 
 console.log('入队判定')
@@ -160,11 +195,13 @@ t('树不是 ok → tree-<状态>', () => {
 t('树落后 → stale', () => {
   assert.equal(pause({ stale: true }), 'stale')
 })
-t('主机忙碌、正在交谈、发送中、有未投递命中依次暂停', () => {
+t('主机忙碌、发送中、有未投递命中依次暂停', () => {
   assert.equal(pause({ hostBusy: true }), 'host-busy')
-  assert.equal(pause({ hostActive: true }), 'host-active')
   assert.equal(pause({ sending: true }), 'sending')
   assert.equal(pause({ pendingHits: 1 }), 'pending-hits')
+})
+t('host-active 已并入 host-busy，不再单独暂停', () => {
+  assert.equal(pause({ hostActive: true }), '')
 })
 t('发送结束后的静默期内暂停', () => {
   assert.equal(pause({ quietUntil: 2000 }), 'quiet')

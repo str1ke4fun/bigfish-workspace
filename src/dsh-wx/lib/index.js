@@ -369,6 +369,74 @@ export function formatEarNote(hits, allowChats = [], tasks = null, extra = {}) {
   ].join('\n')
 }
 
+/**
+ * 侧栏预览入账器：只读当前列表，不点开、不滚动、不清未读。
+ * 返回本轮每一行的 prevSig/sig，供后台轮转在更新快照前做入队判断。
+ * capture.preview=false 时仍构建 rows（供轮转），只跳过写台账；指纹照常推进。
+ *
+ * @param {{policy:()=>object, contextStore:object, directory:object, people:object,
+ *   log?:(line:string)=>void, lastSig?:Map<string,string>}} [deps]
+ */
+export function createPreviewRecorder({
+  policy, contextStore, directory, people, log = () => {}, lastSig = new Map(),
+} = {}) {
+  let previewWarned = false
+  return function recordPreviews(parsed) {
+    const p = policy()
+    const previewOn = p.capture?.preview !== false
+    let added = 0
+    const rows = []
+    for (const row of parsed?.chats ?? []) {
+      const chat = String(row?.name ?? '').trim()
+      if (!chat) continue
+      const sig = previewSig(row)
+      const prevSig = lastSig.get(chat) ?? ''
+      rows.push({ chat, row, sig, prevSig })
+      if (row.draft) continue
+      if (isIgnoredChat(chat, p.ignoreChats)) continue
+      const preview = String(row.preview ?? '')
+      if (!preview || prevSig === sig) continue
+      if (!previewOn) {
+        // 只跳过写台账；指纹照常推进，避免关闭预览期间每轮都被当成 changed。
+        lastSig.set(chat, sig)
+        continue
+      }
+      const pv = parsePreviewSender(preview)
+      const entry = directory.entry(chat)
+      try {
+        const r = contextStore.capturePreview({
+          chat,
+          chatId: entry?.chatId ?? '',
+          preview,
+          time: String(row.time ?? ''),
+          unread: Number(row.unread) || 0,
+          isDM: entry?.kind === 'dm' ? true : undefined,
+          ignoreChats: p.ignoreChats,
+        })
+        if (r.ok) {
+          added += r.added
+          if (r.sender) {
+            people.learn({
+              name: r.sender,
+              source: entry?.kind === 'dm' ? 'dm' : 'preview',
+              chatId: r.chatId,
+              requireEvidence: pv.needsEvidence,
+            })
+          }
+        }
+        lastSig.set(chat, sig)
+      } catch (err) {
+        if (!previewWarned) {
+          previewWarned = true
+          log('预览入账失败（不影响耳朵）：' + String(err?.message ?? err).slice(0, 120))
+        }
+      }
+    }
+    if (added > 0) log('采集：预览 +' + added)
+    return { added, rows }
+  }
+}
+
 // ---------------------------------------------------------------- 插件主体
 export function apply(ctx, config = {}) {
   const display = String(config.display || ':99')
@@ -525,57 +593,13 @@ export function apply(ctx, config = {}) {
 
   // 侧栏预览入账：只读当前列表，不点开、不滚动、不清未读。
   // 返回本轮每一行的 prevSig/sig，供后台轮转在更新快照前做入队判断。
-  const lastPreviewSig = new Map()
-  let previewWarned = false
-  function recordPreviews(parsed) {
-    const p = policy()
-    if (p.capture?.preview === false) return { added: 0, rows: [] }
-    let added = 0
-    const rows = []
-    for (const row of parsed?.chats ?? []) {
-      const chat = String(row?.name ?? '').trim()
-      if (!chat) continue
-      const sig = previewSig(row)
-      const prevSig = lastPreviewSig.get(chat) ?? ''
-      rows.push({ chat, row, sig, prevSig })
-      if (row.draft) continue
-      if (isIgnoredChat(chat, p.ignoreChats)) continue
-      const preview = String(row.preview ?? '')
-      if (!preview || prevSig === sig) continue
-      const pv = parsePreviewSender(preview)
-      const entry = directory.entry(chat)
-      try {
-        const r = contextStore.capturePreview({
-          chat,
-          chatId: entry?.chatId ?? '',
-          preview,
-          time: String(row.time ?? ''),
-          unread: Number(row.unread) || 0,
-          isDM: entry?.kind === 'dm' ? true : undefined,
-          ignoreChats: p.ignoreChats,
-        })
-        if (r.ok) {
-          added += r.added
-          if (r.sender) {
-            people.learn({
-              name: r.sender,
-              source: entry?.kind === 'dm' ? 'dm' : 'preview',
-              chatId: r.chatId,
-              requireEvidence: pv.needsEvidence,
-            })
-          }
-        }
-        lastPreviewSig.set(chat, sig)
-      } catch (err) {
-        if (!previewWarned) {
-          previewWarned = true
-          console.log('[dsh-wx] 预览入账失败（不影响耳朵）：' + String(err?.message ?? err).slice(0, 120))
-        }
-      }
-    }
-    if (added > 0) console.log('[dsh-wx] 采集：预览 +' + added)
-    return { added, rows }
-  }
+  const recordPreviews = createPreviewRecorder({
+    policy,
+    contextStore,
+    directory,
+    people,
+    log: (line) => console.log('[dsh-wx] ' + line),
+  })
   const RECENT_FILE = '/home/str1k3/.dsh-wx/recent-chats.json'
   const RECENT_MS = 30 * 60_000
   let recent = []
@@ -1596,7 +1620,6 @@ export function apply(ctx, config = {}) {
     const reason = pauseReason({
       policy: p,
       hostBusy: hostBusy(),
-      hostActive: !!hostState?.active && Date.now() - hostState.at < HOST_BUSY_MS,
       sending: sendBusy > 0,
       pendingHits,
       treeStatus: treeLast?.status ?? 'down',

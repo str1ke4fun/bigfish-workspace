@@ -122,12 +122,11 @@ export function shouldEnqueue({
 /**
  * 暂停原因，空串表示可以轮转。
  * 顺序按 spec §4.3：policy-off → login → 树状态 → stale → host-busy →
- * host-active → sending → pending-hits → quiet。暂停只影响轮转。
+ * sending → pending-hits → quiet。暂停只影响轮转。
  */
 export function pauseReason({
   policy,
   hostBusy = false,
-  hostActive = false,
   sending = false,
   pendingHits = 0,
   treeStatus = 'unknown',
@@ -141,7 +140,6 @@ export function pauseReason({
   if (treeStatus !== 'ok') return 'tree-' + (str(treeStatus) || 'unknown')
   if (stale) return 'stale'
   if (hostBusy) return 'host-busy'
-  if (hostActive) return 'host-active'
   if (sending) return 'sending'
   if ((Number(pendingHits) || 0) > 0) return 'pending-hits'
   if ((Number(quietUntil) || 0) > (Number(now) || 0)) return 'quiet'
