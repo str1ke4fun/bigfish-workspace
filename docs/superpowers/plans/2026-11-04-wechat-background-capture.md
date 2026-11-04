@@ -1197,7 +1197,7 @@ git commit -m "feat(dsh-wx): 后台轮转采集与 OCR 发言人接线"
 **Interfaces:**
 - Consumes: Task 12 的 `health.json.capture`、日志前缀 `[dsh-wx] 采集：`、`people.json`、目录 `lastNonZeroUnread`。
 
-- [ ] **Step 1: 重启并观察启动**
+- [x] **Step 1: 重启并观察启动**
 
 ```bash
 sudo -n /usr/local/sbin/fish-ctl restart dsh-web.service
@@ -1207,7 +1207,7 @@ jq '.capture' ~/.dsh-wx/health.json
 
 Expected: `paused` 为 false 或带明确 `pauseReason`；`queued` 数字合理；20 秒内至少有一次 `lastResult`。
 
-- [ ] **Step 2: 验证暂停让路**
+- [ ] **Step 2: 验证暂停让路**（观测到 `quiet` 暂停与恢复；本轮没有真实宿主回合，`host-busy` / `host-active` / `sending` 仍未在真机观察）
 
 在宿主对话框里让大肥鱼处理一件需要模型回合的事（或等一次真实回复），同时：
 
@@ -1217,7 +1217,7 @@ journalctl -u dsh-web -f | grep '\[dsh-wx\] 采集'
 
 Expected: 回合期间出现 `采集：暂停（host-busy）` 或 `host-active`；回合结束后（且 10 秒静默过去）才出现 `采集：<会话> +N`。采集暂停期间不点开任何会话（日志中没有新的 `采集：<会话>` 行）。
 
-- [ ] **Step 3: 验证记录与发言人**
+- [x] **Step 3: 验证记录与发言人**
 
 ```bash
 node --input-type=module -e "import {createContextStore} from './src/dsh-wx/lib/context.js'; const s=createContextStore({}); console.log(s.listRecordedChats({}).text)"
@@ -1233,21 +1233,31 @@ Expected:
 
 发送不被抢占：在她回复或宿主 `wx_send` 期间观察 `journalctl`，采集日志必须出现暂停，且 `wx_send` 的返回时间不因采集被拖长；两者不交叉执行（采集与发送共用 `withGuiLock`）。
 
-- [ ] **Step 4: 验证 `wx_history` 工具（模型调用）**
+- [ ] **Step 4: 验证 `wx_history` 工具（模型调用）**（工具已注册，本轮未由模型实际调用；仅用 Node 直接调用 `createContextStore` 验证）
 
 让大肥鱼实际调用一次 `wx_history`（用户在微信或宿主里问“查一下某群最近的记录”）。记录她的工具返回和 `~/.dsh-wx/context-queries.jsonl`（若有）。若本轮没有模型调用，明确写“工具已注册，未由模型实际调用”，不算验收通过。
 
-- [ ] **Step 5: README 补验收边界**
+- [x] **Step 5: README 补验收边界**
 
 写清楚：预览流只覆盖侧栏最后一条且不点开；轮转点开会清未读（用户已接受）；OCR 失败退化为“发言人未识别”；采集暂停条件与查看方法（`health.json.capture`、`journalctl` 前缀）。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add src/dsh-wx/README.md
 git diff --cached --check && python scripts/audit-staged.py
 git commit -m "docs(dsh-wx): 后台采集的配置、验收与边界"
 ```
+
+**验收记录（2026-11-04，live dsh-web on dev plugin tree）**
+
+- 重启后 `health.json.capture` 出现：`paused:false`、`queued`、`lastAt/lastChat/lastResult`；日志 `[dsh-wx] 采集：` 可见暂停/恢复与 `<会话> +N`。
+- 轮转覆盖 `allowChats`：内部赤石群、计科4223薛长顺、cat不到flag的cat、Tina Yu、我需要重新集结部队；`source:"capture"` 行写入台账；采集到的 @ 并入下一轮投递。
+- 预览流去重生效（`added:0 skipped:4/5`）；`ignoreChats` 无新增预览；`listRecordedChats` 不列服务号，旧服务号台账仍在盘上。
+- `directory.json` 的 `lastNonZeroUnread` 在点开后保留（星晓家园10号楼1302=1、Tencent News=4、内部赤石群=1），`unread` 归零。
+- 暂停观测：发送后 `quiet` → 到期恢复采集；真实宿主回合未出现，`host-busy/host-active/sending` 未验证。
+- 发言人：OCR 名字带图标前缀时用尾部片段回查名册（`medium`）；首次见到的 OCR 新名字不建档，第二次才建档；重启后 `people.json` 未再新增噪声 key。遗留噪声条目来自修复前的运行（见 `~/.dsh-wx/people.json`，8 个 OCR-only key），未自动清理。
+- `wx_history`：工具已注册；Node 直接调用 `createContextStore` 可查，但本轮没有模型实际调用，按 Step 4 记为未验证。
 
 ---
 
@@ -1260,6 +1270,6 @@ git commit -m "docs(dsh-wx): 后台采集的配置、验收与边界"
 
 ## 手工验收记录
 
-- [ ] M1：预览流台账出现 `source:"preview"`；服务号无新增；`wx_history` 的只读 Node 调用可用。
-- [ ] M2：`health.json.capture` 有数据；暂停日志出现；突发通讯录轮转后有 `source:"capture"`；`people.json` 生成；`lastNonZeroUnread` 保留。
+- [x] M1：预览流台账出现 `source:"preview"`；服务号无新增；`wx_history` 的只读 Node 调用可用。
+- [x] M2：`health.json.capture` 有数据；暂停日志出现；突发通讯录轮转后有 `source:"capture"`；`people.json` 生成；`lastNonZeroUnread` 保留。
 - [ ] `wx_history` 由模型实际调用（未调用则记为未验证）。
