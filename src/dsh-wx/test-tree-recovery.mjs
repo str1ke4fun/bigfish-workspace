@@ -60,9 +60,32 @@ const ok = treeAction({ health: { status: 'ok' }, phase: 'init', now })
 assert.equal(ok.phase, 'steady')
 assert.equal(ok.restart, false)
 
-const first = treeAction({ health: { status: 'down' }, phase: 'init', now })
+const first = treeAction({ health: { status: 'down' }, phase: 'init', now, statusSince: now - 120_000 })
 assert.equal(first.restart, true)
 assert.equal(first.attempt, 1)
+
+// 2026-11-04 用户报：登录成功的一瞬间主窗口先出现、树还没挂上，单次采样就判 down
+// → 耳朵在登录过渡里把微信 TERM 了。down 必须持续一段时间才允许重启。
+const unconfirmed = treeAction({ health: { status: 'down' }, phase: 'init', now, statusSince: now - 10_000, confirmMs: 90_000 })
+assert.equal(unconfirmed.restart, false)
+assert.equal(unconfirmed.wait, true)
+assert.match(unconfirmed.alert, /先观察|不重启/)
+
+// 刚看到过登录页：即使 down 已经持续很久，也先等树挂上（登录后主窗口可能先出来）
+const afterLogin = treeAction({
+  health: { status: 'down' }, phase: 'init', now,
+  statusSince: now - 300_000, lastLoginAt: now - 30_000, loginLatchMs: 300_000,
+})
+assert.equal(afterLogin.restart, false)
+assert.equal(afterLogin.wait, true)
+assert.match(afterLogin.alert, /登录/)
+
+// 登录保护窗口过期、down 也确认了：恢复原来的有界重试
+const loginExpired = treeAction({
+  health: { status: 'down' }, phase: 'init', now,
+  statusSince: now - 300_000, lastLoginAt: now - 600_000, loginLatchMs: 300_000,
+})
+assert.equal(loginExpired.restart, true)
 
 const cooling = treeAction({ health: { status: 'down' }, phase: 'init', attempts: 1, lastRestartAt: now - 10_000, now })
 assert.equal(cooling.restart, false)

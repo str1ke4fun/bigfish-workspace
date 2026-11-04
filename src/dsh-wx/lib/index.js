@@ -588,9 +588,14 @@ export function apply(ctx, config = {}) {
   const TREE_RESTART_MAX = 2
   const TREE_RESTART_COOLDOWN_MS = 45_000
   const TREE_RESTART_SETTLE_MS = 45_000
+  // 单次 down 采样不下结论：树必须持续掉这么久才允许重启。
+  const TREE_DOWN_CONFIRM_MS = 90_000
+  // 看到登录页后的保护窗口：登录成功瞬间主窗口先出现、树后挂上，此时重启会踢掉登录。
+  const TREE_LOGIN_LATCH_MS = 300_000
   let treePhase = 'init'
   let treeAttempts = 0
   let treeLastRestartAt = 0
+  let treeLastLoginAt = 0
   // 上一次看到的微信 MainPID；变了 = 它被重启过（0 = 还没读到基线）。
   let treePid = 0
   // 刚挂上的头 20 秒只观察：微信/宿主可能正在启动，别把正在拉起的进程又杀一遍。
@@ -761,6 +766,7 @@ export function apply(ctx, config = {}) {
       if (h.status === 'ok') console.log(`[dsh-wx] 树恢复：${h.elements} 个元素、${h.chats} 个会话`)
       else console.log(`[dsh-wx] 树状态：${h.status}（元素 ${h.elements}、会话 ${h.chats}）`)
     }
+    if (h.status === 'login' || h.login) treeLastLoginAt = Date.now()
     const act = treeAction({
       health: h,
       phase: treePhase,
@@ -770,6 +776,10 @@ export function apply(ctx, config = {}) {
       now: Date.now(),
       maxAttempts: TREE_RESTART_MAX,
       cooldownMs: TREE_RESTART_COOLDOWN_MS,
+      statusSince: treeSince,
+      lastLoginAt: treeLastLoginAt,
+      confirmMs: TREE_DOWN_CONFIRM_MS,
+      loginLatchMs: TREE_LOGIN_LATCH_MS,
     })
     treePhase = act.phase
     const prevAlert = treeAlert

@@ -171,6 +171,12 @@ export function treeAction({
   now = Date.now(),
   maxAttempts = 2,
   cooldownMs = 45_000,
+  // down 的起点（index.js 传 statusSince=treeSince）。0 = 未知，按「已经很久」处理。
+  statusSince = 0,
+  // 最近一次看到登录页的时刻。登录成功后主窗口可能先出来、树后挂上，这段时间不许重启。
+  lastLoginAt = 0,
+  confirmMs = 90_000,
+  loginLatchMs = 300_000,
 } = {}) {
   const status = health?.status ?? 'down'
   const canRestart = phase === 'init' || phase === 'recover'
@@ -209,6 +215,27 @@ export function treeAction({
       alert: phase === 'recover'
         ? `微信重启后一直没连上无障碍树，已重启 ${attempts} 次；停止自动重启，只提醒`
         : `初始化时微信一直没连上无障碍树，已重启 ${attempts} 次；停止自动重启，只提醒`,
+    }
+  }
+  // 2026-11-04：登录页 -> 主窗口的过渡里，主窗口刚出现、无障碍树还没挂上，
+  // 单次采样就是 down。此时重启微信等于把正在登录的人踢下去。
+  if (lastLoginAt && now - lastLoginAt < loginLatchMs) {
+    return {
+      phase,
+      status,
+      restart: false,
+      wait: true,
+      alert: '刚看到过微信登录页，先等无障碍树挂上；不自动重启',
+    }
+  }
+  // down 必须持续一段时间才算「没连上」；单次采样不下结论。
+  if (statusSince && now - statusSince < confirmMs) {
+    return {
+      phase,
+      status,
+      restart: false,
+      wait: true,
+      alert: '无障碍树还没连上，先观察一会儿；不自动重启',
     }
   }
   if (retryAfter > now) {
