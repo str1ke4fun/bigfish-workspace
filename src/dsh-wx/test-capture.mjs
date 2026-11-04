@@ -104,8 +104,21 @@ t('启动后还没采过 → first 优先于未读和变化', () => {
     { enqueue: true, reason: 'first' },
   )
 })
-t('同会话冷却中不入队', () => {
-  assert.deepEqual(shouldEnqueue(enqueueReq({ prevSig: '0|13:00|old', lastCaptureAt: 900000 })), { enqueue: false, reason: 'cooldown' })
+t('冷却期内有变化仍入队，dueAt=上次完成+冷却', () => {
+  assert.deepEqual(
+    shouldEnqueue(enqueueReq({ prevSig: '0|13:00|old', lastCaptureAt: 900000, now: 910000 })),
+    { enqueue: true, reason: 'cooldown', dueAt: 960000 },
+  )
+  assert.deepEqual(
+    shouldEnqueue(enqueueReq({ row: { ...row, unread: 2 }, sig: '2|14:02|x', prevSig: '0|14:02|x', lastCaptureAt: 900000, now: 910000 })),
+    { enqueue: true, reason: 'cooldown', dueAt: 960000 },
+  )
+})
+t('冷却期内没有变化信号就不入队', () => {
+  assert.deepEqual(
+    shouldEnqueue(enqueueReq({ lastCaptureAt: 900000, now: 910000 })),
+    { enqueue: false, reason: 'unchanged' },
+  )
 })
 t('有草稿不入队', () => {
   assert.deepEqual(shouldEnqueue(enqueueReq({ row: { ...row, draft: true }, prevSig: '0|13:00|old' })), { enqueue: false, reason: 'draft' })

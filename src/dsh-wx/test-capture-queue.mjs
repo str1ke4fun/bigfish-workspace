@@ -30,7 +30,7 @@ test('brief 场景：冷却、去重、上限与退避', () => {
   t = 200_000
   q.done('D')
   q.fail('C', { backoffMs: 120_000 })
-  assert.equal(q.lastDoneAt('C'), 320_000)
+  assert.equal(q.lastDoneAt('C'), 0) // 失败不算成功完成
   q.offer({ chat: 'C' })
   assert.equal(q.due(200_001), null) // 退避期内不取
   assert.equal(q.due(320_000).chat, 'C')
@@ -78,10 +78,23 @@ test('fail 缺省退避 120000；退避后再 offer 不叠加冷却', () => {
   const q = createCaptureQueue({ now: () => t, queueMax: 10, cooldownMs: 60_000 })
   q.offer({ chat: 'A' })
   q.fail('A')
-  assert.equal(q.lastDoneAt('A'), 121_000)
+  assert.equal(q.lastDoneAt('A'), 0)
   assert.equal(q.offer({ chat: 'A' }), true)
   assert.equal(q.due(120_999), null)
-  assert.equal(q.due(121_000).chat, 'A')
+  assert.equal(q.due(121_000).chat, 'A') // 120s 可重试，不是 180s
+})
+
+test('冷却期内变化入队后，别的设备读了也不再丢这次采集', () => {
+  let t = 0
+  const q = createCaptureQueue({ now: () => t, queueMax: 10, cooldownMs: 60_000 })
+  q.done('A') // 上次成功完成在 t=0
+  t = 10_000
+  // 有变化：shouldEnqueue 给出 dueAt = 0 + 60_000。
+  assert.equal(q.offer({ chat: 'A', reason: 'cooldown', unread: 2, dueAt: 60_000 }), true)
+  t = 20_000
+  // 别的设备读完了，未读归零、指纹不再变化；这一轮没有新信号，但队列里的 job 还在。
+  assert.equal(q.due(59_999), null)
+  assert.equal(q.due(60_000).chat, 'A')
 })
 
 test('clear 清空队列与冷却/退避记录', () => {

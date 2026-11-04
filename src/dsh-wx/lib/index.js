@@ -1575,7 +1575,7 @@ export function apply(ctx, config = {}) {
         lastCaptureAt: queue.lastDoneAt(name),
         now: Date.now(), cooldownMs: p.capture.chatCooldownSec * 1000,
       })
-      if (r.enqueue) queue.offer({ chat: name, reason: r.reason, unread: row.unread })
+      if (r.enqueue) queue.offer({ chat: name, reason: r.reason, unread: row.unread, dueAt: r.dueAt })
     }
     roundPreview = null
     // 每 5 秒最多采一个，避免启动初期把队列一次点完。

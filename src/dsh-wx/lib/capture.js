@@ -83,8 +83,9 @@ export function previewSig(row) {
 
 /**
  * 是否把一个会话放进轮转队列。
- * 顺序：not-allowed → ignored → draft → cooldown → first > unread > changed。
- * 冷却只在上一次确实采集过（lastCaptureAt > 0）时生效，避免启动初期永远冷却。
+ * 顺序：not-allowed → ignored → draft → 变化信号 → cooldown。
+ * 先看有没有变化信号：冷却只决定「什么时候采」，不能把信号吞掉。
+ * 有信号但还在冷却期时仍入队，dueAt 指向冷却结束；没有信号才是 unchanged。
  */
 export function shouldEnqueue({
   row,
@@ -103,15 +104,19 @@ export function shouldEnqueue({
   if (isIgnoredChat(name, ignoreChats)) return { enqueue: false, reason: 'ignored' }
   if (row?.draft) return { enqueue: false, reason: 'draft' }
 
-  const last = Number(lastCaptureAt) || 0
-  if (last > 0 && (Number(now) || 0) - last < (Number(cooldownMs) || 0)) {
-    return { enqueue: false, reason: 'cooldown' }
-  }
+  let signal = ''
+  if (!capturedSinceStart) signal = 'first'
+  else if ((Number(row?.unread) || 0) > 0) signal = 'unread'
+  else if (sig !== prevSig) signal = 'changed'
+  if (!signal) return { enqueue: false, reason: 'unchanged' }
 
-  if (!capturedSinceStart) return { enqueue: true, reason: 'first' }
-  if ((Number(row?.unread) || 0) > 0) return { enqueue: true, reason: 'unread' }
-  if (sig !== prevSig) return { enqueue: true, reason: 'changed' }
-  return { enqueue: false, reason: 'unchanged' }
+  const last = Number(lastCaptureAt) || 0
+  const at = Number(now) || 0
+  const cooldown = Number(cooldownMs) || 0
+  if (last > 0 && at - last < cooldown) {
+    return { enqueue: true, reason: 'cooldown', dueAt: last + cooldown }
+  }
+  return { enqueue: true, reason: signal }
 }
 
 /**

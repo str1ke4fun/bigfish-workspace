@@ -33,7 +33,8 @@ export function createCaptureQueue({
   const cooldown = Math.max(0, numberOr(cooldownMs, DEFAULT_COOLDOWN_MS))
 
   // Map 保留插入顺序，既做索引又天然是 FIFO；
-  // lastDone[chat] = { at, retry }：done 记录完成时间，fail 记录可重试时间。
+  // lastDone[chat] = { at, retry }：done 记录成功完成时间，fail 记录可重试时间。
+  // 对外 lastDoneAt 只表示「上次成功完成」；失败退避由内部 availableAt/dueAt 生效。
   const jobs = new Map()
   const lastDone = new Map()
 
@@ -123,10 +124,10 @@ export function createCaptureQueue({
   /** 按入队顺序返回 job 副本数组。 */
   const list = () => [...jobs.values()].map(copy)
 
-  /** 无记录返回 0；fail 后返回可重试时间。 */
+  /** 上次成功完成时间；无记录或上次失败返回 0（失败退避不对外冒充完成时间）。 */
   const lastDoneAt = (chat) => {
     const record = lastDone.get(chatKey(chat))
-    return record ? record.at : 0
+    return record && !record.retry ? record.at : 0
   }
 
   /** 清空队列以及冷却/退避记录，回到全新状态。 */
