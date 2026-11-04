@@ -132,7 +132,10 @@ case "$cmd" in
     ;;
 
   speakers)
-    node "$LIB_DIR/ocr-speakers.mjs" 2>&1 | head -c 200000
+    # 这是给上层解析的接口，node 的失败码要跟着传出去；输出仍然限长。
+    out=$(node "$LIB_DIR/ocr-speakers.mjs" 2>&1); status=$?
+    printf '%s\n' "$out" | head -c 200000
+    exit "$status"
     ;;
 
   chats)

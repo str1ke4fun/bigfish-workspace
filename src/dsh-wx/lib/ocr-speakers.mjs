@@ -56,10 +56,13 @@ export function parseSpeakerTsv(tsv, { scale = 1, origin = { x: 0, y: 0 }, minCo
   return { lines }
 }
 
+// stderr 必须单独接管：默认会写进父进程 stderr，而 wx.sh 用 2>&1 合并输出，
+// 任何一条诊断（tesseract 的 "Estimating resolution as …"）都会污染 JSON。
 const run = (file, args, options = {}) => execFileSync(file, args, {
   encoding: 'utf8',
   maxBuffer: 40 * 1024 * 1024,
   timeout: 60000,
+  stdio: ['ignore', 'pipe', 'pipe'],
   ...options,
 })
 
@@ -87,8 +90,9 @@ function findWindow() {
 }
 
 const describe = (error) => {
+  const message = String(error?.message ?? error)
   const stderr = String(error?.stderr ?? '').trim()
-  return [String(error?.message ?? error), stderr].filter(Boolean).join(': ').slice(0, 200)
+  return [message, stderr && !message.includes(stderr) ? stderr : ''].filter(Boolean).join(': ').slice(0, 200)
 }
 
 function main() {

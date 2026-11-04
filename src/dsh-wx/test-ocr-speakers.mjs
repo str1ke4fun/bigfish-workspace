@@ -28,9 +28,11 @@ t('裁剪坐标换回屏幕绝对坐标', () => {
   assert.equal(r.lines[0].x, 120)
   assert.equal(r.lines[0].y, 60)
   assert.equal(r.lines[0].h, 8)
+  assert.equal(r.lines[0].w, 620 / 3)
   assert.equal(r.lines[0].conf, 80)
   assert.equal(r.lines[1].x, 120)
   assert.equal(r.lines[1].y, 90)
+  assert.equal(r.lines[1].w, 80)
 })
 t('低于 minConfidence 的行整行丢弃', () => {
   const r = parseSpeakerTsv(tsv, { ...options, minConfidence: 85 })
@@ -39,6 +41,11 @@ t('低于 minConfidence 的行整行丢弃', () => {
 })
 t('默认 minConfidence 保留普通识别结果', () => {
   assert.equal(parseSpeakerTsv(tsv, options).lines.length, 2)
+})
+t('空 TSV 和只有表头都返回空行数组', () => {
+  assert.deepEqual(parseSpeakerTsv('').lines, [])
+  assert.deepEqual(parseSpeakerTsv(undefined).lines, [])
+  assert.deepEqual(parseSpeakerTsv(tsv.split('\n')[0]).lines, [])
 })
 
 console.log(`\n${n} 项通过`)
