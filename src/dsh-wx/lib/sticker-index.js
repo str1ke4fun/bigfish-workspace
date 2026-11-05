@@ -49,6 +49,9 @@ function normalizeEntry(e) {
   return {
     id,
     pHash,
+    // 内容裁切后的 dHash（去掉白底/聊天背景），发送回执用它和气泡比对。
+    // 旧索引没有这个字段，保持空串；发送前会要求重扫。
+    artHash: HASH_RE.test(String(e.artHash ?? '').toLowerCase()) ? String(e.artHash).toLowerCase() : '',
     sha256: String(e.sha256 ?? ''),
     thumb: String(e.thumb ?? `thumbs/${id}.png`),
     pos,
@@ -171,10 +174,14 @@ export function mergeScan(index, cells, { now = Date.now(), panel } = {}) {
     }
     pos.order = Number.isFinite(cell?.pos?.order) ? Number(cell.pos.order) : pos.row * cols + pos.col
     const thumb = String(cell?.thumb ?? '')
+    const artHash = HASH_RE.test(String(cell?.artHash ?? '').toLowerCase())
+      ? String(cell.artHash).toLowerCase()
+      : ''
     if (hit) {
       hit.pos = pos
       hit.pHash = pHash
       if (sha) hit.sha256 = sha
+      if (artHash) hit.artHash = artHash
       if (thumb) hit.thumb = thumb
       hit.lastSeen = at
       hit.stale = false
@@ -185,7 +192,7 @@ export function mergeScan(index, cells, { now = Date.now(), panel } = {}) {
       const id = uniqueId(`st_${pHash}`, used)
       used.add(id)
       const e = normalizeEntry({
-        id, pHash, sha256: sha, thumb: thumb || `thumbs/${id}.png`, pos,
+        id, pHash, artHash, sha256: sha, thumb: thumb || `thumbs/${id}.png`, pos,
         firstSeen: at, lastSeen: at,
       })
       entries.push(e)

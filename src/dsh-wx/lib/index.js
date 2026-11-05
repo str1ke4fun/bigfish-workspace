@@ -45,6 +45,7 @@ import { createVectorProvider } from './vector.js'
 import { annotate, loadIndex, saveIndex } from './sticker-index.js'
 import { findStickers, formatFind, formatList, listStickers } from './sticker-query.js'
 import { scanStickers } from './sticker-scan.js'
+import { sendSticker, targetEntry } from './sticker-send.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -313,7 +314,8 @@ function promptText() {
     '- wx_sticker_list：列出收藏表情索引里的条目、描述和置信度。返回文字，不含图片。',
     '- wx_sticker_find：按关键词查收藏表情，最多返回 5 个候选，带命中原因和置信度；候选不等于要发。',
     '- wx_sticker_tag：给某张表情补图上文字、描述或标签，只改本地索引，不改微信收藏本身。',
-    '- 收藏表情目前只能看和查，还不能用表情回复；发送是后续阶段。描述来自面板小图，置信度低时不要当成确定事实。',
+    '- wx_sticker_send：按索引 id 发一张收藏表情到指定会话。表情格点下去就发送，没有二次确认；发送前会重新扫描面板、核对当前会话和格子 pHash，任何一步对不上就不点；发完核对消息区新增表情并比对 pHash，对不上就如实说没确认。id 只能从 wx_sticker_list / wx_sticker_find 里拿，别猜。',
+    '- 表情描述来自面板小图，置信度低时不要当成确定事实；发送前先 wx_sticker_find 找候选，别按印象选 id。',
     '',
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
@@ -1166,6 +1168,92 @@ export function apply(ctx, config = {}) {
     // 发送本身也算一次活动：给后台采集留出静默期，别紧接着点开会话。
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
     return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed', outMsgId }
+  }
+
+  /**
+   * 按索引 id 发一张收藏表情。与 wx_send 共用同一套闸：允许名单、@、频率、当前会话核对。
+   * 表情格点下去就发送、没有二次确认，所以点之前会重新扫描面板并核对 pHash，点之后核对消息区。
+   * 不写文本 outbox：表情在预览里都是 "[Sticker]"，写进去会让别人发的同款表情被当成自己的回声。
+   */
+  async function sendStickerToChat({ chat, id, taskId = '' } = {}) {
+    const p = policy()
+    if (!p.enabled) throw new Error(OFF)
+    const want = String(chat ?? '').trim()
+    const sid = String(id ?? '').trim()
+    if (!want) throw new Error('wx_sticker_send: chat 不能为空。')
+    if (!sid) throw new Error('wx_sticker_send: id 不能为空。')
+
+    const allowed = canSendWithPolicy(p, want)
+    if (!allowed.ok) throw new Error(allowed.why)
+
+    // 先把索引核对完再碰界面：id 不存在、旧索引缺 artHash、已从收藏删除，都不打开面板。
+    targetEntry(loadIndex(stickerDir).index, sid)
+
+    let s = await look()
+    if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不发送。')
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+      if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不发送。`)
+      await run(['clean'], 30_000).catch(() => '')
+      fresh.reset()
+      await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+      await sleep(700)
+      s = await look({ confirm: false })
+      if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+      if (!sameName(s.parsed.current, allowed.chat)) {
+        throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不发送。`)
+      }
+    }
+
+    const g = await gateSend()
+    if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不发送。`)
+
+    // 清浮层再读一屏：回执拿这一屏当“发送前”，之后只认末尾新增的表情行。
+    await run(['clean'], 30_000).catch(() => '')
+    fresh.reset()
+    s = await look({ confirm: false })
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不发送。' + fresh.notice().trim())
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      throw new Error(`当前会话是「${s.parsed.current || '读不到'}」，不是「${allowed.chat}」，不发送。`)
+    }
+    const before = s.parsed.messages ?? []
+
+    // 频率闸只记一次；等完再看一眼会话，别在等待期间被切走。
+    await speechGate(allowed.chat)
+    const last = await gateSend()
+    if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
+
+    const r = await sendSticker({
+      run,
+      dir: stickerDir,
+      id: sid,
+      before,
+      look: () => look({ confirm: false }),
+      log: (m) => console.log('[dsh-wx] 表情发送：' + m),
+    })
+
+    // 回执确认了才落台账：没看到新增表情就不假装发过。
+    let outMsgId = ''
+    if (r.confirmed) {
+      try {
+        const captured = contextStore.capture({
+          chat: allowed.chat,
+          source: 'sent',
+          taskId,
+          ignoreChats: p.ignoreChats,
+          messages: [{
+            sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'sticker',
+            text: '[Sticker]', at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
+            stickerId: sid,
+          }],
+        })
+        outMsgId = captured.records?.at(-1)?.msgId ?? ''
+      } catch { /* 台账记不下不影响已经发出的表情 */ }
+    }
+    quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
+    return { ok: true, chat: allowed.chat, ...r, outMsgId }
   }
 
   // 说明只挂她一个 agent：会话 cwd 就是她的屋子
@@ -2416,6 +2504,34 @@ export function apply(ctx, config = {}) {
       if (entry.text) bits.push(`图上文字：${entry.text}`)
       if (entry.desc) bits.push(`描述：${entry.desc}`)
       return `已更新 ${entry.id}${bits.length ? '｜' + bits.join('｜') : ''}。`
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_send',
+    description: '按索引 id 发一张收藏表情到指定会话。表情格点下去就发送、没有二次确认：发送前会重新扫描面板、确认当前会话和格子 pHash，发送后核对聊天区新增表情并比对 pHash；任何一步不确定都不点，或如实报告未确认。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '会话全名，与 wx_send 的 chat 相同' },
+        id: { type: 'string', description: '表情 id，只能来自 wx_sticker_list / wx_sticker_find' },
+        task_id: { type: 'string', description: '可选：这条表情属于哪个任务，写进台账' },
+      },
+      required: ['chat', 'id'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const r = await withSendLock(() => sendStickerToChat({
+        chat: args?.chat,
+        id: args?.id,
+        taskId: String(args?.task_id ?? ''),
+      }))
+      return r.confirmed
+        ? `已把表情 ${r.id} 发到「${r.chat}」。${r.receipt}${r.outMsgId ? ` 台账：${r.outMsgId}` : ''}`
+        : `表情点击已执行，但没有确认发对了：${r.receipt}先用 wx_peek 看当前会话，别重复点。`
     },
   })
 

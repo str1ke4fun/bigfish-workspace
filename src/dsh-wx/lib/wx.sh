@@ -199,7 +199,8 @@ case "$cmd" in
     ;;
 
   panel-click)
-    # 坐标相对面板左上角；只用于点页签/安全空白，不点表情格。
+    # 坐标相对面板左上角。扫描只点页签/安全空白；发送阶段由 sticker-send.js
+    # 在重新截图确认 pHash 之后才点目标格，这里不替调用方做安全判断。
     x="${1:?要 x}"; y="${2:?要 y}"
     p=$(panel_find) || { echo "面板没开" >&2; exit 2; }
     set -- $p
@@ -259,6 +260,17 @@ case "$cmd" in
     convert "$png" -crop "${w}x${h}+${x}+${y}" +repage -resize 128x128 "$out" 2>/dev/null \
       || { echo "缩略图失败" >&2; exit 3; }
     echo "$out"
+    ;;
+
+  win-gray)
+    # 主窗口内某块区域的灰度字节 → base64。坐标相对窗口左上角（不是屏幕坐标），
+    # 用于发送回执时裁表情气泡；不落盘、不碰鼠标。
+    x="${1:?x}"; y="${2:?y}"; w="${3:?w}"; h="${4:?h}"
+    p=$(pick) || { echo "找不到微信窗口" >&2; exit 2; }
+    set -- $p
+    import -window "$1" -silent png:- 2>/dev/null \
+      | convert png:- -crop "${w}x${h}+${x}+${y}" +repage -colorspace Gray -depth 8 gray:- 2>/dev/null \
+      | base64 -w0
     ;;
 
   sha256)
@@ -418,7 +430,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|speakers|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|pid|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|sha256 <file>}" >&2
+    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|speakers|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|pid|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|win-gray <x> <y> <w> <h>|sha256 <file>}" >&2
     exit 64
     ;;
 esac

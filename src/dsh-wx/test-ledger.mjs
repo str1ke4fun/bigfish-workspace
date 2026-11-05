@@ -134,4 +134,26 @@ t('repair 不认识的消息 → 拒绝，不写', () => {
   assert.match(r.why, /没有/)
 })
 
+console.log('表情')
+t('连续两张不同表情靠 stickerId 分开；重读同一张仍去重', () => {
+  const d = dir()
+  const l = createLedger({ dir: d, now: () => T })
+  const base = { sender: null, kind: 'sticker', text: '[Sticker]', direction: 'out', source: 'sent' }
+  assert.equal(l.append('c1', [{ ...base, stickerId: 'st_a' }]).added, 1)
+  // 正文和上一条完全相同，只有 stickerId 不同：必须入账，不能被当成同一条
+  assert.equal(l.append('c1', [{ ...base, stickerId: 'st_b' }]).added, 1)
+  assert.deepEqual(l.recent('c1', 5).map((x) => x.stickerId), ['st_a', 'st_b'])
+  // 同一张表情再读一遍：跳过
+  assert.equal(l.append('c1', [{ ...base, stickerId: 'st_b' }]).added, 0)
+  // 落盘后字段还在
+  const again = createLedger({ dir: d, now: () => T })
+  assert.deepEqual(again.recent('c1', 5).map((x) => x.stickerId), ['st_a', 'st_b'])
+})
+t('收到的表情没有 id：同一屏重复读仍然只入账一次', () => {
+  const l = createLedger({ dir: dir(), now: () => T })
+  const msg = { sender: '甲', kind: 'sticker', text: '[Sticker]', direction: 'in' }
+  assert.equal(l.append('c1', [msg]).added, 1)
+  assert.equal(l.append('c1', [msg]).added, 0)
+})
+
 console.log(`\n${n} 项通过`)
