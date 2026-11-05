@@ -29,6 +29,7 @@ import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
+import { freshHits, forgetReadChats, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
 import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, pauseReason, previewSig, shouldEnqueue } from './capture.js'
 import { createCaptureQueue } from './capture-queue.js'
@@ -1188,16 +1189,13 @@ export function apply(ctx, config = {}) {
   // 「已投递」记在盘上不记在内存里：以前用内存基线，每次重启都把当时挂着的 @ 当旧消息吃掉。
   const EAR_STATE = '/home/str1k3/.dsh-wx/ear-state.json'
   const loadSeen = () => {
-    try {
-      const d = JSON.parse(readFileSync(EAR_STATE, 'utf8'))
-      const arr = Array.isArray(d?.delivered) ? d.delivered : []
-      return arr.map((x) => (typeof x === 'string' ? x : String(x?.key ?? ''))).filter(Boolean)
-    } catch { return [] }
+    try { return parseSeen(JSON.parse(readFileSync(EAR_STATE, 'utf8'))) } catch { return new Map() }
   }
-  const seen = new Set(loadSeen())
+  const seen = loadSeen()
   const saveSeen = () => {
     try {
-      writeFileSync(EAR_STATE, JSON.stringify({ delivered: [...seen].slice(-200), at: new Date().toISOString() }, null, 2))
+      pruneSeen(seen)
+      writeFileSync(EAR_STATE, JSON.stringify(serializeSeen(seen), null, 2))
     } catch { /* 存不下下次会重投，比丢了强 */ }
   }
   let busy = false
@@ -1809,9 +1807,16 @@ export function apply(ctx, config = {}) {
       // 以前这里写的是 4 分钟：她答完一句，对面马上接话就被整段吃掉，
       // 屏幕上看着就是「她不说话了 / 工具卡住了」。真人不会等 4 分钟再发第二句。
       const ECHO_MS = 45_000
+      // key 是「会话 + 预览文字」，只在一个未读回合里有效：会话被读到（未读归零）就把记录清掉，
+      // 否则「早」「在吗」这种重复的话过几天再发一遍会撞上旧 key，被静默当成回声吃掉。
+      // 只认还在侧栏里的行，没看见的会话不当成已读；OCR 的未读字段不可信，不参与。
+      if (tree.ok && !ocrRecovered) {
+        const readChats = (parsed.chats ?? []).map((c) => ({ ...c, name: canonicalName(c.name) }))
+        if (forgetReadChats(seen, readChats)) saveSeen()
+      }
       // 冷却只压「回声型」的（单聊/免@/名字出现），真正的 @ 不能被压：
       // 同一个人在群里连 @ 她两次，第二次也是要找她。
-      const fresh1 = [...now.values()].filter((m) => !seen.has(m.key) && (m.why === '@' || Date.now() - (lastDeliver.get(m.chat) ?? 0) > ECHO_MS))
+      const fresh1 = freshHits([...now.values()], seen, lastDeliver, { now: Date.now(), echoMs: ECHO_MS })
       const hits = fresh1
       // 压着没投出去的 @：本轮采集让路（投递循环后按实际成功数重算）。
       heldHits = hits.length
@@ -1871,7 +1876,7 @@ export function apply(ctx, config = {}) {
           const sid = await deliverToChat(chat, chatId, note)
           sentChats.push(chat)
           // 投成功才记账：失败下一轮还投，不会丢这条 @
-          seen.add(h.key)
+          seen.set(h.key, { at: Date.now(), chat })
           lastDeliver.set(chat, Date.now())
           // 每个会话投完都给采集留一段静默期（取较大值，不会无限延长）。
           quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
