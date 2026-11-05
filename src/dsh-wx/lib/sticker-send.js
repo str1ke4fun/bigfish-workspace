@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import {
   PANEL, backgroundGray, cropGray, dHash, hamming, largestRegion,
 } from './sticker-image.js'
-import { MAX_HAMMING, loadIndex } from './sticker-index.js'
+import { MAX_HAMMING, findEntry, loadIndex } from './sticker-index.js'
 import { kindOfLabel } from './transcript.js'
 import { readPanelCells } from './sticker-scan.js'
 
@@ -49,7 +49,7 @@ export function ensurePanel(indexPanel, geo) {
 export function targetEntry(index, id) {
   const want = String(id ?? '').trim()
   if (!want) throw new Error('没有指定表情 id。')
-  const entry = (index?.entries ?? []).find((e) => e?.id === want)
+  const entry = findEntry(index, want)
   if (!entry) throw new Error(`索引里没有这个表情 id：${want}；先运行 wx_sticker_scan。`)
   if (entry.stale) {
     throw new Error(`「${want}」没有在最近扫描里出现（可能已从收藏删除）；先运行 wx_sticker_scan。`)

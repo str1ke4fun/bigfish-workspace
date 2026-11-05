@@ -47,6 +47,7 @@ import { findStickers, formatFind, formatList, listStickers } from './sticker-qu
 import { scanStickers } from './sticker-scan.js'
 import { sendSticker, targetEntry } from './sticker-send.js'
 import { collectSticker } from './sticker-collect.js'
+import { normalizeKeyword, searchSticker } from './sticker-search.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -116,6 +117,9 @@ function policy() {
         ? raw.ignoreChats.map((s) => String(s).trim()).filter(Boolean)
         : DEFAULT_IGNORE_CHATS,
       capture: captureSettings({ capture: raw.capture, ignoreChats: raw.ignoreChats }),
+      // 关键词搜索点下去就是发送；用户把“用不用”交给大肥鱼自己决定，
+      // 所以默认开着，只受白名单和发送闸约束；工作台可写 false 关掉。
+      stickerSearch: raw.stickerSearch !== false,
     }
   } catch {
     return {
@@ -123,6 +127,7 @@ function policy() {
       mentionWindowMinutes: 3, noMentionChats: [],
       ignoreChats: DEFAULT_IGNORE_CHATS,
       capture: captureSettings({}),
+      stickerSearch: false,
     }
   }
 }
@@ -318,6 +323,7 @@ function promptText() {
     '- wx_sticker_send：按索引 id 发一张收藏表情到指定会话。表情格点下去就发送，没有二次确认；发送前会重新扫描面板、核对当前会话和格子 pHash，任何一步对不上就不点；发完核对消息区新增表情并比对 pHash，对不上就如实说没确认。id 只能从 wx_sticker_list / wx_sticker_find 里拿，别猜。',
     '- 表情描述来自面板小图，置信度低时不要当成确定事实；发送前先 wx_sticker_find 找候选，别按印象选 id。',
     '- wx_sticker_collect：把当前会话（或指定白名单会话）里最近的一条表情收藏进微信收藏。只右键那条表情并点 Add Sticker，不发消息；先截图 OCR 确认菜单里真有 Add Sticker 才点，收藏后重扫收藏页确认。',
+    '- wx_sticker_search：按关键词在微信表情搜索里找图，点下去直接发到指定白名单会话。结果没有标签，你看不到图，pick 是按行列顺序盲选（0 起）；没有预览确认。只在你确定关键词够具体、并且愿意直接发这张表情时用；发完可以用 wx_sticker_collect 把它收藏进本地索引。',
     '',
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
@@ -1296,6 +1302,91 @@ export function apply(ctx, config = {}) {
       log: (m) => console.log('[dsh-wx] 表情收藏：' + m),
     })
     return { ...r, chat: s.parsed.current }
+  }
+
+  /**
+   * 在表情搜索里按关键词找一张，直接发到白名单会话。
+   * 搜索结果没有标签、她看不到图，pick 是盲选；点下去立即发送，没有预览确认。
+   * 点之前再确认一次当前会话，避免耳朵在搜索期间把会话切走、表情发错人。
+   */
+  async function searchStickerInChat({ chat, keyword, pick = 0, taskId = '' } = {}) {
+    const p = policy()
+    if (!p.enabled) throw new Error(OFF)
+    if (!p.stickerSearch) throw new Error('关键词搜索采集已关闭（policy.json 里 stickerSearch=false）。')
+    const want = String(chat ?? '').trim()
+    if (!want) throw new Error('wx_sticker_search: chat 不能为空。')
+    const word = normalizeKeyword(keyword)
+
+    const allowed = canSendWithPolicy(p, want)
+    if (!allowed.ok) throw new Error(allowed.why)
+
+    let s = await look()
+    if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不搜索。')
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不搜索。' + fresh.notice().trim())
+
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+      if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不搜索。`)
+      await run(['clean'], 30_000).catch(() => '')
+      fresh.reset()
+      await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+      await sleep(700)
+      s = await look({ confirm: false })
+      if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不搜索。' + fresh.notice().trim())
+      if (!sameName(s.parsed.current, allowed.chat)) {
+        throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不搜索。`)
+      }
+    }
+
+    const g = await gateSend()
+    if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不搜索。`)
+
+    // 频率闸只记一次；等完再确认会话。
+    await speechGate(allowed.chat)
+    const last = await gateSend()
+    if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不搜索。`)
+
+    await run(['clean'], 30_000).catch(() => '')
+    fresh.reset()
+    s = await look({ confirm: false })
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不搜索。' + fresh.notice().trim())
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      throw new Error(`当前会话是「${s.parsed.current || '读不到'}」，不是「${allowed.chat}」，不搜索。`)
+    }
+    const before = s.parsed.messages ?? []
+
+    const r = await searchSticker({
+      run,
+      look: () => look({ confirm: false }),
+      keyword: word,
+      pick,
+      before,
+      assertChat: async () => {
+        const now = await look({ confirm: false })
+        return now.parsed.ok && sameName(now.parsed.current, allowed.chat)
+      },
+      shot: join(stickerDir, 'search-panel.png'),
+      log: (m) => console.log('[dsh-wx] 表情搜索：' + m),
+    })
+
+    let outMsgId = ''
+    if (r.confirmed) {
+      try {
+        const captured = contextStore.capture({
+          chat: allowed.chat,
+          source: 'sent',
+          taskId,
+          ignoreChats: p.ignoreChats,
+          messages: [{
+            sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'sticker',
+            text: '[Sticker]', at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
+          }],
+        })
+        outMsgId = captured.records?.at(-1)?.msgId ?? ''
+      } catch { /* 台账记不下不影响已经发出的表情 */ }
+    }
+    quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
+    return { ok: true, chat: allowed.chat, ...r, outMsgId }
   }
 
   // 说明只挂她一个 agent：会话 cwd 就是她的屋子
@@ -2599,6 +2690,36 @@ export function apply(ctx, config = {}) {
       return r.confirmed
         ? `已收藏「${r.chat}」里的这张表情（索引 ${r.id}）。${r.receipt}`
         : `点了 Add Sticker，但没有确认收藏成功：${r.receipt}`
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_search',
+    description: '按关键词在微信表情搜索里找一张，直接发到指定白名单会话。结果是匿名网格、没有标签，调用方看不到图，pick 是按行列顺序的盲选（0 起）；点下去立即发送、没有预览和二次确认。只在你愿意直接发这张表情时用；发完可以用 wx_sticker_collect 收藏。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '会话全名，必须在发送白名单里' },
+        keyword: { type: 'string', description: '搜索关键词，单行，最多 24 个字' },
+        pick: { type: 'number', description: '搜索结果里的第几个，0 起、按行列顺序，默认 0（第一张）' },
+        task_id: { type: 'string', description: '可选：这条表情属于哪个任务，写进台账' },
+      },
+      required: ['chat', 'keyword'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const r = await withSendLock(() => searchStickerInChat({
+        chat: args?.chat,
+        keyword: args?.keyword,
+        pick: args?.pick,
+        taskId: String(args?.task_id ?? ''),
+      }))
+      return r.confirmed
+        ? `已把搜索「${r.keyword}」的第 ${r.pick + 1} 个结果发到「${r.chat}」。${r.receipt}${r.outMsgId ? ` 台账：${r.outMsgId}` : ''}`
+        : `点了搜索结果，但没有确认发出去：${r.receipt}`
     },
   })
 

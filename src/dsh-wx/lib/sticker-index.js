@@ -15,6 +15,8 @@ import { PANEL, hamming } from './sticker-image.js'
 
 export const INDEX_VERSION = 1
 export const MAX_HAMMING = 6
+// 动画表情跨扫描会换帧，pHash 可能差 13；内容裁切后的 artHash 实测同一张 5、不同张 ≥12。
+export const ART_HAMMING = 6
 export const STALE_DAYS = 30
 
 const CONFIDENCE = new Set(['high', 'medium', 'low', 'none'])
@@ -66,7 +68,21 @@ function normalizeEntry(e) {
     stale: e.stale === true,
     staleSince: e.staleSince ? String(e.staleSince) : null,
     updatedAt: e.updatedAt ? String(e.updatedAt) : null,
+    // 换帧合并后保留旧 id，历史引用（台账、她记下的 id）仍能找回这一条。
+    aliases: Array.isArray(e.aliases)
+      ? [...new Set(e.aliases.map((a) => String(a).trim()).filter((a) => a && a !== id))]
+      : [],
   }
+}
+
+/** 按 id 或别名找条目；旧 id 合并后仍可被工具引用。 */
+export function findEntry(index, id) {
+  const want = String(id ?? '').trim()
+  if (!want) return null
+  const entries = index?.entries ?? []
+  return entries.find((e) => e?.id === want)
+    ?? entries.find((e) => Array.isArray(e.aliases) && e.aliases.includes(want))
+    ?? null
 }
 
 /**
@@ -118,22 +134,42 @@ const cellHashes = (cell) => ({
   sha: String(cell?.sha ?? cell?.sha256 ?? ''),
 })
 
-/** 先认完全相同的裁剪图，再认汉明距离最近的 pHash。 */
-export function matchEntry(entries, cell) {
+/** 在候选里找距离最近且唯一的条目；并列就不猜。 */
+function nearestUnique(entries, field, hash, max) {
+  let best = null
+  let bestD = max + 1
+  let tie = false
+  for (const e of entries) {
+    const h = String(e?.[field] ?? '').toLowerCase()
+    if (!HASH_RE.test(h)) continue
+    const d = hamming(h, hash)
+    if (d < bestD) { best = e; bestD = d; tie = false }
+    else if (d === bestD && best) tie = true
+  }
+  return best && !tie && bestD <= max ? best : null
+}
+
+/**
+ * 先认完全相同的裁剪图，再认汉明距离最近的 pHash；
+ * pHash 换帧对不上时，用内容裁切后的 artHash 兜底。
+ * claimed 里是这一轮已经认过格子的 id，避免一条索引吃掉两个格子。
+ */
+export function matchEntry(entries, cell, { claimed = null } = {}) {
   const { pHash, sha } = cellHashes(cell)
+  const artHash = String(cell?.artHash ?? '').toLowerCase()
+  const pool = claimed ? entries.filter((e) => !claimed.has(e.id)) : entries
   if (sha) {
-    const exact = entries.find((e) => e.sha256 && e.sha256 === sha)
+    const exact = pool.find((e) => e.sha256 && e.sha256 === sha)
     if (exact) return exact
   }
-  if (!HASH_RE.test(pHash)) return null
-  let best = null
-  let bestD = MAX_HAMMING + 1
-  for (const e of entries) {
-    if (!HASH_RE.test(e.pHash)) continue
-    const d = hamming(e.pHash, pHash)
-    if (d < bestD) { best = e; bestD = d }
+  if (HASH_RE.test(pHash)) {
+    const hit = nearestUnique(pool, 'pHash', pHash, MAX_HAMMING)
+    if (hit) return hit
   }
-  return bestD <= MAX_HAMMING ? best : null
+  if (HASH_RE.test(artHash)) {
+    return nearestUnique(pool, 'artHash', artHash, ART_HAMMING)
+  }
+  return null
 }
 
 function uniqueId(base, used) {
@@ -145,9 +181,29 @@ function uniqueId(base, used) {
   throw new Error('表情索引 id 用完了')
 }
 
+function posOf(cell, cols) {
+  const pos = {
+    row: Number(cell?.pos?.row ?? cell?.row) || 0,
+    col: Number(cell?.pos?.col ?? cell?.col) || 0,
+  }
+  pos.order = Number.isFinite(cell?.pos?.order) ? Number(cell.pos.order) : pos.row * cols + pos.col
+  return pos
+}
+
+/** 把换帧旧条目的标签/描述并进当前条目；旧 id 留作别名。 */
+function absorbEntry(hit, old) {
+  hit.tags = [...new Set([...(hit.tags ?? []), ...(old.tags ?? [])])]
+  if (!hit.text && old.text) { hit.text = old.text; hit.textConf = old.textConf }
+  if (!hit.desc && old.desc) { hit.desc = old.desc; hit.descConf = old.descConf }
+  if (hit.source === 'none' && old.source && old.source !== 'none') hit.source = old.source
+  if (old.firstSeen && (!hit.firstSeen || old.firstSeen < hit.firstSeen)) hit.firstSeen = old.firstSeen
+  hit.aliases = [...new Set([...(hit.aliases ?? []), old.id, ...(old.aliases ?? [])])]
+    .filter((a) => a && a !== hit.id)
+}
+
 /**
  * 把一次扫描结果并进索引。
- * cells: [{ pHash, sha, pos: {row, col}, thumb? }]
+ * cells: [{ pHash, sha, pos: {row, col}, thumb?, artHash? }]
  * 空扫描不标 stale（切错页签、读图失败时不能把整个索引作废）。
  */
 export function mergeScan(index, cells, { now = Date.now(), panel } = {}) {
@@ -155,49 +211,68 @@ export function mergeScan(index, cells, { now = Date.now(), panel } = {}) {
   const p = panel ?? base.panel ?? PANEL
   const cols = Number(p.cols) || PANEL.cols
   if (!Array.isArray(cells) || cells.length === 0) {
-    return { index: base, added: 0, matched: 0, stale: base.entries.filter((e) => e.stale).length, skipped: true }
+    return { index: base, added: 0, matched: 0, merged: 0, stale: base.entries.filter((e) => e.stale).length, skipped: true }
   }
   const at = nowIso(now)
-  const entries = base.entries.map((e) => ({ ...e, tags: [...e.tags] }))
+  const entries = base.entries.map((e) => ({
+    ...e, tags: [...e.tags], aliases: [...(e.aliases ?? [])],
+  }))
   const used = new Set(entries.map((e) => e.id))
   let added = 0
   let matched = 0
+  let merged = 0
   const touched = new Set()
+  const claimed = new Set()
 
   for (const cell of cells) {
     const { pHash, sha } = cellHashes(cell)
     if (!HASH_RE.test(pHash)) continue
-    const hit = matchEntry(entries, cell)
-    const pos = {
-      row: Number(cell?.pos?.row ?? cell?.row) || 0,
-      col: Number(cell?.pos?.col ?? cell?.col) || 0,
-    }
-    pos.order = Number.isFinite(cell?.pos?.order) ? Number(cell.pos.order) : pos.row * cols + pos.col
-    const thumb = String(cell?.thumb ?? '')
     const artHash = HASH_RE.test(String(cell?.artHash ?? '').toLowerCase())
       ? String(cell.artHash).toLowerCase()
       : ''
-    if (hit) {
-      hit.pos = pos
-      hit.pHash = pHash
-      if (sha) hit.sha256 = sha
-      if (artHash) hit.artHash = artHash
-      if (thumb) hit.thumb = thumb
-      hit.lastSeen = at
-      hit.stale = false
-      hit.staleSince = null
-      touched.add(hit.id)
-      matched++
-    } else {
+    const hit = matchEntry(entries, cell, { claimed })
+    if (!hit) {
+      // 同一张表情在一屏里出现两次：不算新条目，也不重复计数。
+      if (matchEntry(entries, cell)) continue
       const id = uniqueId(`st_${pHash}`, used)
       used.add(id)
       const e = normalizeEntry({
-        id, pHash, artHash, sha256: sha, thumb: thumb || `thumbs/${id}.png`, pos,
-        firstSeen: at, lastSeen: at,
+        id, pHash, artHash, sha256: sha, thumb: String(cell?.thumb ?? '') || `thumbs/${id}.png`,
+        pos: posOf(cell, cols), firstSeen: at, lastSeen: at,
       })
       entries.push(e)
       touched.add(id)
       added++
+      continue
+    }
+
+    hit.pos = posOf(cell, cols)
+    hit.pHash = pHash
+    if (sha) hit.sha256 = sha
+    if (artHash) hit.artHash = artHash
+    if (String(cell?.thumb ?? '')) hit.thumb = String(cell.thumb)
+    hit.lastSeen = at
+    hit.stale = false
+    hit.staleSince = null
+    touched.add(hit.id)
+    claimed.add(hit.id)
+    matched++
+
+    // 旧 bug 留下的换帧重复条目：同一张、已 stale、artHash 对得上，就并进来。
+    if (artHash) {
+      const absorbed = entries.filter((e) => e.id !== hit.id && e.stale && e.artHash
+        && !touched.has(e.id) && hamming(e.artHash, artHash) <= ART_HAMMING)
+      if (absorbed.length) {
+        for (const old of absorbed) {
+          absorbEntry(hit, old)
+          used.delete(old.id)
+          merged++
+        }
+        const gone = new Set(absorbed.map((e) => e.id))
+        for (let i = entries.length - 1; i >= 0; i--) {
+          if (gone.has(entries[i].id)) entries.splice(i, 1)
+        }
+      }
     }
   }
 
@@ -213,6 +288,7 @@ export function mergeScan(index, cells, { now = Date.now(), panel } = {}) {
     index: { ...base, v: INDEX_VERSION, panel: p, entries, updatedAt: at },
     added,
     matched,
+    merged,
     stale,
     skipped: false,
   }
@@ -223,7 +299,7 @@ export function mergeScan(index, cells, { now = Date.now(), panel } = {}) {
  * 置信度只收 high/medium/low/none；来源只收 panel/preview/bubble/manual/none。
  */
 export function annotate(index, id, patch = {}, { now = Date.now() } = {}) {
-  const e = index?.entries?.find((x) => x.id === id)
+  const e = findEntry(index, id)
   if (!e) throw new Error(`没有这个表情 id：${id}`)
   if (patch.descConf != null && !CONFIDENCE.has(patch.descConf)) throw new Error('descConf 只能是 high/medium/low/none')
   if (patch.textConf != null && !CONFIDENCE.has(patch.textConf)) throw new Error('textConf 只能是 high/medium/low/none')
@@ -244,7 +320,7 @@ export function annotate(index, id, patch = {}, { now = Date.now() } = {}) {
   }
   next.tags = [...new Set(next.tags)]
   return {
-    index: { ...index, entries: index.entries.map((x) => (x.id === id ? next : x)), updatedAt: nowIso(now) },
+    index: { ...index, entries: index.entries.map((x) => (x.id === e.id ? next : x)), updatedAt: nowIso(now) },
     entry: next,
   }
 }

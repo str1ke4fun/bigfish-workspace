@@ -100,6 +100,13 @@ await t('看门：id 不存在 / 已 stale 都拒绝', async () => {
   assert.equal(targetEntry(index, 'st_a').id, 'st_a')
 })
 
+await t('看门：旧 id 作为别名仍能定位到合并后的条目', async () => {
+  const index = { entries: [
+    { id: 'st_new', pHash: '0'.repeat(16), artHash: 'a'.repeat(16), stale: false, aliases: ['st_old'] },
+  ] }
+  assert.equal(targetEntry(index, 'st_old').id, 'st_new')
+})
+
 await t('布局守卫：尺寸/网格不一致就拒绝', () => {
   const p = { w: 485, h: 485, cols: 5, cell: 84, pitchX: 92, pitchY: 84, firstX: 16, firstY: 14 }
   assert.doesNotThrow(() => ensurePanel(p, { w: 485, h: 485 }))
