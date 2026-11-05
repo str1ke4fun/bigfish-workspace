@@ -29,7 +29,7 @@ import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
-import { freshHits, forgetReadChats, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
+import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
 import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, pauseReason, previewSig, shouldEnqueue } from './capture.js'
 import { createCaptureQueue } from './capture-queue.js'
@@ -1207,7 +1207,6 @@ export function apply(ctx, config = {}) {
   let lastRelogin = 0
   let lastScanAt = 0
   let scanning = false
-  const lastDeliver = new Map() // 会话 → 上次投递时间，防她跟自己的回声互相触发
 
   /**
    * 微信必须有自己的会话（不能借 QQ 的）：通道隔离全靠 session 分开。
@@ -1803,9 +1802,9 @@ export function apply(ctx, config = {}) {
       }
 
       // 防自激：她一回复，侧栏预览就变成她自己那句话。
-      // 两条闸：① 同一个会话 45 秒内只叫一次（只挡回声，不挡真人） ② 已经投过的 key 不再投。
-      // 以前这里写的是 4 分钟：她答完一句，对面马上接话就被整段吃掉，
-      // 屏幕上看着就是「她不说话了 / 工具卡住了」。真人不会等 4 分钟再发第二句。
+      // 两条闸：① 预览对得上她自己刚发出去的原文（outbox 回执）才算回声 ② 已经投过的 key 不再投。
+      // 以前用「同一个会话 45 秒内只叫一次」一刀切，把她答完话后真人马上接的第二句也吞了
+      // （2026-11-05 09:53 的「这么高冷」：离上次投递 23 秒，被压到红点被采集清掉）。
       const ECHO_MS = 45_000
       // key 是「会话 + 预览文字」，只在一个未读回合里有效：会话被读到（未读归零）就把记录清掉，
       // 否则「早」「在吗」这种重复的话过几天再发一遍会撞上旧 key，被静默当成回声吃掉。
@@ -1814,9 +1813,10 @@ export function apply(ctx, config = {}) {
         const readChats = (parsed.chats ?? []).map((c) => ({ ...c, name: canonicalName(c.name) }))
         if (forgetReadChats(seen, readChats)) saveSeen()
       }
-      // 冷却只压「回声型」的（单聊/免@/名字出现），真正的 @ 不能被压：
-      // 同一个人在群里连 @ 她两次，第二次也是要找她。
-      const fresh1 = freshHits([...now.values()], seen, lastDeliver, { now: Date.now(), echoMs: ECHO_MS })
+      // 只有真的 @ 才能穿过回声判断：同一个人在群里连 @ 她两次，第二次也是要找她。
+      const fresh1 = freshHits([...now.values()], seen, {
+        isEcho: (m) => ownEcho(m.chat, m.preview, outbox, { echoMs: ECHO_MS }),
+      })
       const hits = fresh1
       // 压着没投出去的 @：本轮采集让路（投递循环后按实际成功数重算）。
       heldHits = hits.length
@@ -1877,7 +1877,6 @@ export function apply(ctx, config = {}) {
           sentChats.push(chat)
           // 投成功才记账：失败下一轮还投，不会丢这条 @
           seen.set(h.key, { at: Date.now(), chat })
-          lastDeliver.set(chat, Date.now())
           // 每个会话投完都给采集留一段静默期（取较大值，不会无限延长）。
           quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
           console.log('[dsh-wx] 耳朵：已投递（' + sid + '）→ ' + chat)

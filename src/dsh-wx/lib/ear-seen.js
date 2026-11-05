@@ -11,6 +11,7 @@
  *   - 上限按时间保留最新的 200 条，盘不会越滚越大。
  */
 import { sameName } from './tree.js'
+import { samePreviewText } from './speaker.js'
 
 export const SEEN_TTL_MS = 24 * 3600_000
 export const SEEN_CAP = 200
@@ -54,12 +55,24 @@ export function forgetReadChats(seen, chats, same = sameName) {
 }
 
 /**
- * 这一轮真正要投的命中。
- * 已经投过的 key 不再投；@ 立刻能投，单聊/免@/名字出现仍受回声冷却保护。
+ * 侧栏预览是不是她自己刚发出去的那句话。
+ * 只有 outbox 里（发送回执确认过）的原文才算回声；不再按「上次投递后 45 秒」一刀切，
+ * 否则真人 20 秒后的追问会被一起吞掉（2026-11-05 09:53 的「这么高冷」就是这么丢的）。
  */
-export function freshHits(hits, seen, lastDeliver, { now = Date.now(), echoMs = 45_000 } = {}) {
-  return (hits ?? []).filter((m) => !seen.has(m.key) &&
-    (m.why === '@' || now - (lastDeliver?.get?.(m.chat) ?? 0) > echoMs))
+export function ownEcho(chat, preview, outbox = [], { now = Date.now(), echoMs = 45_000, same = samePreviewText } = {}) {
+  if (!preview) return false
+  return (Array.isArray(outbox) ? outbox : []).some((x) => x && x.text &&
+    (!x.chat || sameName(x.chat, chat)) &&
+    now - (Number(x.at) || 0) <= echoMs &&
+    same(preview, x.text))
+}
+
+/**
+ * 这一轮真正要投的命中。
+ * 已经投过的 key 不再投；@ 立刻能投，其余命中只要不是她自己的回声就能投。
+ */
+export function freshHits(hits, seen, { isEcho = () => false } = {}) {
+  return (hits ?? []).filter((m) => !seen.has(m.key) && (m.why === '@' || !isEcho(m)))
 }
 
 /** 过期清理 + 按时间保留最新 cap 条。 */

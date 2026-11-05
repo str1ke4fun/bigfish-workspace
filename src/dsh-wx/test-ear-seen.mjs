@@ -1,7 +1,7 @@
 // 耳朵的投递记忆：同一个 key 只能压住「同一个未读回合」。
 // 跑：node test-ear-seen.mjs
 import assert from 'node:assert/strict'
-import { freshHits, forgetReadChats, parseSeen, pruneSeen, serializeSeen, SEEN_TTL_MS } from './lib/ear-seen.js'
+import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen, SEEN_TTL_MS } from './lib/ear-seen.js'
 
 const NOW = Date.parse('2026-11-05T01:50:00.000Z')
 const HOUR = 3600_000
@@ -17,25 +17,34 @@ const key = 'cat不到flag的cat||早'
 const hit = { key, chat: 'cat不到flag的cat', why: 'exempt', preview: '早' }
 const seen = parseSeen({ delivered: [{ key, at: NOW - 2 * 24 * HOUR, chat: 'cat不到flag的cat' }] }, NOW)
 
-assert.equal(freshHits([hit], seen, new Map(), { now: NOW }).length, 0, '未读还在时不能重复投')
+assert.equal(freshHits([hit], seen).length, 0, '未读还在时不能重复投')
 assert.equal(forgetReadChats(seen, [{ name: 'cat不到flag的cat', unread: 1 }]), 0, '未读=1 不是已读')
 assert.equal(seen.has(key), true)
 
 assert.equal(forgetReadChats(seen, [{ name: 'cat不到flag的cat', unread: 0 }]), 1, '读到会话后应清掉旧 key')
 assert.equal(seen.has(key), false)
-assert.equal(freshHits([hit], seen, new Map(), { now: NOW }).length, 1, '读完之后同一句话应重新触发')
+assert.equal(freshHits([hit], seen).length, 1, '读完之后同一句话应重新触发')
 
 // 3. 不在这一屏的会话不能因为「没看见」就被当成已读清掉
 const kept = parseSeen({ delivered: [{ key, at: NOW, chat: 'cat不到flag的cat' }] }, NOW)
 assert.equal(forgetReadChats(kept, [{ name: '另一个会话', unread: 0 }]), 0)
 assert.equal(kept.has(key), true)
 
-// 4. @ 不受回声冷却影响；单聊/免 @ 仍然要等满 45 秒
-const lastDeliver = new Map([['某个群', NOW - 1000], ['某个猫', NOW - 1000]])
-const atHit = { key: '某个群|@|@D33p53Ek 在吗', chat: '某个群', why: '@' }
-const dmHit = { key: '某个猫||在吗', chat: '某个猫', why: 'exempt' }
-assert.equal(freshHits([atHit, dmHit], new Map(), lastDeliver, { now: NOW }).length, 1, '只有 @ 能穿过冷却')
-assert.equal(freshHits([dmHit], new Map(), new Map([['某个猫', NOW - 46_000]]), { now: NOW }).length, 1, '45 秒后单聊可以再叫')
+// 4. 回声只按 outbox 原文判，不按「上次投递后 45 秒」一刀切
+const dmHit = { key: '某个猫||这么高冷', chat: '某个猫', why: 'exempt', preview: '这么高冷' }
+const echoHit = { key: '某个猫||哟', chat: '某个猫', why: 'exempt', preview: '哟' }
+const outbox = [{ chat: '某个猫', text: '哟', at: NOW - 23_000 }]
+const isEcho = (m) => ownEcho(m.chat, m.preview, outbox, { now: NOW })
+assert.equal(freshHits([dmHit], new Map(), { isEcho }).length, 1, '真人 23 秒后的追问不能被回声保护吞掉')
+assert.equal(freshHits([echoHit], new Map(), { isEcho }).length, 0, '她自己刚发的话才算回声')
+assert.equal(freshHits([{ ...echoHit, why: '@' }], new Map(), { isEcho }).length, 1, '@ 仍可穿过回声判断')
+
+// 4b. outbox 过期后不再算回声；换一个会话也不算
+assert.equal(ownEcho('某个猫', '哟', [{ chat: '某个猫', text: '哟', at: NOW - 46_000 }], { now: NOW }), false)
+assert.equal(ownEcho('另一个会话', '哟', outbox, { now: NOW }), false)
+
+// 4c. 预览通常只是正文开头，前缀能对上
+assert.equal(ownEcho('某个猫', '今天天气不错', [{ chat: '某个猫', text: '今天天气不错，出去走走吧', at: NOW }], { now: NOW }), true)
 
 // 5. 24 小时兜底：过期记录会被清掉，没到期的留着
 const old = parseSeen({
