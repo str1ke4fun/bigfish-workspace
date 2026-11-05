@@ -294,7 +294,7 @@ describe({ png, source }) -> { text, textConf, desc, tags, descConf }
 | 阶段 | 内容 | 验收 | 状态 |
 |---|---|---|---|
 | M1 | 扫描器 + 索引 + `wx_sticker_scan` / `wx_sticker_list` / `wx_sticker_find` / `wx_sticker_tag` | 索引可重建；单测全绿；不点击表情 | 已实现（main `ec6429a`），未重载 |
-| M2 | `wx_sticker_send` + 回执 + 台账 `kind=sticker` | 测试号发送成功且 pHash 回验一致；异常时不发送 | 未开始 |
+| M2 | `wx_sticker_send` + 回执 + 台账 `kind=sticker` | 测试号发送成功且 pHash 回验一致；异常时不发送 | 已实现（dev `dfca4b2`）；实机已验收，宿主待重载 |
 | M3 | 从收到的表情采集 + 重扫 | 收藏 +1、索引 +1，无重复 | 未开始 |
 | M4 | 本地 VLM 描述侧车（可选） | 断网可用；超时/崩溃静默降级为人工标签 | 未开始 |
 | M5 | 关键词搜索采集（默认关闭） | 仅白名单会话；需显式开启 | 未开始 |
@@ -302,7 +302,8 @@ describe({ png, source }) -> { text, textConf, desc, tags, descConf }
 实现状态说明（2026-11-03）：
 
 - M1 代码在 main（`ae6a417`、`6a2e74e`，合并提交线到 `ec6429a`），4 个工具已注册，索引落在 `~/.dsh-wx/stickers`，当前 7 条人工标签。Desktop 进程未重载，所以运行中的微信会话还看不到这 4 个工具。
-- M2 没有开始：没有 `wx_sticker_send`，没有任何点击表情格的路径，日常回复仍然只能发文字。发送前必须补会话校验、面板布局校验和发送后的气泡 pHash 回执；这三样没过之前不接发送。
+- M2 已在 dev（`dfca4b2`）实现：`wx_sticker_send`、发送前重扫切格、发送后气泡 pHash 回执、台账 `kind=sticker` + `stickerId`。2026-11-05 实机验收通过：重扫 7 格全部认回并补上 `artHash`；发 `st_cae8eca696cec4f0`（奶牛“收到”）到 `cat不到flag的cat`，面板格子 `cellDistance=0`，消息区新增 `Animated Stickers`，气泡与 `artHash` 距离 5（阈值 10）。宿主 8710 尚未重载，运行中的会话暂时看不到 `wx_sticker_send`。
+- 回执阈值 `RECEIPT_MAX=10` 以本次实机距离 5 为基准；同一张表情在面板和气泡里各缩放一次，距离不为 0 属正常。若后续出现不同表情距离落在 10 以内，再收紧。
 - 收藏里的临时“......6”猫仍在，删除需要用户明确批准。
 
 ## 12. 开放问题
