@@ -66,6 +66,25 @@ panel_find() {
   return 1
 }
 
+# 右键菜单也是独立小窗：class=wechat、WM_NAME 空、类型不是 UTILITY（和表情面板区分开）。
+# 只在“点了右键之后”用它；找不到就返回 1，不猜。
+menu_find() {
+  local id g name
+  local X=0 Y=0 WIDTH=0 HEIGHT=0
+  for id in $(xdotool search --class '^wechat$' 2>/dev/null); do
+    name=$(xprop -id "$id" WM_NAME 2>/dev/null | sed -n 's/^[^=]*= //p')
+    [ -z "$name" ] || continue
+    xwininfo -id "$id" 2>/dev/null | grep -q 'Map State: IsViewable' || continue
+    g=$(xdotool getwindowgeometry --shell "$id" 2>/dev/null) || continue
+    eval "$g"
+    [ "$WIDTH" -ge 100 ] && [ "$HEIGHT" -ge 60 ] || continue
+    [ "$((WIDTH * HEIGHT))" -lt 200000 ] || continue
+    echo "$id $X $Y $WIDTH $HEIGHT"
+    return 0
+  done
+  return 1
+}
+
 # 输入栏最左边的表情按钮：相对主窗 (347, 高度-33)。点它是开/关面板的可靠方式；
 # Alt+E 只在面板关着时可靠，面板开着时不会收起。
 emoji_button() {
@@ -165,6 +184,20 @@ case "$cmd" in
     import -window "$1" -silent png:- 2>/dev/null \
       | convert png:- -crop "${w}x${h}+${x}+${y}" +repage -depth 8 rgb:- 2>/dev/null \
       | md5sum | cut -c1-12
+    ;;
+
+  menu-find)
+    menu_find || exit 1
+    ;;
+
+  menu-shot)
+    # 右键菜单截图：输出 "<windowId> <x> <y> <w> <h>"，坐标是屏幕绝对坐标。
+    out="${1:?要输出路径}"
+    mkdir -p "$(dirname "$out")"
+    p=$(menu_find) || { echo "没有找到右键菜单" >&2; exit 2; }
+    set -- $p
+    import -window "$1" -silent "$out" 2>/dev/null || { echo "菜单截图失败" >&2; exit 3; }
+    echo "$p"
     ;;
 
   panel-find)

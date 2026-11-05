@@ -59,6 +59,11 @@ t('贴纸、图片、普通文字各自归类', () => {
   assert.equal(splitMessageLabel('[Image]').kind, 'image')
   assert.deepEqual(splitMessageLabel('普通一句话'), { text: '普通一句话', quote: null, kind: 'text' })
 })
+t('贴纸后面带表情名（微信 4.x 会附 [哟] 这种文字）仍算贴纸', () => {
+  assert.equal(kindOfLabel('Animated Stickers [哟]'), 'sticker')
+  assert.equal(splitMessageLabel('Animated Stickers [哟]').kind, 'sticker')
+  assert.equal(splitMessageLabel('Animated Stickers [Animated Stickers]').kind, 'sticker')
+})
 t('中文标记也认', () => {
   assert.equal(kindOfLabel('[图片]'), 'image')
   assert.equal(kindOfLabel('[动画表情]'), 'sticker')

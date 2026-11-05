@@ -14,7 +14,8 @@
 const str = (v) => String(v ?? '').trim()
 
 const KIND_RULES = [
-  ['sticker', /^(?:\[(?:sticker|animated stickers?|表情|动画表情|贴纸|自定义表情)\]|animated stickers?)$/i],
+  // 微信 4.x 会在贴纸行后面附上表情名，如 "Animated Stickers [哟]"；尾注不影响类型。
+  ['sticker', /^(?:\[(?:sticker|animated stickers?|表情|动画表情|贴纸|自定义表情)\]|animated stickers?(?: \[[^\]]*\])?)$/i],
   ['image', /^\[(?:image|photo|图片|照片)\]$/i],
   ['file', /^\[(?:file|文件)\]$/i],
   ['voice', /^\[(?:voice|audio|语音)\]$/i],

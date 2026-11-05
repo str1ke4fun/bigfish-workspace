@@ -46,6 +46,7 @@ import { annotate, loadIndex, saveIndex } from './sticker-index.js'
 import { findStickers, formatFind, formatList, listStickers } from './sticker-query.js'
 import { scanStickers } from './sticker-scan.js'
 import { sendSticker, targetEntry } from './sticker-send.js'
+import { collectSticker } from './sticker-collect.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -316,6 +317,7 @@ function promptText() {
     '- wx_sticker_tag：给某张表情补图上文字、描述或标签，只改本地索引，不改微信收藏本身。',
     '- wx_sticker_send：按索引 id 发一张收藏表情到指定会话。表情格点下去就发送，没有二次确认；发送前会重新扫描面板、核对当前会话和格子 pHash，任何一步对不上就不点；发完核对消息区新增表情并比对 pHash，对不上就如实说没确认。id 只能从 wx_sticker_list / wx_sticker_find 里拿，别猜。',
     '- 表情描述来自面板小图，置信度低时不要当成确定事实；发送前先 wx_sticker_find 找候选，别按印象选 id。',
+    '- wx_sticker_collect：把当前会话（或指定白名单会话）里最近的一条表情收藏进微信收藏。只右键那条表情并点 Add Sticker，不发消息；先截图 OCR 确认菜单里真有 Add Sticker 才点，收藏后重扫收藏页确认。',
     '',
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
@@ -1254,6 +1256,46 @@ export function apply(ctx, config = {}) {
     }
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
     return { ok: true, chat: allowed.chat, ...r, outMsgId }
+  }
+
+  /**
+   * 把聊天里的一条表情收藏进微信收藏。只右键气泡、点 Add Sticker，不发送任何消息。
+   * 不指定 chat 时只处理当前打开的会话；指定了就必须在白名单里，不为了收藏去点陌生会话。
+   */
+  async function collectStickerFromChat({ chat = '', which = 1 } = {}) {
+    const p = policy()
+    if (!p.enabled) throw new Error(OFF)
+    const want = String(chat ?? '').trim()
+    let s = await look()
+    if (!s.parsed.ok) throw new Error('读不到微信窗口，不采集。')
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不采集。' + fresh.notice().trim())
+
+    if (want) {
+      const allowed = canSendWithPolicy(p, want)
+      if (!allowed.ok) throw new Error(allowed.why)
+      if (!sameName(s.parsed.current, allowed.chat)) {
+        const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+        if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不采集。`)
+        await run(['clean'], 30_000).catch(() => '')
+        fresh.reset()
+        await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+        await sleep(700)
+        s = await look({ confirm: false })
+        if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不采集。' + fresh.notice().trim())
+        if (!sameName(s.parsed.current, allowed.chat)) {
+          throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不采集。`)
+        }
+      }
+    }
+
+    const r = await collectSticker({
+      run,
+      dir: stickerDir,
+      look: () => look({ confirm: false }),
+      which,
+      log: (m) => console.log('[dsh-wx] 表情收藏：' + m),
+    })
+    return { ...r, chat: s.parsed.current }
   }
 
   // 说明只挂她一个 agent：会话 cwd 就是她的屋子
@@ -2532,6 +2574,31 @@ export function apply(ctx, config = {}) {
       return r.confirmed
         ? `已把表情 ${r.id} 发到「${r.chat}」。${r.receipt}${r.outMsgId ? ` 台账：${r.outMsgId}` : ''}`
         : `表情点击已执行，但没有确认发对了：${r.receipt}先用 wx_peek 看当前会话，别重复点。`
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_collect',
+    description: '把当前会话（或指定白名单会话）里最近的一条表情收藏进微信收藏。只右键那条表情并点 Add Sticker，不发消息；先截图 OCR 确认菜单里真有 Add Sticker 才点，收藏后重扫收藏页确认。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '可选：白名单里的会话全名；不传就用当前打开的会话' },
+        which: { type: 'number', description: '从最新往前数第几条表情，默认 1（最近一条）' },
+      },
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const r = await withSendLock(() => collectStickerFromChat({
+        chat: args?.chat,
+        which: args?.which,
+      }))
+      return r.confirmed
+        ? `已收藏「${r.chat}」里的这张表情（索引 ${r.id}）。${r.receipt}`
+        : `点了 Add Sticker，但没有确认收藏成功：${r.receipt}`
     },
   })
 
