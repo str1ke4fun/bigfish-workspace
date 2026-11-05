@@ -30,6 +30,7 @@ import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, 
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
+import { openChatHit } from './ear-open.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
 import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, pauseReason, previewSig, shouldEnqueue } from './capture.js'
 import { createCaptureQueue } from './capture-queue.js'
@@ -594,12 +595,15 @@ export function apply(ctx, config = {}) {
       })
       // 当前会话的最近一屏留给 maybeOcrCurrent 补发言人用。
       if (captured?.ok) lastCurrentCapture = { chat, chatId: directory.idFor(chat), messages }
+      // 留给耳朵判断「当前打开的会话有没有新入站消息」：侧栏没有未读也叫得醒。
+      return captured
     } catch (err) {
       if (!captureWarned) {
         captureWarned = true
         console.log('[dsh-wx] 台账记不下（不影响收发）：' + String(err?.message ?? err).slice(0, 120))
       }
     }
+    return null
   }
 
   // 侧栏预览入账：只读当前列表，不点开、不滚动、不清未读。
@@ -846,7 +850,7 @@ export function apply(ctx, config = {}) {
     }
     writeHealth()
     mergeDirectory(s.parsed, s.source === 'ocr' ? 'ocr' : 'tree')
-    if (capture) captureCurrent(s, policy())
+    if (capture) s.capturedCurrent = captureCurrent(s, policy())
     return s
   }
 
@@ -1985,7 +1989,20 @@ export function apply(ctx, config = {}) {
         ? ocrMentionHits(parsed)
         : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats))
         .filter((m) => !isIgnoredChat(m.chat, p.ignoreChats))
-      // 后台采集补扫到的 @ 也参与投递：采集可能已经清掉未读，侧栏会看不到这条。
+      // 当前打开的会话没有未读角标时，侧栏判据看不到它新收到的消息。
+      // captureCurrent 这一轮新记下的入站正文如果和侧栏 preview 对得上，就补一条命中；
+      // 先进 pendingCaptureHits，hostBusy / 15 秒节流 / 投递失败时下一轮还能重试。
+      if (tree.ok && !ocrRecovered) {
+        const openRow = (parsed.chats ?? []).find((c) => sameName(c.name, parsed.current)) ?? null
+        const openHit = openChatHit({
+          chat: parsed.current, row: openRow, captured: s.capturedCurrent, policy: p,
+        })
+        if (openHit && !pendingCaptureHits.some((h) => h.key === openHit.key)) {
+          pendingCaptureHits.push(openHit)
+          if (pendingCaptureHits.length > 20) pendingCaptureHits.shift()
+        }
+      }
+      // 后台采集补扫到的 @ / 当前会话补的命中参与投递：采集可能已经清掉未读，侧栏会看不到。
       // 服务号即使在旧队列里残留了命中，也不投递。
       const deliverableCaptureHits = pendingCaptureHits.filter((m) => !isIgnoredChat(m.chat, p.ignoreChats))
       const mergedHits = new Map()
