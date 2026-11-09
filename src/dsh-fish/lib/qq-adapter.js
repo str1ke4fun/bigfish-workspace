@@ -385,6 +385,18 @@ export function qqAdapterStatus() {
   return { legacy: [...legacyTools].sort() }
 }
 
+/**
+ * 观测台用的惰性视图：每次读 `legacy` 都取当前集合并排序。
+ *
+ * 不能直接传 `qqAdapterStatus()` 的返回值——那是在插件启动时取的一次数组副本，
+ * 而 legacy 只在运行期 `tools/post-execute` 里才写入，快照会永远是空的。
+ */
+export function qqExposure() {
+  return {
+    get legacy() { return qqAdapterStatus().legacy },
+  }
+}
+
 /** 仅测试用：清空 legacy 记录。 */
 export function resetQqAdapterStatus() {
   legacyTools.clear()

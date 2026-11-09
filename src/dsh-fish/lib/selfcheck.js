@@ -300,7 +300,7 @@ export async function runChecks(o = {}) {
     const artifacts = Number(ledgerStatus.artifacts ?? 0) || 0
     push('tool-ledger', '工具台账', {
       ok: ledgerStatus.ok !== false && failed === 0,
-      detail: `已写 ${written} 条，失败 ${failed} 条，artifact ${artifacts} 个${legacyText}`,
+      detail: `本次运行累计：已写 ${written} 条，失败 ${failed} 条，artifact ${artifacts} 个${legacyText}`,
     })
   } else {
     push('tool-ledger', '工具台账', { ok: true, detail: `台账没挂上${legacyText}` })

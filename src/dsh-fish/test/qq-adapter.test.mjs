@@ -4,6 +4,7 @@ import {
   projectQqTool,
   registerQqAdapter,
   qqAdapterStatus,
+  qqExposure,
   resetQqAdapterStatus,
 } from '../lib/qq-adapter.js'
 
@@ -161,6 +162,20 @@ test('未知 qq_* 进 legacy，监听器原样放行', async () => {
   assert.equal(decision.kind, 'accept')
   assert.equal(Object.hasOwn(decision, 'content'), false)
   assert.deepEqual(qqAdapterStatus(), { legacy: ['qq_mystery'] })
+  resetQqAdapterStatus()
+})
+
+test('qqExposure 是惰性视图：同一对象能看到运行期新增的 legacy 名字', async () => {
+  resetQqAdapterStatus()
+  const exp = qqExposure()
+  assert.deepEqual(exp.legacy, [], '启动时还没有 legacy')
+
+  const listeners = []
+  registerQqAdapter({ on: (ev, fn) => { listeners.push([ev, fn]); return () => {} } }, { core: { surface: { current: () => 'qq' } } })
+  const fn = listeners.find(([ev]) => ev === 'tools/post-execute')[1]
+  await fn({ name: 'qq_late', agent: {} }, { isError: false, content: [] }, () => Promise.resolve({ kind: 'accept' }))
+
+  assert.ok(exp.legacy.includes('qq_late'), '同一个 exposure 对象必须看到运行期新名字，不能是启动时快照')
   resetQqAdapterStatus()
 })
 

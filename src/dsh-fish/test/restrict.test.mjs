@@ -400,6 +400,56 @@ test('reveal 把 state.hostNames 传给 loadTargets，重复 load 是幂等的',
   assert.equal(a.calls.length, callsBefore, '没有新名字就不该重下 restrict')
 })
 
+test('revealed 计数：首次成功 reveal N 个新名字就增加 N', () => {
+  const before = readRestrictState().revealed
+  const ctx = fakeCtx()
+  const surface = { current: () => 'wx' }
+  const policy = {
+    resolveAllow: ({ revealed }) => ['growth_commit', ...revealed],
+    loadTargets: ({ names }) => ({ ok: true, names }),
+  }
+  const a = fakeAgent('/her')
+  registerToolRestrict(ctx, { herDir: '/her', surface, policy, caps: {}, enabled: true })
+  ctx.emit('agent/created', { agent: a.agent })
+
+  const r = revealTools(a.agent, ['wx_see', 'wx_hear'])
+  assert.equal(r.ok, true)
+  assert.equal(readRestrictState().revealed, before + 2, '两个新名字应各计一次')
+})
+
+test('revealed 计数：重复 reveal、loadTargets 失败、restrict 失败都不增加', () => {
+  const ctx = fakeCtx()
+  const surface = { current: () => 'wx' }
+  let restrictFails = false
+  const policy = {
+    resolveAllow: ({ revealed }) => ['growth_commit', ...revealed],
+    loadTargets: ({ names }) => names.includes('wx_bad')
+      ? { ok: false, why: '这条路上打不开' }
+      : { ok: true, names },
+  }
+  const a = fakeAgent('/her')
+  a.agent.ctx.tools.restrict = (filter) => {
+    if (restrictFails) throw new Error('restrict 没挂上')
+    a.calls.push(filter)
+    return () => {}
+  }
+  registerToolRestrict(ctx, { herDir: '/her', surface, policy, caps: {}, enabled: true })
+  ctx.emit('agent/created', { agent: a.agent })
+  assert.equal(revealTools(a.agent, ['wx_see']).ok, true)
+  const afterFirst = readRestrictState().revealed
+
+  const repeated = revealTools(a.agent, ['wx_see'])
+  assert.equal(repeated.ok, true)
+  assert.equal(readRestrictState().revealed, afterFirst, '重复 reveal 已开的名字不计数')
+
+  assert.equal(revealTools(a.agent, ['wx_bad']).ok, false)
+  assert.equal(readRestrictState().revealed, afterFirst, 'loadTargets 拒绝不计数')
+
+  restrictFails = true
+  assert.equal(revealTools(a.agent, ['wx_hear']).ok, false)
+  assert.equal(readRestrictState().revealed, afterFirst, 'restrict 失败回滚后不计数')
+})
+
 test('启动期宿主名单还没有自有工具时，自有工具仍要并进 allow（回归 I1）', () => {
   // 真实启动顺序：registerToolRestrict → bootstrapHome 建会话（agent/created 在此同步
   // 发出）→ 本插件才注册自己的工具。所以这一瞬间宿主 view 的 restrictableNames 里

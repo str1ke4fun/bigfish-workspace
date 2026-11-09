@@ -27,7 +27,7 @@ import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
 import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
 import { provideFishCore } from './core-service.js'
-import { registerQqAdapter, qqAdapterStatus } from './qq-adapter.js'
+import { registerQqAdapter, qqExposure } from './qq-adapter.js'
 import { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry } from './tool-policy.js'
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
@@ -124,8 +124,15 @@ export function apply(ctx, baseConfig = {}) {
         surfaceOf: (agent) => fishCore?.surface?.current?.(agent),
       })
       const offLedger = ledger.register(ctx)
-      if (typeof offLedger === 'function') disposers.push(offLedger)
+      // register 自己吞错并 markFailed：此时台账不可用，置回 null，让自检报
+      // 「台账没挂上」，而不是 written:0 的假绿。
+      if (ledger.status().ok === false) {
+        ledger = null
+      } else if (typeof offLedger === 'function') {
+        disposers.push(offLedger)
+      }
     } catch (err) {
+      ledger = null
       logger.warn('[dsh-fish] 工具台账没挂上', err?.message ?? err)
     }
 
@@ -310,7 +317,7 @@ export function apply(ctx, baseConfig = {}) {
       surface: fishCore?.surface ?? null,
       policy,
       ledger,
-      qq: qqAdapterStatus(),
+      qq: qqExposure(),
     }
     const obs = registerObserve(ctx, { root, version: VERSION, exposure })
     if (obs?.dispose) disposers.push(() => obs.dispose())

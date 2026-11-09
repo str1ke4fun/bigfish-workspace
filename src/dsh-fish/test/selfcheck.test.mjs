@@ -150,6 +150,7 @@ test('自检显示面登记、策略分布与台账，legacy 工具逐个列名'
     const ledger = ITEM(r, 'tool-ledger')
     assert.ok(ledger, '要有一项工具台账')
     assert.equal(ledger.ok, true)
+    assert.match(ledger.detail, /本次运行累计/)
     assert.match(ledger.detail, /已写 3/)
     assert.match(ledger.detail, /artifact 1/)
     assert.match(ledger.detail, /qq_react/)
