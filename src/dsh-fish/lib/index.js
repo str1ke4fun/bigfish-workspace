@@ -27,6 +27,7 @@ import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
 import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
 import { provideFishCore } from './core-service.js'
+import { registerQqAdapter } from './qq-adapter.js'
 import { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry } from './tool-policy.js'
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
@@ -199,6 +200,20 @@ export function apply(ctx, baseConfig = {}) {
     if (fishCore) {
       fishCore.tools.reveal = (agent, names) => revealTools(agent, names)
       fishCore.tools.state = (agent) => getAgentToolState(agent)
+    }
+
+    // ---- QQ（OneBot）vendor 工具返回投影 ----
+    // 宿主 `tools/post-execute` 是 waterfall：只替换 content，不碰 value/schema。
+    // 监听器自己 try/catch，任何异常都 next() —— 抛错会把成功调用变成 isError。
+    // 面判定靠 fishCore.surface，所以必须排在 registerToolRestrict 之后。
+    try {
+      const offQq = registerQqAdapter(ctx, {
+        core: fishCore,
+        log: (...a) => logger.warn(...a),
+      })
+      if (typeof offQq === 'function') disposers.push(offQq)
+    } catch (err) {
+      logger.warn('[dsh-fish] QQ 投影适配没挂上', err?.message ?? err)
     }
 
     // ---- 她的身份：走 system prompt，不进对话历史（2026-10-25 改）----
