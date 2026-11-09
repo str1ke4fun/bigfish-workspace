@@ -49,7 +49,7 @@ import { scanStickers } from './sticker-scan.js'
 import { sendSticker, targetEntry } from './sticker-send.js'
 import { collectSticker } from './sticker-collect.js'
 import { normalizeKeyword, searchSticker } from './sticker-search.js'
-import { projectWxContext, projectWxOcr, projectWxPeek } from './project.js'
+import { lazyRender, projectWxContext, projectWxOcr, projectWxPeek } from './project.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -491,17 +491,12 @@ export function apply(ctx, config = {}) {
   const reg = (tool) => {
     const execute = tool.execute
     const base = { ...tool, execute: (...a) => withGuiLock(() => execute(...a)) }
-    // 有投影且 dsh-fish 的包装器在场才包；缺席时保持完全旧的注册方式，
-    // 不依赖 dsh-fish 是否安装、也不依赖两个插件的加载顺序。
-    let def = stripProject(base)
-    if (tool.project) {
-      try {
-        const core = ctx.get?.('fishCore')
-        if (core?.tools?.wrapRender) def = core.tools.wrapRender(base, { core })
-      } catch {
-        // 拿不到 fishCore：照旧注册，只是不给模型投影。
-      }
-    }
+    // 有投影的工具一律注册成懒投影：fishCore 可能在本插件 apply() 之后才出现
+    //（profile 里 dsh-wx 先于 dsh-fish 加载），所以把判断推迟到 render。
+    // base 必须保留 project，懒包装器才能算出投影。
+    const def = tool.project
+      ? { ...stripProject(base), project: tool.project, output: { ...(base.output ?? {}), render: lazyRender(ctx, base) } }
+      : stripProject(base)
     disposers.push(ctx.tools.register(def))
   }
 

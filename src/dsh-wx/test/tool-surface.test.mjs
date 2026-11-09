@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { projectWxContext, projectWxOcr, projectWxPeek } from '../lib/project.js'
+import { lazyRender, projectWxContext, projectWxOcr, projectWxPeek } from '../lib/project.js'
 
 test('wx_context 投影去掉匹配原因/来源/置信度/msgId', () => {
   const raw = '[上下文 1/3] 群名｜阿明｜2026-11-09 12:30\n「晚上来吗」\n匹配：关键词 + 同线程；来源：台账 msg_1；置信度：high'
@@ -54,4 +54,47 @@ test('wx_peek 投影去掉 box=[…] 并截断 12000 字', () => {
   assert.match(text, /晚上来吗/)
   assert.ok(text.length <= 12_040, `长度应为 12000 左右，实际 ${text.length}`)
   assert.match(text, /截断/)
+})
+
+test('wx_peek 的 OCR JSON 投影成可读文本，不泄露坐标与置信度', () => {
+  const raw = JSON.stringify({
+    source: 'ocr', current: '', currentVerified: false,
+    chats: [{ name: '测试群', unread: 2, mention: true, preview: '晚上来吗', box: [1, 2, 3, 4], nameConfidence: 0.9 }],
+    messages: [{ text: '明天见', confidence: 0.8, verified: false }],
+    note: 'OCR cannot verify the active conversation or authorize sending.',
+  })
+  const text = projectWxPeek(raw)
+  assert.match(text, /测试群/)
+  assert.match(text, /晚上来吗/)
+  assert.match(text, /明天见/)
+  assert.equal(text.includes('box'), false)
+  assert.equal(text.includes('Confidence'), false)
+  assert.equal(text.includes('0.9'), false)
+  assert.equal(text.includes('0.8'), false)
+  assert.equal(text.includes('OCR cannot verify'), false)
+  assert.equal(text.includes('{'), false)
+  assert.equal(text.includes('retcode'), false)
+})
+
+test('lazyRender 在 core 晚到时仍能接上投影', () => {
+  let core = null
+  const ctx = { get: (k) => (k === 'fishCore' ? core : undefined) }
+  const base = {
+    name: 'wx_peek',
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: String(v) }] },
+    project: (out) => ({ text: '投影：' + out }),
+    execute: async () => 'raw',
+  }
+  const render = lazyRender(ctx, base)
+
+  // core 还没出现：走旧渲染。
+  assert.equal(render({}, 'raw')[0].text, 'raw')
+
+  // core 晚到：同一个 render 下一次调用就接上投影。
+  core = {
+    tools: {
+      wrapRender: (b) => ({ output: { render: (_a, v) => [{ type: 'text', text: b.project(v).text }] } }),
+    },
+  }
+  assert.equal(render({}, 'raw')[0].text, '投影：raw')
 })

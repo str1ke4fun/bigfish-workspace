@@ -68,11 +68,84 @@ export function projectWxOcr(raw) {
   return '[屏幕上看到]\n' + (lines.length ? lines.join('\n') : '（没有识别到文字）')
 }
 
+/** wx_peek 在 OCR 模式下返回 JSON：转成模型能读的几行，字段全部脱敏。 */
+function renderPeekOcr(data) {
+  if (!data || typeof data !== 'object') return null
+  const chats = Array.isArray(data.chats) ? data.chats : []
+  const messages = Array.isArray(data.messages) ? data.messages : []
+  if (!Array.isArray(data.chats) && !Array.isArray(data.messages)) return null
+  const lines = ['[屏幕上看到（OCR 未校验）]']
+  for (const chat of chats) {
+    if (!chat || typeof chat !== 'object') continue
+    const name = String(chat.name ?? '').trim()
+    let line = '会话：' + (name || '（未识别）')
+    const unread = Number(chat.unread)
+    if (Number.isFinite(unread) && unread > 0) line += `（未读 ${unread}）`
+    if (chat.mention === true) line += '（@我）'
+    const preview = String(chat.preview ?? '').trim()
+    if (preview) line += '｜' + preview
+    lines.push(line)
+  }
+  if (messages.length) {
+    lines.push('最近消息：')
+    for (const message of messages) {
+      if (!message || typeof message !== 'object') continue
+      const text = String(message.text ?? '').trim()
+      if (text) lines.push(text)
+    }
+  }
+  return lines.join('\n')
+}
+
 /**
  * wx_peek：无障碍树每行都带 box=[…] 屏幕坐标。坐标是给 wx_click 用的，
  * 模型要的是名字、预览和消息文字；整段可能有几十行，超长截断。
+ * OCR 分支返回的是 JSON，同样只留可读文字。
  */
 export function projectWxPeek(raw) {
-  const text = String(raw ?? '').replace(/\s*box=\[[^\]]*\]/g, '')
-  return cut(text, PEEK_LIMIT)
+  const text = String(raw ?? '')
+  const trimmed = text.trim()
+  if (trimmed.startsWith('{')) {
+    try {
+      const rendered = renderPeekOcr(JSON.parse(trimmed))
+      if (rendered) return cut(rendered, PEEK_LIMIT)
+    } catch {
+      // 解析失败：退回普通文本路径。
+    }
+  }
+  return cut(text.replace(/\s*box=\[[^\]]*\]/g, ''), PEEK_LIMIT)
+}
+
+/**
+ * 懒投影 render：插件加载顺序不确定，dsh-fish 的 fishCore 可能在 dsh-wx 的
+ * apply() 之后才出现。所以不在注册时判断，而是在每次 render 时现取：
+ *   - 拿到 core 的包装器后缓存委托函数，之后直接走它；
+ *   - 没拿到（或包装失败）就退回 base 原来的 render，下次继续重试。
+ *
+ * 纯函数，不 import 任何东西、不改 base、不做 I/O。
+ */
+export function lazyRender(ctx, base) {
+  let delegate
+  return function render(args, result) {
+    if (!delegate) {
+      try {
+        const core = ctx?.get?.('fishCore')
+        if (core?.tools?.wrapRender) {
+          delegate = core.tools.wrapRender(base, { core }).output.render
+        }
+      } catch {
+        // core 解析失败：这一轮照旧渲染，不缓存失败。
+      }
+    }
+    if (delegate) {
+      try {
+        return delegate(args, result)
+      } catch {
+        // 委托失败也退回旧渲染。
+      }
+    }
+    const legacy = base?.output?.render
+    if (typeof legacy === 'function') return legacy(args, result)
+    return [{ type: 'text', text: String(result ?? '') }]
+  }
 }
