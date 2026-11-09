@@ -49,6 +49,7 @@ import { scanStickers } from './sticker-scan.js'
 import { sendSticker, targetEntry } from './sticker-send.js'
 import { collectSticker } from './sticker-collect.js'
 import { normalizeKeyword, searchSticker } from './sticker-search.js'
+import { projectWxContext, projectWxOcr, projectWxPeek } from './project.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -473,12 +474,35 @@ export function apply(ctx, config = {}) {
   })
 
   const disposers = []
+  // 预分配的微信会话 id：宿主在 create 期间就触发 agent/created，那时 surface
+  // 登记必须已经能命中。本地集合先兜底，fishCore 在场时再写进面注册表。
+  const reservedWxSessions = new Set()
+  const reserveWxSession = (id) => {
+    const s = String(id ?? '')
+    if (!s) return
+    reservedWxSessions.add(s)
+    try {
+      ctx.get?.('fishCore')?.surface?.reserve?.(s, 'wx')
+    } catch {
+      // fishCore 缺席 / 加载顺序没轮到时，本地集合仍然可用。
+    }
+  }
+  const stripProject = ({ project: _project, ...plain }) => plain
   const reg = (tool) => {
     const execute = tool.execute
-    disposers.push(ctx.tools.register({
-      ...tool,
-      execute: (...a) => withGuiLock(() => execute(...a)),
-    }))
+    const base = { ...tool, execute: (...a) => withGuiLock(() => execute(...a)) }
+    // 有投影且 dsh-fish 的包装器在场才包；缺席时保持完全旧的注册方式，
+    // 不依赖 dsh-fish 是否安装、也不依赖两个插件的加载顺序。
+    let def = stripProject(base)
+    if (tool.project) {
+      try {
+        const core = ctx.get?.('fishCore')
+        if (core?.tools?.wrapRender) def = core.tools.wrapRender(base, { core })
+      } catch {
+        // 拿不到 fishCore：照旧注册，只是不给模型投影。
+      }
+    }
+    disposers.push(ctx.tools.register(def))
   }
 
   // ---- 定时提醒：一次性许可 + 「最近把谁叫醒过」 ----
@@ -1477,8 +1501,22 @@ export function apply(ctx, config = {}) {
     if (wxSessionId) return wxSessionId
     const sc = controller()
     if (!sc?.create) throw new Error('sessionController 还没起来（等工作区）')
-    const created = await sc.create({ cwd: HER_DIR })
-    const id = String(created?.sessionId ?? created?.id ?? '')
+    // 先预分配 id 再建会话：宿主可能在 create 还没返回时就触发 agent/created，
+    // 面注册表必须在那之前就认得这个会话。宿主不认 sessionId 时回退旧调用。
+    const requested = randomUUID()
+    reserveWxSession(requested)
+    let created = null
+    try {
+      created = await sc.create({ cwd: HER_DIR, sessionId: requested })
+    } catch {
+      created = null
+    }
+    let id = String(created?.sessionId ?? created?.id ?? '')
+    if (!id) {
+      created = await sc.create({ cwd: HER_DIR })
+      id = String(created?.sessionId ?? created?.id ?? '')
+    }
+    reserveWxSession(id)
     if (!id) throw new Error('宿主建了会话但没给 id')
     wxSessionId = id
     saveWxSession(id)
@@ -1503,8 +1541,20 @@ export function apply(ctx, config = {}) {
     if (!sc?.create) return main
     if (sessions.list().length >= sessions.limit - 1) return main
     try {
-      const created = await sc.create({ cwd: HER_DIR })
-      const id = String(created?.sessionId ?? created?.id ?? '')
+      const requested = randomUUID()
+      reserveWxSession(requested)
+      let created = null
+      try {
+        created = await sc.create({ cwd: HER_DIR, sessionId: requested })
+      } catch {
+        created = null
+      }
+      let id = String(created?.sessionId ?? created?.id ?? '')
+      if (!id) {
+        created = await sc.create({ cwd: HER_DIR })
+        id = String(created?.sessionId ?? created?.id ?? '')
+      }
+      reserveWxSession(id)
       if (!id) return main
       const r = sessions.assign(chatId, id, chatName)
       if (!r.ok) return main
@@ -1680,6 +1730,8 @@ export function apply(ctx, config = {}) {
     inboxSummary: (opts) => contextStore.summary(opts),
     inbox: () => contextStore.inbox(),
     isWxSession: (sessionId) => isWxSession(sessionId),
+    // 会话还在创建中 / 尚未落到 wxSessionId 或会话池时也能认出来。
+    isReservedSession: (id) => reservedWxSessions.has(String(id ?? '')),
     currentChat: (sessionId) => (isWxSession(sessionId)
       ? (chatNameOfSession(sessionId) || recentChats().at(-1) || '')
       : ''),
@@ -2188,6 +2240,7 @@ export function apply(ctx, config = {}) {
     description: '读取微信当前界面：当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息（无发言人）、可点击元素。坐标为屏幕绝对坐标，可直接用于 wx_click。树落后于屏幕时，返回末尾带 [提示]。',
     parameters: { type: 'object', properties: {} },
     output: textOut,
+    project: (out) => ({ text: projectWxPeek(out) }),
     isConcurrencySafe: () => true,
     execute: async (_args, exec) => {
       deny(exec)
@@ -2394,6 +2447,7 @@ export function apply(ctx, config = {}) {
       required: ['task_id'],
     },
     output: textOut,
+    project: (out) => ({ text: projectWxContext(out) }),
     isConcurrencySafe: () => true,
     execute: async (args, exec) => {
       deny(exec)
@@ -2494,6 +2548,7 @@ export function apply(ctx, config = {}) {
     description: '只读 OCR 观察微信窗口，返回侧栏识别行和消息区文字。OCR 不证明当前会话，不能用作发送授权。',
     parameters: { type: 'object', properties: {} },
     output: textOut,
+    project: (out) => ({ text: projectWxOcr(out) }),
     isConcurrencySafe: () => true,
     execute: async (_args, exec) => {
       deny(exec)
