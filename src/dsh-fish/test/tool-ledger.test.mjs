@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,6 +41,36 @@ test('失败调用也写台账，error 进 error 字段', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('失败调用里的 error 文本也脱敏', async () => {
+  const root = await tmpRoot()
+  try {
+    const ledger = createToolLedger({ root, guard })
+    const entry = await ledger.record(
+      { name: 'http_get', arguments: {}, agent: { session: { header: { id: 's1' } } } },
+      { isError: true, error: { message: 'HTTP 401 https://example.test?token=sk-abcdefabcdef' }, content: [] },
+      { surface: 'wx' },
+    )
+    assert.equal(entry.error, '[redacted]')
+    assert.equal(entry.redacted, true)
+    assert.equal(JSON.stringify(entry).includes('sk-abcdefabcdef'), false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('正常结果里的 code 也脱敏', async () => {
+  const root = await tmpRoot()
+  try {
+    const ledger = createToolLedger({ root, guard })
+    const entry = await ledger.record(
+      { name: 'wx_context', arguments: {}, agent: { session: { header: { id: 's1' } } } },
+      { isError: false, value: { ok: true, code: 'token=sk-abcdefabcdef' }, content: [] },
+      { surface: 'wx' },
+    )
+    assert.equal(entry.code, '[redacted]')
+    assert.equal(typeof entry.code, 'string')
+    assert.equal(JSON.stringify(entry).includes('sk-abcdefabcdef'), false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('密钥被脱敏，redacted=true', async () => {
   const root = await tmpRoot()
   try {
@@ -66,6 +97,33 @@ test('超过 32KB 的结果落 artifact，台账只留 sha256', async () => {
     assert.equal(typeof entry.artifact, 'string')
     assert.equal(typeof entry.bytes, 'number')
     assert.match(entry.sha256, /^[0-9a-f]{64}$/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('content 与 modelText 超过上限也落 artifact', async () => {
+  const root = await tmpRoot()
+  try {
+    const ledger = createToolLedger({ root, guard, maxInlineBytes: 64 })
+    const big = 'x'.repeat(200)
+    const entry = await ledger.record(
+      { name: 'wx_ocr', arguments: {}, agent: { session: { header: { id: 's1' } } } },
+      { isError: false, value: { ok: true }, content: [{ type: 'text', text: big }] },
+      { surface: 'wx' },
+    )
+    const cases = [
+      ['content', 'content', [{ type: 'text', text: big }]],
+      ['modelText', 'modelText', big],
+    ]
+    for (const [field, suffix, expected] of cases) {
+      const ref = entry[field]
+      assert.equal(typeof ref, 'object')
+      assert.equal(ref.artifact, join(root, 'tool-ledger', 'artifacts', `${entry.id}.${suffix}.json`))
+      const text = await readFile(ref.artifact, 'utf8')
+      assert.deepEqual(JSON.parse(text), expected)
+      assert.equal(ref.bytes, Buffer.byteLength(text, 'utf8'))
+      assert.equal(ref.sha256, createHash('sha256').update(text).digest('hex'))
+    }
+    assert.equal(ledger.status().artifacts, 2)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

@@ -66,7 +66,7 @@ function errorTextOf(result) {
  * @param {{ looksLikeSecret: (text: string) => { hit: boolean, why?: string } }} [opts.guard]
  * @param {Function} [opts.log] 失败日志（宿主 logger.warn 或普通函数）
  * @param {() => number} [opts.now] 时钟，测试可注入
- * @param {number} [opts.maxInlineBytes] value 超过多少字节落 artifact
+ * @param {number} [opts.maxInlineBytes] value / content / modelText 超过多少字节落 artifact
  * @param {(agent: any) => string|null} [opts.surfaceOf] 面板判定（record 未显式传 surface 时用）
  */
 export function createToolLedger({
@@ -161,24 +161,32 @@ export function createToolLedger({
 
     const isError = result?.isError === true
     const ok = !isError && rawValue?.ok !== false
-    const code = rawValue?.code ?? result?.error?.info?.code ?? ''
-    const error = isError ? errorTextOf(result) : null
+    const rawCode = value?.code ?? sanitize(result?.error?.info?.code ?? '', redactState)
+    const code = rawCode == null ? '' : String(rawCode)
+    const error = isError ? sanitize(errorTextOf(result), redactState) : null
 
     const handles = sanitize(rawValue?.handles ?? [], redactState)
     const refs = sanitize(rawValue?.refs ?? {}, redactState)
     const effects = sanitize(rawValue?.effects ?? null, redactState)
 
     // 大字段：先脱敏，再算 sha256（对脱敏后的字节），原始值绝不落盘。
-    const valueJson = JSON.stringify(value)
-    let entryValue = value
-    let artifact = null
-    if (typeof valueJson === 'string' && Buffer.byteLength(valueJson, 'utf8') > maxBytes) {
-      const bytes = Buffer.byteLength(valueJson, 'utf8')
-      const sha256 = sha256Hex(valueJson)
-      const artifactPath = join(p.toolLedgerArtifacts, `${id}.json`)
-      artifact = { path: artifactPath, json: valueJson, bytes, sha256 }
-      entryValue = { artifact: artifactPath, bytes, sha256 }
+    // value / content / modelText 各自判断，一次调用可产生多个 artifact。
+    const artifacts = []
+
+    function offload(data, suffix) {
+      const json = JSON.stringify(data)
+      if (typeof json !== 'string') return data
+      const bytes = Buffer.byteLength(json, 'utf8')
+      if (bytes <= maxBytes) return data
+      const artifactPath = join(p.toolLedgerArtifacts, suffix ? `${id}.${suffix}.json` : `${id}.json`)
+      const sha256 = sha256Hex(json)
+      artifacts.push({ path: artifactPath, json, bytes, sha256 })
+      return { artifact: artifactPath, bytes, sha256 }
     }
+
+    const entryValue = offload(value, '')
+    const entryContent = offload(content, 'content')
+    const entryModelText = offload(modelText, 'modelText')
 
     const entry = {
       v: LEDGER_VERSION,
@@ -194,8 +202,8 @@ export function createToolLedger({
       code,
       durationMs: durationFor(extra),
       value: entryValue,
-      content,
-      modelText,
+      content: entryContent,
+      modelText: entryModelText,
       handles,
       refs,
       effects,
@@ -203,21 +211,23 @@ export function createToolLedger({
       projectionVersion: PROJECTION_VERSION,
     }
 
-    if (artifact) {
-      entry.artifact = artifact.path
-      entry.bytes = artifact.bytes
-      entry.sha256 = artifact.sha256
+    if (entryValue !== value) {
+      entry.artifact = entryValue.artifact
+      entry.bytes = entryValue.bytes
+      entry.sha256 = entryValue.sha256
     }
 
-    return { entry, artifact }
+    return { entry, artifacts }
   }
 
-  async function persist(entry, artifact) {
-    if (artifact) {
+  async function persist(entry, artifacts) {
+    if (artifacts.length > 0) {
       await fs.mkdir(p.toolLedgerArtifacts, { recursive: true, mode: 0o700 })
       await fs.chmod(p.toolLedgerArtifacts, 0o700).catch(() => {})
-      await fs.writeFile(artifact.path, artifact.json, { encoding: 'utf8', mode: 0o600 })
-      await fs.chmod(artifact.path, 0o600).catch(() => {})
+      for (const artifact of artifacts) {
+        await fs.writeFile(artifact.path, artifact.json, { encoding: 'utf8', mode: 0o600 })
+        await fs.chmod(artifact.path, 0o600).catch(() => {})
+      }
     }
 
     await fs.mkdir(p.toolLedgerDir, { recursive: true, mode: 0o700 })
@@ -253,9 +263,9 @@ export function createToolLedger({
     }
 
     return enqueue(async () => {
-      await persist(built.entry, built.artifact)
+      await persist(built.entry, built.artifacts)
       state.written++
-      if (built.artifact) state.artifacts++
+      state.artifacts += built.artifacts.length
       return built.entry
     }).then(
       (entry) => entry,
