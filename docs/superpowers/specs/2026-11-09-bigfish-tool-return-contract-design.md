@@ -82,7 +82,7 @@ UI 投影第一版可以只保留结构，不接观测台；台账和模型投�
 
 选择性透传不是“越少越好”，而是**刚好够下一步用**。
 
-长素材要截断时，保留开头和结尾，给模型一句“后面还有 N 条/行”；完整内容进台账。不要只给开头，也不要把整段 OCR/聊天历史塞进去。
+长素材要截断时，按素材类型选策略：OCR/长文保留开头和结尾，给模型一句“后面还有 N 条/行”；聊天记录/群历史保留最近 N 条（她要接的是最近的话），更早的用一句“前面还有 N 条”带过；完整内容进台账。不要只给开头，也不要把整段 OCR/聊天历史塞进去。
 
 ## 3. 调研二：结构化与人设
 
@@ -141,6 +141,7 @@ UI 投影第一版可以只保留结构，不接观测台；台账和模型投�
 2. **必须用 id 时，只给必要的。** `her_recall` 给 `ev_…`（revise/narration 要指回去）；`her_reminders` 给提醒 id（取消要用）；`wx_sticker_list/find` 给 sticker id（tag/send 要用）。
 3. **Handle 和正文分开。** 列表/素材类结果的正文里不出现 id；最后一行写 `（编号：1=ev_…，2=ev_…）`。单条写操作（`growth_commit`、`her_leave`）的回执可以带一个 id，因为下一步 revise 要用它。
 4. **优先让写工具接受人话参数。** 如果 `wx_sticker_send` 能接受“第 1 个 / 猫无语”，就不必把 id 交给模型。第一版可以先保留 id handle，后续再改参数。
+5. **三态都走同一套 footer。** 单条写操作可以内联一个 handle；列表/搜索用 `[{label,value}]` 数组；失败时如果下一步仍要用 handle（例如取消提醒、重试同一条），也保留 footer，不要把 id 塞进失败文案里。
 
 ### 3.6 改前 / 改后
 
@@ -158,12 +159,12 @@ UI 投影第一版可以只保留结构，不接观测台；台账和模型投�
 [微信] 现在停在「群名」。侧栏有 3 个会话：
 - 「群名」3 条未读，最后一句：晚上来吗
 - 「阿明」无未读，最后一句：文件发你了
-当前对话最后几条：
-阿明：晚上来吗
-你：看情况
+当前对话最后几条（发言人未识别）：
+晚上来吗
+看情况
 ```
 
-坐标、box、置信度、树健康只在台账里；树落后时加一句 `[屏幕可能慢半拍]`。
+`wx_peek` 的消息树没有发言人字段（`index.js:1562` 明确写了“消息列表没有发言人”，`sender` 可能是 `null`）。能可靠区分“你/对方”时才标；区分不了就写“发言人未识别”，不要把侧栏会话名当成发言人，也不要按顺序猜“阿明说的”。坐标、box、置信度、树健康只在台账里；树落后时加一句 `[屏幕可能慢半拍]`。
 
 **`wx_context`**
 
@@ -248,16 +249,19 @@ UI 投影第一版可以只保留结构，不接观测台；台账和模型投�
 }
 ```
 
-`project(result, args, ctx)` 是唯一的模型投影来源，纯函数，返回：
+宿主把 handler 返回的整个对象称为 `value`；台账里的 `value` 就是上面这个信封，`data` 是其中的业务字段。
+
+`project(result, args, view)` 是唯一的模型投影来源，纯函数；它在 `execute` 里只算一次，结果挂在 `result[PROJECTION]`。宿主 `output.render(args, value)` 拿不到 `exec`/`ctx`，所以 surface、sessionId、当前时间、图片路由这些上下文必须在 `execute` 里冻结进 `view`，不能等到 `render` 再算。返回：
 
 ```js
-{ text: string, handles?: Record<string,string>, blocks?: ContentBlock[] }
+{ text: string, handles?: Array<{ label: string, value: string }>, blocks?: ContentBlock[] }
 ```
 
 - `text` 只给模型；不写她的台词。
-- `handles` 只放下一步必需的 id；由包装器统一渲染成末尾一行 `（编号：1=…，2=…）`，`text` 里不重复写 id。
-- `blocks` 用于图片等非文本内容；有图片时先放图片块，再放文本；没有就省略。
+- `handles` 只放下一步必需的 id，形状是 `[{ label: '1', value: 'ev_…' }]`，不是 `Record`。用 `Object.entries` 遍历 `Record` 会把字段名（`eventId`）带进 footer，模型会照着念；改成数组后 footer 只渲染 `label=value`。由包装器统一渲染成末尾一行 `（编号：1=ev_…，2=ev_…）`，`text` 里不重复写 id。
+- `blocks` 用于图片等非文本内容；有图片时先放图片块，再放文本；没有就省略。图片块要 `{ type: 'image', attachment: ImageAttachmentRef }`，不是路径或 base64；先经附件服务 `saveImages` 取得 ref，拿不到就退回 `read_image` + 条件路径，不要塞路径冒充图片。
 - 不在 handler 里预生成模型文本；这样同一份结果可以分别投影给模型、UI 和测试，不会出现两套文案。
+- 投影只算一次：包装器在 `execute` 返回后算好 `{ text, handles, blocks }`，用 `Symbol` 或 WeakMap 挂在结果上（不写进 `result` 的 JSON）。`output.render` 只读这一份；台账不重算 `project`，而是由宿主 `tools/post-execute` 记录最终 `result.content`（模型实际所见）和 `result.value`。这样跨分钟、跨日也不会出现两套文案。
 
 ### 4.2 注册包装器
 
@@ -274,45 +278,64 @@ registerTool(ctx, {
 
 `registerTool` 内部把 `outputSchema` 映射到宿主的 `output.schema`，并把 `project` 包进 `output.render`；业务代码不再手写 `render`。`outputSchema` 描述**完整结果**，不是投影文本；投影只改变 `render` 的文本，不改变返回值结构。
 
-`execute` 返回 `{ ok: false }` 不算异常：台账记 `ok: false` + `code`，投影仍走 `project`，模型看到的是 `[没…：原因]`。只有真正抛错（网络、权限、宿主异常）才走 `ToolError` 路径；两条路径都要留台账。
+**宿主校验的是完整返回值**：`output.schema` 会在 `render` 之前校验 handler 的整个返回对象。每个包装过的工具都必须提供 `output.schema`；失败分支不能只返回 `{ ok: false, message }` 或别的临时形状，否则宿主抛 `ToolOutputError`，`project` 根本轮不到。统一信封要么所有字段可选，要么用 `oneOf` 精确区分成功/失败；每个 handler 的每条返回路径都必须先满足 schema。`execute` 返回 `{ ok: false }` 不算异常：台账记 `ok: false` + `code`，投影仍走 `project`，模型看到的是 `[没…：原因]`。只有真正抛错（网络、权限、宿主异常）才走 `ToolError` 路径；宿主会把 throw 统一渲染成 `Error: ${message}`，所以预期失败优先用信封，不要指望 `modelText` 能变成干净的方括号提示。两条路径都要留台账。
 
 包装器做四件事：
 
-1. 记录开始时间、surface、session、tool、参数（脱敏）。
-2. 调 `execute`；成功/失败都写一条 `tool-ledger`。
-3. 成功时把 `project(result)` 的文本交给 `output.render`。
-4. 失败时把完整错误写台账，只把 `ToolError.modelText` 抛给宿主。
+1. 记下开始时间（放在 `CALL_META` 里，供 `post-execute` 算耗时）；surface/session 冻结进 `view`。参数脱敏和台账写入由 `post-execute` 统一处理，不在每个 handler 里重复。
+2. 调 `execute`；成功/失败都返回统一信封，由宿主的 `tools/post-execute` 统一写一条 `tool-ledger`（能同时覆盖 vendor 工具，也避免二次投影）。
+3. 成功时在 `execute` 里冻结 `view`、算好 `project(result, args, view)` 并挂到 `result[PROJECTION]`；`output.render` 只读这一份，不再计算。
+4. 失败时把完整错误留在信封/异常里；台账由 `post-execute` 记录 `result.content`、`result.value` 和错误。台账写入必须自己 try/catch，绝不改变工具结果。
 
 ```js
-// handler 是业务 execute；包装器自己的 execute 只负责记账和投影
+// handler 是业务 execute；包装器只负责统一信封、冻结投影。
 execute: async (args, exec) => {
-  const call = toolLedger.begin({ tool, args, exec })
+  const startedAt = Date.now()
+  let result
   try {
-    const result = await handler(args, exec)
-    await toolLedger.finish(call, result)
-    return result
+    result = await handler(args, exec)
   } catch (err) {
-    await toolLedger.fail(call, err)
-    throw new ToolError(err.code ?? 'TOOL_FAILED', projectError(err))
+    // 意外异常才 throw；预期失败用 { ok:false, code, ... } 信封
+    throw err instanceof ToolError ? err : new ToolError(err.code ?? 'TOOL_FAILED', projectError(err))
   }
+  const view = {
+    surface: fishCore.surface.current(exec.agent),
+    sessionId: exec.agent?.id,
+    now: Date.now(),
+    imageRoute: imageRouteOf(exec),   // 包装器 helper：判断当前路由能否收图片块
+  }
+  Object.defineProperty(result, PROJECTION, {
+    value: project(result, args, view),
+    enumerable: false,
+  })
+  Object.defineProperty(result, CALL_META, { value: { startedAt }, enumerable: false })
+  return result
 }
 ```
 
-`output.render` 只做投影，不再包含业务逻辑：
+`output.render` 只做投影，不再包含业务逻辑，并且必须自己兜底：投影代码抛错不能变成 `Error: output.render failed: …` 进入她的上下文。
 
 ```js
 output: {
   schema: outputSchema,
   render: (args, result) => {
-    const p = project(result, args)
-    const footer = p.handles && Object.keys(p.handles).length
-      ? `\n（编号：${Object.entries(p.handles).map(([k, v]) => `${k}=${v}`).join('，')}）`
-      : ''
-    const blocks = p.blocks ?? []
-    return [...blocks, { type: 'text', text: p.text + footer }]
+    try {
+      // PROJECTION 是包装器预计算并挂在 result 上的 Symbol/WeakMap 条目
+      const p = result[PROJECTION]
+      if (!p) return [{ type: 'text', text: '[结果没能显示出来]' }]
+      const footer = p.handles?.length
+        ? `\n（编号：${p.handles.map(h => `${h.label}=${h.value}`).join('，')}）`
+        : ''
+      const blocks = p.blocks ?? []
+      return [...blocks, { type: 'text', text: p.text + footer }]
+    } catch {
+      return [{ type: 'text', text: '[结果没能显示出来]' }]
+    }
   },
 }
 ```
+
+`tools/post-execute` 监听器同样要 try/catch：宿主把监听器抛错当成工具失败，台账写失败不能把一次成功调用变成 `isError`。监听器只读 `result.content` / `result.value`，不修改 content（QQ 适配层是例外，见 §4.6）。
 
 ### 4.3 工具台账
 
@@ -336,10 +359,12 @@ output: {
   "ok": true,
   "code": "OK",
   "durationMs": 42,
-  "result": { "…": "完整结构化结果" },
+  "value": { "…": "完整结构化结果" },
+  "content": [{ "type": "text", "text": "[翻到] 「群名」里相关的 3 条：…" }],
   "modelText": "[翻到] 「群名」里相关的 3 条：…",
-  "handles": {},
+  "handles": [{ "label": "1", "value": "ev_…" }],
   "refs": { "msgIds": ["msg_…"], "taskIds": ["7f3a"] },
+  "effects": { "action": "confirmed", "event": "ok" },
   "error": null,
   "projectionVersion": 1
 }
@@ -347,12 +372,15 @@ output: {
 
 规则：
 
-- `result` 是 handler 的完整返回，不是投影文本。
-- `modelText` 由同一个 `project(result, args, ctx)` 计算；`output.render` 再调用一次，纯函数应得到同一结果。
-- 大字段（`wx_peek` 原始树、`wx_ocr` 原始 JSON、`qq_napcat_api` 原始响应）超过 32KB 时，写入 `tool-ledger/artifacts/<id>.json`，记录里留 `artifact`、`bytes`、`sha256`。
-- `args` 过 `guard.looksLikeSecret`；命中就替换成 `[redacted]` 并置 `redacted: true`。cookie/token/密码不落台账。
-- WX/QQ 的正文可以用 `refs.msgIds` 指向已有的消息台账，避免复制两份；台账仍记 `chars`、`sha256`，需要时能定位。
+- `value` 是 handler 的完整返回，不是投影文本；`content` 是宿主最终交给模型的投影（可能被 `post-execute` 改写过）。两者都记。
+- `modelText` 是 `content` 的纯文本拼接，便于回声统计；`content` 保留块结构（含图片块）。它不再单独调用 `project`；`output.render` 读的是同一份 `PROJECTION`。`projectionVersion` 记录投影规则版本，方便回放。
+- 大字段（`wx_peek` 原始树、`wx_ocr` 原始 JSON、`qq_napcat_api` 原始响应）超过 32KB 时，先脱敏，再写入 `tool-ledger/artifacts/<id>.json`，记录里留 `artifact`、`bytes`、`sha256`；`sha256` 对脱敏后的字节计算，不要对原文算。artifact 目录 `0700`、文件 `0600`。
+- `args`、`value`、`content`、`modelText` 都过 `guard.looksLikeSecret`；命中就替换成 `[redacted]` 并置 `redacted: true`。cookie/token/密码不落台账，也不能借 `qq_napcat_api` 这类原始响应或投影文本漏进上下文。
+- WX/QQ 的正文可以用 `refs.msgIds` 指向已有的消息台账，避免复制两份；此时 `value` 里的正文用 `{ ref, chars, sha256 }` 表示，不重复存全文，需要原文时按 `ref` 去消息台账取。没有对应 `msgId` 的正文才落文本/artifact。
 - 台账只追加，不自动删除。保留期和清理是运维动作，必须另行批准，不能顺手 `rm`。
+- **按次写入串行**：同一进程内用一个追加队列，避免两个工具同时写同一行；跨进程写同一份台账不在第一版支持范围。
+- **按 begin 日期钉文件**：文件名用调用开始时的本地日期，不按完成时间切；跨午夜的调用仍写进同一行、同一个文件，避免一次调用被劈成两条或落错日期。
+- 台账写入永不抛出：失败只写 stderr、计数给自检，不能改变工具结果。
 - 崩溃追溯：第一版在完成/失败时写一条完整记录；进程在调用中崩溃时，这次调用可能没有台账。若需要严格追溯，再加一条 `status: 'started'` 的预写行，按 `id` 合并；默认不做，避免双倍写入。
 - 观测台只读台账；她的记忆只读事件流。两者不互相冒充。
 
@@ -367,12 +395,15 @@ output: {
 | `growth_commit` 的判断 | 写调用记录 | 写 `utterance` / `revise` / `reunion` / `narration` / `refusal`；日记另写文件和 `meta` | 台账记“调了什么”，事件流记“她判断了什么” |
 | `bili_speak` 的评论 | 写调用记录 | 写 `utterance(surface='bili')` | 评论是她的话，必须可召回 |
 | `bili_watch` 的观看 | 写调用记录 | 写 `saw` | 看过的内容要影响她 |
+| `bili_look` 的浏览 | 写调用记录 | 写 `saw`（可能带 `voice`） | 不是“纯读操作”，会沉淀 |
 | `bili_reply` | 写调用记录（如果由工具触发） | 写 `bili_reply` | 别人的回复是一等事件 |
+| `her_leave` 的留话 | 写调用记录 | 写 `utterance` + `meta` | 留话是她说的话，不是纯读 |
 | 普通读工具（`wx_peek`、`wx_context`、`qq_group_history`） | 写 | 不写 | 读操作不自动沉淀；她若判断，另走 `growth_commit` |
 
 规则：
 
-- 有对外动作的工具（评论、发消息、看视频）必须**先完成动作，再写语义事件**；动作失败不写“她说过/看过”的事件。`growth_commit` 本身就是写事件，写失败就不算记下。
+- 有对外动作的工具（评论、发消息、看视频、留话）必须**先完成动作，再写语义事件**；动作失败不写“她说过/看过”的事件。`growth_commit` 本身就是写事件，写失败就不算记下。
+- 结果里带 `effects: { action: 'confirmed' | 'unconfirmed' | 'failed', event: 'ok' | 'failed' | 'skipped' }`。动作成了、事件写失败：投影写 `[发出去了，但没记进记忆]`，下一轮补写；动作不确定（超时、没看到回执）：投影写 `[按了发送，没看到回执；可能发出去了，也可能没有]`，不能写成成功。
 - 事件写失败不回滚已完成的动作，但要在台账里记 `eventWriteError`，并在投影里保留“动作成了、记忆没跟上”的不确定性；不能假装两件事都成了。
 - `her_recall` 只读事件流，不读工具台账；观测台只读台账。两条路不互相冒充。
 
@@ -386,18 +417,20 @@ class ToolError extends Error {
 }
 ```
 
+- **预期失败走信封，不走 throw**：`{ ok: false, code, message }` 仍然满足 `output.schema`，投影可控，模型看到的是干净的 `[没…：原因]`。宿主把 throw 渲染成 `Error: ${message}`，方括号舞台提示会变成 `Error: [没…]`；`modelText` 不能假设自己是唯一文本。
 - `code` 给台账和观测台：`WX_NOT_ALLOWED`、`WX_UNCONFIRMED`、`BILI_COOLDOWN`、`REMIND_EXPIRED`。
-- `modelText` 给她：一句能理解的话，例如 `这个会话不在能说话的名单里`、`今天说得够多了`、`网断了，等会儿再试`。
-- `projectError(err)` 是错误码到人话的映射；没有专用映射时用 `没做成，再试一次`，不得把堆栈、路径或原始错误消息带出来。
+- `modelText` 给她：一句能理解的话，例如 `这个会话不在能说话的名单里`、`今天说得够多了`、`网断了，等会儿再试`。它可能被宿主加上 `Error: ` 前缀，措辞要能带着前缀读。
+- `projectError(err)` 是错误码到人话的映射；没有专用映射时用 `没做成，再试一次`，不得把堆栈、路径或原始错误消息带出来。它只看 `code`/已知错误类型，不拼 `err.message`。
+- 包装器捕获到已经是 `ToolError` 的异常时原样抛出，不要二次包装；只把未知异常转成 `ToolError`。如果目标宿主对 `Error:` 前缀不可接受，就把该工具的全部预期失败改成信封，`ToolError` 只留真正的意外。
 - 原始错误、堆栈只进台账；模型永远看不到 `ECONNREFUSED`、`TypeError`、文件路径。
 - 不确定的结果不算失败：`[发出去了，但列表末尾没看到，可能还没刷新]` 比“发送失败”更准确。
 
 ### 4.6 各插件的接入
 
 - `dsh-fish`：核心工具直接用 `registerTool` / `wrapTool`；`growth_commit`、`her_recall`、`her_leave`、`her_remind*`、`her_inbox` 先改。
-- `dsh-wx`：把 `reg()` 换成带包装的注册；`wx_peek`、`wx_ocr`、`wx_context` 是重点。
-- `dsh-bili`：`bili_look`、`bili_watch`、`bili_speak` 用同一套 `project`。
-- QQ：vendor 插件不改的前提下，适配层在注册时包一层 `execute`/`render`；如果宿主不允许替换已注册工具，则先对 `qq_napcat_api` 和 `qq_group_history` 做上游补丁或薄 fork。这是实施风险，不是设计假设。
+- `dsh-wx`：把 `reg()` 换成 `fishCore.tools.wrap` 包装的注册（面插件不 import core 内部）；`wx_peek`、`wx_ocr`、`wx_context` 是重点。
+- `dsh-bili`：`bili_look`、`bili_watch`、`bili_speak` 用同一套 `fishCore.tools.wrap` 和 `project`。
+- QQ：vendor 插件不改注册和 render；适配层注册宿主 `tools/post-execute` 监听，按工具名重写 `content` 并写台账。这个事件能同时覆盖 `qq_napcat_api`/`qq_group_history`，不需要薄 fork。若目标宿主版本没有该事件或不允许替换 content，再退回“明确列出的薄 fork”，并在报告里写清未覆盖的工具；不能假装统一。监听器要 try/catch，抛错会把成功调用变成 `isError`。
 - `read_image` 是宿主工具，不包装；台账记录路径、mime、大小，模型直接看图。
 
 ## 5. 逐工具返回设计
@@ -414,13 +447,15 @@ class ToolError extends Error {
 | 工具 | 台账（完整） | 透传（模型） | 隐藏 |
 | --- | --- | --- | --- |
 | `growth_commit` | type、text、refs、verdict、confidence、事件 id、flags、日记日期/路径、seen meta | `[已记下 · ev_…]` 或 `[没记下：原因]` | 事件类型表、flags、路径、配额、内部状态 |
-| `her_recall` | 命中 id、date、type、text、score | `[翻到] 日期｜原话` + `（编号 1=ev_…）` | type、score、匹配原因 |
+| `her_recall` | 命中 id、date、type、text、score、surface | `[翻到] 日期（B 站/微信/QQ）｜原话` + `（编号 1=ev_…）` | type、score、匹配原因、原始 surface 字段名 |
 | `her_leave` | ok、事件 id、letter mark、text | `[已留]` / `[没留：原因]` | id、mark |
 | `her_inbox` | 任务 id、会话、最后一句、状态、排序分 | `[待回] 「会话」：最后一句…`；需要后续操作时脚注任务 handle | 排序分、内部状态、总数 |
 | `her_remind` | scheduleId、chat、dueAt、text、permit | `[已定：明天 09:00 发到「X」]` | id、permit、检查细节 |
 | `her_reminders` | 行 id、chat、dueAt、text | `[提醒] 明天 09:00「X」` + `（编号 1=提醒 id）`；取消时原样带回 | permit、内部状态 |
 | `her_remind_cancel` | ok、id、错误 | `[已取消]` / `[没取消：原因]` | id |
 | `her_tools` | query/group、命中项、策略允许集、已揭示集合、完整 schema 引用 | `[工具] 1. 名字 — 一句话`；最多 5 条；需要时再 `[已打开]` | 完整参数 schema、内部策略表、allow/deny 名单 |
+
+`her_recall` 的 `surface` 只作短归属出现（`（B 站）`/`（微信）`/`（QQ）`），不写成“来源：…”，也不带匹配原因；B 站评论、群聊判断、日记、留话都能翻到，不按面过滤。
 
 `her_tools` 的 `load` 不是把 schema 正文塞进返回；它改的是下一轮可见工具集合，返回只说 `[已打开]`。如果宿主不支持下一轮装载，就报告“这条路上打不开”，不能假装已经打开。
 
@@ -429,20 +464,22 @@ class ToolError extends Error {
 | 工具 | 台账（完整） | 透传（模型） | 隐藏 |
 | --- | --- | --- | --- |
 | `bili_look` | 每条 bvid、title、up、tags、desc、stats、comments、voice、错误码 | `[看到] 4 条：标题 / UP / 一句介绍；评论区原话最多引一句` | bvid、URL、播放量、内部错误码、完整评论树 |
-| `bili_watch` | bvid、title、path、frames、OCR 原文、截断数、时长；另写 `saw` 事件 | `[画面] OCR 文本`；没认出字就 `[只看到画面，没读出字]`；能返回图片时直接给图片块 | path、帧数、截断数、错误码 |
-| `bili_speak` | ok、said、rpid、bvid、root、配额、错误；另写 `utterance(surface='bili')` | `[已发 · 「实际原话」]` / `[没说：原因]` | rpid、root、配额、线程 id |
+| `bili_watch` | bvid、title、path、frames、OCR 原文、截断数、时长；另写 `saw` 事件 | `[画面] OCR 文本`；没认出字就 `[只看到画面，没读出字]`；能返回图片时给图片块（attachment ref） | path、帧数、截断数、错误码 |
+| `bili_speak` | ok、said、rpid、bvid、root、配额、effects、错误；另写 `utterance(surface='bili')` | `[已发 · 「实际原话」]`；事件没写进记忆时 `[发出去了，但没记进记忆]`；不确定时 `[按了发送，没看到回执；可能发出去了，也可能没有]` | rpid、root、配额、线程 id |
 
-`bili_watch` 的 `path` 是“条件必需”：只有后续 `read_image` 真能用时才给；如果当前路由不支持图片，路径就是噪声，改成一句“看不了画面”。
+`bili_watch` 的 `path` 是“条件必需”：只有后续 `read_image` 真能用时才给；如果当前路由不支持图片，路径就是噪声，改成一句“看不了画面”。要直接给图片块时，先经附件服务 `saveImages` 拿到 `ImageAttachmentRef`；拿不到就退回 `read_image` + 条件路径，不能把本地路径塞进 image block。
+
+`bili_speak` 的网络超时不等于没发出去：返回 `effects.action = 'unconfirmed'`，下一次 `scanReplies` 按 `rpid` 或评论文本对账；在确认前，投影不能说“已经发出去了”。
 
 ### 5.3 微信工具
 
 | 工具 | 台账（完整） | 透传（模型） | 隐藏 |
 | --- | --- | --- | --- |
 | `wx_see` | path、宽高、时间、截图状态 | `[截了图，但这条路上看不了图]`；支持图片时给图片块 | path、宽高 |
-| `wx_peek` | 原始树文本、parsed、digest、source、tree health、mood | `[微信] 当前会话；侧栏会话名/未读/@；最后几条消息；可点按钮名` | 坐标、box、置信度、原始文本、字段名；树落后只留一句提示 |
+| `wx_peek` | 原始树文本、parsed、digest、source、tree health、mood | `[微信] 当前会话；侧栏会话名/未读/@；最后几条消息（能区分才标你/对方，否则写“发言人未识别”）；可点按钮名` | 坐标、box、置信度、原始文本、字段名；树落后只留一句提示 |
 | `wx_click` | x/y、target、before/after、current | `[点到了「X」，现在在「Y」]`；不一致就说不一致 | 坐标、控件类型 |
-| `wx_type` | text、enter、chat、receipt、outMsgId | `[打好了，还没发]` / `[发出去了，消息在末尾]` / `[发出去了，但列表里没看到，可能还没刷新]` / `[没发出去：原因]` | 字数、outMsgId、context capture 细节 |
-| `wx_send` | chat、text、receipt、outMsgId、taskId、permit、检查结果 | `[已发到「X」，消息在末尾]`；任务只写 `[任务已记为回了一半]` | message id、permit、allowlist、频率检查细节 |
+| `wx_type` | text、enter、chat、receipt、outMsgId、effects | `[打好了，还没发]` / `[发出去了，消息在末尾]` / `[发出去了，但列表里没看到，可能还没刷新]` / `[按了发送，但没看到回执；可能发出去，也可能没有]` / `[没发出去：原因]` | 字数、outMsgId、context capture 细节 |
+| `wx_send` | chat、text、receipt、outMsgId、taskId、permit、检查结果、effects | 成功且确认：`[已发到「X」，消息在末尾]`；只看到预览：`[发出去了，列表末尾没看到，可能还没刷新]`；没确认：`[按了发送，但没看到回执；可能发出去，也可能没有]`；任务只在确认后写 `[任务已记为回了一半]` | message id、permit、allowlist、频率检查细节 |
 | `wx_context` | 卡片 msgId、chatId、sender、at、text、reasons、source、confidence、semantic | `[翻到] 「会话」里相关的 N 条：谁（时间）：原话` | 匹配原因、来源、置信度、msgId、semantic 标志 |
 | `wx_task_snooze` | taskId、minutes、dueAt | `[推迟了 15 分钟]` | taskId、dueAt 精度 |
 | `wx_task_done` | taskId、note、status | `[完成了]` | taskId、内部状态 |
@@ -463,6 +500,10 @@ dev 多出来的四个入口按同一规则处理：
 | `wx_sticker_search` | query、命中 id、score、entry | `[找到] 1. … 2. …` + 编号 handle | score、原始索引 |
 
 如果实施时 dev 的入口与上表不一致，以注册表为准；这份表只固定投影原则，不把分支数量写死。
+
+`wx_peek` 不再把坐标给模型，`wx_click` 必须优先用 label；只有 label 找不到、且台账里确有坐标时，才允许工具内部回退到最近一次 `wx_peek` 的坐标，不要把回退细节写进投影。如果 label 解析失败又无坐标可用，就如实说“没点到”，别猜坐标。
+
+`wx_send`/`wx_type` 的三种回执必须分开：**确认**（列表末尾看到消息）、**仅预览**（看到预览但没看到落列）、**未确认**（按了发送但没看到回执）。只有“确认”才能写“已发到”，只有确认后才能 `wx_task_done`；仅预览和未确认都不算发成功，也不能把任务标成“回了一半”。未确认时下一轮 `wx_peek` 可以复核，但不要在投影里假装已经复核过。
 
 ### 5.4 QQ 工具
 
@@ -499,19 +540,20 @@ dev 多出来的四个入口按同一规则处理：
 
 决策顺序：**先改投影，再加 `RESULT_BRIEF`，最后检查 persona 段是否被工具教程挤占**；三步都不做“回复后润色”。
 
+这些投影和 prompt 段都属于展示层，不是记忆：它们不写 `events.jsonl`、不被 `her_recall` 翻到，也不改变父设计里“她的主动写入全共享”的规则。投影只改“工具回来什么”，不改变“她记得什么”。
+
 ### 6.2 建议加入的段落
 
-放在身份文档的 core 段，所有面共享，控制在 4–6 行：
+放在 core 的工具语义段（不是 person core 的人格段，也不是 bili/wx 的面策略），所有有工具的面共享，控制在 4–6 行：
 
 ```text
 ## 看到结果之后
 工具回来的是刚发生的事，不是让你复述的报告。
 方括号里是状态，不是你的话；别把编号、路径、字段名、置信度念出来。
 看到什么，用你自己的话说；没看清就说没看清；没发出去就说没发出去。
-对方问的是人话，你答的也是人话。
 ```
 
-这段只讲“怎么对待结果”，不讲“你是什么性格”。人设仍由现有 persona 段负责。
+这段只讲“怎么对待结果”，不讲“你是什么性格”。“说人话”已经在 `STYLE_BRIEF` 和“这个房间”段里说过，不要在这里再写一遍；新增 core 段会挤掉可选段，加完要跑一次预算回归。人设仍由现有 persona 段负责。它是所有面的工具语义，不是 bili/wx 的面规矩，也不进事件流。
 
 ### 6.3 各面的附加一句
 
@@ -520,13 +562,13 @@ dev 多出来的四个入口按同一规则处理：
 - QQ：`群里说话短一点；历史只是背景，不是让你逐条复述。`
 - B 站：`评论是给陌生人看的；工具只告诉你发没发出去。`
 
-这四句只补该面的现实约束，不重复工具用法。
+这四句是 L2/L3 面策略，由各面插件拥有，通过 `fishCore.surface.register({ id, sections })` 挂载；不要写进 `selfdoc.js` 的 `browse`/`speak` 分支，否则又会变成“按开关拼字符串”，和 surface registry 两套来源。它们只补该面的现实约束，不重复工具用法，也不进 core。B 站那句与 `BSITE_BRIEF` 去重，只保留一处。
 
 ### 6.4 该删的重复
 
-- `TOOL_BRIEF` 里对 `growth_commit` 的“只能新增/revise 用 id”已经在工具 description 和 schema 里；保留一句“想改就 revise”即可，不重复整段。
+- `TOOL_BRIEF` 拆成「core 记忆工具说明」和「面工具教程」：`growth_commit`/`her_recall`/`her_leave` 留在 core；`bili_watch` 一节迁 bili 面，不再常驻 Web。`growth_commit` 的“只能新增/revise 用 id”已经在工具 description 和 schema 里；保留一句“想改就 revise”即可，不重复整段。
 - `RECALL_BRIEF` 里“小括号是 id”可以保留，因为它是 handle 的使用说明；但不要在每个工具返回里再写一遍。
-- `BSITE_BRIEF` 是策略和人设，不是工具教程，保留；但把“发评论的规矩”里已经由工具 schema 强制的长度/格式说明压缩。
+- `BSITE_BRIEF` 是 bili 面策略，不是 core 人设；整体迁到 `dsh-bili` 的面段，core 不再出现蜜罐、评论规矩和 B 站工具教程。只压缩其中已由工具 schema 强制的长度/格式说明。
 - `wx_context` 返回末尾的“只查这个任务自己的会话；查询不写进记忆”是工具 description 的内容，不要每次返回都重复。
 
 ### 6.5 验证
@@ -544,7 +586,12 @@ dev 多出来的四个入口按同一规则处理：
 - `metaTalkRate`：回复里出现“工具/返回/调用/系统/参数”的比例。目标下降。
 - `reportRate`：闲聊里出现项目符号、“已完成”“以下是”的比例。目标下降。
 - `taskSuccess`：发消息、查上下文、发提醒、B 站评论、QQ 发图是否仍成功。不能下降。
+- `falseSuccessRate`：工具实际失败/未确认，她却当成成功说出去的比例。必须下降；只看 `taskSuccess` 会漏掉“假成功”。
+- `closureRate`：读工具返回后，下一轮是否真的用了正文（接话、引用、据此行动）。投影只回条数时这项会掉。
+- `handleUseRate`：给了 handle 后，下一步是否在对的工具里用上；用来发现“handle 给了但没用/被念出来”。
 - 自然度盲评：同一组对话，用户不知道版本，按 1–5 打分；目标不低于 baseline。
+
+指标按面分段统计（微信/QQ/B 站/Web），并排除代码块、引用的专名和必要的技术回答；否则“技术对话里出现 `{}`/引号”会被误判为结构化泄漏，越压越短也会让 `toolEchoRate` 虚低。`taskSuccess` 上升但同时 `falseSuccessRate` 上升，不算通过。
 
 验收顺序：先看 `taskSuccess` 不降，再看 `structuredLeakRate` 和 `toolEchoRate`；如果投影已经解决回声，就不加 prompt，避免过度指令。
 
@@ -573,7 +620,7 @@ dev 多出来的四个入口按同一规则处理：
 ### Phase D：QQ
 
 - 五个发送工具用 `status`；`qq_group_history` 用 `transcript`；`qq_napcat_api` 按 action 投影。
-- 如果适配层无法包装 vendor 的 `render`，先对这两个工具做薄 fork/上游补丁，并在报告里说明。
+- 不给 vendor 注册的 `render` 打补丁；适配层注册 `tools/post-execute`，按工具名重写 `content` 并写台账。若目标宿主没有该事件或不允许替换 content，再对 `qq_napcat_api`/`qq_group_history` 做明确列出的薄 fork，并在报告里说明未覆盖范围。
 - 测试：发送成功/失败、群历史正文、napcat 未知 action 不返回原始 JSON。
 
 ### Phase E：Prompt 与 A/B
@@ -590,8 +637,15 @@ dev 多出来的四个入口按同一规则处理：
 - **投影回声**：如果投影写成完整句子，她可能复述。坚持方括号和舞台提示；用 `toolEchoRate` 守住。
 - **台账膨胀**：`wx_peek`、`wx_ocr`、`qq_napcat_api` 可能很大。用 artifact 分文件，按日切分，不自动删除。
 - **隐私**：台账是本地 `0600`，但仍可能包含聊天正文。优先用 `refs.msgIds` 指向已有消息台账；不复制 cookie/token。
-- **vendor 包装**：QQ 插件不一定允许替换已注册工具的 `render`。如果不能，必须明确哪些工具暂时保留原样，不能假装已经统一。
+- **vendor 包装**：QQ 工具由 vendor 注册，不能改它的 `render`；用 `tools/post-execute` 重写 `content`。如果目标宿主没有该事件，必须明确哪些工具暂时保留原样或薄 fork，不能假装已经统一。
 - **prompt 过度指令**：加太多“要像人”会让她更假。先改投影，再小步加 prompt；用盲评决定是否保留。
+- **投影结果含密钥**：只脱敏 `args` 不够；`value`、`content`、`modelText` 都要过 `guard.looksLikeSecret`，`qq_napcat_api` 这类原始响应尤其要按字段脱敏。
+- **投影二次计算**：`render` 拿不到 `view`，在 `render` 或台账里重算会分叉；必须在 `execute` 冻结上下文、一次计算，`post-execute` 台账读最终 `content`。
+- **面策略越界**：§6 的面段属于 `L2/L3`，不得写成人格改写或权限授予；`BSITE_BRIEF` 迁 bili，不留在 core。
+- **handle 被当成话题**：模型可能说“编号 1 那条”。第一版用数组 `{label,value}` 渲染 footer，并保留服务端别名解析（例如把“第 1 条”映射回 `ev_…`）的余地；不要求模型记住字段名。
+- **指标被 Goodhart**：只压短投影、挑低风险工具，会让 `taskSuccess` 假升。必须同时看 `falseSuccessRate`、`closureRate` 和工具调用覆盖，不能只追 `toolEchoRate`。
+- **新旧返回并存**：fish 工具已用新契约、wx/QQ 还是旧返回时，同一会话会出现两套语域。A/B 只比较全部接入后的版本；混合版本单独标 `contractVersion`，不混进结论。
+- **图片路由不支持**：直接返回 image block 可能报错或塞爆上下文。`execute` 先读图片路由；不支持就降级文本，拿不到 attachment ref 就不塞路径。
 
 ### 待决
 
@@ -602,6 +656,8 @@ dev 多出来的四个入口按同一规则处理：
 - 是否把 `wx_sticker_send` 改成接受“编号/描述”而不是 id；如果改，能进一步减少 handle 泄漏。
 
 ## 9. 关键证据与文件
+
+行号以 main 为准；dev 分支已有偏移（例如 dev 的 `wx_peek` 在 `src/dsh-wx/lib/index.js:2187`，`wx_ocr` 在 `2493`），实施前按符号重新定位，不要把行号当跨分支常量。
 
 | 文件 | 现状 | 本设计中的问题 |
 | --- | --- | --- |
@@ -621,6 +677,7 @@ dev 多出来的四个入口按同一规则处理：
 ## 10. 与父设计的关系
 
 - 父设计定义“谁拥有工具、哪个面看见哪些工具”；本设计定义“工具回来什么、模型看见什么”。
-- `fishCore` 增加 `toolLedger` 服务；`dsh-bili` / `dsh-wx` 通过它写台账，投影函数留在各自插件里。
+- `fishCore` 增加 `tools.wrap` 与 `toolLedger` 服务；`dsh-bili` / `dsh-wx` 通过它们注册包装和写台账，投影函数留在各自插件里。台账由宿主 `tools/post-execute` 统一记录，不要求每个插件自己包 handler。
 - 本设计的 Phase A/B 可以和父设计的 Phase 1-2 合并；Phase C/D 跟在工具面拆分之后；Phase E 放在验收前。
 - 本设计不改变父设计的工具矩阵、发送边界和事件模型；只改变返回的记账与透传方式。
+- 投影和 §6 的 prompt 段都是展示层，不写 `events.jsonl`，不改变父设计的「一份记忆、所有面可召回」。B 站评论是否可召回，取决于它是否作为 `utterance` 写入，而不是取决于投影。
