@@ -226,6 +226,34 @@ test('提醒说明先说做得到，不给她「我没闹钟」的回绝台阶',
   assert.match(REMIND_PROMPT, /别用「我这边没闹钟」/)
 })
 
+test('三个提醒工具的模型投影都是方括号状态，不回显提醒原文', async () => {
+  const schedule = fakeSchedule()
+  const ctx = fakeCtx({ wx: fakeWx(), schedule })
+  registerRemind(ctx, { root: tmp() })
+  const byName = Object.fromEntries(ctx.defs.map((d) => [d.name, d]))
+  const exec = { agent: { session: { id: 's' } } }
+
+  const ok = await byName.her_remind.execute({ chat: '测试群A', text: '到点了，喝水', after_minutes: 30 }, exec)
+  const okText = byName.her_remind.output.render({}, ok)[0].text
+  assert.match(okText, /^\[已定：.*发到「测试群A」\]$/)
+  assert.doesNotMatch(okText, /编号/)
+
+  const bad = await byName.her_remind.execute({ chat: '测试群A', text: '到点了，喝水', after_minutes: 0 }, exec)
+  assert.match(byName.her_remind.output.render({}, bad)[0].text, /^\[没定：/)
+
+  const empty = await byName.her_reminders.execute({}, exec)
+  assert.equal(byName.her_reminders.output.render({}, empty)[0].text, '[提醒] 现在没有定时提醒。')
+
+  schedule.active.push({ id: 'schedule-1', title: `${REMIND_TITLE_PREFIX}测试群A`, scheduledAt: '2026-11-03T13:30:00.000Z' })
+  const list = await byName.her_reminders.execute({}, exec)
+  const listText = byName.her_reminders.output.render({}, list)[0].text
+  assert.match(listText, /^\[提醒\] /)
+  assert.ok(listText.includes('schedule-1'), '列表里的 id 要能让模型接着取消')
+
+  const cancel = await byName.her_remind_cancel.execute({ id: 'schedule-1' }, exec)
+  assert.equal(byName.her_remind_cancel.output.render({}, cancel)[0].text, '[已取消]')
+})
+
 test('三个工具都注册，参数是宿主认的 JSON Schema', () => {
   const ctx = fakeCtx({ wx: fakeWx(), schedule: fakeSchedule() })
   registerRemind(ctx, { root: tmp() })

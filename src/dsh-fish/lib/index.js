@@ -263,17 +263,17 @@ export function apply(ctx, baseConfig = {}) {
     // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会看，或只会记不会看）。
     if (ctx.tools?.register) {
       for (const reg of [
-        () => registerCapture(ctx, { root }),
+        () => registerCapture(ctx, { root, core: fishCore ?? undefined }),
         () => registerLook(ctx, { root, client: baseConfig.client }),
         () => registerSpeak(ctx, { root, client: baseConfig.client }),
-        () => registerRecall(ctx, { root }),
+        () => registerRecall(ctx, { root, core: fishCore ?? undefined }),
         () => registerWatch(ctx, { root }),
         // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
-        () => registerLetter(ctx, { root }),
+        () => registerLetter(ctx, { root, core: fishCore ?? undefined }),
         // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
-        () => registerRemind(ctx, { root, log: (...a) => logger.warn(...a) }),
+        () => registerRemind(ctx, { root, core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
         // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
-        () => registerInbox(ctx, { log: (...a) => logger.warn(...a) }),
+        () => registerInbox(ctx, { core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
         // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
         () => registerHerTools(ctx, { core: fishCore, policy, caps }),
       ]) {

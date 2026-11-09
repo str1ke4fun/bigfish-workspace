@@ -36,6 +36,18 @@ test('QQ 会话里拒绝', async () => {
   await assert.rejects(() => def.execute({}, { agent: { session: { id: 'onebot-1' } } }), /微信通道/)
 })
 
+test('模型投影：有任务给 [待回]，没任务给 [没有要回的]', async () => {
+  const busy = harness({ inboxSummary: () => 't_1｜群A｜未回' })
+  const out = await busy.def.execute({}, {})
+  const text = busy.def.output.render({}, out)[0].text
+  assert.match(text, /^\[待回\] t_1/)
+  assert.doesNotMatch(text, /编号/)
+
+  const idle = harness({ inboxSummary: () => '' })
+  const none = await idle.def.execute({}, {})
+  assert.equal(idle.def.output.render({}, none)[0].text, '[没有要回的]')
+})
+
 test('工具形状：object-rooted schema + render', () => {
   const { def } = harness(undefined)
   assert.equal(def.name, 'her_inbox')

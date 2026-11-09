@@ -18,7 +18,7 @@ import { personaLine, assemble, foldOlderBeliefs, HARD_BANS, sleepPrompt } from 
 import { renderSelfDoc } from '../lib/selfdoc.js'
 import { addExchange, recentExchanges, renderCarry, TALK_KEEP } from '../lib/talkmem.js'
 import { bumpTurns, rotateTalkSession, activeCarry, homeStatus, CARRY_TURNS } from '../lib/home.js'
-import { searchEvents, tokensOf, renderRecall, RECALL_LIMIT } from '../lib/recall.js'
+import { searchEvents, tokensOf, renderRecall, registerRecall, RECALL_LIMIT } from '../lib/recall.js'
 import { normalizeConfig, DEFAULTS } from '../lib/settings.js'
 
 const DAY = 86_400_000
@@ -241,6 +241,25 @@ test('回忆：超长原文被截断，不给她整段历史', () => {
   assert.ok(rows[0].text.length <= 200)
   assert.ok(rows[0].text.endsWith('…'))
 })
+
+test('her_recall 的模型投影以 [翻到] / [没翻到] 开头，不另给 handle', async () => withRoot(async (root) => {
+  const defs = new Map()
+  const ctx = { tools: { register: (d) => { defs.set(d.name, d); return () => {} } } }
+  registerRecall(ctx, { root })
+  const def = defs.get('her_recall')
+  assert.ok(def, '工具必须注册')
+
+  const none = await def.execute({ query: '完全翻不到的词' }, {})
+  assert.equal(def.output.render({}, none)[0].text, '[没翻到]')
+
+  const { appendEvent } = await import('../lib/store.js')
+  await appendEvent({ type: 'utterance', text: '那天雨很大，我在窗边站了很久。' }, { day: 1, stage: 1, source: 'tool' }, root)
+  const hit = await def.execute({ query: '雨很大' }, {})
+  const text = def.output.render({}, hit)[0].text
+  assert.match(text, /^\[翻到\]/)
+  assert.ok(text.includes('那天雨很大'), '投影要把翻到的那句带上')
+  assert.doesNotMatch(text, /编号/, '结果里没有 id 列表，不该造 handle')
+}))
 
 // ---------------------------------------------------------------- 配置
 

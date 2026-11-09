@@ -36,6 +36,7 @@ import { refreshSelfDoc } from './selfdoc.js'
 import { Reject } from './schema.js'
 
 import { defineTool } from './tool.js'
+import { registerTool } from './tool-result.js'
 
 /** 一句留话最多多少字。太长就不是"留句话"，是写报告。 */
 export const LETTER_MAX = 500
@@ -124,7 +125,8 @@ export async function leaveLetter(root, text, { log } = {}) {
 /** 注册 her_leave 工具。 */
 export function registerLetter(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
-  return ctx.tools.register(
+  return registerTool(
+    ctx,
     defineTool({
       name: 'her_leave',
       description:
@@ -146,16 +148,16 @@ export function registerLetter(ctx, deps = {}) {
           },
           required: ['ok', 'note'],
         },
-        // render 必须返回 ContentBlock 数组（签名 (args, value)）。
-        // 只回"[已留]"——不说留了几条、还剩几条（那会变成配额感），
-        // 也不写成完整句子（2026-10-24：用户看到「留好了。就一句。没说别的。」，
-        // 头三个字就是旧回执，模型会把工具返回的话当自己的话接着说）。
-        render: (_args, out) => [{ type: 'text', text: out.ok ? '[已留]' : `[没留：${out.note}]` }],
       },
+      // 模型投影：只回"[已留]"——不说留了几条、还剩几条（那会变成配额感），
+      // 也不写成完整句子（2026-10-24：用户看到「留好了。就一句。没说别的。」，
+      // 头三个字就是旧回执，模型会把工具返回的话当自己的话接着说）。
+      project: (out) => ({ text: out?.ok ? '[已留]' : `[没留：${out?.note ?? ''}]` }),
       async execute(args) {
         const r = await leaveLetter(root, args?.text, { log: deps.log })
         return { ok: r.ok, note: r.note }
       },
     }),
+    { core: deps.core },
   )
 }

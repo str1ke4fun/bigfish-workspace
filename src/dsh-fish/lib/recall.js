@@ -22,6 +22,7 @@ import { toJsonSchema } from './toolschema.js'
 import { rootDir, readEvents, channelOfAgent } from './store.js'
 
 import { defineTool } from './tool.js'
+import { registerTool } from './tool-result.js'
 
 /** 一次最多给几条 */
 export const RECALL_LIMIT = 5
@@ -117,7 +118,8 @@ export function renderRecall(rows) {
  */
 export function registerRecall(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
-  return ctx.tools.register(
+  return registerTool(
+    ctx,
     defineTool({
       name: 'her_recall',
       description:
@@ -135,8 +137,10 @@ export function registerRecall(ctx, deps = {}) {
           },
           required: ['found', 'text'],
         },
-        render: (_args, out) => [{ type: 'text', text: out.text }],
       },
+      // 模型投影：翻到就把原有那段话原样给她（里面已经带了能用于 refs 的 id），
+      // 翻不到只回一句状态。返回值里没有 id 列表，不另造 handle。
+      project: (out) => (out?.found ? { text: `[翻到] ${out.text}` } : { text: '[没翻到]' }),
       async execute(args, exec) {
         try {
           const { events } = await readEvents(root)
@@ -154,5 +158,6 @@ export function registerRecall(ctx, deps = {}) {
         }
       },
     }),
+    { core: deps.core },
   )
 }
