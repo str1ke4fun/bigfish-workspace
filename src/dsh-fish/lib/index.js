@@ -25,10 +25,11 @@ import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
-import { registerToolRestrict, revealTools, getAgentToolState } from './restrict.js'
+import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
 import { provideFishCore } from './core-service.js'
 import { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry } from './tool-policy.js'
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
+import { registerHerTools } from './tools.js'
 import { createToolLedger } from './tool-ledger.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
@@ -172,13 +173,19 @@ export function apply(ctx, baseConfig = {}) {
       get hasOcr() { return hasWx() },
       hasImageRoute: true,
     }
+    // 策略表的目录/解析入口只准备一份：收窄（restrict.js）和 `her_tools` 共用，
+    // 避免两边各拼一个对象后行为悄悄分叉。
+    const policy = { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry }
     try {
       const off = registerToolRestrict(ctx, {
         herDir,
         surface: fishCore?.surface,
-        policy: { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry },
+        policy,
         caps,
         extra: config?.tools?.allow ?? [],
+        // `her_tools` 必须并进 ownTools：她的屋子会话在本插件注册工具之前就触发
+        // agent/created，不并进去它会被宿主名单滤掉，她自己永远打不开。
+        ownTools: [...FISH_TOOLS, 'her_tools'],
         enabled: config?.tools?.restrict !== false,
         log: (...a) => logger.info(...a),
         onResult: (r) => { restrictState = r },
@@ -267,6 +274,8 @@ export function apply(ctx, baseConfig = {}) {
         () => registerRemind(ctx, { root, log: (...a) => logger.warn(...a) }),
         // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
         () => registerInbox(ctx, { log: (...a) => logger.warn(...a) }),
+        // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
+        () => registerHerTools(ctx, { core: fishCore, policy, caps }),
       ]) {
         try {
           const d = reg()
