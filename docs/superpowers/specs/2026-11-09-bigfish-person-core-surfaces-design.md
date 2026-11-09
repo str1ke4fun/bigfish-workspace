@@ -2,6 +2,7 @@
 
 日期：2026-11-09
 状态：设计待评审；未实施
+子设计：[工具返回契约：完整记账与选择性透传](2026-11-09-bigfish-tool-return-contract-design.md)
 
 ## 1. 背景与已确认的决策
 
@@ -30,6 +31,7 @@
 - 工具分两类：记忆沉淀原子能力（所有面常驻）与对话原子能力（按面拆分，必要时渐进披露）。
 - 把“可揭示集合”从“全局注册表减已可见”改成显式策略表；`her_tools` 只揭示当前面策略允许、且宿主真的注册了的工具。
 - Web/home、WX、QQ、B 站四面的提示词段按面挂载；修掉当前按 cwd 挂微信段、`wakeText` 全局、carry 全局等串扰。
+- 工具返回拆成“完整台账 + 选择性模型投影”：台账记全，模型只看闭环必需信息和必要 handle，不把 JSON、坐标、置信度、内部 id 塞进上下文。
 - 拆出 `dsh-bili`，让 B 站插件只通过 `fishCore` 服务读写记忆，不再直接依赖 `dsh-fish` 内部文件。
 
 ### 考虑过但不采用
@@ -142,6 +144,7 @@ fishCore = {
   guard:   { sanitizeForeign, screenOutgoing, looksLikeSecret },
   config:  { get() },
   sessions:{ ensure({ id, title, dir, preset }), prompt(id, text, signal?) },
+  toolLedger: { write(entry), artifact(bytes), read(query) },
 }
 ```
 
@@ -150,6 +153,7 @@ fishCore = {
 - `memory.commit` 用于她署名的写入（评论、回复、留言、判断），`memory.appendSystem` 用于系统侧写入（`saw`、`bili_reply`、quota meta）。两者都做校验、补 `surface`、写盘；面插件不直接 `fs.appendFile`。未显式给 `surface` 时，从 `opts.agent` 推断并补上，保证 `growth_commit` 在 B 站出门会话里写的判断也带 `surface: bili`。
 - `growth_commit` 仍是唯一的**通用判断写入口**。`bili_speak` / `postReply` 是通道动作，成功后由 core 用同一校验路径追加 `utterance`；不新增一个模型可写的通用判断入口。
 - `self.doc(surface)` 给 `identity.js` 组装提示词用；core 段所有面共享，surface 段只给匹配的面。
+- `toolLedger` 记录每次工具调用的完整参数、完整结果、耗时、错误、引用 id 和实际模型投影；它是审计与观测台账，不是她的记忆。写记忆的工具仍要另写 `events.jsonl`，两者不互相替代。详见子设计。
 
 ## 5. 事件模型 v3
 
@@ -369,6 +373,8 @@ catalog(surface) = entries
 新增：
 
 - `core-service.js`：`fishCore` 的 provide/consume、surface registry、memory 写入封装；
+- `tool-result.js`：`registerTool`/`wrapTool`、`project*` 投影风格、`ToolError`；
+- `tool-ledger.js`：工具台账追加、脱敏、大字段 artifact、只读查询；
 - `tool-policy.js`：策略表、catalog、已揭示集合、guard 同步；
 - `tools.js`：`her_tools` 注册。
 
@@ -412,6 +418,12 @@ catalog(surface) = entries
 - `wakeText` 改为按 session 存；carry 只在 Web/home。
 - 身份段改为“core 段 + surface 段”，先让行为与现在等价。
 - 测试：surface 判定、B 站工作区被认作她、WX 段不再挂到 home、wake/carry 不串面。
+
+### Phase 1.5：工具返回契约
+
+- 引入 `tool-result.js` / `tool-ledger.js`，先接核心工具和 B 站三个工具。
+- 工具返回改成“完整结果 + `project()` 模型投影”；状态用方括号舞台提示，素材保留原话和归属。
+- 测试：每次调用一条台账、完整结果、秘密脱敏、投影无 JSON/坐标/置信度/内部 id。
 
 ### Phase 2：事件模型 v3 与 B 站记忆闭环
 
@@ -513,3 +525,6 @@ catalog(surface) = entries
 | `src/dsh-wx/lib/index.js` | cwd 判据挂微信段 | 改 `surface=wx` |
 | `src/dsh-fish/lib/selfdoc.js` | 一份文档所有面共用 | core 段 + surface 段 |
 | `src/dsh-fish/lib/browsejob.js` | 后台刷站写 `saw` | 保留；由 `dsh-bili` 调度 |
+| `docs/superpowers/specs/2026-11-09-bigfish-tool-return-contract-design.md` | 工具返回契约子设计 | 台账、投影、逐工具返回、prompt 重编译 |
+| `src/dsh-fish/lib/tool-result.js`（新增） | 无 | `registerTool`/`wrapTool`、`project*`、`ToolError` |
+| `src/dsh-fish/lib/tool-ledger.js`（新增） | 无 | 完整工具台账、脱敏、artifact |
