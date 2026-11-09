@@ -26,6 +26,7 @@ import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
 import { registerToolRestrict } from './restrict.js'
+import { provideFishCore } from './core-service.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
 import { clearWakeSection, registerIdentity } from './identity.js'
@@ -83,6 +84,19 @@ export function apply(ctx, baseConfig = {}) {
     // 她自己的房间必须先存在：她的会话 cwd 指向这里（不是 root），
     // 这样她不会一睁眼就站在自己的 events.jsonl 旁边。
     const herDir = await ensureHer(root)
+
+    // ---- 插件内核：面判定 / guard / config / 工具返回契约 ----
+    // 必须在 registerToolRestrict 之前挂上：限制监听器（Task 6 起）要靠 surface
+    // 判断这个 agent 属于哪个面。这里先只提供判定，本任务不改 restrict 的签名。
+    let fishCore = null
+    try {
+      const handle = provideFishCore(ctx, { root, herDir, log: (...a) => logger.warn(...a) })
+      fishCore = handle.core
+      if (typeof handle.dispose === 'function') disposers.push(handle.dispose)
+    } catch (err) {
+      logger.warn('[dsh-fish] fishCore 没挂上', err?.message ?? err)
+    }
+
     const { events } = await readEvents(root)
 
     // 首次启动播种：她最初的那一点点性格，是**第一个事实**，不是可调参数。
@@ -167,6 +181,14 @@ export function apply(ctx, baseConfig = {}) {
     if (bootAbort.signal.aborted) return
     if (!home.ok) logger.warn(`[dsh-fish] 屋子没建起来：${home.why}`)
     else {
+      // 屋子会话建好后补登记一次：create 期间 web matcher 还能靠 cwd 命中，
+      // 这里是第二道保险（会话 id 已知，不再依赖 cwd）。
+      try {
+        fishCore?.surface?.reserve?.(home.sessionId, 'web')
+      } catch (err) {
+        logger.warn('[dsh-fish] 屋子会话没登记成 web 面', err?.message ?? err)
+      }
+
       // 屋子是空的（上一次开了但从没说过话）时，侧栏不会显示它——见 sessionVisible。
       // 启动时就叫一声，免得用户重启后以为"人不见了"。
       try {
