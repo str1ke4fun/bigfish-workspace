@@ -33,6 +33,9 @@ export function paths(root = rootDir()) {
     config: join(root, 'config.json'),
     diaryDir: join(root, 'diary'),
     outDir: join(root, 'out'),
+    // 工具调用台账：与事件流分开的审计旁路，按日追加，不参与 deriveSelf / her_recall。
+    toolLedgerDir: join(root, 'tool-ledger'),
+    toolLedgerArtifacts: join(root, 'tool-ledger', 'artifacts'),
     // 她自己的房间：会话 cwd 指向这里，**不是 root**。
     // 理由（原实现与 B 文档矛盾，已修）：cwd=root 等于让她站在自己的
     // events.jsonl / config.json 旁边，`cat` 一下就读到全部历史与参数，

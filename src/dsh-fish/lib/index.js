@@ -27,6 +27,7 @@ import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
 import { registerToolRestrict } from './restrict.js'
 import { provideFishCore } from './core-service.js'
+import { createToolLedger } from './tool-ledger.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
 import { clearWakeSection, registerIdentity } from './identity.js'
@@ -95,6 +96,23 @@ export function apply(ctx, baseConfig = {}) {
       if (typeof handle.dispose === 'function') disposers.push(handle.dispose)
     } catch (err) {
       logger.warn('[dsh-fish] fishCore 没挂上', err?.message ?? err)
+    }
+
+    // ---- 工具台账：只读观察 tools/result，与事件流完全分离 ----
+    // 必须放在 fishCore 之后：surfaceOf 靠它判定这次调用来自哪个面。
+    // 放在工具注册之前：插件启动期间已经发生的调用也要被看见。
+    // 监听器内部自己吞错，台账写失败绝不能把成功的工具调用变成 isError。
+    try {
+      const ledger = createToolLedger({
+        root,
+        guard: { looksLikeSecret },
+        log: (...a) => logger.warn(...a),
+        surfaceOf: (agent) => fishCore?.surface?.current?.(agent),
+      })
+      const offLedger = ledger.register(ctx)
+      if (typeof offLedger === 'function') disposers.push(offLedger)
+    } catch (err) {
+      logger.warn('[dsh-fish] 工具台账没挂上', err?.message ?? err)
     }
 
     const { events } = await readEvents(root)
