@@ -1,3 +1,14 @@
+## 未发布 — 2026-11-09
+
+**工具可见性接进自检，边界写清**（工具暴露渐进披露的收尾）。
+
+- `/selfcheck` 新增三项：`surface`（面登记与各面名称）、`tool-policy`（每面常驻/按需数量与进程内揭示总数）、`tool-ledger`（已写/失败/artifact 数量；未被 QQ 投影覆盖的 `qq_*` 逐个列名）。数据源整体缺席时三项仍然出现，给中性文案，不抛。
+- `lib/restrict.js` 增加进程内 `revealed` 计数：`revealTools` 每新增一个名字 +1，`readRestrictState()` 一并返回。计数只加不减，进程重启后归零。
+- `lib/index.js` 的台账实例提到 try 外，观测台通过 `exposure = { surface, policy, ledger, qq }` 读取；QQ 投影的 legacy 名单来自 `qqAdapterStatus()`。
+- 文档写清：可见性由 `tool-policy` 唯一决定，`config.tools.allow` 仅 web 额外放行兼容；`her_tools` 的 search / describe / load 语义；台账位置与“不自动删除”；未做 B 站独立出门会话、`dsh-bili` 拆包、事件 v3 跨面记忆，QQ / B 站仍按旧调度运行。
+
+**未改事件流、未改发送闸。**
+
 ## 未发布 — 2026-11-04
 
 **说话改成人话：软一点，先说对，再开玩笑**（用户：人设太不像人、不够可爱，阴阳有时把逻辑拧反了）。

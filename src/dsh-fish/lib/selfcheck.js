@@ -255,6 +255,57 @@ export async function runChecks(o = {}) {
     })
   }
 
+  // 11. 可见性：面登记 / 工具策略 / 工具台账（2026-11-09 工具暴露架构）
+  // 这三项只做观测。数据源（exposure）整体缺席时仍要给出中性结论，
+  // 不能因为观测台拿不到内部对象就把整次自检判红。
+  const X = o.exposure && typeof o.exposure === 'object' ? o.exposure : null
+  let surfaceIds = []
+  try {
+    const list = typeof X?.surface?.list === 'function' ? X.surface.list() : null
+    if (Array.isArray(list)) surfaceIds = list.map((s) => String(s?.id ?? '')).filter(Boolean)
+  } catch {
+    surfaceIds = []
+  }
+  push('surface', '可见的面', surfaceIds.length
+    ? { ok: true, detail: `${surfaceIds.length} 个面：${surfaceIds.join(' / ')}` }
+    : { ok: true, detail: '面登记没挂上' })
+
+  const revealed = Number(o.restrict?.revealed ?? 0) || 0
+  if (X?.policy && typeof X.policy.entriesFor === 'function') {
+    const parts = []
+    for (const id of surfaceIds) {
+      let rows = []
+      try { rows = X.policy.entriesFor(id) ?? [] } catch { rows = [] }
+      const entries = Array.isArray(rows) ? rows : []
+      const always = entries.filter((e) => e?.tier === 'always').length
+      const deferred = entries.filter((e) => e?.tier === 'deferred').length
+      parts.push(`${id}（常驻 ${always} / 按需 ${deferred}）`)
+    }
+    push('tool-policy', '工具策略', {
+      ok: true,
+      detail: `${parts.length ? `${parts.join('，')}；` : '策略表已挂上；'}已揭示 ${revealed} 个`,
+    })
+  } else {
+    push('tool-policy', '工具策略', { ok: true, detail: '策略表没挂上' })
+  }
+
+  let ledgerStatus = null
+  try { ledgerStatus = X?.ledger?.status?.() ?? null } catch { ledgerStatus = null }
+  // 没被投影接管的 qq_* 工具必须逐个列名：只说「有一部分没覆盖」等于没说。
+  const legacy = Array.isArray(X?.qq?.legacy) ? X.qq.legacy.map((n) => String(n)).filter(Boolean) : []
+  const legacyText = legacy.length ? `；legacy：${legacy.join(' / ')}` : ''
+  if (ledgerStatus && typeof ledgerStatus === 'object') {
+    const written = Number(ledgerStatus.written ?? 0) || 0
+    const failed = Number(ledgerStatus.failed ?? 0) || 0
+    const artifacts = Number(ledgerStatus.artifacts ?? 0) || 0
+    push('tool-ledger', '工具台账', {
+      ok: ledgerStatus.ok !== false && failed === 0,
+      detail: `已写 ${written} 条，失败 ${failed} 条，artifact ${artifacts} 个${legacyText}`,
+    })
+  } else {
+    push('tool-ledger', '工具台账', { ok: true, detail: `台账没挂上${legacyText}` })
+  }
+
   const bad = items.filter((x) => !x.ok)
   return {
     ok: bad.length === 0,

@@ -84,6 +84,13 @@ CI 也跑同一套（`.github/workflows/test.yml`，Node 20 / 22 / 24 各跑一�
 
 ---
 
+## 7. 工具可见性与台账边界（2026-11-09）
+
+- 工具可见性由 `lib/tool-policy.js` 唯一决定；`config.tools.allow` 只是 web 面的额外放行兼容，不要拿它控制 wx / qq / bili 的可见性。
+- `her_tools` 只做三件事：`search` 列当前面未打开的按需工具，`describe` 给一两个工具的一句说明与参数名（不给 JSON schema），`load` 真正打开（别的面、宿主工具、未知名字整次拒绝）。
+- 工具台账在 `<root>/tool-ledger/YYYY-MM-DD.jsonl`，大结果脱敏后放 `tool-ledger/artifacts/`；台账不自动删除，也不进事件流。
+- 本辑未做：B 站独立出门会话、`dsh-bili` 拆包、事件 v3 跨面记忆。QQ 与 B 站仍按旧调度运行。
+
 ## 提 PR / 提交前自检
 
 - [ ] 三个依赖字段还是 `{}`

@@ -395,6 +395,9 @@ export function revealTools(agent, names) {
   }
 
   const added = [...new Set(targets.names ?? [])]
+  // 只有这次真的从「没揭示」变成「揭示了」的名字才计数：group 加载可能带回
+  // 已经揭示过的名字，重复 load 是幂等，不该把计数越堆越大。
+  const newly = added.filter((n) => !state.revealed.has(n))
   const before = [...state.allow]
   for (const n of added) state.revealed.add(n)
 
@@ -438,6 +441,7 @@ export function revealTools(agent, names) {
     return { ok: false, why: String(err?.message ?? err).slice(0, 160), added: [], allow: [...state.allow] }
   }
 
+  revealedCount += newly.length
   return { ok: true, added, allow }
 }
 
@@ -529,6 +533,10 @@ export function adoptKnownFromError(message) {
 // ---------------------------------------------------------------------------
 let lastState = { ok: false, applied: 0, why: 'not attempted', allow: HER_TOOLS.slice() }
 
+// 进程内累计「按需揭示过多少个工具名」。revealed 本身按 agent 存在 WeakMap，
+// 观测台只需要一个总量；只加不减（进程重启后归零）。
+let revealedCount = 0
+
 // 「宿主全局认得哪些工具名」的最近一份快照（进程内）。
 // 只有拿到过某个 agent 的全局视角才有值；plugin 自己的 view() 只看得到本插件注册的那几个，
 // 拿它校验会把 `skill` 这类宿主工具判成不存在，所以**不用它兜底**。
@@ -536,7 +544,7 @@ let lastKnownTools = null
 
 /** 读最近一次收窄结论（自检用）。 */
 export function readRestrictState() {
-  return { ...lastState }
+  return { ...lastState, revealed: revealedCount }
 }
 
 /** 内部：登记一次结论。 */

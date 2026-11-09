@@ -107,6 +107,70 @@ test('源码守门：三处 readOwner 都必须 await（漏了就是上面那两
   assert.ok(vd.includes('(await readOwner(root))?.cookie'), '看画面取 cookie 也要 await')
 })
 
+test('自检显示面登记、策略分布与台账，legacy 工具逐个列名', async () => {
+  await withRoot(async (root) => {
+    const r = await runChecks({
+      root,
+      net: false,
+      host: {},
+      peers: [],
+      restrict: { revealed: 2 },
+      exposure: {
+        surface: {
+          list: () => [
+            { id: 'web', sections: ['identity'] },
+            { id: 'wx', sections: ['identity'] },
+            { id: 'qq', sections: ['identity'] },
+            { id: 'bili', sections: ['identity'] },
+          ],
+        },
+        policy: {
+          entriesFor: (id) => (id === 'web'
+            ? [{ tier: 'always' }, { tier: 'always' }, { tier: 'deferred' }]
+            : [{ tier: 'always' }]),
+        },
+        ledger: {
+          status: () => ({ ok: true, written: 3, failed: 0, lastError: null, artifacts: 1 }),
+        },
+        qq: { legacy: ['qq_react', 'qq_poke'] },
+      },
+    })
+
+    const surface = ITEM(r, 'surface')
+    assert.ok(surface, '要有一项面登记')
+    assert.equal(surface.ok, true)
+    assert.match(surface.detail, /4 个面：web \/ wx \/ qq \/ bili/)
+
+    const policy = ITEM(r, 'tool-policy')
+    assert.ok(policy, '要有一项工具策略')
+    assert.equal(policy.ok, true)
+    assert.match(policy.detail, /web/)
+    assert.match(policy.detail, /已揭示 2/)
+
+    const ledger = ITEM(r, 'tool-ledger')
+    assert.ok(ledger, '要有一项工具台账')
+    assert.equal(ledger.ok, true)
+    assert.match(ledger.detail, /已写 3/)
+    assert.match(ledger.detail, /artifact 1/)
+    assert.match(ledger.detail, /qq_react/)
+    assert.match(ledger.detail, /qq_poke/)
+  })
+})
+
+test('没有 exposure 时三项仍然出现，不抛也不报红', async () => {
+  await withRoot(async (root) => {
+    const r = await runChecks({ root, net: false, host: {}, peers: [] })
+    for (const id of ['surface', 'tool-policy', 'tool-ledger']) {
+      const it = ITEM(r, id)
+      assert.ok(it, `缺少 ${id}`)
+      assert.equal(it.ok, true, `${id} 不该报红：${it.detail}`)
+    }
+    assert.match(ITEM(r, 'surface').detail, /面登记没挂上/)
+    assert.match(ITEM(r, 'tool-policy').detail, /策略表没挂上/)
+    assert.match(ITEM(r, 'tool-ledger').detail, /台账没挂上/)
+  })
+})
+
 test('源码守门：/owner POST 只认登录账号，不许覆盖领养人', async () => {
   const ob = await readFile(join(ROOT, 'lib', 'observe.js'), 'utf8')
   assert.ok(ob.includes('await saveAccount(me, root)'), '「测试登录」成功时要记下登录账号')

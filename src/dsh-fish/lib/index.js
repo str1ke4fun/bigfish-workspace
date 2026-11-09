@@ -27,7 +27,7 @@ import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
 import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
 import { provideFishCore } from './core-service.js'
-import { registerQqAdapter } from './qq-adapter.js'
+import { registerQqAdapter, qqAdapterStatus } from './qq-adapter.js'
 import { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry } from './tool-policy.js'
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
@@ -114,8 +114,10 @@ export function apply(ctx, baseConfig = {}) {
     // 必须放在 fishCore 之后：surfaceOf 靠它判定这次调用来自哪个面。
     // 放在工具注册之前：插件启动期间已经发生的调用也要被看见。
     // 监听器内部自己吞错，台账写失败绝不能把成功的工具调用变成 isError。
+    // 实例在 try 外留一个引用：/selfcheck 要读 ledger.status()，外部闭包拿不到 try 里的 const。
+    let ledger = null
     try {
-      const ledger = createToolLedger({
+      ledger = createToolLedger({
         root,
         guard: { looksLikeSecret },
         log: (...a) => logger.warn(...a),
@@ -302,8 +304,15 @@ export function apply(ctx, baseConfig = {}) {
       }
     }
 
-    // 观测台路由
-    const obs = registerObserve(ctx, { root, version: VERSION })
+    // 观测台路由。`exposure` 是可见性状态（面登记、策略表、台账、QQ 投影 legacy），
+    // 只读传给自检；任何一项没挂上都由 selfcheck 给出中性结论，不影响工具路径。
+    const exposure = {
+      surface: fishCore?.surface ?? null,
+      policy,
+      ledger,
+      qq: qqAdapterStatus(),
+    }
+    const obs = registerObserve(ctx, { root, version: VERSION, exposure })
     if (obs?.dispose) disposers.push(() => obs.dispose())
 
     // 生物钟：把屋子信息一起传下去。她每晚醒来说话要落进**同一个**会话，
