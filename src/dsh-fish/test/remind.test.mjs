@@ -236,7 +236,19 @@ test('三个提醒工具的模型投影都是方括号状态，不回显提醒�
   const ok = await byName.her_remind.execute({ chat: '测试群A', text: '到点了，喝水', after_minutes: 30 }, exec)
   const okText = byName.her_remind.output.render({}, ok)[0].text
   assert.match(okText, /^\[已定：.*发到「测试群A」\]$/)
+  assert.equal(okText.includes('到点了，喝水'), false, '成功投影不回显她填的提醒原文')
   assert.doesNotMatch(okText, /编号/)
+
+  // 即使返回里以后多出 text（或宿主补上），投影也必须只报时间 + 会话。
+  const echo = byName.her_remind.output.render({}, {
+    ok: true, chat: '测试群A', dueAt: '2026-11-03T13:30:00.000Z', text: '到点了，喝水',
+  })[0].text
+  assert.equal(echo.includes('到点了，喝水'), false, '投影不能回显提醒原文')
+  const dueText = new Date('2026-11-03T13:30:00.000Z').toLocaleString('zh-CN', {
+    hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  })
+  assert.ok(echo.includes(dueText), '投影要含格式化后的时间')
+  assert.ok(echo.includes('测试群A'), '投影要含会话名')
 
   const bad = await byName.her_remind.execute({ chat: '测试群A', text: '到点了，喝水', after_minutes: 0 }, exec)
   assert.match(byName.her_remind.output.render({}, bad)[0].text, /^\[没定：/)
@@ -252,6 +264,13 @@ test('三个提醒工具的模型投影都是方括号状态，不回显提醒�
 
   const cancel = await byName.her_remind_cancel.execute({ id: 'schedule-1' }, exec)
   assert.equal(byName.her_remind_cancel.output.render({}, cancel)[0].text, '[已取消]')
+
+  // 列表失败不能伪装成正常列表。
+  const noScheduleCtx = fakeCtx({ wx: fakeWx() })
+  registerRemind(noScheduleCtx, { root: tmp() })
+  const noSchedule = Object.fromEntries(noScheduleCtx.defs.map((d) => [d.name, d]))
+  const failed = await noSchedule.her_reminders.execute({}, exec)
+  assert.match(noSchedule.her_reminders.output.render({}, failed)[0].text, /^\[没看到：/)
 })
 
 test('三个工具都注册，参数是宿主认的 JSON Schema', () => {

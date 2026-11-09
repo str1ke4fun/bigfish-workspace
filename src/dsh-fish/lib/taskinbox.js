@@ -15,6 +15,11 @@ import { registerTool, ToolError } from './tool-result.js'
 
 const isOnebot = (exec) => String(exec?.agent?.session?.id ?? '').startsWith('onebot-')
 
+// handler 的固定文案。投影按整句精确比较，摘要里碰巧出现「看不到 / 没有要回」不会被误判。
+const NO_WX_TEXT = '微信任务板没接上，现在看不到待回的消息。'
+const UNREADABLE_TEXT = '任务摘要读不出来，现在看不到待回的消息。'
+const EMPTY_TEXT = '现在没有要回的微信消息。'
+
 /**
  * @param {object} ctx
  * @param {{getWx?:()=>object, log?:(msg:string, err?:unknown)=>void, core?:object}} [opts]
@@ -43,8 +48,8 @@ export function registerInbox(ctx, { getWx, log, core } = {}) {
     // 模型投影：有任务就给一句状态 + 摘要；没有就说没有，不编。
     project: (out) => {
       const text = String(out?.text ?? '').trim()
-      if (!text || text.includes('没有要回')) return { text: '[没有要回的]' }
-      if (text.includes('看不到') || text.includes('读不出来')) return { text: `[没看到] ${text}` }
+      if (!text || text === EMPTY_TEXT) return { text: '[没有要回的]' }
+      if (text === NO_WX_TEXT || text === UNREADABLE_TEXT) return { text: `[没看到] ${text}` }
       return { text: `[待回] ${text}` }
     },
     isConcurrencySafe: () => true,
@@ -54,16 +59,16 @@ export function registerInbox(ctx, { getWx, log, core } = {}) {
       const w = wx()
       if (!w?.inboxSummary) {
         log?.('her_inbox：wx 服务没接上')
-        return { text: '微信任务板没接上，现在看不到待回的消息。' }
+        return { text: NO_WX_TEXT }
       }
       let text = ''
       try {
         text = String(w.inboxSummary({ max: 10 }) ?? '').trim()
       } catch (err) {
         log?.('her_inbox：读任务摘要失败', err)
-        return { text: '任务摘要读不出来，现在看不到待回的消息。' }
+        return { text: UNREADABLE_TEXT }
       }
-      return { text: text || '现在没有要回的微信消息。' }
+      return { text: text || EMPTY_TEXT }
     },
   }, { core })
   return typeof off === 'function' ? off : () => {}
