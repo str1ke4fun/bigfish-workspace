@@ -145,6 +145,7 @@ function readHostNames(agent) {
  * @param {object} [opts.policy]  `tool-policy` 的 `resolveAllow` / `loadTargets`
  * @param {object} [opts.caps]    面能力（hasGui / hasOcr / hasImageRoute）
  * @param {string[]} [opts.extra] 用户在设置页额外放行的工具名（只对 web 面）
+ * @param {string[]} [opts.ownTools] 本插件自己注册的工具名（默认 FISH_TOOLS）
  * @param {boolean} [opts.enabled=true]
  * @param {(msg: string, err?: unknown) => void} [opts.log]
  * @param {(info: object) => void} [opts.onResult] 记录"这次真的挂上没有"（给自检用）
@@ -155,6 +156,7 @@ export function registerToolRestrict(ctx, {
   policy,
   caps = {},
   extra = [],
+  ownTools = FISH_TOOLS,
   enabled = true,
   log,
   onResult,
@@ -178,6 +180,9 @@ export function registerToolRestrict(ctx, {
   const extraNames = [...new Set(
     (Array.isArray(extra) ? extra : []).map((s) => String(s).trim()).filter(Boolean),
   )]
+  const ownNames = [...new Set(
+    (Array.isArray(ownTools) ? ownTools : []).map((s) => String(s).trim()).filter(Boolean),
+  )]
   const owner = { herDir, surface, policy: effectivePolicy, caps: caps ?? {}, extra: extraNames, say }
   active = owner
 
@@ -186,6 +191,11 @@ export function registerToolRestrict(ctx, {
 
   const onCreated = ({ agent } = {}) => {
     const hostNames = readHostNames(agent)
+    // 插件自己的工具在本插件注册前必然不在宿主的 restrictableNames 里：agent/created
+    // 由 bootstrapHome 建会话时同步发出，而本插件的工具注册还在它后面。它们一定由
+    // 本插件注册，所以只并 ownNames 不会放宽到别人的工具；宿主名单之外的其它名字
+    // 仍然要被滤掉。hostNames 为 null 表示根本拿不到名单，按旧行为不做宿主过滤。
+    const namesForPolicy = hostNames ? new Set([...hostNames, ...ownNames]) : null
 
     let surfaceId = null
     try { surfaceId = surface?.current?.(agent) ?? null } catch { surfaceId = null }
@@ -198,14 +208,14 @@ export function registerToolRestrict(ctx, {
       surface: surfaceId,
       caps: owner.caps,
       revealed: new Set(),
-      hostNames,
+      hostNames: namesForPolicy,
     }) ?? [])]
 
     // 用户在设置页额外放行的名字：只对 web 面生效，而且宿主得真注册过
-    // （hostNames 为 null 表示拿不到名单，按旧行为放行）。
+    // （namesForPolicy 为 null 表示拿不到名单，按旧行为放行）。
     if (surfaceId === 'web') {
       for (const n of extraNames) {
-        if (!hostNames || hostNames.has(n)) allow.push(n)
+        if (!namesForPolicy || namesForPolicy.has(n)) allow.push(n)
       }
     }
     const resolved = [...new Set(allow)]
@@ -241,7 +251,7 @@ export function registerToolRestrict(ctx, {
       const allowSet = new Set(resolved)
       const state = {
         surface: surfaceId,
-        hostNames,
+        hostNames: namesForPolicy,
         allow: allowSet,
         revealed: new Set(),
         restrictDispose: null,
@@ -388,12 +398,25 @@ export function revealTools(agent, names) {
   const before = [...state.allow]
   for (const n of added) state.revealed.add(n)
 
-  const allow = [...new Set(policy.resolveAllow({
-    surface: state.surface,
-    caps: active?.caps ?? {},
-    revealed: state.revealed,
-    hostNames: state.hostNames ?? null,
-  }) ?? [])]
+  // 策略解析失败不能把异常丢给调用方：先回滚这次 reveal 记下的名字，
+  // 已有的 restrict 原样留着（不要先 dispose 再算）。
+  let allow
+  try {
+    allow = [...new Set(policy.resolveAllow({
+      surface: state.surface,
+      caps: active?.caps ?? {},
+      revealed: state.revealed,
+      hostNames: state.hostNames ?? null,
+    }) ?? [])]
+  } catch (err) {
+    for (const n of added) state.revealed.delete(n)
+    return {
+      ok: false,
+      why: `这次打不开：${String(err?.message ?? err).slice(0, 160) || '策略解析出错'}`,
+      added: [],
+      allow: [...state.allow],
+    }
+  }
   state.allow.clear()
   for (const n of allow) state.allow.add(n)
 
@@ -404,7 +427,14 @@ export function revealTools(agent, names) {
     for (const n of added) state.revealed.delete(n)
     state.allow.clear()
     for (const n of before) state.allow.add(n)
-    try { state.applyRestrict?.(before) } catch { /* ignore */ }
+    try {
+      state.applyRestrict?.(before)
+    } catch (recoverErr) {
+      // 连旧限制都挂不回去时要留痕——静默意味着她可能一直处于放宽状态而没人知道。
+      try {
+        active?.say?.(`[dsh-fish] 揭示失败后没能恢复原来的工具限制：${String(recoverErr?.message ?? recoverErr).slice(0, 160)}`)
+      } catch { /* 日志失败不改变结果 */ }
+    }
     return { ok: false, why: String(err?.message ?? err).slice(0, 160), added: [], allow: [...state.allow] }
   }
 

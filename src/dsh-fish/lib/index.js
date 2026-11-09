@@ -164,8 +164,14 @@ export function apply(ctx, baseConfig = {}) {
     // agent/created 在会话开始跑第一步之前同步串行发出——晚一步就漏掉这一次。
     // 面能力：微信在，就有 GUI/OCR 工具；图片路由恒开（dsh-wx 的图片都落成路径）。
     // 不能传空对象——那会让所有 wx.ui 工具永远打不开。
-    const hasWx = (() => { try { return !!(ctx.get?.('wx')) } catch { return false } })()
-    const caps = { hasGui: hasWx, hasOcr: hasWx, hasImageRoute: true }
+    // 惰性取值：resolveAllow 会在 agent/created / revealTools 时现读，而不是 boot 期快照。
+    // 后者会把「插件晚一步挂上」误判成「永远没有微信」。
+    const hasWx = () => { try { return !!ctx.get?.('wx') } catch { return false } }
+    const caps = {
+      get hasGui() { return hasWx() },
+      get hasOcr() { return hasWx() },
+      hasImageRoute: true,
+    }
     try {
       const off = registerToolRestrict(ctx, {
         herDir,

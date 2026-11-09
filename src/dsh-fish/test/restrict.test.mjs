@@ -14,6 +14,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  FISH_TOOLS,
   HER_TOOLS,
   isHerAgent,
   registerToolRestrict,
@@ -23,6 +24,7 @@ import {
   getAgentToolState,
   resetAgentToolState,
 } from '../lib/restrict.js'
+import { resolveAllow } from '../lib/tool-policy.js'
 
 /** 一个够用的假插件 ctx：能 on('agent/created')，也能被我们主动触发。 */
 function fakeCtx() {
@@ -396,6 +398,40 @@ test('reveal 把 state.hostNames 传给 loadTargets，重复 load 是幂等的',
   assert.equal(r2.ok, true, '重复 load 不是错误')
   assert.deepEqual(r2.added, [])
   assert.equal(a.calls.length, callsBefore, '没有新名字就不该重下 restrict')
+})
+
+test('启动期宿主名单还没有自有工具时，自有工具仍要并进 allow（回归 I1）', () => {
+  // 真实启动顺序：registerToolRestrict → bootstrapHome 建会话（agent/created 在此同步
+  // 发出）→ 本插件才注册自己的工具。所以这一瞬间宿主 view 的 restrictableNames 里
+  // **一个 FISH_TOOLS 都没有**。如果直接拿它过滤，她会静默地一个核心工具都调不动。
+  const ctx = fakeCtx()
+  const surface = { current: () => 'wx' }
+  const hostNames = new Set(['read_image', 'wx_peek', 'wx_send', 'wx_context'])
+  const a = fakeAgent('/her')
+  a.agent.ctx.tools.view = () => ({ restrictableNames: new Set(hostNames) })
+  registerToolRestrict(ctx, {
+    herDir: '/her',
+    surface,
+    policy: { resolveAllow },
+    caps: { hasImageRoute: true },
+    enabled: true,
+    log: () => {},
+  })
+  ctx.emit('agent/created', { agent: a.agent })
+
+  const allow = a.calls.at(-1).allow
+  // 当前面（wx）按策略仍常驻的自有工具，必须全部在 allow 里。
+  for (const n of ['growth_commit', 'her_recall', 'her_leave', 'her_inbox', 'her_remind', 'her_reminders', 'her_remind_cancel']) {
+    assert.ok(allow.includes(n), `自有工具 ${n} 不该被启动期名单滤掉`)
+  }
+  assert.ok(allow.includes('read_image'), '宿主确实注册了的工具照常放行')
+  assert.ok(!allow.includes('bash'), '宿主名单之外的工具必须仍然被滤掉')
+
+  // 方向性要求：并集只能加 ownTools 里的名字，其它名字仍然要被滤掉。
+  const known = new Set([...hostNames, ...FISH_TOOLS])
+  for (const n of allow) {
+    assert.ok(known.has(n), `${n} 既不在宿主名单也不在自有工具里，不该出现`)
+  }
 })
 
 test('getAgentToolState / resetAgentToolState 给 Task 7 和测试用', () => {
