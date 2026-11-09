@@ -27,6 +27,7 @@ import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
 import { registerToolRestrict } from './restrict.js'
 import { provideFishCore } from './core-service.js'
+import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { createToolLedger } from './tool-ledger.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
@@ -96,6 +97,14 @@ export function apply(ctx, baseConfig = {}) {
       if (typeof handle.dispose === 'function') disposers.push(handle.dispose)
     } catch (err) {
       logger.warn('[dsh-fish] fishCore 没挂上', err?.message ?? err)
+    }
+
+    // ---- 工具返回契约：核心对象上挂包装器 ----
+    // `core` 必须是 fishCore 同一个对象引用（dsh-wx / dsh-bili 通过宿主服务拿到它）；
+    // 复制一份的话，后续任务往里加的东西两边就看不见了。
+    if (fishCore) {
+      fishCore.tools.wrap = (def, opts = {}) => wrapTool(def, { ...opts, core: fishCore })
+      fishCore.tools.wrapRender = (def, opts = {}) => wrapRenderOnly(def, { ...opts, core: fishCore })
     }
 
     // ---- 工具台账：只读观察 tools/result，与事件流完全分离 ----
