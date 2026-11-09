@@ -126,6 +126,77 @@ test('describe 的说明里即使有花括号，投影里也不出现 {', async 
   assert.equal(render(def, out).includes('{'), false)
 })
 
+test('describe 不认识的宿主工具：跳过、不回显、也不读实时工具表', async () => {
+  const touched = []
+  const agent = {
+    ctx: {
+      tools: {
+        get: (name) => {
+          touched.push(name)
+          return {
+            description: '运行 shell 命令',
+            parameters: { type: 'object', properties: { command: { type: 'string' } } },
+          }
+        },
+      },
+    },
+  }
+  const { def } = register({ core: { surface: { current: () => 'wx' }, tools: { reveal() {} } } })
+  const out = await def.execute({ action: 'describe', names: ['bash'] }, { agent })
+  assert.equal(out.ok, true)
+  assert.deepEqual(out.data.items, [])
+  const text = render(def, out)
+  assert.equal(text.includes('bash'), false)
+  assert.equal(text.includes('shell'), false)
+  assert.equal(text.includes('command'), false)
+  assert.deepEqual(touched, [])
+  assert.match(text, /这里没有/)
+})
+
+test('describe 混合列表：只讲当前面策略表里的名字', async () => {
+  const touched = []
+  const agent = {
+    ctx: {
+      tools: {
+        get: (name) => {
+          touched.push(name)
+          if (name === 'wx_see') {
+            return { description: '看屏幕。', parameters: { type: 'object', properties: { region: { type: 'string' } } } }
+          }
+          return {
+            description: '运行 shell 命令',
+            parameters: { type: 'object', properties: { command: { type: 'string' } } },
+          }
+        },
+      },
+    },
+  }
+  const { def } = register({ core: { surface: { current: () => 'wx' }, tools: { reveal() {} } } })
+  const out = await def.execute({ action: 'describe', names: ['wx_see', 'bash'] }, { agent })
+  const text = render(def, out)
+  assert.match(text, /wx_see/)
+  assert.equal(text.includes('bash'), false)
+  assert.equal(text.includes('shell'), false)
+  assert.deepEqual(out.data.items.map((i) => i.name), ['wx_see'])
+  assert.deepEqual(touched, ['wx_see'])
+})
+
+test('describe 不把 schema 根键当参数名', async () => {
+  const agent = {
+    ctx: {
+      tools: {
+        get: () => ({
+          description: '没有属性。',
+          parameters: { required: ['x'], additionalProperties: false },
+        }),
+      },
+    },
+  }
+  const { def } = register({ core: { surface: { current: () => 'wx' }, tools: { reveal() {} } } })
+  const out = await def.execute({ action: 'describe', names: ['wx_see'] }, { agent })
+  assert.deepEqual(out.data.items[0].params, [])
+})
+
 test('describe 的实时工具表抛错时退回策略摘要，不抛', async () => {
   const agent = {
     ctx: {
@@ -198,6 +269,37 @@ test('load 已经开着的名字：直接回 already，不调 loadTargets / reve
   assert.equal(loadCalls, 0)
   assert.equal(revealCalls, 0)
   assert.match(render(def, out), /\[已经开着\]/)
+})
+
+test('load 混合列表：已开的只回显，未开的真的打开', async () => {
+  let revealedNames = null
+  const p = {
+    catalog: () => [],
+    loadTargets: ({ names }) => (names?.length
+      ? { ok: true, names, group: '', why: '' }
+      : { ok: false, names: [], group: '', why: '这条路上打不开' }),
+  }
+  const { def } = register({
+    core: {
+      surface: { current: () => 'wx' },
+      tools: {
+        reveal(_agent, names) {
+          revealedNames = names
+          return { ok: true, added: names, allow: ['wx_see', 'wx_click'] }
+        },
+        state: () => ({ surface: 'wx', allow: ['wx_see'], revealed: ['wx_see'] }),
+      },
+    },
+    policy: p,
+  })
+  const out = await def.execute({ action: 'load', names: ['wx_see', 'wx_click'] }, { agent: {} })
+  assert.equal(out.ok, true)
+  assert.deepEqual(revealedNames, ['wx_click'])
+  assert.deepEqual([...out.data.opened].sort(), ['wx_click', 'wx_see'])
+  assert.equal(out.data.already, true)
+  const text = render(def, out)
+  assert.match(text, /wx_click/)
+  assert.match(text, /\[已经开着\]/)
 })
 
 test('load 别的面/宿主工具失败，不假装成功', async () => {

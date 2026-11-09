@@ -119,6 +119,35 @@ function liveTool(exec, name) {
   }
 }
 
+/**
+ * JSON Schema 的结构关键字。用来区分「标准 schema 的根键」和「简写 DSL 的
+ * 参数名」——`{ required:[...], additionalProperties:false }` 这种没有 properties
+ * 的根对象，绝不能把 required / additionalProperties 当成参数名交给她。
+ * `required` 单独放行：简写 DSL 里它也可能是一个参数名（值是对象时才算）。
+ */
+const SCHEMA_KEYWORDS = new Set([
+  '$schema', '$id', '$ref', '$defs', 'definitions', 'type', 'properties', 'required',
+  'additionalProperties', 'patternProperties', 'propertyNames', 'items', 'prefixItems',
+  'contains', 'enum', 'const', 'oneOf', 'anyOf', 'allOf', 'not', 'if', 'then', 'else',
+  'title', 'description', 'default', 'examples', 'deprecated', 'readOnly', 'writeOnly',
+  'format', 'pattern', 'minLength', 'maxLength', 'minimum', 'maximum', 'exclusiveMinimum',
+  'exclusiveMaximum', 'multipleOf', 'minItems', 'maxItems', 'uniqueItems', 'minProperties',
+  'maxProperties', 'dependencies', 'dependentRequired', 'dependentSchemas',
+  'unevaluatedProperties', 'unevaluatedItems',
+])
+
+/** 简写 DSL：每一条的值都是对象（参数规格），且键不是 schema 结构关键字。 */
+function looksLikeShorthand(p) {
+  const keys = Object.keys(p)
+  if (keys.length === 0) return false
+  return keys.every((k) => {
+    const v = p[k]
+    const valueOk = v !== null && typeof v === 'object' && !Array.isArray(v)
+    const keyOk = k === 'required' || !SCHEMA_KEYWORDS.has(k)
+    return valueOk && keyOk
+  })
+}
+
 /** 参数名列表：只取 schema 的属性名，绝不把 schema 本身交给她。 */
 function paramNames(def) {
   try {
@@ -127,8 +156,8 @@ function paramNames(def) {
     if (p.properties && typeof p.properties === 'object' && !Array.isArray(p.properties)) {
       return Object.keys(p.properties)
     }
-    // 简写 DSL（没有 type/properties）：键就是参数名。
-    if (!p.type) return Object.keys(p)
+    // 没有 properties / type 时才可能是简写 DSL；schema 根键不能当参数名。
+    if (!p.type && looksLikeShorthand(p)) return Object.keys(p)
   } catch {
     /* 读不了就当没有参数 */
   }
@@ -179,7 +208,11 @@ function project(result, args) {
 
     if (action === 'describe') {
       const items = Array.isArray(data.items) ? data.items : []
-      if (items.length === 0) return { text: '[说明] 没有说明要哪个工具。' }
+      if (items.length === 0) {
+        // 给了名字却一个都没留下：只回一句，不回显被拒绝的名字。
+        const asked = parseNames(args?.names).length > 0
+        return { text: asked ? '[说明] 这几样这里没有。' : '[说明] 没有说明要哪个工具。' }
+      }
       // 说明来自实时工具定义，理论上可能夹着 schema 片段；投影里绝不出现 `{`。
       const clean = (s) => String(s ?? '').replace(/[{}]/g, '')
       return {
@@ -272,7 +305,12 @@ export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
       }
 
       if (action === 'describe') {
-        const names = parseNames(args?.names).slice(0, MAX_DESCRIBE)
+        // 先按当前面过滤：只认策略表里、属于这个面的名字。宿主工具、别的面、
+        // 不存在的名字一律跳过——绝不能拿它们去读实时工具表，否则会把宿主的
+        // 说明和参数名带进她的上下文。
+        const names = parseNames(args?.names)
+          .filter((name) => policyEntry(policy, name, surface, caps) !== null)
+          .slice(0, MAX_DESCRIBE)
         const items = names.map((name) => {
           const live = liveTool(exec, name)
           const entry = policyEntry(policy, name, surface, caps)
@@ -290,11 +328,16 @@ export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
         const requested = parseNames(args?.names)
 
         let selector
+        let already = []
         if (requested.length) {
-          // 已经开着的名字：直接告诉她，不去碰策略和限制。
-          const already = requested.filter((n) => open.has(n))
-          if (already.length) return { ok: true, data: { opened: already, already: true } }
-          selector = { names: requested }
+          // 拆成「已经开着」和「还没开」：已开的直接回显，未开的照常打开，
+          // 不能因为列表里混着一个已开的名字就把其余名字丢掉。
+          already = requested.filter((n) => open.has(n))
+          const pending = requested.filter((n) => !open.has(n))
+          if (pending.length === 0) {
+            return { ok: true, data: { opened: already, already: true } }
+          }
+          selector = { names: pending }
         } else if (group) {
           selector = { group }
         } else {
@@ -327,10 +370,14 @@ export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
           return failure('LOAD_FAILED', resolved?.why || LOAD_FAILED_TEXT)
         }
 
-        const opened = targetNames.length
+        const freshlyOpened = targetNames.length
           ? targetNames
           : (Array.isArray(resolved.added) ? resolved.added.map((n) => String(n)) : [])
-        return { ok: true, data: { opened } }
+        const opened = [...new Set([...already, ...freshlyOpened])]
+        return {
+          ok: true,
+          data: already.length ? { opened, already: true } : { opened },
+        }
       }
 
       return failure('LOAD_FAILED', '不认识这个动作')
