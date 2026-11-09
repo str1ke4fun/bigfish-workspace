@@ -19,10 +19,25 @@ const SEND_PREFIX = 'qq_send_'
 const HISTORY_TOOL = 'qq_group_history'
 const NAPCAT_TOOL = 'qq_napcat_api'
 
+/**
+ * 只接管这些已知 vendor 工具。未知 `qq_*` 一律返回 null：
+ * 它们可能返回模型真正需要的内容，硬吞成 `[拿到了]` 比不接管更糟；
+ * 同时在自检的 legacy 列表里留下名字。
+ */
+const HANDLED_TOOLS = new Set([
+  'qq_send_image',
+  'qq_send_voice',
+  'qq_send_video',
+  'qq_send_file',
+  'qq_send_forward',
+  'qq_group_history',
+  'qq_napcat_api',
+])
+
 const HISTORY_LIMIT = 4000
 const REASON_LIMIT = 200
 
-/** 见过的、projectQqTool 返回 null 的 qq_* 名字（目前所有 qq_* 都有兜底投影）。 */
+/** 见过的、projectQqTool 返回 null 的 qq_* 名字（未知 vendor 工具）。 */
 const legacyTools = new Set()
 
 function textBlock(text) {
@@ -299,11 +314,12 @@ function projectNapcat(value, raw, content, args, isError) {
  * @param {any} value 完整信封里的 value（宿主已冻结）
  * @param {any} content 宿主默认渲染的 content
  * @param {{ args?: object, isError?: boolean }} [options]
- * @returns {Array<{ type: 'text', text: string }> | null} 非 qq 工具返回 null（不接管）
+ * @returns {Array<{ type: 'text', text: string }> | null} 未覆盖的工具返回 null（不接管）
  */
 export function projectQqTool(name, value, content, options = {}) {
   const tool = typeof name === 'string' ? name : ''
-  if (!tool.startsWith('qq_')) return null
+  // 非 qq_* 与未知 qq_*（vendor 将来新增的）都不接管；由监听器记入 legacy 后 next()。
+  if (!HANDLED_TOOLS.has(tool)) return null
 
   const isError = options?.isError === true
   // 先把 value 归一成文本：不可序列化的值在这里抛，交给监听器 next()。
@@ -311,10 +327,7 @@ export function projectQqTool(name, value, content, options = {}) {
 
   if (tool.startsWith(SEND_PREFIX)) return projectSend(value, raw, content, isError)
   if (tool === HISTORY_TOOL) return projectHistory(raw, content, isError)
-  if (tool === NAPCAT_TOOL) return projectNapcat(value, raw, content, options?.args, isError)
-
-  if (isError) return textBlock(`[没拿到：${sanitizeReason(contentText(content) || raw)}]`)
-  return textBlock('[拿到了]')
+  return projectNapcat(value, raw, content, options?.args, isError)
 }
 
 function asWarn(log) {

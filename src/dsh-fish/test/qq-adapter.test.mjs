@@ -136,19 +136,49 @@ test('qq_napcat_api OCR 只给文字', () => {
   assert.equal(blocks[0].text.includes('0.98'), false)
 })
 
-test('其他 qq_* 只报拿到，不暴露原始内容', () => {
-  const blocks = projectQqTool('qq_something_new', { secret: 'x', retcode: 0 }, [])
+test('未知 qq_* 返回 null，不接管', () => {
+  assert.equal(projectQqTool('qq_mystery', 'something useful', []), null)
+})
+
+test('qq_napcat_api 未知 action 仍只报拿到', () => {
+  const blocks = projectQqTool('qq_napcat_api', { secret: 'x', retcode: 0 }, [], { args: { action: 'get_unknown_thing' } })
   assert.equal(blocks[0].text, '[拿到了]')
 })
 
-test('legacy 记录 project 返回 null 的 qq_* 名字，排序去重', async () => {
+test('未知 qq_* 进 legacy，监听器原样放行', async () => {
   resetQqAdapterStatus()
   const listeners = []
   const ctx = { on: (ev, fn) => { listeners.push([ev, fn]); return () => {} } }
   registerQqAdapter(ctx, { core: { surface: { current: () => 'qq' } } })
   const fn = listeners.find(([ev]) => ev === 'tools/post-execute')[1]
-  // 正常 qq_* 都被覆盖，legacy 保持为空。
-  await fn({ name: 'qq_send_image', agent: {} }, { isError: false, value: { sent: true }, content: [] }, () => Promise.resolve({ kind: 'accept' }))
-  assert.deepEqual(qqAdapterStatus(), { legacy: [] })
+  let nextCalled = false
+  const decision = await fn(
+    { name: 'qq_mystery', agent: {} },
+    { isError: false, value: 'something useful', content: [{ type: 'text', text: '原样' }] },
+    () => { nextCalled = true; return Promise.resolve({ kind: 'accept' }) },
+  )
+  assert.equal(nextCalled, true)
+  assert.equal(decision.kind, 'accept')
+  assert.equal(Object.hasOwn(decision, 'content'), false)
+  assert.deepEqual(qqAdapterStatus(), { legacy: ['qq_mystery'] })
+  resetQqAdapterStatus()
+})
+
+test('legacy 排序去重，非 qq 面不记录', async () => {
+  resetQqAdapterStatus()
+  const qqListeners = []
+  registerQqAdapter({ on: (ev, fn) => { qqListeners.push([ev, fn]); return () => {} } }, { core: { surface: { current: () => 'qq' } } })
+  const qqFn = qqListeners.find(([ev]) => ev === 'tools/post-execute')[1]
+  const pass = () => Promise.resolve({ kind: 'accept' })
+  await qqFn({ name: 'qq_zeta', agent: {} }, { isError: false, content: [] }, pass)
+  await qqFn({ name: 'qq_zeta', agent: {} }, { isError: false, content: [] }, pass)
+  await qqFn({ name: 'qq_alpha', agent: {} }, { isError: false, content: [] }, pass)
+  assert.deepEqual(qqAdapterStatus(), { legacy: ['qq_alpha', 'qq_zeta'] })
+
+  const wxListeners = []
+  registerQqAdapter({ on: (ev, fn) => { wxListeners.push([ev, fn]); return () => {} } }, { core: { surface: { current: () => 'wx' } } })
+  const wxFn = wxListeners.find(([ev]) => ev === 'tools/post-execute')[1]
+  await wxFn({ name: 'qq_other', agent: {} }, { isError: false, content: [] }, pass)
+  assert.deepEqual(qqAdapterStatus(), { legacy: ['qq_alpha', 'qq_zeta'] })
   resetQqAdapterStatus()
 })
