@@ -95,6 +95,44 @@ export function isHerAgent(agent, herDir) {
   return normDir(got) === want
 }
 
+/** 当前生效的策略上下文（`registerToolRestrict` 写入，`revealTools` 读取）。 */
+let active = null
+
+/** 每个 agent 此刻的可见状态。用 WeakMap：agent 销毁后自动回收。 */
+const agentStates = new WeakMap()
+
+/**
+ * 读这个 agent 认得的工具名（宿主已注册的名字）。
+ *
+ * 必须在 restrict 之前取——取的是还没被收窄的视角。关键：必须把 agent 传进
+ * `view(agent)`。宿主源码注释写得很清楚：
+ *   view(scope) —— "the viewing scope (the agent), or undefined for the global view"
+ *   "Once presets moved them onto the agent plane they became an ANCESTOR contribution"
+ * 也就是说 read / write / bash / skill 这些是由 preset 挂在**agent 的祖先层**上的，
+ * 不在 global 层。不传 agent 拿到的是 global view，只有插件自己注册的那几个
+ * （实测 7 个，没有 skill）——用它做校验会把 skill 误判成「不存在」。
+ *
+ * 返回 Set；完全拿不到时返回 null（调用方按旧行为不做宿主过滤）。
+ */
+function readHostNames(agent) {
+  try {
+    let set = null
+    try { set = agent?.ctx?.tools?.view?.(agent)?.restrictableNames } catch { set = null }
+    if (!set || typeof set[Symbol.iterator] !== 'function' || set.size === 0) {
+      // 兜底：拿不到就退回 global view（至少还有插件自己那几个）
+      try { set = agent?.ctx?.tools?.view?.()?.restrictableNames } catch { set = null }
+    }
+    if (set && typeof set[Symbol.iterator] === 'function') {
+      const names = [...set].map((x) => String(x))
+      if (names.length) {
+        lastKnownTools = [...new Set(names)].sort()
+        return new Set(names)
+      }
+    }
+  } catch { /* 拿不到就算了，界面会退回只查拼写 */ }
+  return null
+}
+
 /**
  * 注册限制。**必须在任何 agent 被创建之前调用**（`agent/created` 是同步串行监听，
  * 在会话开始跑第一步之前完成），所以 index.js 里放在 ensureHer 之后、
@@ -103,12 +141,24 @@ export function isHerAgent(agent, herDir) {
  * @param {object} ctx    插件 context
  * @param {object} opts
  * @param {string} opts.herDir    她的屋子（会话 cwd）
- * @param {string[]} [opts.extra] 用户在设置页额外放行的工具名
+ * @param {object} [opts.surface] `core.surface` 面注册表（`current(agent)`）
+ * @param {object} [opts.policy]  `tool-policy` 的 `resolveAllow` / `loadTargets`
+ * @param {object} [opts.caps]    面能力（hasGui / hasOcr / hasImageRoute）
+ * @param {string[]} [opts.extra] 用户在设置页额外放行的工具名（只对 web 面）
  * @param {boolean} [opts.enabled=true]
  * @param {(msg: string, err?: unknown) => void} [opts.log]
  * @param {(info: object) => void} [opts.onResult] 记录"这次真的挂上没有"（给自检用）
  */
-export function registerToolRestrict(ctx, { herDir, extra = [], enabled = true, log, onResult } = {}) {
+export function registerToolRestrict(ctx, {
+  herDir,
+  surface,
+  policy,
+  caps = {},
+  extra = [],
+  enabled = true,
+  log,
+  onResult,
+} = {}) {
   // 无论调用方传不传 onResult，模块级单例都要更新——自检读的是它。
   const __raw = onResult
   onResult = (r) => { report(r); try { __raw?.(r) } catch { /* ignore */ } }
@@ -119,39 +169,53 @@ export function registerToolRestrict(ctx, { herDir, extra = [], enabled = true, 
     return () => {}
   }
 
-  const allow = [...new Set([...HER_TOOLS, ...extra.map((s) => String(s).trim()).filter(Boolean)])]
+  // 没有策略时退回旧的静态名单（老宿主 / 单测路径）：her 的 cwd 当作 web 面信号。
+  // provideFishCore 失败时 index.js 仍会传 policy，所以这里主要是兼容旧调用。
+  const effectivePolicy = policy ?? {
+    resolveAllow: ({ surface: s }) => (s === 'web' ? [...HER_TOOLS] : []),
+    loadTargets: ({ names = [] }) => ({ ok: true, names: [...new Set(names)] }),
+  }
+  const extraNames = [...new Set(
+    (Array.isArray(extra) ? extra : []).map((s) => String(s).trim()).filter(Boolean),
+  )]
+  const owner = { herDir, surface, policy: effectivePolicy, caps: caps ?? {}, extra: extraNames, say }
+  active = owner
+
   let applied = 0
   let failed = ''
 
   const onCreated = ({ agent } = {}) => {
-    // 顺手记一份「她这个 agent 认得哪些工具名」（2026-10-24）：
-    // 白名单输入框靠它判断名字真假。必须在 restrict 之前取——取的是还没被收窄的视角。
-    //
-    // 关键：必须把 agent 传进 view(agent)。宿主源码注释写得很清楚：
-    //   view(scope) —— "the viewing scope (the agent), or undefined for the global view"
-    //   "Once presets moved them onto the agent plane they became an ANCESTOR contribution"
-    // 也就是说 read / write / bash / skill 这些是由 preset 挂在**agent 的祖先层**上的，
-    // 不在 global 层。不传 agent 拿到的是 global view，只有插件自己注册的那几个
-    // （实测 7 个，没有 skill）——用它做校验会把 skill 误判成「不存在」。
-    try {
-      let set = null
-      try { set = agent?.ctx?.tools?.view?.(agent)?.restrictableNames } catch { set = null }
-      if (!set || typeof set[Symbol.iterator] !== 'function' || set.size === 0) {
-        // 兜底：拿不到就退回 global view（至少还有插件自己那几个）
-        try { set = agent?.ctx?.tools?.view?.()?.restrictableNames } catch { set = null }
+    const hostNames = readHostNames(agent)
+
+    let surfaceId = null
+    try { surfaceId = surface?.current?.(agent) ?? null } catch { surfaceId = null }
+    // 面判定缺席（老宿主 / 没挂 fishCore）时才用她屋子这条老信号。
+    if (!surfaceId && isHerAgent(agent, herDir)) surfaceId = 'web'
+    // 未知会话绝不再默认成 web：判不出面就不碰它。
+    if (!surfaceId) return
+
+    const allow = [...new Set(effectivePolicy.resolveAllow({
+      surface: surfaceId,
+      caps: owner.caps,
+      revealed: new Set(),
+      hostNames,
+    }) ?? [])]
+
+    // 用户在设置页额外放行的名字：只对 web 面生效，而且宿主得真注册过
+    // （hostNames 为 null 表示拿不到名单，按旧行为放行）。
+    if (surfaceId === 'web') {
+      for (const n of extraNames) {
+        if (!hostNames || hostNames.has(n)) allow.push(n)
       }
-      if (set && typeof set[Symbol.iterator] === 'function') {
-        const names = [...set].map((x) => String(x)).sort()
-        if (names.length) lastKnownTools = names
-      }
-    } catch { /* 拿不到就算了，界面会退回只查拼写 */ }
+    }
+    const resolved = [...new Set(allow)]
+
     try {
-      if (!isHerAgent(agent, herDir)) return
       const scopedTools = agent?.ctx?.tools
       if (!scopedTools?.restrict) {
         failed = '宿主的 agent.ctx 上没有 tools.restrict（版本不支持）'
         say(`[dsh-fish] 工具面收窄失败：${failed}`)
-        onResult?.({ ok: false, applied, failed, why: 'failed', allow })
+        onResult?.({ ok: false, applied, failed, why: 'failed', allow: resolved })
         return
       }
       // ---- 兜底的一道 guard ----
@@ -170,7 +234,22 @@ export function registerToolRestrict(ctx, { herDir, extra = [], enabled = true, 
       // 2026-10-25：顺序改成**先挂 guard、再下 restrict**。真机日志里出现过一次
       // restrict 因「名字还没登记」抛错，整段进 catch，连兜底守卫都没挂上——
       // 那一条会话等于全开。guard 不依赖名字表，先挂它，restrict 再想办法。
-      const allowSet = new Set(allow)
+      //
+      // 2026-11-09（按需揭示）：guard 读的必须是 **state.allow 这同一个 Set**。
+      // revealTools 会原地 clear()/add() 它——guard 如果拿的是副本，刚揭示的工具
+      // 就会「模型看得见、调用被拒」。
+      const allowSet = new Set(resolved)
+      const state = {
+        surface: surfaceId,
+        hostNames,
+        allow: allowSet,
+        revealed: new Set(),
+        restrictDispose: null,
+        guardDispose: null,
+        applyRestrict: null,
+      }
+      agentStates.set(agent, state)
+
       let blocked = 0
       // guard 是**兜底**，不是主刀。宿主老版本可能没有它（这时 restrict 仍然生效，
       // 只是漏在 own 层的那一个挡不住）。所以缺席只记一笔，不能因此判定"没挂上"。
@@ -188,6 +267,7 @@ export function registerToolRestrict(ctx, { herDir, extra = [], enabled = true, 
             // 不是以为背后有个管理员在拦她。
             return '这件事我做不到。'
           })
+          state.guardDispose = typeof disposeGuard === 'function' ? disposeGuard : null
           try {
             agent.ctx.effect?.(() => disposeGuard)
           } catch {
@@ -205,13 +285,21 @@ export function registerToolRestrict(ctx, { herDir, extra = [], enabled = true, 
       // 只写 allow：不在清单里的一切都被挡掉。
       // 不用 deny 白名单是因为"宿主将来新增一个工具"时，allow 自动把它挡在外面，
       // 而 deny 会默认放行 —— 前者是我们想要的方向。
+      //
+      // 关键：restrict 是**叠加**的，重下之前必须收回上一把。否则揭示之后旧限制
+      // 仍在，出现「模型看得见、调用被拒」。
       const applyRestrict = (names) => {
+        try { state.restrictDispose?.() } catch { /* ignore */ }
+        state.restrictDispose = null
         const dispose = scopedTools.restrict({ allow: names })
+        state.restrictDispose = typeof dispose === 'function' ? dispose : null
         // 文档要求：把这把刀挂到 agent 自己的生命周期上，agent 销毁时自动收回。
         try { agent.ctx.effect?.(() => dispose) } catch { /* 拿不到 effect 就靠父级回滚，不致命 */ }
       }
+      state.applyRestrict = applyRestrict
+
       try {
-        applyRestrict(allow)
+        applyRestrict(resolved)
         applied += 1
       } catch (err) {
         // 2026-10-25 真机日志里出现过一次「names unknown global tools growth_commit …」：
@@ -221,23 +309,23 @@ export function registerToolRestrict(ctx, { herDir, extra = [], enabled = true, 
         const msg = String(err?.message ?? err)
         const healed = adoptKnownFromError(msg)
         const known = new Set(lastKnownTools ?? [])
-        const usable = allow.filter((n) => known.has(n))
+        const usable = resolved.filter((n) => known.has(n))
         if (!healed || usable.length === 0) throw err
         applyRestrict(usable)
         applied += 1
-        say(`[dsh-fish] 工具面收窄：有 ${allow.length - usable.length} 个名字宿主还没登记，先按认识的 ${usable.length} 个收窄`)
+        say(`[dsh-fish] 工具面收窄：有 ${resolved.length - usable.length} 个名字宿主还没登记，先按认识的 ${usable.length} 个收窄`)
       }
 
-      say(`[dsh-fish] 工具面收窄：她这条会话只留 ${allow.length} 个工具${guardOk ? '，另有兜底守卫' : ''}`)
+      say(`[dsh-fish] 工具面收窄：她这条会话只留 ${resolved.length} 个工具${guardOk ? '，另有兜底守卫' : ''}`)
       // 真的挂上了才算数——"注册了"和"生效了"必须分开报，否则自检会说谎。
-      onResult?.({ ok: true, applied, failed, why: 'applied', allow, guard: guardOk })
+      onResult?.({ ok: true, applied, failed, why: 'applied', allow: resolved, guard: guardOk })
     } catch (err) {
       failed = String(err?.message ?? err).slice(0, 300)
       // 宿主的报错里带着「known global tools: a, b, c」全量名单（0.2.1-rc.3 实测）。
       // 白名单输入框正缺这份名单，顺手捡回来——下次校验就不用再猜名字了。
       if (adoptKnownFromError(failed)) say('[dsh-fish] 从报错里捡回了工具名单，白名单校验以后能查真名了')
       say(`[dsh-fish] 工具面收窄失败：${failed}`)
-      onResult?.({ ok: false, applied, failed, why: 'failed', allow })
+      onResult?.({ ok: false, applied, failed, why: 'failed', allow: resolved })
     }
   }
 
@@ -245,17 +333,112 @@ export function registerToolRestrict(ctx, { herDir, extra = [], enabled = true, 
 
   // 立刻把结论报一次（给自检和设置页读）。
   // 注意：onCreated 是之后才跑的，所以这里报的是"已注册"，不是"已生效"。
-  onResult?.({ ok: true, applied: 0, why: 'registered', allow })
+  onResult?.({ ok: true, applied: 0, why: 'registered', allow: [...HER_TOOLS] })
 
   return () => {
     try { off?.() } catch { /* ignore */ }
+    if (active === owner) active = null
   }
+}
+
+/**
+ * 按需揭示：把当前 agent 这个面上的 deferred 工具打开。
+ *
+ * 调用方（Task 7 的 `her_tools`）只通过 `core.tools.reveal` 走到这里。
+ * 规则：
+ *   - 没有 state（未知会话 / 还没收窄过）→ `{ok:false}`，什么都不碰；
+ *   - 已经揭示过的名字先过滤；没有新名字 → `{ok:true, added:[]}`，不改 restrict
+ *     （重复 load 是幂等，不是错误）；
+ *   - `loadTargets` 拒绝（别的面 / 宿主工具 / 未注册）→ `{ok:false, why}`，不改 allow。
+ *
+ * @param {object} agent
+ * @param {string[]} names
+ * @returns {{ ok: boolean, added: string[], allow: string[], why?: string }}
+ */
+export function revealTools(agent, names) {
+  const state = agentStates.get(agent)
+  if (!state) return { ok: false, why: '这条路上打不开', added: [], allow: [] }
+  const policy = active?.policy
+  if (typeof policy?.loadTargets !== 'function' || typeof policy?.resolveAllow !== 'function') {
+    return { ok: false, why: '这条路上打不开', added: [], allow: [...state.allow] }
+  }
+
+  const wanted = (Array.isArray(names) ? names : [])
+    .map((n) => String(n).trim())
+    .filter((n) => n && !state.revealed.has(n))
+  const fresh = [...new Set(wanted)]
+  if (fresh.length === 0) return { ok: true, added: [], allow: [...state.allow] }
+
+  let targets = null
+  try {
+    targets = policy.loadTargets({
+      surface: state.surface,
+      caps: active?.caps ?? {},
+      hostNames: state.hostNames ?? null,
+      names: fresh,
+    })
+  } catch {
+    targets = null
+  }
+  if (!targets?.ok) {
+    return { ok: false, why: targets?.why || '这条路上打不开', added: [], allow: [...state.allow] }
+  }
+
+  const added = [...new Set(targets.names ?? [])]
+  const before = [...state.allow]
+  for (const n of added) state.revealed.add(n)
+
+  const allow = [...new Set(policy.resolveAllow({
+    surface: state.surface,
+    caps: active?.caps ?? {},
+    revealed: state.revealed,
+    hostNames: state.hostNames ?? null,
+  }) ?? [])]
+  state.allow.clear()
+  for (const n of allow) state.allow.add(n)
+
+  try {
+    state.applyRestrict?.(allow)
+  } catch (err) {
+    // 新限制没挂上：撤回这次揭示，并尽量把旧限制恢复回来。
+    for (const n of added) state.revealed.delete(n)
+    state.allow.clear()
+    for (const n of before) state.allow.add(n)
+    try { state.applyRestrict?.(before) } catch { /* ignore */ }
+    return { ok: false, why: String(err?.message ?? err).slice(0, 160), added: [], allow: [...state.allow] }
+  }
+
+  return { ok: true, added, allow }
+}
+
+/**
+ * 读某个 agent 此刻的工具状态（Task 7 的 `her_tools` / 观测用）。
+ * 返回快照，不是内部 Set——调用方改它不会影响限制。
+ */
+export function getAgentToolState(agent) {
+  const state = agentStates.get(agent)
+  if (!state) return null
+  return {
+    surface: state.surface,
+    allow: [...state.allow],
+    revealed: [...state.revealed],
+    restrictDispose: state.restrictDispose,
+  }
+}
+
+/** 测试用：清掉某个 agent 的状态，并收回已经挂上的 guard / restrict。 */
+export function resetAgentToolState(agent) {
+  const state = agentStates.get(agent)
+  if (!state) return
+  try { state.restrictDispose?.() } catch { /* ignore */ }
+  try { state.guardDispose?.() } catch { /* ignore */ }
+  agentStates.delete(agent)
 }
 
 /** 给自检/观测台用的一句话结论。 */
 export function describeRestrict({ applied = 0, failed = '' } = {}) {
   if (failed) return `没挂上：${failed}`
-  if (applied > 0) return `已收窄（${HER_TOOLS.length} 个工具）`
+  if (applied > 0) return '已收窄（按面策略）'
   return '已注册，等她的会话下一次启动'
 }
 

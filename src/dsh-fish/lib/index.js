@@ -25,8 +25,9 @@ import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
-import { registerToolRestrict } from './restrict.js'
+import { registerToolRestrict, revealTools, getAgentToolState } from './restrict.js'
 import { provideFishCore } from './core-service.js'
+import { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry } from './tool-policy.js'
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { createToolLedger } from './tool-ledger.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
@@ -161,9 +162,16 @@ export function apply(ctx, baseConfig = {}) {
     // ---- 工具面收窄：只让她看见自己的 9+1 个工具 ----
     // 必须**先于** bootstrapHome：她那条会话就是在 bootstrapHome 里被创建的，
     // agent/created 在会话开始跑第一步之前同步串行发出——晚一步就漏掉这一次。
+    // 面能力：微信在，就有 GUI/OCR 工具；图片路由恒开（dsh-wx 的图片都落成路径）。
+    // 不能传空对象——那会让所有 wx.ui 工具永远打不开。
+    const hasWx = (() => { try { return !!(ctx.get?.('wx')) } catch { return false } })()
+    const caps = { hasGui: hasWx, hasOcr: hasWx, hasImageRoute: true }
     try {
       const off = registerToolRestrict(ctx, {
         herDir,
+        surface: fishCore?.surface,
+        policy: { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry },
+        caps,
         extra: config?.tools?.allow ?? [],
         enabled: config?.tools?.restrict !== false,
         log: (...a) => logger.info(...a),
@@ -172,6 +180,12 @@ export function apply(ctx, baseConfig = {}) {
       if (typeof off === 'function') disposers.push(off)
     } catch (err) {
       logger.warn('[dsh-fish] 工具面收窄没挂上', err?.message ?? err)
+    }
+    // 按需揭示 / 状态查询：Task 7 的 her_tools 只通过 fishCore 走这条路，
+    // 不直接 import restrict.js。core 是同一个对象引用，dsh-wx 也看得到。
+    if (fishCore) {
+      fishCore.tools.reveal = (agent, names) => revealTools(agent, names)
+      fishCore.tools.state = (agent) => getAgentToolState(agent)
     }
 
     // ---- 她的身份：走 system prompt，不进对话历史（2026-10-25 改）----

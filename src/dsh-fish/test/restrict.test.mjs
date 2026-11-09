@@ -13,7 +13,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { HER_TOOLS, isHerAgent, registerToolRestrict, readRestrictState, describeRestrict } from '../lib/restrict.js'
+import {
+  HER_TOOLS,
+  isHerAgent,
+  registerToolRestrict,
+  readRestrictState,
+  describeRestrict,
+  revealTools,
+  getAgentToolState,
+  resetAgentToolState,
+} from '../lib/restrict.js'
 
 /** 一个够用的假插件 ctx：能 on('agent/created')，也能被我们主动触发。 */
 function fakeCtx() {
@@ -41,10 +50,12 @@ function fakeCtx() {
 function fakeAgent(cwd, { withRestrict = true, withGuard = true } = {}) {
   const calls = []
   const tools = {}
+  let disposed = 0
   if (withRestrict) {
     tools.restrict = (filter) => {
       calls.push(filter)
-      return () => {}
+      // reveal 会先收回上一把刀再下新的；disposed 计数让测试能看见"真的先 dispose 了"。
+      return () => { disposed += 1 }
     }
   }
   if (withGuard) {
@@ -58,6 +69,7 @@ function fakeAgent(cwd, { withRestrict = true, withGuard = true } = {}) {
   return {
     calls,
     guards,
+    get disposed() { return disposed },
     agent: {
       session: { header: { cwd } },
       ctx: { tools, effect: () => {} },
@@ -166,7 +178,7 @@ test('关掉开关就一个都不动', () => {
 })
 
 test('describeRestrict 的三种说法不能混', () => {
-  assert.match(describeRestrict({ applied: 1 }), /已收窄/)
+  assert.match(describeRestrict({ applied: 1 }), /已收窄（按面策略）/)
   assert.match(describeRestrict({ applied: 0 }), /等她的会话下一次启动/)
   assert.match(describeRestrict({ applied: 0, failed: 'requires a scoped context' }), /没挂上/)
   assert.doesNotMatch(describeRestrict({ applied: 0, failed: 'requires a scoped context' }), /已收窄/)
@@ -286,4 +298,127 @@ test('restrict 一直失败时，兜底守卫仍然挂着（挡住 subagent 的�
   assert.equal(guards[0]({ name: 'subagent' }), '这件事我做不到。', '挡不住名字就靠执行时拦')
   assert.equal(guards[0]({ name: 'her_recall' }), undefined)
   assert.equal(seen.at(-1).why, 'failed', '如实报失败，不能假装成功')
+})
+
+// ---------------------------------------------------------------------------
+// 按面策略 + 按需揭示（Task 6）
+//
+// 收窄从"一张静态清单"变成"每个面各自的可见集"；deferred 工具由 her_tools
+// 调用 revealTools 打开。两条硬约束：
+//   ① guard 和 restrict 必须读同一个 allowSet —— 否则刚揭示的工具"看得见、调不动"；
+//   ② 重算 allow 之前必须先收回上一把 restrict，不能叠加。
+// ---------------------------------------------------------------------------
+
+test('按面解析 allow：web 不给 wx，wx 不给 bili', () => {
+  const ctx = fakeCtx()
+  const surface = { current: (a) => a.__surface ?? null }
+  const policy = {
+    resolveAllow: ({ surface: s }) => s === 'web' ? ['growth_commit', 'read_image'] : ['growth_commit', 'wx_peek'],
+  }
+  const off = registerToolRestrict(ctx, { herDir: '/her', surface, policy, caps: {}, enabled: true })
+  const web = fakeAgent('/her'); web.agent.__surface = 'web'
+  const wx = fakeAgent('/her'); wx.agent.__surface = 'wx'
+  ctx.emit('agent/created', { agent: web.agent })
+  ctx.emit('agent/created', { agent: wx.agent })
+  assert.deepEqual(web.calls.at(-1).allow.sort(), ['growth_commit', 'read_image'])
+  assert.deepEqual(wx.calls.at(-1).allow.sort(), ['growth_commit', 'wx_peek'])
+  off()
+})
+
+test('未知会话不默认成 web：面判定为 null 就不动它', () => {
+  const ctx = fakeCtx()
+  const surface = { current: () => null }
+  const policy = { resolveAllow: () => ['growth_commit'] }
+  const off = registerToolRestrict(ctx, { herDir: '/her', surface, policy, caps: {}, enabled: true })
+  const other = fakeAgent('/somewhere-else')
+  ctx.emit('agent/created', { agent: other.agent })
+  assert.equal(other.calls.length, 0, '判不出面时宁可不动，也不默认 web')
+  off()
+})
+
+test('reveal 先 dispose 旧限制，再按并集重新 restrict；guard 放行新工具', () => {
+  const ctx = fakeCtx()
+  const surface = { current: () => 'wx' }
+  let allow = ['growth_commit']
+  const policy = {
+    resolveAllow: () => allow,
+    loadTargets: ({ names }) => names.includes('wx_see') ? { ok: true, names: ['wx_see'] } : { ok: false, why: '这条路上打不开' },
+  }
+  const a = fakeAgent('/her')
+  registerToolRestrict(ctx, { herDir: '/her', surface, policy, caps: {}, enabled: true })
+  ctx.emit('agent/created', { agent: a.agent })
+  const beforeDisposed = a.disposed
+  allow = ['growth_commit', 'wx_see']
+  const r = revealTools(a.agent, ['wx_see'])
+  assert.equal(r.ok, true)
+  assert.equal(a.disposed, beforeDisposed + 1)
+  assert.deepEqual(a.calls.at(-1).allow.sort(), ['growth_commit', 'wx_see'])
+  assert.doesNotThrow(() => a.guards.at(-1)({ name: 'wx_see' })) // guard 用的同一个 Set 已更新
+})
+
+test('reveal 拒绝别的面/宿主工具/未注册名字，失败不改变 allow', () => {
+  const ctx = fakeCtx()
+  const surface = { current: () => 'wx' }
+  const policy = {
+    resolveAllow: () => ['growth_commit'],
+    loadTargets: () => ({ ok: false, why: '这条路上打不开' }),
+  }
+  const a = fakeAgent('/her')
+  registerToolRestrict(ctx, { herDir: '/her', surface, policy, caps: {}, enabled: true })
+  ctx.emit('agent/created', { agent: a.agent })
+  const before = a.calls.length
+  const r = revealTools(a.agent, ['bili_look'])
+  assert.equal(r.ok, false)
+  assert.equal(a.calls.length, before)
+})
+
+test('reveal 把 state.hostNames 传给 loadTargets，重复 load 是幂等的', () => {
+  const ctx = fakeCtx()
+  const surface = { current: () => 'wx' }
+  let seenHosts = null
+  const policy = {
+    resolveAllow: () => ['growth_commit'],
+    loadTargets: ({ hostNames, names }) => { seenHosts = hostNames; return { ok: true, names } },
+  }
+  const a = fakeAgent('/her')
+  a.agent.ctx.tools.view = () => ({ restrictableNames: new Set(['growth_commit', 'wx_see']) })
+  registerToolRestrict(ctx, { herDir: '/her', surface, policy, caps: {}, enabled: true })
+  ctx.emit('agent/created', { agent: a.agent })
+
+  const r1 = revealTools(a.agent, ['wx_see', 'wx_see'])
+  assert.equal(r1.ok, true)
+  assert.ok(seenHosts instanceof Set, 'revealTools 必须把 hostNames 递下去')
+  assert.ok(seenHosts.has('wx_see'))
+  assert.deepEqual(r1.added, ['wx_see'])
+
+  const callsBefore = a.calls.length
+  const r2 = revealTools(a.agent, ['wx_see'])
+  assert.equal(r2.ok, true, '重复 load 不是错误')
+  assert.deepEqual(r2.added, [])
+  assert.equal(a.calls.length, callsBefore, '没有新名字就不该重下 restrict')
+})
+
+test('getAgentToolState / resetAgentToolState 给 Task 7 和测试用', () => {
+  const ctx = fakeCtx()
+  const surface = { current: () => 'wx' }
+  const policy = {
+    resolveAllow: ({ revealed }) => revealed.has('wx_see') ? ['growth_commit', 'wx_see'] : ['growth_commit'],
+    loadTargets: ({ names }) => ({ ok: true, names }),
+  }
+  const a = fakeAgent('/her')
+  registerToolRestrict(ctx, { herDir: '/her', surface, policy, caps: {}, enabled: true })
+  ctx.emit('agent/created', { agent: a.agent })
+
+  const before = getAgentToolState(a.agent)
+  assert.equal(before.surface, 'wx')
+  assert.ok(before.allow.includes('growth_commit'))
+  assert.deepEqual(before.revealed, [])
+
+  revealTools(a.agent, ['wx_see'])
+  const after = getAgentToolState(a.agent)
+  assert.ok(after.allow.includes('wx_see'))
+  assert.deepEqual(after.revealed, ['wx_see'])
+
+  resetAgentToolState(a.agent)
+  assert.equal(getAgentToolState(a.agent), null)
 })
