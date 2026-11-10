@@ -234,6 +234,13 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
   const channel = raw.channel === 'qq' || raw.channel === 'wx' || raw.channel === 'web' ? raw.channel : 'core'
   let surface
   if (raw.surface === undefined || raw.surface === null) {
+    // v3 新增类型不能被推断兜住：`bili_reply` 是 B 站公开事实，正确面无法从
+    // channel/type/text 反推（channel 规定为 core），漏传时推断只会静默落 core——
+    // 正是 §5.2「写入时必填」要防的误分类。所以这里拒绝，而不是猜。
+    // 旧 v1/v2 类型继续走推断，保持既有写入方兼容。
+    if (type === 'bili_reply') {
+      throw new Reject('BAD_SURFACE', 'BAD_SURFACE: bili_reply 必须显式写 surface（应为 bili）')
+    }
     surface = inferSurface({ channel, type, text, refs })
   } else if (SURFACES.includes(raw.surface)) {
     surface = raw.surface

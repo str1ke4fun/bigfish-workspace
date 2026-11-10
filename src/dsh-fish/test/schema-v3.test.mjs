@@ -86,6 +86,17 @@ test('v3: 不传 surface 时按老行为接受，并推断出 surface', () => {
   assert.equal(validateEvent({ type: 'utterance', text: 'x' }, { source: 'system' }).surface, 'core')
 })
 
+test('v3: bili_reply 漏传/空 surface 拒绝，不静默落 core', () => {
+  const reply = { bvid: 'BV1', rpid: '42' }
+  for (const surface of [undefined, null]) {
+    assert.throws(
+      () => validateEvent({ type: 'bili_reply', text: '回了', surface, reply }, { source: 'system' }),
+      (e) => e.code === 'BAD_SURFACE' && /BAD_SURFACE/.test(e.message),
+      `surface=${String(surface)} 时应当拒绝`,
+    )
+  }
+})
+
 test('v3: bili_reply 结构化去重键', () => {
   const ev = validateEvent(
     { type: 'bili_reply', text: '回了', surface: 'bili', reply: { bvid: 'BV1', rpid: '42' } },
