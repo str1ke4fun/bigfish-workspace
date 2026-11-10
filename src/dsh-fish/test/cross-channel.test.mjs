@@ -376,3 +376,30 @@ test('身份文档：narrative / refusals 里的微信原文也跨面抹掉，�
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 })
+
+test('derive：refusals / scars 的 object 也跨面去引用化（act 非空时 persona 会渲染它）', () => {
+  // persona 只在 act 非空时才渲染「（你不想${act}：${object}）」，
+  // 所以旧用例的 act 是空串，object 的泄露一直没被看见。
+  const phone = '13800138000'
+  const events = [
+    ev('ev_seed', 'seed', 1, '种', { channel: 'core', surface: 'core', source: 'system' }),
+    ev('ev_refuse', 'refusal', 2, `我不想看手机${phone}里的聊天记录，这件事真的够了。`, { channel: 'wx', surface: 'wx' }),
+    // 他因此难过 + 她三天内退让 → 一条疤；疤也带同样的 act / object。
+    ev('ev_react', 'meta', 2, 'react:ev_refuse:hurt', { channel: 'wx', surface: 'wx' }),
+    ev('ev_concede', 'utterance', 3, '好吧，听你的，我收回刚才的话。', { channel: 'wx', surface: 'wx' }),
+  ]
+
+  const raw = deriveSelf(events, { now: T0 + 4 * DAY_MS })
+  assert.equal(raw.refusals.length, 1)
+  assert.equal(raw.refusals[0].act, '看', 'fixture 的 act 必须非空，否则 persona 不渲染 object')
+  assert.ok(raw.refusals[0].object.includes(phone), '对照：不带 viewSurface 时 object 原文保留')
+  assert.equal(raw.scars.length, 1, 'fixture 必须产出一条疤')
+
+  const m = deriveSelf(events, { now: T0 + 4 * DAY_MS, viewSurface: 'identity' })
+  assert.equal(m.refusals.length, 1, '去引用化后拒绝条目不能消失（计数不变）')
+  assert.equal(m.refusals[0].act, '看', 'act 不是原文，必须保留')
+  assert.equal(m.refusals[0].object.includes(phone), false, 'refusals[].object 的手机号不能透出')
+  assert.equal(m.scars.length, 1, '去引用化后疤条目不能消失（计数不变）')
+  assert.equal(m.scars[0].act, '看')
+  assert.equal(m.scars[0].object.includes(phone), false, 'scars[].object 的手机号不能透出')
+})

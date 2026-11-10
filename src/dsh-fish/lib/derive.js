@@ -738,6 +738,8 @@ export function deriveSelf(events = [], opts = {}) {
           ...r,
           what: redactField(r.what, source),
           quote: redactField(r.quote, source),
+          // persona 渲染的是「（你不想${act}：${object}）」——object 也是原文。
+          object: redactField(r.object, source),
         }
       })
     : refusals
@@ -749,6 +751,7 @@ export function deriveSelf(events = [], opts = {}) {
           ...s,
           what: redactField(s.what, refusalText),
           quote: redactField(s.quote, refusalText),
+          object: redactField(s.object, refusalText),
           concedeText: redactField(s.concedeText, { id: src.concedeId, channel: src.concedeChannel }),
         }
       })
