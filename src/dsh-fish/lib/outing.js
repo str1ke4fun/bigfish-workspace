@@ -27,7 +27,7 @@ import { renderWatchList } from './history.js'
 import { fetchCover, coverLines } from './cover.js'
 import { withWake } from './wakewin.js'
 import { watchTurnEnd } from './turnend.js'
-import { setWakeSection, clearWakeSection } from './identity.js'
+import { setWakeSection, clearWakeSection, getWakeSection } from './identity.js'
 import { BILI_TRIGGER, BILI_HINT } from './wakeconst.js'
 
 export const TITLE_OUTING_WORKSPACE = '大肥鱼出门'
@@ -141,7 +141,8 @@ function firstLook(ctx, sessionId, log) {
       clearTimeout(kill)
       setTimeout(() => {
         try { watcher.off?.() } catch { /* ignore */ }
-        clearWakeSection(sessionId)
+        // 只清自己写的那一段：这 90 秒里可能已经有另一次出门挂上了新的处境。
+        if (getWakeSection(sessionId) === text) clearWakeSection(sessionId)
       }, OUTING_CLEAR_MS).unref?.()
     })
 }
@@ -363,7 +364,8 @@ export async function maybeOuting(ctx, opts = {}) {
       log(`出门（${material ? '带素材' : '带回复'}）`)
       setTimeout(() => {
         try { watcher.off?.() } catch { /* ignore */ }
-        clearWakeSection(sid)
+        // 只清自己写的那一段：这 90 秒里可能已经有下一次出门挂上了新的处境。
+        if (getWakeSection(sid) === wakeText) clearWakeSection(sid)
       }, OUTING_CLEAR_MS).unref?.()
       return { ok: true, sessionId: sid }
     } catch (err) {
