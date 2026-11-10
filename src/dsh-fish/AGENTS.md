@@ -69,7 +69,7 @@
 node --test
 ```
 
-当前基线 **641 个**：`--test-isolation=none` 下 639 过、2 条已知跨文件假红；用独立进程跑 `node --test` 应全绿。任何一条红都不许提交——包括看起来"不是我弄的"那条。
+当前基线 **813 个**：`--test-isolation=none` 下可能有跨文件假红（ULID / cover）；用独立进程跑 `node --test` 应全绿。任何一条红都不许提交——包括看起来"不是我弄的"那条。
 
 按环境挑跑法：
 
@@ -89,13 +89,14 @@ CI 也跑同一套（`.github/workflows/test.yml`，Node 20 / 22 / 24 各跑一�
 - 工具可见性由 `lib/tool-policy.js` 唯一决定；`config.tools.allow` 只是 web 面的额外放行兼容，不要拿它控制 wx / qq / bili 的可见性。
 - `her_tools` 只做三件事：`search` 列当前面未打开的按需工具，`describe` 给一两个工具的一句说明与参数名（不给 JSON schema），`load` 真正打开（别的面、宿主工具、未知名字整次拒绝）。
 - 工具台账在 `<root>/tool-ledger/YYYY-MM-DD.jsonl`，大结果脱敏后放 `tool-ledger/artifacts/`；台账不自动删除，也不进事件流。
-- 本辑未做：B 站独立出门会话、`dsh-bili` 拆包、事件 v3 跨面记忆。QQ 与 B 站仍按旧调度运行。
+- B 站出门会话（2026-11-10）：`lib/outing.js` 幂等地建/复用工作区 `home/bili` 与会话「去 B 站」，预分配 id → `surface.reserve(id,'bili')` → `sc.create`；归档/删掉后才重建。调度器每轮把后台刷到的素材和未回回复投进这条会话（正文进 `fish:wake` 段，对话里只留「（出门看看）」）。**别再把它塞回 home 唤醒**：home 是 web 面，看不见 `bili_speak`。`isHerAgent` 认屋子的子目录，正是为了让这条会话拿到身份段并被收窄——只认 `home` 本身的话，她会带着宿主全套工具出门。
+- 本辑未做：`dsh-bili` 拆包、事件 v3 跨面记忆。QQ 仍按旧调度运行。
 
 ## 提 PR / 提交前自检
 
 - [ ] 三个依赖字段还是 `{}`
 - [ ] 没有新增人格设置入口
 - [ ] 新输入口都过了 `guard.js`
-- [ ] `node --test` 641 全绿
+- [ ] `node --test` 813 全绿
 - [ ] 界面文案没有「他」「四道门」「三道门」
 - [ ] 改了 `EVENT_SCHEMA_VERSION` 的话，`CHANGELOG.md` 里写了迁移说明

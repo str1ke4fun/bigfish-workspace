@@ -73,22 +73,60 @@ export const INBOX_ORDER = 8850
 
 /** 这一次唤醒的处境正文；空串表示没有（正常聊天时就是空）。 */
 let wakeText = ''
+/**
+ * 按会话分开的处境（2026-11-10，B 站出门会话）。
+ *
+ * 以前只有一份全局 `wakeText`：home 在唤醒时，出门会话如果刚好也在组装提示词，
+ * 会把 home 的处境看进去；反过来也一样。现在唤醒可以带 sessionId，段按会话取；
+ * 不带 sessionId 的旧调用仍写全局那份，行为不变。
+ */
+const wakeBySession = new Map()
+
+function sessionIdOf(agent) {
+  return String(agent?.session?.header?.id ?? agent?.session?.id ?? '')
+}
 
 /**
  * 设这一次的处境正文。传空串等于清掉。
  * @param {string} text
+ * @param {string} [sessionId] 只给这一条会话看；不传就写给全局（旧行为）
  */
-export function setWakeSection(text) {
-  wakeText = String(text ?? '')
+export function setWakeSection(text, sessionId) {
+  const body = String(text ?? '')
+  const sid = String(sessionId ?? '')
+  if (sid) {
+    if (body) wakeBySession.set(sid, body)
+    else wakeBySession.delete(sid)
+    return
+  }
+  wakeText = body
 }
 
-/** 清掉。回合结束、唤醒失败、插件卸载时都要调。 */
-export function clearWakeSection() {
+/**
+ * 清掉。回合结束、唤醒失败、插件卸载时都要调。
+ * @param {string} [sessionId] 只清这条会话；不传就清全局和所有会话段
+ */
+export function clearWakeSection(sessionId) {
+  const sid = String(sessionId ?? '')
+  if (sid) {
+    wakeBySession.delete(sid)
+    return
+  }
   wakeText = ''
+  wakeBySession.clear()
 }
 
-/** 测试用：看现在挂着什么。 */
-export function getWakeSection() {
+/** 测试用：看现在挂着什么（带 sessionId 就看那条会话的）。 */
+export function getWakeSection(sessionId) {
+  const sid = String(sessionId ?? '')
+  if (sid) return wakeBySession.get(sid) ?? ''
+  return wakeText
+}
+
+/** 某条 agent 这一轮该看到的处境：有按会话的就用会话的，否则退回全局。 */
+export function wakeSectionFor(agent) {
+  const sid = sessionIdOf(agent)
+  if (sid && wakeBySession.has(sid)) return wakeBySession.get(sid)
   return wakeText
 }
 
@@ -148,7 +186,8 @@ export function attachIdentity(agent, root, { canRemind, inboxText } = {}) {
     sp.section({
       name: WAKE_SECTION,
       order: WAKE_ORDER,
-      text: () => wakeText,
+      // 按会话取：home 和出门会话各自只看到自己的处境。
+      text: () => wakeSectionFor(agent),
     })
     // 定时提醒的工具说明。固定文本，不随配置变；只在微信那条会话里出现。
     sp.section({

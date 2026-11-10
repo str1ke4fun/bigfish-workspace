@@ -105,6 +105,17 @@ test('isHerAgent 只认她的屋子，不认别的目录', () => {
   assert.equal(isHerAgent({ session: {} }, her), false)
 })
 
+test('isHerAgent 认屋子下面的子目录（B 站出门会话住在 home/bili）', () => {
+  const her = 'C:\\Users\\someone\\.dsh-fish\\home'
+  // 出门会话的工作区是 home/bili，cwd 是它的子目录——也是她
+  assert.equal(isHerAgent({ session: { header: { cwd: `${her}\\bili` } } }, her), true)
+  assert.equal(isHerAgent({ session: { header: { cwd: `${her}\\bili\\` } } }, her), true)
+  // 只是名字前缀相同、并不是子目录：不认
+  assert.equal(isHerAgent({ session: { header: { cwd: `${her}root` } } }, her), false)
+  // 上一级：不认
+  assert.equal(isHerAgent({ session: { header: { cwd: 'C:\\Users\\someone\\.dsh-fish' } } }, her), false)
+})
+
 test('只有她的 agent 被收窄，别人的会话一个都不碰', () => {
   const ctx = fakeCtx()
   registerToolRestrict(ctx, { herDir: 'C:\\her-home', log: () => {} })

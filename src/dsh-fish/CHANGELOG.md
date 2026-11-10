@@ -1,3 +1,16 @@
+## 未发布 — 2026-11-10
+
+**她可以自己出门去 B 站了**（用户：B 站插件要能自己看视频、自己醒、自己出门发评论）。
+
+以前 `bili_look` / `bili_watch` / `bili_speak` 挂在 `bili` 面上，而面由会话决定；没有 B 站会话，这三个工具对任何会话都不可见——她只能被推送着看，没法自己点开视频，也没法在评论区回话。
+
+- 新增 `lib/outing.js`：启动时幂等建「大肥鱼出门 / 去 B 站」（工作区 `home/bili`，状态 `bili-session.json`；归档或删掉才重建），预分配 id → `surface.reserve(id,'bili')` → `sc.create`，保证 `agent/created` 发出时已经按 bili 面装配。新建时先跑一轮，侧栏才显示得出来。
+- 调度器每轮在后台刷站之后调用 `maybeOuting()`：刷到素材、或评论区有未回回复时投进出门会话。对话里只有「（出门看看）」，素材走 `fish:wake` 段（按会话分开，home 看不到）。每天上限跟 `browse.perDay` 走（≥1、≤4），只带回复的出门间隔 ≥60 分钟，回复扫描按 `comment.scanEveryMin` 节流（缺省 30 分钟，夹在 5 分钟到 12 小时之间）。
+- home 唤醒不再渲染 B 站回复：那是 web 面，她看不见 `bili_speak`，提了也只能干看着。
+- `isHerAgent` 放宽为「在她屋子里」：屋子的子目录（`home/bili`）也算她，否则出门会话拿不到身份段、也不会被收窄。
+- `lib/turnend.js` 抽出 `watchTurnEnd()`，home 唤醒和出门共用同一套 `turn/end` 判定。
+- 记账只追加 `meta biliout:<日期> browse|replies`，不改事件流 schema。
+
 ## 未发布 — 2026-11-09
 
 **工具可见性接进自检，边界写清**（工具暴露渐进披露的收尾）。

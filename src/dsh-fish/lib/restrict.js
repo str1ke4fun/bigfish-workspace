@@ -83,16 +83,25 @@ function normDir(p) {
  * 判据用 **cwd** 而不是 sessionId：会话会轮换（`chat.rotateAfter`），
  * 轮换后 sessionId 变了，但 cwd 永远是她的屋子。用 sessionId 判断的话，
  * 轮换一次限制就悄悄失效了 —— 那是最难发现的那种 bug。
+ *
+ * 2026-11-10：屋子的**子目录**也算她。B 站出门会话的工作区是 `home/bili`，
+ * 如果只认 cwd 完全等于 `home`，那条会话就既拿不到身份段、也不会被收窄——
+ * 她会带着宿主全套工具出门。判据从「同一个目录」放宽成「在她屋子里」，
+ * 别的目录仍然一律不认。
  */
 export function isHerAgent(agent, herDir) {
   const want = normDir(herDir)
   if (!want) return false
-  const got =
+  const got = normDir(
     agent?.session?.header?.cwd ??
     agent?.header?.cwd ??
     agent?.session?.cwd ??
-    ''
-  return normDir(got) === want
+    '',
+  )
+  if (!got) return false
+  if (got === want) return true
+  const sep = want.includes('\\') ? '\\' : '/'
+  return got.startsWith(want + sep)
 }
 
 /** 当前生效的策略上下文（`registerToolRestrict` 写入，`revealTools` 读取）。 */

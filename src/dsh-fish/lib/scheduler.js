@@ -28,12 +28,13 @@ import { backgroundBrowse } from './browsejob.js'
 import { renderWatchList } from './history.js'
 import { fetchCover, coverLines } from './cover.js'
 import { riskState, browsePlan, noteRisk } from './risk.js'
-import { scanReplies, renderReplies } from './comment.js'
 import { flushReport } from './report.js'
 import { talkSessionId } from './home.js'
-import { WAKE_TRIGGER } from './wakeconst.js'
+import { WAKE_TRIGGER, WAKE_HINT } from './wakeconst.js'
 import { refreshSelfDoc } from './selfdoc.js'
 import { setWakeSection, clearWakeSection } from './identity.js'
+import { maybeOuting } from './outing.js'
+import { watchTurnEnd } from './turnend.js'
 
 const TICK_MS = 60_000
 const INITIAL_DELAY_MS = 20_000
@@ -41,50 +42,6 @@ const WAKE_TIMEOUT_MS = 5 * 60_000
 // 等她的回合结束时最多等这么久。一次唤醒的思考通常 10–40 秒，
 // 90 秒足够；再久就说明卡住了，先把报告写出去，别让用户干等。
 const REPORT_WAIT_MS = 90_000
-
-// 2026-10-26（用户 m00507）：她看不懂对话里那句「……」。
-// 真机 reasoning 原话是「用户发来的只有一个省略号，没有实质请求」，接着猜
-// 「用户的意思是让我留一句话、写日记」——把系统叫醒当成了用户的请求。
-// 这句说明只进 system prompt 的 fish:wake 段（用户看不见），把性质讲清楚；
-// 触发语本身也换成了括号旁白（见 wakeconst.js）。两处必须一起在，只有其一
-// 她仍会去猜。
-const WAKE_HINT = '对话里那条括号里的短句不是用户说的话，是叫醒你的信号。不用回应它，也不用问它什么意思——这一轮是你自己的。'
-
-/**
- * 唤醒时对话里唯一出现的那句话（2026-10-25 晚）。
- *
- * 为什么只剩这一句：真正的「这一次的处境」走 system prompt 的 `fish:wake` 段，
- * 不进对话历史。对话里必须**有一条** user 消息才能把回合点起来，所以留这句。
- * 它要短到不带任何剧本味——用户看到的是「屋子里有人动了」，而不是系统在给她派活。
- */
-
-
-
-/**
- * 等这一次唤醒的回合真正结束。
- *
- * 坑（真机抓到）：`sessionController.prompt()` 在把消息**排进队列**时就 resolve 了，
- * 模型还在后面慢慢想。之前紧接着就 flushReport，报告在她开口前 8 秒就写完，
- * 于是 out/YYYY-MM-DD.md 永远显示"今天她什么都没说"——她其实说了，只是晚了。
- *
- * 宿主的信号是 `session/event`，事件里 `type === 'turn/end'`。
- * 拿不到事件总线（单测/老宿主）时退回"等一会儿再写一次"，
- * 反正 flushReport 是幂等的重写，多写一次不会错。
- */
-function watchTurnEnd(ctx, sessionId, done) {
-  let fired = false
-  const once = () => {
-    if (fired) return
-    fired = true
-    try { done() } catch { /* 报告是派生品，写不出来不影响任何东西 */ }
-  }
-  const off = ctx.on?.('session/event', (session, event) => {
-    const id = session?.header?.id ?? session?.id
-    if (id !== sessionId) return
-    if (event?.type === 'turn/end') once()
-  })
-  return { off, once, get fired() { return fired } }
-}
 
 export function startScheduler(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
@@ -118,18 +75,38 @@ export function startScheduler(ctx, deps = {}) {
       const { config } = await loadConfig(root)
       const dk = dateKey()
 
-      // ---- 后台刷站（2026-11-03）----
-      // 放在唤醒日程之前：她不醒的时候也要有"今天看见过什么"。
+      // ---- 后台刷站 + B 站出门 ----
+      // 刷站放在唤醒日程之前：她不醒的时候也要有"今天看见过什么"。
       // 配额与唤醒共用，browsejob 会为还没发生的唤醒留一次。
-      // 用 running 串行化，避免网络慢时两轮刷站叠在一起。
+      // 用 running 串行化，避免网络慢时两轮叠在一起。
+      //
+      // 出门（2026-11-10）：刷到的素材、以及评论区新回复，投进「去 B 站」那条会话
+      // ——不是 home。以前回复渲染在 home 唤醒里，于是她在屋子里替 B 站回话，
+      // 而 bili_speak 属于 bili 面，她根本看不见那个工具。
+      // 带素材的出门在这里；只带回复的出门也由它自己判配额/间隔。
       running = true
+      let bg = null
       try {
-        const bg = await backgroundBrowse({ root, config, events, dk, log, deps })
+        bg = await backgroundBrowse({ root, config, events, dk, log, deps })
         if (bg?.ok) {
           // 新事件（saw / browse）已经落盘，后面的唤醒配额与身份文档都要读到。
           events = (await readEvents(root)).events
           await refreshSelfDoc(root, { log })
         }
+        const out = await maybeOuting(ctx, {
+          root,
+          config,
+          events,
+          dk,
+          now: new Date(),
+          material: bg?.ok ? bg.text : '',
+          picks: bg?.ok ? bg.picks : [],
+          log,
+          ensureSession: deps.ensureBiliSession,
+          client: deps.client,
+          appendEvent: deps.appendEvent,
+        })
+        if (out?.ok) events = (await readEvents(root)).events
       } finally {
         running = false
       }
@@ -344,21 +321,10 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
   // 而这整份文档每轮都以 system prompt 的形式在场。这里再写一遍 = 同一件事说两遍。
 
   // ---- P4：能不能在 B 站说话 ----
-  // 关着的时候**连工具说明都不给**——不是"给了但拒绝"。
-  // 差别很重要：给了再拒绝，她会反复试、会猜为什么被拒；
-  // 不给，就等于这件事不存在，她不会去处理一个不存在的门。
-  let canSpeak = config?.comment?.enabled === true
-  if (canSpeak) {
-    // 有人回她了才把素材递过去。没人回、或者她今天还没说话，就没必要提这件事。
-    const events = (await readEvents(root).catch(() => ({ events: [] }))).events
-    const waiting = await scanReplies({ root, events, dateKey: dk }).catch(() => [])
-    if (waiting.length) {
-      const txt = renderReplies(waiting)
-      if (txt) parts.push('', txt)
-    }
-    // 能说话这件事的说明在身份文档的「在网上说话」一节（开关打开时 selfdoc 才写），
-    // 不在这儿重复。
-  }
+  // 2026-11-10：回复**不再**在 home 唤醒里渲染。B 站回复属于 bili 面，
+  // 而 home 是 web 面——她在这里看不见 bili_speak，却会被指着鼻子问
+  // 「有人在你下面说话了」，只能干看着。现在回复只投进出门会话（lib/outing.js）。
+  // 能说话这件事的说明仍在身份文档的「在网上说话」一节（开关打开时 selfdoc 才写）。
 
   // 日记：**不再在叫醒消息里推**（2026-10-26，用户 m00928：「叫醒仅仅只是叫醒」）。
   // 病历：原来这里整段塞 diaryPrompt（「今天写日记…写今天发生了什么…」），加上后面的

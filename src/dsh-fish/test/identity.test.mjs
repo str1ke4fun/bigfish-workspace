@@ -136,6 +136,39 @@ test('attachIdentity：不是微信那条会话时，提醒说明和任务摘要
   assert.match(calls[7].text(), /t_1/)
 })
 
+test('处境段按会话分开：home 和 B 站出门会话各看各的，互不串', () => {
+  resetIdentityCache()
+  clearWakeSection()
+  const root = tmp()
+  fs.mkdirSync(join(root, 'home'), { recursive: true })
+  fs.writeFileSync(selfDocPath(root), '我是她', 'utf8')
+
+  const sectionFor = (id) => {
+    const calls = []
+    const agent = { session: { header: { id } }, ctx: { systemPrompt: { section: (o) => calls.push(o) } } }
+    assert.equal(attachIdentity(agent, root, { inboxText: () => '' }).ok, true)
+    return calls[1].text
+  }
+  const homeWake = sectionFor('ses-home')
+  const biliWake = sectionFor('ses-bili')
+
+  setWakeSection('屋子里的事', 'ses-home')
+  setWakeSection('外面的事', 'ses-bili')
+  assert.equal(homeWake(), '屋子里的事')
+  assert.equal(biliWake(), '外面的事')
+  // 不传 sessionId 的旧调用仍写全局；没有自己那条的会话退回全局
+  setWakeSection('全局的处境')
+  assert.equal(sectionFor('ses-other')(), '全局的处境')
+  assert.equal(homeWake(), '屋子里的事', '有自己那条的会话不看全局')
+  // 只清一条：另一条和全局都还在
+  clearWakeSection('ses-bili')
+  assert.equal(biliWake(), '全局的处境')
+  assert.equal(homeWake(), '屋子里的事')
+  clearWakeSection()
+  assert.equal(homeWake(), '')
+  assert.equal(biliWake(), '')
+})
+
 test('attachIdentity：没有 systemPrompt 时返回 ok:false，不抛', () => {
   const r = attachIdentity({ ctx: {} }, tmp())
   assert.equal(r.ok, false)

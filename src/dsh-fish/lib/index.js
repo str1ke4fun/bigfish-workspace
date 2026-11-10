@@ -24,6 +24,7 @@ import { registerInbox } from './taskinbox.js'
 import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
+import { ensureBiliSession } from './outing.js'
 import { writeSelfDoc } from './selfdoc.js'
 import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
 import { provideFishCore } from './core-service.js'
@@ -309,6 +310,34 @@ export function apply(ctx, baseConfig = {}) {
       }
     }
 
+    // ---- 出门会话（2026-11-10）----
+    // 「大肥鱼出门 / 去 B 站」，工作区在 home/bili。B 站工具只在 bili 面可见，
+    // 没有这条会话，她就只被推送着看、没法自己打开视频或在评论区回话。
+    // 建失败不挡住启动：调度器每轮会再试（maybeOuting 内部会调 ensureBiliSession）。
+    let ensureBili = null
+    if (home.ok) {
+      try {
+        const out = await ensureBiliSession(ctx, {
+          root,
+          preset: config?.tools?.preset ?? '',
+          log: (...a) => logger.info(...a),
+        })
+        if (out.ok) {
+          logger.info(`[dsh-fish] 出门会话 ${out.sessionId}${out.reused ? '（复用）' : '（新建）'}`)
+          ensureBili = () => ensureBiliSession(ctx, {
+            root,
+            preset: config?.tools?.preset ?? '',
+            log: (...a) => logger.warn(...a),
+            wakeOnCreate: false,
+          })
+        } else {
+          logger.warn(`[dsh-fish] 出门会话没建起来：${out.why}`)
+        }
+      } catch (err) {
+        logger.warn('[dsh-fish] 出门会话出错', err?.message ?? err)
+      }
+    }
+
     // ---- 身份文本再落一次盘：屋子建好之后 activeCarry 等才齐，内容可能变 ----
     // 这条改动之后它**不再被宿主注入**（那是旧的 AGENTS.md 通道），只是落盘副本；
     // 真正进她上下文的是上面注册的 system prompt 段（每轮组装时现读文件）。
@@ -333,6 +362,7 @@ export function apply(ctx, baseConfig = {}) {
       herDir,
       wsId: home.wsId,
       sessionId: home.sessionId,
+      ensureBiliSession: ensureBili ?? undefined,
       log: (...a) => logger.info(...a),
     })
 
