@@ -23,9 +23,15 @@ import { registerRemind } from './remind.js'
 import { registerInbox } from './taskinbox.js'
 import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
-import { bootstrapHome, homeStatus, wakeIfBlank } from './home.js'
+import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc } from './selfdoc.js'
-import { registerToolRestrict } from './restrict.js'
+import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
+import { provideFishCore } from './core-service.js'
+import { registerQqAdapter, qqExposure } from './qq-adapter.js'
+import { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry } from './tool-policy.js'
+import { wrapRenderOnly, wrapTool } from './tool-result.js'
+import { registerHerTools } from './tools.js'
+import { createToolLedger } from './tool-ledger.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
 import { clearWakeSection, registerIdentity } from './identity.js'
@@ -48,6 +54,8 @@ const SEED_KEY = 'seed:'
 export function apply(ctx, baseConfig = {}) {
   const root = baseConfig.root || process.env.DSH_FISH_HOME || rootDir()
   const disposers = []
+  // dispose 时用它叫停「等宿主服务就绪」的重试循环，别让插件停用后还在后台醒着。
+  const bootAbort = new AbortController()
 
   // 把过滤能力作为服务暴露给 dsh-wx 这类输入通道：它们不能直接 import 本插件的内部文件，
   // 但检索结果、外来文本在递给她之前必须过 guard.js。服务不可用时，调用方应整行拦下。
@@ -81,6 +89,53 @@ export function apply(ctx, baseConfig = {}) {
     // 她自己的房间必须先存在：她的会话 cwd 指向这里（不是 root），
     // 这样她不会一睁眼就站在自己的 events.jsonl 旁边。
     const herDir = await ensureHer(root)
+
+    // ---- 插件内核：面判定 / guard / config / 工具返回契约 ----
+    // 必须在 registerToolRestrict 之前挂上：限制监听器（Task 6 起）要靠 surface
+    // 判断这个 agent 属于哪个面。这里先只提供判定，本任务不改 restrict 的签名。
+    let fishCore = null
+    try {
+      const handle = provideFishCore(ctx, { root, herDir, log: (...a) => logger.warn(...a) })
+      fishCore = handle.core
+      if (typeof handle.dispose === 'function') disposers.push(handle.dispose)
+    } catch (err) {
+      logger.warn('[dsh-fish] fishCore 没挂上', err?.message ?? err)
+    }
+
+    // ---- 工具返回契约：核心对象上挂包装器 ----
+    // `core` 必须是 fishCore 同一个对象引用（dsh-wx / dsh-bili 通过宿主服务拿到它）；
+    // 复制一份的话，后续任务往里加的东西两边就看不见了。
+    if (fishCore) {
+      fishCore.tools.wrap = (def, opts = {}) => wrapTool(def, { ...opts, core: fishCore })
+      fishCore.tools.wrapRender = (def, opts = {}) => wrapRenderOnly(def, { ...opts, core: fishCore })
+    }
+
+    // ---- 工具台账：只读观察 tools/result，与事件流完全分离 ----
+    // 必须放在 fishCore 之后：surfaceOf 靠它判定这次调用来自哪个面。
+    // 放在工具注册之前：插件启动期间已经发生的调用也要被看见。
+    // 监听器内部自己吞错，台账写失败绝不能把成功的工具调用变成 isError。
+    // 实例在 try 外留一个引用：/selfcheck 要读 ledger.status()，外部闭包拿不到 try 里的 const。
+    let ledger = null
+    try {
+      ledger = createToolLedger({
+        root,
+        guard: { looksLikeSecret },
+        log: (...a) => logger.warn(...a),
+        surfaceOf: (agent) => fishCore?.surface?.current?.(agent),
+      })
+      const offLedger = ledger.register(ctx)
+      // register 自己吞错并 markFailed：此时台账不可用，置回 null，让自检报
+      // 「台账没挂上」，而不是 written:0 的假绿。
+      if (ledger.status().ok === false) {
+        ledger = null
+      } else if (typeof offLedger === 'function') {
+        disposers.push(offLedger)
+      }
+    } catch (err) {
+      ledger = null
+      logger.warn('[dsh-fish] 工具台账没挂上', err?.message ?? err)
+    }
+
     const { events } = await readEvents(root)
 
     // 首次启动播种：她最初的那一点点性格，是**第一个事实**，不是可调参数。
@@ -118,10 +173,29 @@ export function apply(ctx, baseConfig = {}) {
     // ---- 工具面收窄：只让她看见自己的 9+1 个工具 ----
     // 必须**先于** bootstrapHome：她那条会话就是在 bootstrapHome 里被创建的，
     // agent/created 在会话开始跑第一步之前同步串行发出——晚一步就漏掉这一次。
+    // 面能力：微信在，就有 GUI/OCR 工具；图片路由恒开（dsh-wx 的图片都落成路径）。
+    // 不能传空对象——那会让所有 wx.ui 工具永远打不开。
+    // 惰性取值：resolveAllow 会在 agent/created / revealTools 时现读，而不是 boot 期快照。
+    // 后者会把「插件晚一步挂上」误判成「永远没有微信」。
+    const hasWx = () => { try { return !!ctx.get?.('wx') } catch { return false } }
+    const caps = {
+      get hasGui() { return hasWx() },
+      get hasOcr() { return hasWx() },
+      hasImageRoute: true,
+    }
+    // 策略表的目录/解析入口只准备一份：收窄（restrict.js）和 `her_tools` 共用，
+    // 避免两边各拼一个对象后行为悄悄分叉。
+    const policy = { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry }
     try {
       const off = registerToolRestrict(ctx, {
         herDir,
+        surface: fishCore?.surface,
+        policy,
+        caps,
         extra: config?.tools?.allow ?? [],
+        // `her_tools` 必须并进 ownTools：它是本插件注册的，但老宿主/名单晚到的
+        // 情况下 agent/created 可能还看不到它；不并进去会被宿主名单滤掉。
+        ownTools: [...FISH_TOOLS, 'her_tools'],
         enabled: config?.tools?.restrict !== false,
         log: (...a) => logger.info(...a),
         onResult: (r) => { restrictState = r },
@@ -129,6 +203,26 @@ export function apply(ctx, baseConfig = {}) {
       if (typeof off === 'function') disposers.push(off)
     } catch (err) {
       logger.warn('[dsh-fish] 工具面收窄没挂上', err?.message ?? err)
+    }
+    // 按需揭示 / 状态查询：Task 7 的 her_tools 只通过 fishCore 走这条路，
+    // 不直接 import restrict.js。core 是同一个对象引用，dsh-wx 也看得到。
+    if (fishCore) {
+      fishCore.tools.reveal = (agent, names) => revealTools(agent, names)
+      fishCore.tools.state = (agent) => getAgentToolState(agent)
+    }
+
+    // ---- QQ（OneBot）vendor 工具返回投影 ----
+    // 宿主 `tools/post-execute` 是 waterfall：只替换 content，不碰 value/schema。
+    // 监听器自己 try/catch，任何异常都 next() —— 抛错会把成功调用变成 isError。
+    // 面判定靠 fishCore.surface，所以必须排在 registerToolRestrict 之后。
+    try {
+      const offQq = registerQqAdapter(ctx, {
+        core: fishCore,
+        log: (...a) => logger.warn(...a),
+      })
+      if (typeof offQq === 'function') disposers.push(offQq)
+    } catch (err) {
+      logger.warn('[dsh-fish] QQ 投影适配没挂上', err?.message ?? err)
     }
 
     // ---- 她的身份：走 system prompt，不进对话历史（2026-10-25 改）----
@@ -149,14 +243,62 @@ export function apply(ctx, baseConfig = {}) {
       logger.warn('[dsh-fish] 身份段没挂上', err?.message ?? err)
     }
 
+    // ---- 工具：一个写（growth_commit）、一个看（bili_look）----
+    // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会看，或只会记不会看）。
+    // **必须先于 bootstrapHome**：屋子会话是在那里创建的，`agent/created` 同步发出；
+    // 工具若晚一步，restrict 会因「names unknown global tools …」自愈，把 her_tools
+    // 这类唯一能按需开工具的入口一起丢掉，这条会话终生降级。
+    if (bootAbort.signal.aborted) return
+    if (ctx.tools?.register) {
+      for (const reg of [
+        () => registerCapture(ctx, { root, core: fishCore ?? undefined }),
+        () => registerLook(ctx, { root, client: baseConfig.client }),
+        () => registerSpeak(ctx, { root, client: baseConfig.client }),
+        () => registerRecall(ctx, { root, core: fishCore ?? undefined }),
+        () => registerWatch(ctx, { root }),
+        // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
+        () => registerLetter(ctx, { root, core: fishCore ?? undefined }),
+        // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
+        () => registerRemind(ctx, { root, core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
+        // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
+        () => registerInbox(ctx, { core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
+        // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
+        () => registerHerTools(ctx, { core: fishCore, policy, caps }),
+      ]) {
+        try {
+          const d = reg()
+          if (typeof d === 'function') disposers.push(d)
+          else if (d && typeof d.dispose === 'function') disposers.push(() => d.dispose())
+        } catch (err) {
+          logger.warn('[dsh-fish] 工具注册失败', err?.message ?? err)
+        }
+      }
+    }
+
     let home = { ok: false, why: 'not attempted', wsId: '', sessionId: '' }
     try {
-      home = await bootstrapHome(ctx, { root, preset: config?.tools?.preset ?? '', log: (...a) => logger.info(...a) })
+      home = await bootstrapHomeWithRetry(ctx, {
+        root,
+        preset: config?.tools?.preset ?? '',
+        log: (...a) => logger.info(...a),
+        warn: (...a) => logger.warn(...a),
+        signal: bootAbort.signal,
+      })
     } catch (err) {
       home = { ok: false, why: String(err?.message ?? err).slice(0, 160), wsId: '', sessionId: '' }
     }
+    // 重试期间插件被停用：不继续挂观测路由、开定时器，静默收尾（工具此前已注册，由 disposers 统一注销）。
+    if (bootAbort.signal.aborted) return
     if (!home.ok) logger.warn(`[dsh-fish] 屋子没建起来：${home.why}`)
     else {
+      // 屋子会话建好后补登记一次：create 期间 web matcher 还能靠 cwd 命中，
+      // 这里是第二道保险（会话 id 已知，不再依赖 cwd）。
+      try {
+        fishCore?.surface?.reserve?.(home.sessionId, 'web')
+      } catch (err) {
+        logger.warn('[dsh-fish] 屋子会话没登记成 web 面', err?.message ?? err)
+      }
+
       // 屋子是空的（上一次开了但从没说过话）时，侧栏不会显示它——见 sessionVisible。
       // 启动时就叫一声，免得用户重启后以为"人不见了"。
       try {
@@ -173,34 +315,15 @@ export function apply(ctx, baseConfig = {}) {
     const doc = await writeSelfDoc(root, { log: (...a) => logger.warn(...a) })
     if (!doc.ok) logger.warn(`[dsh-fish] 身份文件写不出来：${doc.why}`)
 
-    // 工具：一个写（growth_commit）、一个看（bili_look）。
-    // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会看，或只会记不会看）。
-    if (ctx.tools?.register) {
-      for (const reg of [
-        () => registerCapture(ctx, { root }),
-        () => registerLook(ctx, { root, client: baseConfig.client }),
-        () => registerSpeak(ctx, { root, client: baseConfig.client }),
-        () => registerRecall(ctx, { root }),
-        () => registerWatch(ctx, { root }),
-        // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
-        () => registerLetter(ctx, { root }),
-        // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
-        () => registerRemind(ctx, { root, log: (...a) => logger.warn(...a) }),
-        // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
-        () => registerInbox(ctx, { log: (...a) => logger.warn(...a) }),
-      ]) {
-        try {
-          const d = reg()
-          if (typeof d === 'function') disposers.push(d)
-          else if (d && typeof d.dispose === 'function') disposers.push(() => d.dispose())
-        } catch (err) {
-          logger.warn('[dsh-fish] 工具注册失败', err?.message ?? err)
-        }
-      }
+    // 观测台路由。`exposure` 是可见性状态（面登记、策略表、台账、QQ 投影 legacy），
+    // 只读传给自检；任何一项没挂上都由 selfcheck 给出中性结论，不影响工具路径。
+    const exposure = {
+      surface: fishCore?.surface ?? null,
+      policy,
+      ledger,
+      qq: qqExposure(),
     }
-
-    // 观测台路由
-    const obs = registerObserve(ctx, { root, version: VERSION })
+    const obs = registerObserve(ctx, { root, version: VERSION, exposure })
     if (obs?.dispose) disposers.push(() => obs.dispose())
 
     // 生物钟：把屋子信息一起传下去。她每晚醒来说话要落进**同一个**会话，
@@ -225,6 +348,7 @@ export function apply(ctx, baseConfig = {}) {
   })
 
   ctx.on?.('dispose', () => {
+    try { bootAbort.abort() } catch { /* ignore */ }
     try { scheduler?.dispose?.() } catch { /* ignore */ }
     try { clearWakeSection() } catch { /* ignore */ }
     for (const d of disposers) { try { d() } catch { /* ignore */ } }
@@ -232,6 +356,7 @@ export function apply(ctx, baseConfig = {}) {
 
   return {
     dispose() {
+      try { bootAbort.abort() } catch { /* ignore */ }
       try { scheduler?.dispose?.() } catch { /* ignore */ }
       try { clearWakeSection() } catch { /* ignore */ }
       for (const d of disposers) { try { d() } catch { /* ignore */ } }

@@ -36,6 +36,39 @@ test('QQ 会话里拒绝', async () => {
   await assert.rejects(() => def.execute({}, { agent: { session: { id: 'onebot-1' } } }), /微信通道/)
 })
 
+test('模型投影：有任务给 [待回]，没任务给 [没有要回的]', async () => {
+  const busy = harness({ inboxSummary: () => 't_1｜群A｜未回' })
+  const out = await busy.def.execute({}, {})
+  const text = busy.def.output.render({}, out)[0].text
+  assert.match(text, /^\[待回\] t_1/)
+  assert.doesNotMatch(text, /编号/)
+
+  const idle = harness({ inboxSummary: () => '' })
+  const none = await idle.def.execute({}, {})
+  assert.equal(idle.def.output.render({}, none)[0].text, '[没有要回的]')
+})
+
+test('模型投影：摘要里出现「看不到 / 没有要回」等词不算状态', async () => {
+  const tricky = harness({ inboxSummary: () => 't_1｜群A｜客户说没有要回执，也看不到附件' })
+  const out = await tricky.def.execute({}, {})
+  assert.match(tricky.def.output.render({}, out)[0].text, /^\[待回\] t_1/)
+})
+
+test('模型投影：wx 没接上或摘要抛错给 [没看到]，不是空串、不抛', async () => {
+  const absent = harness(undefined)
+  const absentOut = await absent.def.execute({}, {})
+  const absentText = absent.def.output.render({}, absentOut)[0].text
+  assert.match(absentText, /^\[没看到\] /)
+  assert.ok(absentText.length > '[没看到] '.length, '不能只给空状态')
+
+  const broken = harness({ inboxSummary: () => { throw new Error('boom') } })
+  const brokenOut = await broken.def.execute({}, {})
+  assert.doesNotThrow(() => broken.def.output.render({}, brokenOut))
+  const brokenText = broken.def.output.render({}, brokenOut)[0].text
+  assert.match(brokenText, /^\[没看到\] /)
+  assert.ok(brokenText.length > '[没看到] '.length, '不能只给空状态')
+})
+
 test('工具形状：object-rooted schema + render', () => {
   const { def } = harness(undefined)
   assert.equal(def.name, 'her_inbox')

@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
+import { isIgnoredChat } from './capture.js'
 import { chatIdFor } from './ledger.js'
 import { parsePreviewSender } from './speaker.js'
 
@@ -68,6 +69,8 @@ function blankEntry(name, at) {
     lastPreview: '',
     lastSender: null,
     unread: 0,
+    lastNonZeroUnread: 0,
+    lastNonZeroAt: '',
     pinned: false,
     position: 0,
   }
@@ -137,8 +140,11 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
    * @param {string} [req.source] tree / ocr
    * @param {string[]} [req.knownNames] 权威全名（允许名单等）
    * @param {string[]} [req.directNames] 私聊名单
+   * @param {string[]} [req.ignoreChats] 服务号会话；不再写它们的预览内容
    */
-  function merge({ chats = [], current = '', source = 'tree', knownNames = [], directNames = [] } = {}) {
+  function merge({
+    chats = [], current = '', source = 'tree', knownNames = [], directNames = [], ignoreChats = [],
+  } = {}) {
     const at = nowIso(now)
     const authoritative = [
       ...(knownNames ?? []).map(str).filter(Boolean),
@@ -150,6 +156,7 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
     const upsert = (rawName, row = {}) => {
       const name = norm(rawName)
       if (!name) return null
+      const ignored = isIgnoredChat(name, ignoreChats)
       const clean = stripEllipsis(name)
       const truncated = looksTruncated(name)
       const resolvedFull = uniquePrefix(name, authoritative)
@@ -182,10 +189,15 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       e.lastSeenAt = at
       if (!e.firstSeenAt) e.firstSeenAt = at
       if (row.preview !== undefined) {
-        e.lastPreview = String(row.preview ?? '').slice(0, 240)
+        // 服务号只更新元数据，不把预览正文写进目录。
+        if (!ignored) e.lastPreview = String(row.preview ?? '').slice(0, 240)
         e.lastSender = parsePreviewSender(row.preview).sender ?? e.lastSender ?? null
       }
-      if (row.unread !== undefined) e.unread = Math.max(0, Number(row.unread) || 0)
+      if (row.unread !== undefined) {
+        const u = Math.max(0, Number(row.unread) || 0)
+        e.unread = u
+        if (u > 0) { e.lastNonZeroUnread = u; e.lastNonZeroAt = at }
+      }
       if (row.pinned !== undefined) e.pinned = row.pinned === true
       if (Number.isFinite(Number(row.position))) e.position = Number(row.position)
       dirty = true

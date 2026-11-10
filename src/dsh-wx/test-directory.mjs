@@ -1,7 +1,7 @@
 // 会话目录：node test-directory.mjs
 // 只测合并、稳定 id、截断名解析和跨页扫描；不启动微信。
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -63,6 +63,59 @@ await t('私聊名单标记 kind=dm；群聊按预览猜 kind', async () => {
   d.merge({ chats: [{ name: '大白饭', preview: '吃了吗' }, { name: '测试群A', preview: '甲: 在吗' }], directNames: ['大白饭'] })
   assert.equal(d.entry('大白饭').kind, 'dm')
   assert.equal(d.entry('测试群A').kind, 'group')
+})
+await t('忽略会话只更新元数据，不写预览正文', async () => {
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({
+    chats: [{ name: 'Service Messages', unread: 1, preview: '系统: 不该存' }],
+    ignoreChats: ['Service Messages'],
+  })
+  const e = d.entry('Service Messages')
+  assert.equal(e.lastPreview, '')
+  assert.equal(e.unread, 1)
+})
+await t('未读清零后仍保留最后一次非零未读', async () => {
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({ chats: [{ name: '群A', unread: 3, preview: '张三: hi' }] })
+  let e = d.entry('群A')
+  assert.equal(e.unread, 3)
+  assert.equal(e.lastNonZeroUnread, 3)
+  assert.ok(e.lastNonZeroAt, 'lastNonZeroAt 应是非空时间')
+  assert.equal(new Date(e.lastNonZeroAt).toISOString(), e.lastNonZeroAt)
+  d.merge({ chats: [{ name: '群A', unread: 0, preview: '张三: hi' }] })
+  e = d.entry('群A')
+  assert.equal(e.unread, 0)
+  assert.equal(e.lastNonZeroUnread, 3) // 清掉红点后仍保留
+  assert.ok(e.lastNonZeroAt)
+})
+await t('再次出现未读时刷新快照时间', async () => {
+  const f = file()
+  const later = T + 60_000
+  let clock = T
+  const d = createDirectory({ file: f, now: () => clock })
+  d.merge({ chats: [{ name: '群A', unread: 2 }] })
+  const firstAt = d.entry('群A').lastNonZeroAt
+  clock = later
+  d.merge({ chats: [{ name: '群A', unread: 5 }] })
+  const e = d.entry('群A')
+  assert.equal(e.lastNonZeroUnread, 5)
+  assert.ok(e.lastNonZeroAt > firstAt)
+  assert.equal(e.lastNonZeroAt, new Date(later).toISOString())
+  const again = createDirectory({ file: f, now: () => clock })
+  assert.equal(again.entry('群A').lastNonZeroUnread, 5)
+  assert.equal(again.entry('群A').lastNonZeroAt, new Date(later).toISOString())
+})
+await t('老目录文件没有新字段时按默认值读出', async () => {
+  const f = file()
+  writeFileSync(f, JSON.stringify({
+    version: 1,
+    updatedAt: new Date(T).toISOString(),
+    chats: [{ chatId: chatIdFor('老群'), displayName: '老群', fullName: '老群', unread: 0 }],
+  }))
+  const d = createDirectory({ file: f, now: () => T })
+  const e = d.entry('老群')
+  assert.equal(e.lastNonZeroUnread, 0)
+  assert.equal(e.lastNonZeroAt, '')
 })
 await t('目录写盘 0600，重开一个实例能读回', async () => {
   const f = file()

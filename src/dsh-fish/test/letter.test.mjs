@@ -242,6 +242,19 @@ test('回执不写成她能复述的句子——同一次唤醒里她不该「�
   assert.ok(bad.startsWith('[') && bad.endsWith(']'))
 })
 
+test('her_leave 的模型投影只有方括号状态，不回显留话原文', async () => {
+  await withRoot(async (root) => {
+    const ctx = fakeCtx()
+    registerLetter(ctx, { root })
+    const spec = ctx._tools[0]
+    const out = await spec.execute({ text: '这句不该出现在回执里。' })
+    const text = spec.output.render({}, out)[0].text
+    assert.equal(text, '[已留]')
+    assert.equal(text.includes('这句不该出现在回执里'), false)
+    assert.doesNotMatch(text, /编号/)
+  })
+})
+
 test('her_leave 的返回值不含任何状态数字（只 ok + note）', () => {
   const ctx = fakeCtx()
   registerLetter(ctx, { root: join(tmpdir(), 'dsh-fish-letter-out') })

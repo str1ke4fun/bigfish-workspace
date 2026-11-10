@@ -22,6 +22,7 @@ import { loadConfig } from './settings.js'
 import { deriveSelf } from './derive.js'
 import { sanitizeForeign, looksLikeSecret } from './guard.js'
 import { defineTool } from './tool.js'
+import { registerTool } from './tool-result.js'
 
 /** 最短 1 分钟。 */
 export const REMIND_MIN_MINUTES = 1
@@ -303,7 +304,8 @@ export function registerRemind(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
   const regs = []
 
-  regs.push(ctx.tools.register(
+  regs.push(registerTool(
+    ctx,
     defineTool({
       name: 'her_remind',
       description:
@@ -327,11 +329,13 @@ export function registerRemind(ctx, deps = {}) {
           },
           required: ['ok', 'note'],
         },
-        render: (_args, out) => [{
-          type: 'text',
-          text: out.ok ? `[已定：${nowText(out.dueAt)} 发到「${out.chat}」]` : `[没定：${out.note}]`,
-        }],
       },
+      // 模型投影：定上了只说到点会发到哪，不重复她填的原话；没定上照实给原因。
+      project: (out) => ({
+        text: out?.ok
+          ? `[已定：${nowText(out.dueAt)} 发到「${out.chat}」]`
+          : `[没定：${out?.note ?? ''}]`,
+      }),
       async execute(args, exec) {
         const r = await createReminder({
           ctx,
@@ -349,9 +353,11 @@ export function registerRemind(ctx, deps = {}) {
         return r
       },
     }),
+    { core: deps.core },
   ))
 
-  regs.push(ctx.tools.register(
+  regs.push(registerTool(
+    ctx,
     defineTool({
       name: 'her_reminders',
       description: '看看还有哪些自己定的提醒没到点。',
@@ -365,8 +371,11 @@ export function registerRemind(ctx, deps = {}) {
           },
           required: ['ok', 'text'],
         },
-        render: (_args, out) => [{ type: 'text', text: out.text }],
       },
+      // 模型投影：列表原文里已经带了 id（取消要用），正文不再重复编号；失败不能伪装成正常列表。
+      project: (out) => ({
+        text: out?.ok ? `[提醒] ${out?.text ?? ''}` : `[没看到：${out?.text ?? ''}]`,
+      }),
       async execute(_args, exec) {
         const r = await listReminders({
           ctx,
@@ -383,9 +392,11 @@ export function registerRemind(ctx, deps = {}) {
         }
       },
     }),
+    { core: deps.core },
   ))
 
-  regs.push(ctx.tools.register(
+  regs.push(registerTool(
+    ctx,
     defineTool({
       name: 'her_remind_cancel',
       description: '取消一条还没到点的提醒。id 从 her_reminders 里抄。',
@@ -401,8 +412,8 @@ export function registerRemind(ctx, deps = {}) {
           },
           required: ['ok', 'note'],
         },
-        render: (_args, out) => [{ type: 'text', text: out.ok ? '[已取消]' : `[没取消：${out.note}]` }],
       },
+      project: (out) => ({ text: out?.ok ? '[已取消]' : `[没取消：${out?.note ?? ''}]` }),
       async execute(args, exec) {
         return cancelReminder({
           ctx,
@@ -414,6 +425,7 @@ export function registerRemind(ctx, deps = {}) {
         })
       },
     }),
+    { core: deps.core },
   ))
 
   return () => {

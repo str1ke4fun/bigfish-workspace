@@ -26,18 +26,37 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
+import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
+import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
+import { openChatHit } from './ear-open.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
+import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, pauseReason, previewSig, shouldEnqueue } from './capture.js'
+import { createCaptureQueue } from './capture-queue.js'
+import { captureEvidenceKey, runCapture } from './capture-run.js'
 import { createContextStore } from './context.js'
 import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
+import { createPeople } from './people.js'
+import { normalizeMessages } from './transcript.js'
 import { createSessionPool } from './sessions.js'
-import { requesterOf, samePreviewText } from './speaker.js'
+import { parsePreviewSender, requesterOf, samePreviewText } from './speaker.js'
+import { alignSpeakers, planSpeakerRepairs } from './speaker-align.js'
 import { createVectorProvider } from './vector.js'
 import { annotate, loadIndex, saveIndex } from './sticker-index.js'
 import { findStickers, formatFind, formatList, listStickers } from './sticker-query.js'
 import { scanStickers } from './sticker-scan.js'
+import { sendSticker, targetEntry } from './sticker-send.js'
+import { collectSticker } from './sticker-collect.js'
+import { normalizeKeyword, searchSticker } from './sticker-search.js'
+import {
+  boundedText,
+  clipPeekBody,
+  lazyRender,
+  projectWxContext,
+  projectWxOcr,
+  projectWxPeek,
+} from './project.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -103,9 +122,22 @@ function policy() {
       trigger: Array.isArray(raw.trigger) && raw.trigger.length > 0
         ? raw.trigger.map((s) => String(s))
         : ['@D33p53Ek', 'D33p53Ek'],
+      ignoreChats: Array.isArray(raw.ignoreChats)
+        ? raw.ignoreChats.map((s) => String(s).trim()).filter(Boolean)
+        : DEFAULT_IGNORE_CHATS,
+      capture: captureSettings({ capture: raw.capture, ignoreChats: raw.ignoreChats }),
+      // 关键词搜索点下去就是发送；用户把“用不用”交给大肥鱼自己决定，
+      // 所以默认开着，只受白名单和发送闸约束；工作台可写 false 关掉。
+      stickerSearch: raw.stickerSearch !== false,
     }
   } catch {
-    return { enabled: false, allowChats: [], watch: false, trigger: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [] }
+    return {
+      enabled: false, allowChats: [], watch: false, trigger: [], requireMention: true,
+      mentionWindowMinutes: 3, noMentionChats: [],
+      ignoreChats: DEFAULT_IGNORE_CHATS,
+      capture: captureSettings({}),
+      stickerSearch: false,
+    }
   }
 }
 
@@ -133,6 +165,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 输出统一是一段文字：宿主只接受 string/object 这类 JSON schema。 */
 const textOut = { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: String(v ?? '') }] }
+// wx_ocr 的 execute 返回完整 JSON（台账会落 artifact），但 fishCore 缺席时
+// 旧渲染路径最多只该给 24k，不能把整段 JSON 塞进上下文。
+const ocrOut = { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: boundedText(v) }] }
 
 const OFF = '微信通道已关闭。'
 
@@ -281,22 +316,26 @@ function promptText() {
   return [
     '## 微信通道（dsh-wx）',
     '',
-    '微信里的动作通过 14 个工具完成，没有 shell：',
-    '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。坐标是屏幕绝对坐标，可直接给 wx_click。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
-    '- wx_click：点击。label 可填会话名或按钮名；也可填 x/y。返回里会写落点是什么、点完当前会话是什么。',
+    '微信里的动作通过 15 个工具完成，没有 shell：',
+    '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。要点击时，把这里看到的名字或按钮名填给 wx_click 的 label。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
+    '- wx_click：点击。label 填会话名或按钮名，和 wx_peek 里的写法一致；x/y 只作内部回退，正常不用填。返回里会写落点是什么、点完当前会话是什么。',
     '- wx_type：输入文字，enter=true 时回车发送。发送前核对当前会话是否在允许名单内；发送后回报消息是否出现在列表末尾。文本不能含换行。',
     '- wx_key：按键。Return 视同发送，同样核对。',
     '- wx_see：截图存档。当前模型不支持图像输入，读不了截图。',
     '- wx_ocr：只读 OCR。OCR 不证明当前会话，不能当发送授权。',
     '- wx_send：直接发到指定会话。它自己点开会话、点输入框、输入、回车，并核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话有效。带上 task_id 时，回执确认后会把这次回复记到任务上。',
     '- wx_context：在「当前任务自己的会话」里查上下文。给 task_id，可选 query，或按时间翻页（before/limit）。只返回最多 5 条引用卡片，带发言人（读不出来的写「发言人未识别」）、时间、匹配原因和置信度；原文和每日摘要一起查，不会跨会话查，也不会把查询写进记忆。',
+    '- wx_history：只读查询微信台账。不传 chat 时列出有记录的非服务会话；传 chat 时查该会话最近的记录，可选 query 关键词和 hours 时间窗。最多 20 条，带发言人、时间、来源和置信度。不建任务、不写事件流。',
     '- wx_task_snooze：把任务推迟几分钟再提醒。现在回不了、但不是不用回时用；推迟期间不再催。',
     '- wx_task_done：把一条任务标记为完成。发了一条回复不等于完成；确实答完、不用再跟进时才用。',
     '- wx_sticker_scan：扫描微信收藏表情面板，重建或更新本地索引。只点心形页签，不点任何表情格；会打开再关上表情面板。',
     '- wx_sticker_list：列出收藏表情索引里的条目、描述和置信度。返回文字，不含图片。',
     '- wx_sticker_find：按关键词查收藏表情，最多返回 5 个候选，带命中原因和置信度；候选不等于要发。',
     '- wx_sticker_tag：给某张表情补图上文字、描述或标签，只改本地索引，不改微信收藏本身。',
-    '- 收藏表情目前只能看和查，还不能用表情回复；发送是后续阶段。描述来自面板小图，置信度低时不要当成确定事实。',
+    '- wx_sticker_send：按索引 id 发一张收藏表情到指定会话。表情格点下去就发送，没有二次确认；发送前会重新扫描面板、核对当前会话和格子 pHash，任何一步对不上就不点；发完核对消息区新增表情并比对 pHash，对不上就如实说没确认。id 只能从 wx_sticker_list / wx_sticker_find 里拿，别猜。',
+    '- 表情描述来自面板小图，置信度低时不要当成确定事实；发送前先 wx_sticker_find 找候选，别按印象选 id。',
+    '- wx_sticker_collect：把当前会话（或指定白名单会话）里最近的一条表情收藏进微信收藏。只右键那条表情并点 Add Sticker，不发消息；先截图 OCR 确认菜单里真有 Add Sticker 才点，收藏后重扫收藏页确认。',
+    '- wx_sticker_search：按关键词在微信表情搜索里找图，点下去直接发到指定白名单会话。结果没有标签，你看不到图，pick 是按行列顺序盲选（0 起）；没有预览确认。只在你确定关键词够具体、并且愿意直接发这张表情时用；发完可以用 wx_sticker_collect 把它收藏进本地索引。',
     '',
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
@@ -353,6 +392,74 @@ export function formatEarNote(hits, allowChats = [], tasks = null, extra = {}) {
   ].join('\n')
 }
 
+/**
+ * 侧栏预览入账器：只读当前列表，不点开、不滚动、不清未读。
+ * 返回本轮每一行的 prevSig/sig，供后台轮转在更新快照前做入队判断。
+ * capture.preview=false 时仍构建 rows（供轮转），只跳过写台账；指纹照常推进。
+ *
+ * @param {{policy:()=>object, contextStore:object, directory:object, people:object,
+ *   log?:(line:string)=>void, lastSig?:Map<string,string>}} [deps]
+ */
+export function createPreviewRecorder({
+  policy, contextStore, directory, people, log = () => {}, lastSig = new Map(),
+} = {}) {
+  let previewWarned = false
+  return function recordPreviews(parsed) {
+    const p = policy()
+    const previewOn = p.capture?.preview !== false
+    let added = 0
+    const rows = []
+    for (const row of parsed?.chats ?? []) {
+      const chat = String(row?.name ?? '').trim()
+      if (!chat) continue
+      const sig = previewSig(row)
+      const prevSig = lastSig.get(chat) ?? ''
+      rows.push({ chat, row, sig, prevSig })
+      if (row.draft) continue
+      if (isIgnoredChat(chat, p.ignoreChats)) continue
+      const preview = String(row.preview ?? '')
+      if (!preview || prevSig === sig) continue
+      if (!previewOn) {
+        // 只跳过写台账；指纹照常推进，避免关闭预览期间每轮都被当成 changed。
+        lastSig.set(chat, sig)
+        continue
+      }
+      const pv = parsePreviewSender(preview)
+      const entry = directory.entry(chat)
+      try {
+        const r = contextStore.capturePreview({
+          chat,
+          chatId: entry?.chatId ?? '',
+          preview,
+          time: String(row.time ?? ''),
+          unread: Number(row.unread) || 0,
+          isDM: entry?.kind === 'dm' ? true : undefined,
+          ignoreChats: p.ignoreChats,
+        })
+        if (r.ok) {
+          added += r.added
+          if (r.sender) {
+            people.learn({
+              name: r.sender,
+              source: entry?.kind === 'dm' ? 'dm' : 'preview',
+              chatId: r.chatId,
+              requireEvidence: pv.needsEvidence,
+            })
+          }
+        }
+        lastSig.set(chat, sig)
+      } catch (err) {
+        if (!previewWarned) {
+          previewWarned = true
+          log('预览入账失败（不影响耳朵）：' + String(err?.message ?? err).slice(0, 120))
+        }
+      }
+    }
+    if (added > 0) log('采集：预览 +' + added)
+    return { added, rows }
+  }
+}
+
 // ---------------------------------------------------------------- 插件主体
 export function apply(ctx, config = {}) {
   const display = String(config.display || ':99')
@@ -377,12 +484,30 @@ export function apply(ctx, config = {}) {
   })
 
   const disposers = []
+  // 预分配的微信会话 id：宿主在 create 期间就触发 agent/created，那时 surface
+  // 登记必须已经能命中。本地集合先兜底，fishCore 在场时再写进面注册表。
+  const reservedWxSessions = new Set()
+  const reserveWxSession = (id) => {
+    const s = String(id ?? '')
+    if (!s) return
+    reservedWxSessions.add(s)
+    try {
+      ctx.get?.('fishCore')?.surface?.reserve?.(s, 'wx')
+    } catch {
+      // fishCore 缺席 / 加载顺序没轮到时，本地集合仍然可用。
+    }
+  }
+  const stripProject = ({ project: _project, ...plain }) => plain
   const reg = (tool) => {
     const execute = tool.execute
-    disposers.push(ctx.tools.register({
-      ...tool,
-      execute: (...a) => withGuiLock(() => execute(...a)),
-    }))
+    const base = { ...tool, execute: (...a) => withGuiLock(() => execute(...a)) }
+    // 有投影的工具一律注册成懒投影：fishCore 可能在本插件 apply() 之后才出现
+    //（profile 里 dsh-wx 先于 dsh-fish 加载），所以把判断推迟到 render。
+    // base 必须保留 project，懒包装器才能算出投影。
+    const def = tool.project
+      ? { ...stripProject(base), project: tool.project, output: { ...(base.output ?? {}), render: lazyRender(ctx, base) } }
+      : stripProject(base)
+    disposers.push(ctx.tools.register(def))
   }
 
   // ---- 定时提醒：一次性许可 + 「最近把谁叫醒过」 ----
@@ -429,6 +554,7 @@ export function apply(ctx, config = {}) {
       return directory.merge({
         chats, current: String(parsed.current ?? ''), source,
         knownNames: knownNames(), directNames: policy().noMentionChats,
+        ignoreChats: policy().ignoreChats,
       })
     } catch (err) {
       console.log('[dsh-wx] 会话目录合并失败：' + String(err?.message ?? err).slice(0, 120))
@@ -459,6 +585,10 @@ export function apply(ctx, config = {}) {
     resolveChat,
     log: (m, err) => console.log('[dsh-wx] 上下文：' + String(m ?? '') + (err ? '（' + String(err?.message ?? err).slice(0, 120) + '）' : '')),
   })
+  // 人物名册是派生索引：只增不删，写坏了按空名册处理，不影响台账。
+  const people = createPeople({
+    log: (m) => console.log('[dsh-wx] 人物名册：' + String(m ?? '').slice(0, 160)),
+  })
   // 她自己发出去、回执确认过的原文。发言人归因只认这批，绝不从正文猜。
   const outbox = []
   const noteOutbox = (chat, text) => {
@@ -469,42 +599,51 @@ export function apply(ctx, config = {}) {
 
   let captureWarned = false
   /** 把当前打开会话的消息区记进台账。发言人和方向按 speaker.js 的证据分层。 */
-  const captureCurrent = (s) => {
+  const captureCurrent = (s, p) => {
     try {
       if (!s?.parsed?.ok || s.source === 'ocr') return
       const chat = String(s.parsed.current ?? '').trim()
       if (!chat) return
+      // 服务号会话不采集：连引用作者都不学，避免把系统消息里出现的人名当成联系人。
+      if (isIgnoredChat(chat, p.ignoreChats)) return
       const entry = directory.entry(chat)
       const row = (s.parsed.chats ?? []).find((c) => sameName(c.name, chat)) ?? null
-      const messages = (s.parsed.messages ?? [])
-        .map((m) => String(m?.text ?? '').trim())
-        .filter(Boolean)
-        .map((text) => ({
-          sender: null,
-          senderConfidence: 'unknown',
-          direction: 'unknown',
-          kind: 'text',
-          text,
-          at: '',
-          atConfidence: 'unknown',
-          source: 'tree',
-        }))
+      const messages = normalizeMessages(s.parsed.messages ?? [], { now: Date.now() })
+      for (const m of messages) {
+        if (m.quote?.author) people.learn({ name: m.quote.author, source: 'quote', chatId: directory.idFor(chat) })
+      }
       if (!messages.length) return
-      contextStore.capture({
+      const captured = contextStore.capture({
         chat,
         messages,
         source: 'tree',
         preview: row?.preview ?? entry?.lastPreview ?? '',
         isDM: entry?.kind === 'dm' ? true : null,
         outbox: outboxFor(chat),
+        ignoreChats: p.ignoreChats,
       })
+      // 当前会话的最近一屏留给 maybeOcrCurrent 补发言人用。
+      if (captured?.ok) lastCurrentCapture = { chat, chatId: directory.idFor(chat), messages }
+      // 留给耳朵判断「当前打开的会话有没有新入站消息」：侧栏没有未读也叫得醒。
+      return captured
     } catch (err) {
       if (!captureWarned) {
         captureWarned = true
         console.log('[dsh-wx] 台账记不下（不影响收发）：' + String(err?.message ?? err).slice(0, 120))
       }
     }
+    return null
   }
+
+  // 侧栏预览入账：只读当前列表，不点开、不滚动、不清未读。
+  // 返回本轮每一行的 prevSig/sig，供后台轮转在更新快照前做入队判断。
+  const recordPreviews = createPreviewRecorder({
+    policy,
+    contextStore,
+    directory,
+    people,
+    log: (line) => console.log('[dsh-wx] ' + line),
+  })
   const RECENT_FILE = '/home/str1k3/.dsh-wx/recent-chats.json'
   const RECENT_MS = 30 * 60_000
   let recent = []
@@ -571,6 +710,29 @@ export function apply(ctx, config = {}) {
   const hostBlocksSend = () => !!hostState && !hostState.intent && Date.now() - hostState.at < HOST_BLOCK_MS
   const hostBusy = () => !!hostState && hostState.active && Date.now() - hostState.at < HOST_BUSY_MS
 
+  // ---- 后台轮转采集（M2）----
+  // 队列只在首次用到时按当时的 policy 创建；之后改配置要等重启才生效。
+  let captureQueue = null
+  let lastCaptureAttemptAt = 0
+  let quietUntil = 0
+  let lastCurrentOcrAt = 0
+  let lastCurrentCapture = null   // captureCurrent 存下的 { chat, chatId, messages }
+  let roundPreview = null         // 本轮 recordPreviews 的返回值，供 captureTick 入队
+  const pendingCaptureHits = []   // 采集补扫到的 @，等下一轮投递
+  const capturedSinceStart = new Set()
+  let captureHealth = { paused: false, pauseReason: '', queued: 0, lastAt: '', lastChat: '', lastResult: '', lastError: '' }
+  let lastPauseLog = { reason: '', at: 0 }
+
+  function ensureCaptureQueue(p) {
+    if (!captureQueue) {
+      captureQueue = createCaptureQueue({
+        queueMax: p.capture.queueMax,
+        cooldownMs: p.capture.chatCooldownSec * 1000,
+      })
+    }
+    return captureQueue
+  }
+
   // 流水账 + 读气氛：由 dsh-mem 提供。拿不到就当没有，微信照常工作。
   // 依赖方向是 dsh-wx → dsh-mem（和上面的说话频率同一个办法：动态 import 一个固定路径）。
   let feed = null
@@ -581,15 +743,23 @@ export function apply(ctx, config = {}) {
 
   const treeStats = { calls: 0, lastMs: 0, since: Date.now() }
   const fresh = createFreshness((m) => console.log('[dsh-wx] 树：' + m))
-  // 树的重试只发生在插件刚挂上（初始化）这一小段：微信常常比用户级无障碍总线先启动，
-  // Qt 的桥只连一次，总线晚到就永远空树。见过一次健康的树之后就进入 steady：
-  // 使用中再掉只写 health/工作台提醒，绝不自动重启。
+  // 树的重试发生在两段：插件刚挂上（init），以及**检测到微信被重启过**（recover）。
+  // 微信常常比用户级无障碍总线先启动，Qt 的桥只连一次，总线晚到就永远空树；
+  // 重启微信（systemd Restart、工作台按钮、手动）也会重演这件事。
+  // 其余使用中掉树只写 health/工作台提醒，绝不自动重启。
   const TREE_RESTART_MAX = 2
   const TREE_RESTART_COOLDOWN_MS = 45_000
   const TREE_RESTART_SETTLE_MS = 45_000
+  // 单次 down 采样不下结论：树必须持续掉这么久才允许重启。
+  const TREE_DOWN_CONFIRM_MS = 90_000
+  // 看到登录页后的保护窗口：登录成功瞬间主窗口先出现、树后挂上，此时重启会踢掉登录。
+  const TREE_LOGIN_LATCH_MS = 300_000
   let treePhase = 'init'
   let treeAttempts = 0
   let treeLastRestartAt = 0
+  let treeLastLoginAt = 0
+  // 上一次看到的微信 MainPID；变了 = 它被重启过（0 = 还没读到基线）。
+  let treePid = 0
   // 刚挂上的头 20 秒只观察：微信/宿主可能正在启动，别把正在拉起的进程又杀一遍。
   let treeRetryAfter = Date.now() + 20_000
   let treeAlert = ''
@@ -709,7 +879,7 @@ export function apply(ctx, config = {}) {
     }
     writeHealth()
     mergeDirectory(s.parsed, s.source === 'ocr' ? 'ocr' : 'tree')
-    if (capture) captureCurrent(s)
+    if (capture) s.capturedCurrent = captureCurrent(s, policy())
     return s
   }
 
@@ -729,6 +899,7 @@ export function apply(ctx, config = {}) {
           lastRestartAt: treeLastRestartAt ? new Date(treeLastRestartAt).toISOString() : null,
           alert: treeAlert || '',
         } : null,
+        capture: captureHealth,
         events: fresh.events.slice(-20),
       }, null, 2))
     } catch { /* 写不了不影响用 */ }
@@ -737,6 +908,12 @@ export function apply(ctx, config = {}) {
   const jsonLine = (text) => {
     const line = String(text ?? '').trim().split('\n').filter((l) => l.startsWith('{')).pop()
     try { return line ? JSON.parse(line) : null } catch { return null }
+  }
+
+  /** 微信主进程 PID；读不到就 0（不影响本轮观测）。 */
+  async function readTreePid() {
+    const r = await run(['pid'], 10_000).then(jsonLine).catch(() => null)
+    return Number(r?.pid) > 0 ? Number(r.pid) : 0
   }
 
   /**
@@ -752,6 +929,7 @@ export function apply(ctx, config = {}) {
       if (h.status === 'ok') console.log(`[dsh-wx] 树恢复：${h.elements} 个元素、${h.chats} 个会话`)
       else console.log(`[dsh-wx] 树状态：${h.status}（元素 ${h.elements}、会话 ${h.chats}）`)
     }
+    if (h.status === 'login' || h.login) treeLastLoginAt = Date.now()
     const act = treeAction({
       health: h,
       phase: treePhase,
@@ -761,6 +939,10 @@ export function apply(ctx, config = {}) {
       now: Date.now(),
       maxAttempts: TREE_RESTART_MAX,
       cooldownMs: TREE_RESTART_COOLDOWN_MS,
+      statusSince: treeSince,
+      lastLoginAt: treeLastLoginAt,
+      confirmMs: TREE_DOWN_CONFIRM_MS,
+      loginLatchMs: TREE_LOGIN_LATCH_MS,
     })
     treePhase = act.phase
     const prevAlert = treeAlert
@@ -782,16 +964,17 @@ export function apply(ctx, config = {}) {
    */
   async function recoverTree(act) {
     fresh.reset('微信在重启，屏幕基线作废') // 重启会换窗口，旧像素基线没有意义
+    const when = treePhase === 'recover' ? '微信重启后' : '初始化时'
     treeAttempts = Number(act?.attempt) || treeAttempts + 1
     treeLastRestartAt = Date.now()
-    treeAlert = act?.alert || '初始化时微信没连上无障碍树，准备重启'
+    treeAlert = act?.alert || `${when}微信没连上无障碍树，准备重启`
     console.log('[dsh-wx] 树：' + treeAlert)
     logInbound({ type: 'tree-restart', attempt: treeAttempts, status: treeLast?.status, elements: treeLast?.elements, chats: treeLast?.chats })
     writeHealth()
     const bus = await run(['bus-start'], 30_000).then(jsonLine).catch((e) => jsonLine(e?.message))
     if (!bus?.ok) {
       treeRetryAfter = Date.now() + TREE_RESTART_COOLDOWN_MS
-      treeAlert = '初始化时读不到无障碍树，而且无障碍总线没起来：先不重启微信，等总线恢复'
+      treeAlert = `${when}读不到无障碍树，而且无障碍总线没起来：先不重启微信，等总线恢复`
       console.log('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-error', error: treeAlert, bus })
       writeHealth()
@@ -801,12 +984,12 @@ export function apply(ctx, config = {}) {
       const r = await run(['restart'], 90_000).then(jsonLine).catch((e) => jsonLine(e?.message))
       if (!r?.ok) throw new Error(r?.error || '重启命令没有返回 ok')
       treeRetryAfter = Date.now() + TREE_RESTART_SETTLE_MS
-      treeAlert = `初始化时微信没连上无障碍树，已重启微信（${r.oldPid}→${r.pid}），等树恢复`
+      treeAlert = `${when}微信没连上无障碍树，已重启微信（${r.oldPid}→${r.pid}），等树恢复`
       console.log('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-restarted', attempt: treeAttempts, ...r })
     } catch (error) {
       treeRetryAfter = Date.now() + TREE_RESTART_COOLDOWN_MS
-      treeAlert = '初始化时微信没连上无障碍树，重启失败：' + String(error?.message ?? error).slice(0, 120)
+      treeAlert = `${when}微信没连上无障碍树，重启失败：` + String(error?.message ?? error).slice(0, 120)
       console.log('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-error', error: treeAlert, attempt: treeAttempts })
     }
@@ -877,10 +1060,13 @@ export function apply(ctx, config = {}) {
   // 不能假设窗口正停在哪个会话，所以这里自己点会话、点输入框、核对、再回车。
   // 所有高层发送串行：两个提醒同时到点时，不能一个在打字、另一个来点会话。
   let sendLock = Promise.resolve()
+  // 后台采集靠这个计数避开「正在发送」：打字/回车期间不点开会话。
+  let sendBusy = 0
   function withSendLock(fn) {
+    sendBusy += 1
     const p = sendLock.then(fn, fn)
     sendLock = p.then(() => {}, () => {})
-    return p
+    return p.finally(() => { sendBusy -= 1 })
   }
 
   /**
@@ -1011,6 +1197,7 @@ export function apply(ctx, config = {}) {
           chat: allowed.chat,
           source: 'sent',
           taskId,
+          ignoreChats: p.ignoreChats,
           messages: [{
             sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
             text: body, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
@@ -1019,7 +1206,220 @@ export function apply(ctx, config = {}) {
         outMsgId = captured.records?.at(-1)?.msgId ?? ''
       } catch { /* 台账记不下不影响已经发出的消息 */ }
     }
+    // 发送本身也算一次活动：给后台采集留出静默期，别紧接着点开会话。
+    quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
     return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed', outMsgId }
+  }
+
+  /**
+   * 按索引 id 发一张收藏表情。与 wx_send 共用同一套闸：允许名单、@、频率、当前会话核对。
+   * 表情格点下去就发送、没有二次确认，所以点之前会重新扫描面板并核对 pHash，点之后核对消息区。
+   * 不写文本 outbox：表情在预览里都是 "[Sticker]"，写进去会让别人发的同款表情被当成自己的回声。
+   */
+  async function sendStickerToChat({ chat, id, taskId = '' } = {}) {
+    const p = policy()
+    if (!p.enabled) throw new Error(OFF)
+    const want = String(chat ?? '').trim()
+    const sid = String(id ?? '').trim()
+    if (!want) throw new Error('wx_sticker_send: chat 不能为空。')
+    if (!sid) throw new Error('wx_sticker_send: id 不能为空。')
+
+    const allowed = canSendWithPolicy(p, want)
+    if (!allowed.ok) throw new Error(allowed.why)
+
+    // 先把索引核对完再碰界面：id 不存在、旧索引缺 artHash、已从收藏删除，都不打开面板。
+    targetEntry(loadIndex(stickerDir).index, sid)
+
+    let s = await look()
+    if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不发送。')
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+      if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不发送。`)
+      await run(['clean'], 30_000).catch(() => '')
+      fresh.reset()
+      await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+      await sleep(700)
+      s = await look({ confirm: false })
+      if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+      if (!sameName(s.parsed.current, allowed.chat)) {
+        throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不发送。`)
+      }
+    }
+
+    const g = await gateSend()
+    if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不发送。`)
+
+    // 清浮层再读一屏：回执拿这一屏当“发送前”，之后只认末尾新增的表情行。
+    await run(['clean'], 30_000).catch(() => '')
+    fresh.reset()
+    s = await look({ confirm: false })
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不发送。' + fresh.notice().trim())
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      throw new Error(`当前会话是「${s.parsed.current || '读不到'}」，不是「${allowed.chat}」，不发送。`)
+    }
+    const before = s.parsed.messages ?? []
+
+    // 频率闸只记一次；等完再看一眼会话，别在等待期间被切走。
+    await speechGate(allowed.chat)
+    const last = await gateSend()
+    if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
+
+    const r = await sendSticker({
+      run,
+      dir: stickerDir,
+      id: sid,
+      before,
+      look: () => look({ confirm: false }),
+      log: (m) => console.log('[dsh-wx] 表情发送：' + m),
+    })
+
+    // 回执确认了才落台账：没看到新增表情就不假装发过。
+    let outMsgId = ''
+    if (r.confirmed) {
+      try {
+        const captured = contextStore.capture({
+          chat: allowed.chat,
+          source: 'sent',
+          taskId,
+          ignoreChats: p.ignoreChats,
+          messages: [{
+            sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'sticker',
+            text: '[Sticker]', at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
+            stickerId: sid,
+          }],
+        })
+        outMsgId = captured.records?.at(-1)?.msgId ?? ''
+      } catch { /* 台账记不下不影响已经发出的表情 */ }
+    }
+    quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
+    return { ok: true, chat: allowed.chat, ...r, outMsgId }
+  }
+
+  /**
+   * 把聊天里的一条表情收藏进微信收藏。只右键气泡、点 Add Sticker，不发送任何消息。
+   * 不指定 chat 时只处理当前打开的会话；指定了就必须在白名单里，不为了收藏去点陌生会话。
+   */
+  async function collectStickerFromChat({ chat = '', which = 1 } = {}) {
+    const p = policy()
+    if (!p.enabled) throw new Error(OFF)
+    const want = String(chat ?? '').trim()
+    let s = await look()
+    if (!s.parsed.ok) throw new Error('读不到微信窗口，不采集。')
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不采集。' + fresh.notice().trim())
+
+    if (want) {
+      const allowed = canSendWithPolicy(p, want)
+      if (!allowed.ok) throw new Error(allowed.why)
+      if (!sameName(s.parsed.current, allowed.chat)) {
+        const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+        if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不采集。`)
+        await run(['clean'], 30_000).catch(() => '')
+        fresh.reset()
+        await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+        await sleep(700)
+        s = await look({ confirm: false })
+        if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不采集。' + fresh.notice().trim())
+        if (!sameName(s.parsed.current, allowed.chat)) {
+          throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不采集。`)
+        }
+      }
+    }
+
+    const r = await collectSticker({
+      run,
+      dir: stickerDir,
+      look: () => look({ confirm: false }),
+      which,
+      log: (m) => console.log('[dsh-wx] 表情收藏：' + m),
+    })
+    return { ...r, chat: s.parsed.current }
+  }
+
+  /**
+   * 在表情搜索里按关键词找一张，直接发到白名单会话。
+   * 搜索结果没有标签、她看不到图，pick 是盲选；点下去立即发送，没有预览确认。
+   * 点之前再确认一次当前会话，避免耳朵在搜索期间把会话切走、表情发错人。
+   */
+  async function searchStickerInChat({ chat, keyword, pick = 0, taskId = '' } = {}) {
+    const p = policy()
+    if (!p.enabled) throw new Error(OFF)
+    if (!p.stickerSearch) throw new Error('关键词搜索采集已关闭（policy.json 里 stickerSearch=false）。')
+    const want = String(chat ?? '').trim()
+    if (!want) throw new Error('wx_sticker_search: chat 不能为空。')
+    const word = normalizeKeyword(keyword)
+
+    const allowed = canSendWithPolicy(p, want)
+    if (!allowed.ok) throw new Error(allowed.why)
+
+    let s = await look()
+    if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不搜索。')
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不搜索。' + fresh.notice().trim())
+
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+      if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不搜索。`)
+      await run(['clean'], 30_000).catch(() => '')
+      fresh.reset()
+      await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+      await sleep(700)
+      s = await look({ confirm: false })
+      if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不搜索。' + fresh.notice().trim())
+      if (!sameName(s.parsed.current, allowed.chat)) {
+        throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不搜索。`)
+      }
+    }
+
+    const g = await gateSend()
+    if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不搜索。`)
+
+    // 频率闸只记一次；等完再确认会话。
+    await speechGate(allowed.chat)
+    const last = await gateSend()
+    if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不搜索。`)
+
+    await run(['clean'], 30_000).catch(() => '')
+    fresh.reset()
+    s = await look({ confirm: false })
+    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不搜索。' + fresh.notice().trim())
+    if (!sameName(s.parsed.current, allowed.chat)) {
+      throw new Error(`当前会话是「${s.parsed.current || '读不到'}」，不是「${allowed.chat}」，不搜索。`)
+    }
+    const before = s.parsed.messages ?? []
+
+    const r = await searchSticker({
+      run,
+      look: () => look({ confirm: false }),
+      keyword: word,
+      pick,
+      before,
+      assertChat: async () => {
+        const now = await look({ confirm: false })
+        return now.parsed.ok && sameName(now.parsed.current, allowed.chat)
+      },
+      shot: join(stickerDir, 'search-panel.png'),
+      log: (m) => console.log('[dsh-wx] 表情搜索：' + m),
+    })
+
+    let outMsgId = ''
+    if (r.confirmed) {
+      try {
+        const captured = contextStore.capture({
+          chat: allowed.chat,
+          source: 'sent',
+          taskId,
+          ignoreChats: p.ignoreChats,
+          messages: [{
+            sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'sticker',
+            text: '[Sticker]', at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
+          }],
+        })
+        outMsgId = captured.records?.at(-1)?.msgId ?? ''
+      } catch { /* 台账记不下不影响已经发出的表情 */ }
+    }
+    quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
+    return { ok: true, chat: allowed.chat, ...r, outMsgId }
   }
 
   // 说明只挂她一个 agent：会话 cwd 就是她的屋子
@@ -1043,16 +1443,13 @@ export function apply(ctx, config = {}) {
   // 「已投递」记在盘上不记在内存里：以前用内存基线，每次重启都把当时挂着的 @ 当旧消息吃掉。
   const EAR_STATE = '/home/str1k3/.dsh-wx/ear-state.json'
   const loadSeen = () => {
-    try {
-      const d = JSON.parse(readFileSync(EAR_STATE, 'utf8'))
-      const arr = Array.isArray(d?.delivered) ? d.delivered : []
-      return arr.map((x) => (typeof x === 'string' ? x : String(x?.key ?? ''))).filter(Boolean)
-    } catch { return [] }
+    try { return parseSeen(JSON.parse(readFileSync(EAR_STATE, 'utf8'))) } catch { return new Map() }
   }
-  const seen = new Set(loadSeen())
+  const seen = loadSeen()
   const saveSeen = () => {
     try {
-      writeFileSync(EAR_STATE, JSON.stringify({ delivered: [...seen].slice(-200), at: new Date().toISOString() }, null, 2))
+      pruneSeen(seen)
+      writeFileSync(EAR_STATE, JSON.stringify(serializeSeen(seen), null, 2))
     } catch { /* 存不下下次会重投，比丢了强 */ }
   }
   let busy = false
@@ -1064,7 +1461,6 @@ export function apply(ctx, config = {}) {
   let lastRelogin = 0
   let lastScanAt = 0
   let scanning = false
-  const lastDeliver = new Map() // 会话 → 上次投递时间，防她跟自己的回声互相触发
 
   /**
    * 微信必须有自己的会话（不能借 QQ 的）：通道隔离全靠 session 分开。
@@ -1110,8 +1506,22 @@ export function apply(ctx, config = {}) {
     if (wxSessionId) return wxSessionId
     const sc = controller()
     if (!sc?.create) throw new Error('sessionController 还没起来（等工作区）')
-    const created = await sc.create({ cwd: HER_DIR })
-    const id = String(created?.sessionId ?? created?.id ?? '')
+    // 先预分配 id 再建会话：宿主可能在 create 还没返回时就触发 agent/created，
+    // 面注册表必须在那之前就认得这个会话。宿主不认 sessionId 时回退旧调用。
+    const requested = randomUUID()
+    reserveWxSession(requested)
+    let created = null
+    try {
+      created = await sc.create({ cwd: HER_DIR, sessionId: requested })
+    } catch {
+      created = null
+    }
+    let id = String(created?.sessionId ?? created?.id ?? '')
+    if (!id) {
+      created = await sc.create({ cwd: HER_DIR })
+      id = String(created?.sessionId ?? created?.id ?? '')
+    }
+    reserveWxSession(id)
     if (!id) throw new Error('宿主建了会话但没给 id')
     wxSessionId = id
     saveWxSession(id)
@@ -1136,8 +1546,20 @@ export function apply(ctx, config = {}) {
     if (!sc?.create) return main
     if (sessions.list().length >= sessions.limit - 1) return main
     try {
-      const created = await sc.create({ cwd: HER_DIR })
-      const id = String(created?.sessionId ?? created?.id ?? '')
+      const requested = randomUUID()
+      reserveWxSession(requested)
+      let created = null
+      try {
+        created = await sc.create({ cwd: HER_DIR, sessionId: requested })
+      } catch {
+        created = null
+      }
+      let id = String(created?.sessionId ?? created?.id ?? '')
+      if (!id) {
+        created = await sc.create({ cwd: HER_DIR })
+        id = String(created?.sessionId ?? created?.id ?? '')
+      }
+      reserveWxSession(id)
       if (!id) return main
       const r = sessions.assign(chatId, id, chatName)
       if (!r.ok) return main
@@ -1209,6 +1631,7 @@ export function apply(ctx, config = {}) {
       directory.merge({
         chats: merged, current: '', source: 'scan',
         knownNames: knownNames(), directNames: policy().noMentionChats,
+        ignoreChats: policy().ignoreChats,
       })
       fresh.reset('目录扫描滚动了侧栏，旧基线作废')
       console.log(`[dsh-wx] 目录扫描：${res.pages} 页、${merged.length} 个会话（${res.reason}）`)
@@ -1312,6 +1735,8 @@ export function apply(ctx, config = {}) {
     inboxSummary: (opts) => contextStore.summary(opts),
     inbox: () => contextStore.inbox(),
     isWxSession: (sessionId) => isWxSession(sessionId),
+    // 会话还在创建中 / 尚未落到 wxSessionId 或会话池时也能认出来。
+    isReservedSession: (id) => reservedWxSessions.has(String(id ?? '')),
     currentChat: (sessionId) => (isWxSession(sessionId)
       ? (chatNameOfSession(sessionId) || recentChats().at(-1) || '')
       : ''),
@@ -1333,17 +1758,226 @@ export function apply(ctx, config = {}) {
   else console.log('[dsh-wx] wx 服务没挂上：' + wxProvided.why)
   if (typeof wxProvided.dispose === 'function') disposers.push(wxProvided.dispose)
 
+  // ---- 后台轮转采集（M2）：当前会话 OCR 补发言人 ----
+  /** 当前会话最近一屏补发言人：最多每 p.capture.ocrEveryMs 一次；失败只记日志。 */
+  async function maybeOcrCurrent(p) {
+    const cap = lastCurrentCapture
+    if (!cap || !cap.messages?.length) return
+    if (isIgnoredChat(cap.chat, p.ignoreChats)) return
+    if (Date.now() - lastCurrentOcrAt < p.capture.ocrEveryMs) return
+    if ((treeLast?.status ?? 'down') !== 'ok') return
+    // 真正尝试之前就记时间：OCR 失败/超时也不要每轮都重跑。
+    lastCurrentOcrAt = Date.now()
+    try {
+      // 重读 + OCR + 写入整段持 GUI 锁：从耳朵起始快照到这里可能已经切换过会话，
+      // 只有锁内复核当前会话仍是快照里的那个，OCR 的发言人才能归到它名下。
+      await withGuiLock(async () => {
+        const s = await look({ confirm: false })
+        if (!sameName(s?.parsed?.current, cap.chat)) return
+        // 必须用锁内这一屏的新 box 对齐：旧快照的 box 可能已被新消息/滚动挤错位。
+        const messages = normalizeMessages(s.parsed.messages ?? [], { now: Date.now() })
+        if (!messages.length) return
+        const d = JSON.parse(await run(['speakers'], 90_000))
+        if (!d.ok) return
+        const aligned = alignSpeakers(messages, d.lines, { roster: people })
+        const evidenceKey = captureEvidenceKey(cap.chatId, aligned)
+        for (const name of new Set(aligned.map((a) => a.sender).filter(Boolean))) {
+          people.learn({ name, source: 'ocr', chatId: cap.chatId, evidenceKey })
+        }
+        // 只追加 repair，不改已有记录；对不上就什么都不写。
+        const docs = contextStore.ledger.recent(cap.chatId, 30)
+        for (const fix of planSpeakerRepairs(aligned, docs)) {
+          contextStore.ledger.repair(cap.chatId, { ...fix, why: 'OCR 补发言人' })
+        }
+      })
+    } catch (err) {
+      console.log('[dsh-wx] 采集：当前会话 OCR 失败（' + String(err?.message ?? err).slice(0, 120) + '）')
+    }
+  }
+
+  /** 聊天区的滚动锚点：最后一条消息的中心；没有消息就取窗口右下区域。 */
+  const scrollAnchor = (parsed) => {
+    const last = [...(parsed?.messages ?? [])].reverse().find((m) => m?.box)
+    if (last) return { x: Math.round(last.box.cx), y: Math.round(last.box.cy) }
+    const win = parsed?.window ?? {}
+    return {
+      x: Math.round((Number(win.ox) || 0) + (Number(win.w) || 0) * 0.6),
+      y: Math.round((Number(win.oy) || 0) + (Number(win.h) || 0) * 0.55),
+    }
+  }
+
+  /**
+   * 后台采集用的窗口原语。点击/滚动都走 run()（自带 GUI 锁，同链可重入）。
+   * 坐标取整即可：parseTree 的 box 已经是屏幕绝对坐标，不再乘 window.scale。
+   */
+  const makeCaptureIo = () => {
+    const findRow = (parsed, chat) => (parsed?.chats ?? []).find(
+      (c) => sameName(c.name, chat) || canonicalName(c.name) === canonicalName(chat),
+    ) ?? null
+    const clickRow = async (box) => {
+      await run(['clean'])
+      fresh.reset()
+      await run(['click', String(Math.round(box.cx)), String(Math.round(box.cy))])
+      await sleep(700)
+      return look({ confirm: false })
+    }
+    return {
+      read: () => look({ confirm: false }),
+      open: async (chat, before) => {
+        const row = findRow(before?.parsed, chat)
+        if (!row?.box) return null
+        let s = await clickRow(row.box)
+        if (sameName(s.parsed?.current, chat)) return s
+        // 点一次没对上：同样的点击+核对再来一次，仍不对就放弃（不写台账）。
+        s = await clickRow(row.box)
+        return sameName(s.parsed?.current, chat) ? s : null
+      },
+      scrollUp: async (parsed) => {
+        const { x, y } = scrollAnchor(parsed)
+        await run(['scroll', String(x), String(y), 'up', '5'])
+        await sleep(600)
+        return look({ confirm: false })
+      },
+      scrollDown: async (parsed, times) => {
+        const { x, y } = scrollAnchor(parsed)
+        await run(['scroll', String(x), String(y), 'down', String(Math.max(1, Number(times) || 1))])
+        await sleep(600)
+      },
+      ocrSpeakers: async () => {
+        const d = JSON.parse(await run(['speakers'], 90_000))
+        if (!d.ok) throw new Error(d.why || 'speakers 失败')
+        return d
+      },
+      restore: async (chat) => {
+        const s0 = await look({ confirm: false })
+        const row = findRow(s0.parsed, chat)
+        if (!row?.box) return false
+        await run(['click', String(Math.round(row.box.cx)), String(Math.round(row.box.cy))])
+        await sleep(700)
+        const s = await look({ confirm: false })
+        return sameName(s.parsed?.current, chat)
+      },
+      onMention: (hit) => {
+        saveMentions(grant(readMentions(), hit.chat, Date.now()))
+        pendingCaptureHits.push(hit)
+        if (pendingCaptureHits.length > 20) pendingCaptureHits.shift() // 上限 20，超出丢最旧
+        logInbound({ type: 'capture-mention', chat: hit.chat, msgId: hit.msgId })
+      },
+      outboxFor: (chat) => outboxFor(chat),
+    }
+  }
+
+  /**
+   * 后台轮转采集的一拍：先按本轮预览入队（暂停期间也要排队），再决定是否让路；
+   * 空闲且冷却到了就采一个会话。失败只影响这一个会话，不阻塞下一轮。
+   */
+  async function captureTick({ parsed, p, pendingHits }) {
+    const queue = ensureCaptureQueue(p)
+    if (!p.capture.rotate) {
+      captureHealth = { ...captureHealth, queued: queue.size() }
+      writeHealth()
+      return
+    }
+    for (const { chat, row, sig, prevSig } of roundPreview?.rows ?? []) {
+      const name = canonicalName(chat) || chat
+      const r = shouldEnqueue({
+        row, sig, prevSig,
+        allowChats: p.allowChats, ignoreChats: p.ignoreChats,
+        capturedSinceStart: capturedSinceStart.has(name),
+        lastCaptureAt: queue.lastDoneAt(name),
+        now: Date.now(), cooldownMs: p.capture.chatCooldownSec * 1000,
+      })
+      if (r.enqueue) queue.offer({ chat: name, reason: r.reason, unread: row.unread, dueAt: r.dueAt })
+    }
+    roundPreview = null
+    // 每 5 秒最多采一个，避免启动初期把队列一次点完。
+    if (Date.now() - lastCaptureAttemptAt < 5000) {
+      captureHealth = { ...captureHealth, queued: queue.size() }
+      writeHealth()
+      return
+    }
+    const reason = pauseReason({
+      policy: p,
+      hostBusy: hostBusy(),
+      sending: sendBusy > 0,
+      pendingHits,
+      treeStatus: treeLast?.status ?? 'down',
+      stale: !!fresh.stale,
+      login: treeLast?.status === 'login',
+      quietUntil,
+      now: Date.now(),
+    })
+    captureHealth = { ...captureHealth, paused: !!reason, pauseReason: reason, queued: queue.size() }
+    if (reason) {
+      if (lastPauseLog.reason !== reason || Date.now() - lastPauseLog.at > 30_000) {
+        lastPauseLog = { reason, at: Date.now() }
+        console.log('[dsh-wx] 采集：暂停（' + reason + '）')
+      }
+      writeHealth()
+      return
+    }
+    const job = queue.due(Date.now())
+    if (!job) { writeHealth(); return }
+    lastCaptureAttemptAt = Date.now()
+    const settings = p.capture
+    const jobChatId = directory.idFor(job.chat)
+    const io = makeCaptureIo()
+    try {
+      const r = await withGuiLock(() => runCapture({
+        job: { ...job, chatId: jobChatId }, io, contextStore, directory, people, settings, policy: p,
+        log: (m) => console.log('[dsh-wx] 采集：' + String(m ?? '').slice(0, 160)),
+      }))
+      if (r.ok) {
+        for (const name of r.ocrSenders ?? []) {
+          people.learn({ name, source: 'ocr', chatId: jobChatId, evidenceKey: r.ocrEvidenceKey })
+        }
+        queue.done(job.chat)
+        capturedSinceStart.add(job.chat)
+        quietUntil = Date.now() + settings.quietMs
+        captureHealth = { ...captureHealth, lastAt: new Date().toISOString(), lastChat: job.chat, lastResult: `added:${r.added} skipped:${r.skipped}`, lastError: '' }
+        if (r.added > 0) console.log(`[dsh-wx] 采集：${job.chat} +${r.added}（回滚 ${r.scrolled} 屏）`)
+      } else {
+        queue.fail(job.chat)
+        captureHealth = { ...captureHealth, lastError: r.why ?? 'failed' }
+        console.log('[dsh-wx] 采集：' + job.chat + ' 失败（' + (r.why ?? '') + '）')
+      }
+    } catch (err) {
+      queue.fail(job.chat)
+      captureHealth = { ...captureHealth, lastError: String(err?.message ?? err).slice(0, 160) }
+    }
+    // done/fail 都会改队列长度，收尾时重算一次再写盘。
+    captureHealth = { ...captureHealth, queued: queue.size() }
+    writeHealth()
+  }
+
   const ear = async () => {
     if (busy) return
     const p = policy()
     if (!p.enabled || p.watch === false) return
     busy = true
+    let roundParsed = null
+    let heldHits = 0
     try {
       const s = await look({ confirm: false, capture: true }).catch(() => null)
       if (!s) return
       const tree = s.tree ?? treeHealth(s.raw, s.parsed)
+      // 微信被重启过（systemd Restart、工作台按钮、手动）且树没回来：
+      // 「使用中只提醒」不适用——开启一轮有界的「重启后恢复」，由 treeAction 控制次数/冷却。
+      const prevPid = treePid
+      const pid = await readTreePid()
+      const ep = restartEpisode({ prevPid, pid, treeOk: tree.ok, phase: treePhase })
+      if (pid) treePid = pid
+      if (ep.recover) {
+        treePhase = 'recover'
+        treeAttempts = 0
+        treeRetryAfter = Date.now() + TREE_RESTART_SETTLE_MS
+        treeAlert = `微信重启过（${prevPid}→${pid}），等无障碍树恢复`
+        console.log('[dsh-wx] 树：' + treeAlert)
+        logInbound({ type: 'tree-pid-change', from: prevPid, to: pid, status: tree.status })
+        writeHealth()
+      }
       // 初始化（刚挂上、还没见过健康的树）：总线不在就先拉起总线，再把微信重启一次。
-      // 使用中掉树：observeTree 只写 health/提醒，不返回 restart。
+      // 使用中掉树（pid 没变）：observeTree 只写 health/提醒，不返回 restart。
       const act = observeTree(s)
       if (act.restart) {
         await recoverTree(act)
@@ -1380,6 +2014,13 @@ export function apply(ctx, config = {}) {
 
       // 树没连上、OCR 也没读到会话行：这一轮没有可看的东西，等树恢复/下一轮。
       if (!tree.ok && !ocrRecovered) return
+      roundParsed = parsed
+      // 只有树健康时才写预览台账：partial/down/login 没有可信数据。
+      // OCR 回退只用于识别 @，不拿它写预览。
+      // 返回值（每行 prevSig/sig）留给 finally 的 captureTick 在更新快照前入队。
+      if (tree.ok && !ocrRecovered) roundPreview = recordPreviews(parsed)
+      // 当前会话的发言人补全：失败只记日志，不阻塞本轮。
+      await maybeOcrCurrent(p)
       // 每 10 分钟把侧栏从头滚到尾一次，补齐当前页看不到的会话和全名。
       if (!ocrRecovered && Date.now() - lastScanAt > 10 * 60_000) {
         lastScanAt = Date.now()
@@ -1401,9 +2042,29 @@ export function apply(ctx, config = {}) {
 
       const trigger = p.trigger.length > 0 ? p.trigger : ['D33p53Ek']
       // 免 @ 名单和允许名单一起交给它：单聊没有「@我」标记，不靠这两条就永远叫不醒她
-      const mentionsRaw = ocrRecovered
+      const baseMentions = (ocrRecovered
         ? ocrMentionHits(parsed)
-        : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats)
+        : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats))
+        .filter((m) => !isIgnoredChat(m.chat, p.ignoreChats))
+      // 当前打开的会话没有未读角标时，侧栏判据看不到它新收到的消息。
+      // captureCurrent 这一轮新记下的入站正文如果和侧栏 preview 对得上，就补一条命中；
+      // 先进 pendingCaptureHits，hostBusy / 15 秒节流 / 投递失败时下一轮还能重试。
+      if (tree.ok && !ocrRecovered) {
+        const openRow = (parsed.chats ?? []).find((c) => sameName(c.name, parsed.current)) ?? null
+        const openHit = openChatHit({
+          chat: parsed.current, row: openRow, captured: s.capturedCurrent, policy: p,
+        })
+        if (openHit && !pendingCaptureHits.some((h) => h.key === openHit.key)) {
+          pendingCaptureHits.push(openHit)
+          if (pendingCaptureHits.length > 20) pendingCaptureHits.shift()
+        }
+      }
+      // 后台采集补扫到的 @ / 当前会话补的命中参与投递：采集可能已经清掉未读，侧栏会看不到。
+      // 服务号即使在旧队列里残留了命中，也不投递。
+      const deliverableCaptureHits = pendingCaptureHits.filter((m) => !isIgnoredChat(m.chat, p.ignoreChats))
+      const mergedHits = new Map()
+      for (const m of [...baseMentions, ...deliverableCaptureHits]) mergedHits.set(m.key, m)
+      const mentionsRaw = [...mergedHits.values()]
       // 截断名解析到全名后再记 @ 窗口和任务，否则发送闸会拿两个不同的键互相比。
       const mentions = mentionsRaw.map((m) => ({ ...m, chat: canonicalName(m.chat) }))
       // 有人 @ 她 → 这个会话在窗口内可以开口（@ 才回）。挂着的未读 @ 会一直续窗口。
@@ -1436,14 +2097,24 @@ export function apply(ctx, config = {}) {
       }
 
       // 防自激：她一回复，侧栏预览就变成她自己那句话。
-      // 两条闸：① 同一个会话 45 秒内只叫一次（只挡回声，不挡真人） ② 已经投过的 key 不再投。
-      // 以前这里写的是 4 分钟：她答完一句，对面马上接话就被整段吃掉，
-      // 屏幕上看着就是「她不说话了 / 工具卡住了」。真人不会等 4 分钟再发第二句。
+      // 两条闸：① 预览对得上她自己刚发出去的原文（outbox 回执）才算回声 ② 已经投过的 key 不再投。
+      // 以前用「同一个会话 45 秒内只叫一次」一刀切，把她答完话后真人马上接的第二句也吞了
+      // （2026-11-05 09:53 的「这么高冷」：离上次投递 23 秒，被压到红点被采集清掉）。
       const ECHO_MS = 45_000
-      // 冷却只压「回声型」的（单聊/免@/名字出现），真正的 @ 不能被压：
-      // 同一个人在群里连 @ 她两次，第二次也是要找她。
-      const fresh1 = [...now.values()].filter((m) => !seen.has(m.key) && (m.why === '@' || Date.now() - (lastDeliver.get(m.chat) ?? 0) > ECHO_MS))
+      // key 是「会话 + 预览文字」，只在一个未读回合里有效：会话被读到（未读归零）就把记录清掉，
+      // 否则「早」「在吗」这种重复的话过几天再发一遍会撞上旧 key，被静默当成回声吃掉。
+      // 只认还在侧栏里的行，没看见的会话不当成已读；OCR 的未读字段不可信，不参与。
+      if (tree.ok && !ocrRecovered) {
+        const readChats = (parsed.chats ?? []).map((c) => ({ ...c, name: canonicalName(c.name) }))
+        if (forgetReadChats(seen, readChats)) saveSeen()
+      }
+      // 只有真的 @ 才能穿过回声判断：同一个人在群里连 @ 她两次，第二次也是要找她。
+      const fresh1 = freshHits([...now.values()], seen, {
+        isEcho: (m) => ownEcho(m.chat, m.preview, outbox, { echoMs: ECHO_MS }),
+      })
       const hits = fresh1
+      // 压着没投出去的 @：本轮采集让路（投递循环后按实际成功数重算）。
+      heldHits = hits.length
       if (hits.length === 0) {
         // 压住的时候留一行日志，否则「她没被叫醒」和「她听到了不想说」在日志里长得一样
         const held = [...now.values()].filter((m) => !seen.has(m.key))
@@ -1480,13 +2151,13 @@ export function apply(ctx, config = {}) {
         const who = requesterOf({ chat, isDM: isDM === true, preview: h.preview })
         if (who?.name) reqs.set(chat, who)
         try {
-          const r = contextStore.ingest({ chat, chatId, preview: h.preview, why: h.why, isDM })
+          const r = contextStore.ingest({ chat, chatId, preview: h.preview, why: h.why, isDM, ignoreChats: p.ignoreChats })
           if (r.ok && r.task) tasks.set(chat, r.task)
         } catch (err) {
           console.log('[dsh-wx] 入池失败（不影响这次投递）：' + String(err?.message ?? err).slice(0, 120))
         }
         try {
-          const rec = contextStore.recentContext({ chat, chatId, limit: 6, hours: 6 })
+          const rec = contextStore.recentContext({ chat, chatId, limit: 6, hours: 6, ignoreChats: p.ignoreChats })
           if (rec.ok && rec.lines.length) recents.set(chat, rec.lines)
         } catch { /* 前文读不到就只发预览 */ }
       }
@@ -1500,14 +2171,20 @@ export function apply(ctx, config = {}) {
           const sid = await deliverToChat(chat, chatId, note)
           sentChats.push(chat)
           // 投成功才记账：失败下一轮还投，不会丢这条 @
-          seen.add(h.key)
-          lastDeliver.set(chat, Date.now())
+          seen.set(h.key, { at: Date.now(), chat })
+          // 每个会话投完都给采集留一段静默期（取较大值，不会无限延长）。
+          quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
           console.log('[dsh-wx] 耳朵：已投递（' + sid + '）→ ' + chat)
           logInbound({ type: 'delivered', session: sid, chatId, chat, why: h.why, preview: h.preview, key: h.key })
         } catch (err) {
           console.log('[dsh-wx] 耳朵：投递失败（' + chat + '）：' + String(err?.message ?? err).slice(0, 160))
           logInbound({ type: 'deliver-failed', chatId, chat, why: h.why, error: String(err?.message ?? err).slice(0, 160) })
         }
+      }
+      heldHits = Math.max(0, hits.length - sentChats.length)
+      // 采集补扫到的 @：投过的清掉；压着的（例如 hostBusy）留到下一轮，别被采集清未读后弄丢。
+      for (let i = pendingCaptureHits.length - 1; i >= 0; i--) {
+        if (seen.has(pendingCaptureHits[i].key)) pendingCaptureHits.splice(i, 1)
       }
       if (!sentChats.length) return
       saveSeen()
@@ -1521,6 +2198,12 @@ export function apply(ctx, config = {}) {
         logInbound({ type: 'error', error: msg })
       }
     } finally {
+      // 不管这一轮为什么结束（返回/抛错），都按当前状态决定要不要采一次。
+      try {
+        await captureTick({ parsed: roundParsed, p, pendingHits: pendingCaptureHits.length + heldHits })
+      } catch (err) {
+        console.log('[dsh-wx] 采集：本轮出错（' + String(err?.message ?? err).slice(0, 120) + '）')
+      }
       busy = false
     }
   }
@@ -1559,26 +2242,27 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_peek',
-    description: '读取微信当前界面：当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息（无发言人）、可点击元素。坐标为屏幕绝对坐标，可直接用于 wx_click。树落后于屏幕时，返回末尾带 [提示]。',
+    description: '读取微信当前界面：当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息（无发言人）、可点击元素。要操作界面时用 wx_click 的 label 填这里看到的名字或按钮名。树落后于屏幕时，返回末尾带 [提示]。',
     parameters: { type: 'object', properties: {} },
     output: textOut,
+    project: (out) => ({ text: projectWxPeek(out) }),
     isConcurrencySafe: () => true,
     execute: async (_args, exec) => {
       deny(exec)
       if (!policy().enabled) throw new Error(OFF)
       const s = await look()
       if (s.source === 'ocr') return JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: 'OCR cannot verify the active conversation or authorize sending.' }, null, 2)
-      const body = s.raw.length > 12_000 ? s.raw.slice(0, 12_000) + '\n…（已截断）' : s.raw
       // 当前会话的气氛粗判 + 她自己记下的关于这个人的话（没有就是空串）
       let mood = ''
       try { mood = feed?.hint(s.parsed.current) ?? '' } catch { /* ignore */ }
-      return body + fresh.notice() + mood
+      // 尾巴（[提示] / 气氛）比正文更重要：先给它们留位置，再截正文。
+      return clipPeekBody(s.raw, fresh.notice() + mood)
     },
   })
 
   reg({
     name: 'wx_click',
-    description: '点击微信窗口里的一个位置。label 填会话名或按钮名（会话列表里的名字、Contacts、Chat Info 等）；或填 x/y（屏幕绝对坐标，来自 wx_peek）。返回落点是什么、点击后的当前会话。',
+    description: '点击微信窗口里的一个位置。首选 label：填 wx_peek 里看到的会话名或按钮名（会话列表里的名字、Contacts、Chat Info 等）。x/y 只作内部回退，正常不用填。返回落点是什么、点击后的当前会话。',
     parameters: {
       type: 'object',
       properties: {
@@ -1695,6 +2379,7 @@ export function apply(ctx, config = {}) {
           contextStore.capture({
             chat: second.chat,
             source: 'sent',
+            ignoreChats: policy().ignoreChats,
             messages: [{
               sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
               text, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
@@ -1767,6 +2452,7 @@ export function apply(ctx, config = {}) {
       required: ['task_id'],
     },
     output: textOut,
+    project: (out) => ({ text: projectWxContext(out) }),
     isConcurrencySafe: () => true,
     execute: async (args, exec) => {
       deny(exec)
@@ -1778,9 +2464,38 @@ export function apply(ctx, config = {}) {
         query: String(a.query ?? ''),
         before: String(a.before ?? ''),
         limit: Number(a.limit) || undefined,
+        ignoreChats: policy().ignoreChats,
       })
       if (!r.ok) throw new Error(r.why)
       return r.text + '\n（只查这个任务自己的会话；查询不写进记忆。）'
+    },
+  })
+
+  reg({
+    name: 'wx_history',
+    description: '只读查询微信台账：不传 chat 列出有记录的非服务会话；传 chat 按会话名查最近记录，可选 query 关键词和 hours 时间窗。最多 20 条，带发言人、时间、来源和置信度。不建任务、不写事件流。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '可选。会话名；不填则列出有记录的会话。' },
+        query: { type: 'string', description: '可选。要找的关键词或短句。' },
+        hours: { type: 'number', description: '可选。只保留最近多少小时内的记录。' },
+        limit: { type: 'number', description: '可选。最多返回条数，最多 20。' },
+      },
+    },
+    output: textOut,
+    isConcurrencySafe: () => true,
+    execute: async (args, exec) => {
+      deny(exec)
+      const a = args || {}
+      const ignoreChats = policy().ignoreChats
+      const chat = String(a.chat ?? '').trim()
+      const limit = Number(a.limit) || undefined
+      const r = chat
+        ? contextStore.historyForChat({ chat, query: String(a.query ?? ''), hours: Number(a.hours) || 0, limit, ignoreChats })
+        : contextStore.listRecordedChats({ limit, ignoreChats })
+      if (!r.ok) throw new Error(r.why)
+      return r.text
     },
   })
 
@@ -1837,13 +2552,16 @@ export function apply(ctx, config = {}) {
     name: 'wx_ocr',
     description: '只读 OCR 观察微信窗口，返回侧栏识别行和消息区文字。OCR 不证明当前会话，不能用作发送授权。',
     parameters: { type: 'object', properties: {} },
-    output: textOut,
+    output: ocrOut,
+    project: (out) => ({ text: projectWxOcr(out) }),
     isConcurrencySafe: () => true,
     execute: async (_args, exec) => {
       deny(exec)
       if (!policy().enabled) throw new Error(OFF)
       const data = await ocrRead()
-      return JSON.stringify(data, null, 2).slice(0, 24_000)
+      // 完整返回：台账会把大字段落 artifact（审计副本）。模型看到的由
+      // projectWxOcr 投影；fishCore 缺席时由 ocrOut 限长，不把整段 JSON 塞进上下文。
+      return JSON.stringify(data, null, 2)
     },
   })
 
@@ -1998,6 +2716,89 @@ export function apply(ctx, config = {}) {
       if (entry.text) bits.push(`图上文字：${entry.text}`)
       if (entry.desc) bits.push(`描述：${entry.desc}`)
       return `已更新 ${entry.id}${bits.length ? '｜' + bits.join('｜') : ''}。`
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_send',
+    description: '按索引 id 发一张收藏表情到指定会话。表情格点下去就发送、没有二次确认：发送前会重新扫描面板、确认当前会话和格子 pHash，发送后核对聊天区新增表情并比对 pHash；任何一步不确定都不点，或如实报告未确认。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '会话全名，与 wx_send 的 chat 相同' },
+        id: { type: 'string', description: '表情 id，只能来自 wx_sticker_list / wx_sticker_find' },
+        task_id: { type: 'string', description: '可选：这条表情属于哪个任务，写进台账' },
+      },
+      required: ['chat', 'id'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const r = await withSendLock(() => sendStickerToChat({
+        chat: args?.chat,
+        id: args?.id,
+        taskId: String(args?.task_id ?? ''),
+      }))
+      return r.confirmed
+        ? `已把表情 ${r.id} 发到「${r.chat}」。${r.receipt}${r.outMsgId ? ` 台账：${r.outMsgId}` : ''}`
+        : `表情点击已执行，但没有确认发对了：${r.receipt}先用 wx_peek 看当前会话，别重复点。`
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_collect',
+    description: '把当前会话（或指定白名单会话）里最近的一条表情收藏进微信收藏。只右键那条表情并点 Add Sticker，不发消息；先截图 OCR 确认菜单里真有 Add Sticker 才点，收藏后重扫收藏页确认。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '可选：白名单里的会话全名；不传就用当前打开的会话' },
+        which: { type: 'number', description: '从最新往前数第几条表情，默认 1（最近一条）' },
+      },
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const r = await withSendLock(() => collectStickerFromChat({
+        chat: args?.chat,
+        which: args?.which,
+      }))
+      return r.confirmed
+        ? `已收藏「${r.chat}」里的这张表情（索引 ${r.id}）。${r.receipt}`
+        : `点了 Add Sticker，但没有确认收藏成功：${r.receipt}`
+    },
+  })
+
+  reg({
+    name: 'wx_sticker_search',
+    description: '按关键词在微信表情搜索里找一张，直接发到指定白名单会话。结果是匿名网格、没有标签，调用方看不到图，pick 是按行列顺序的盲选（0 起）；点下去立即发送、没有预览和二次确认。只在你愿意直接发这张表情时用；发完可以用 wx_sticker_collect 收藏。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chat: { type: 'string', description: '会话全名，必须在发送白名单里' },
+        keyword: { type: 'string', description: '搜索关键词，单行，最多 24 个字' },
+        pick: { type: 'number', description: '搜索结果里的第几个，0 起、按行列顺序，默认 0（第一张）' },
+        task_id: { type: 'string', description: '可选：这条表情属于哪个任务，写进台账' },
+      },
+      required: ['chat', 'keyword'],
+    },
+    output: textOut,
+    isConcurrencySafe: () => false,
+    execute: async (args, exec) => {
+      deny(exec)
+      if (!policy().enabled) throw new Error(OFF)
+      const r = await withSendLock(() => searchStickerInChat({
+        chat: args?.chat,
+        keyword: args?.keyword,
+        pick: args?.pick,
+        taskId: String(args?.task_id ?? ''),
+      }))
+      return r.confirmed
+        ? `已把搜索「${r.keyword}」的第 ${r.pick + 1} 个结果发到「${r.chat}」。${r.receipt}${r.outMsgId ? ` 台账：${r.outMsgId}` : ''}`
+        : `点了搜索结果，但没有确认发出去：${r.receipt}`
     },
   })
 

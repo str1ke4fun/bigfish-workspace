@@ -34,7 +34,7 @@
 
 | 条款 | 真相在哪 | 守它的测试 |
 | --- | --- | --- |
-| 不撒娇卖萌（写成「还不会」，不是「不许」） | `lib/rules.js` 的 `learn-affection` | `test/rules.test.mjs`（断言含「还不会」且不含「不可以」） |
+| 表演式撒娇还不会（颜文字/叠字）；软话不算这类，不是「不许」 | `lib/rules.js` 的 `learn-affection` | `test/rules.test.mjs`（断言含「还不会」且不含「不可以」） |
 | 没有好感度/亲密度数字 | `lib/rules.js` 的 `no-relational-score` | `test/rules.test.mjs`（提示词里 `cannot` 只剩这一条） |
 | 不能读自己的数值与设定（能看自己说过什么） | `lib/rules.js` 的 `no-read-self`（物理层，`section: null`，**不进提示词**）；工具侧由 `lib/restrict.js` 的 `HER_TOOLS` 收窄 | `test/rules.test.mjs` + `test/restrict.test.mjs` |
 | 不能调工具改自己 | `lib/rules.js` 的 `no-self-modify`（物理层，同样不进提示词）；写入侧唯一入口是 `lib/capture.js` 的 `growth_commit` | `test/rules.test.mjs` + `test/capture.test.mjs` |
@@ -83,6 +83,13 @@ node --test
 CI 也跑同一套（`.github/workflows/test.yml`，Node 20 / 22 / 24 各跑一遍）。
 
 ---
+
+## 7. 工具可见性与台账边界（2026-11-09）
+
+- 工具可见性由 `lib/tool-policy.js` 唯一决定；`config.tools.allow` 只是 web 面的额外放行兼容，不要拿它控制 wx / qq / bili 的可见性。
+- `her_tools` 只做三件事：`search` 列当前面未打开的按需工具，`describe` 给一两个工具的一句说明与参数名（不给 JSON schema），`load` 真正打开（别的面、宿主工具、未知名字整次拒绝）。
+- 工具台账在 `<root>/tool-ledger/YYYY-MM-DD.jsonl`，大结果脱敏后放 `tool-ledger/artifacts/`；台账不自动删除，也不进事件流。
+- 本辑未做：B 站独立出门会话、`dsh-bili` 拆包、事件 v3 跨面记忆。QQ 与 B 站仍按旧调度运行。
 
 ## 提 PR / 提交前自检
 

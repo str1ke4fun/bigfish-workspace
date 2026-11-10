@@ -144,9 +144,22 @@ export function treeMatchesOcr(treeParsed, ocrParsed, { minRows = 3, ratio = 0.6
 }
 
 /**
+ * 微信的 MainPID 变了 = 它被重启过（systemd Restart、工作台按钮、手动都算）。
+ * 重启后 Qt 的无障碍桥可能没连上总线：树掉了，但「使用中只提醒」那条规矩不适用，
+ * 因为这不是用着用着掉的，是重启后没回来。返回是否需要开一轮「重启后恢复」。
+ *
+ * 恢复期内再换 pid 不重置：那多半就是我们自己重启造成的，重置会变成无限重启。
+ */
+export function restartEpisode({ prevPid = 0, pid = 0, treeOk = false, phase = 'steady' } = {}) {
+  const changed = Number(pid) > 0 && Number(prevPid) > 0 && Number(pid) !== Number(prevPid)
+  return { changed, recover: changed && !treeOk && phase === 'steady' }
+}
+
+/**
  * 树掉线时该做什么。纯函数，方便列边界。
- *   phase=init   —— 插件刚挂上：允许先确保无障碍总线，再重启微信（有次数和冷却）
- *   phase=steady —— 已经见过健康的树：只提醒，不重启
+ *   phase=init    —— 插件刚挂上：允许先确保无障碍总线，再重启微信（有次数和冷却）
+ *   phase=recover —— 检测到微信重启且树没回来：和 init 一样有界重启，文案说明是「重启后」
+ *   phase=steady  —— 已经见过健康的树：只提醒，不重启
  * 登录页永远不重启（要人扫码）。
  */
 export function treeAction({
@@ -158,8 +171,15 @@ export function treeAction({
   now = Date.now(),
   maxAttempts = 2,
   cooldownMs = 45_000,
+  // down 的起点（index.js 传 statusSince=treeSince）。0 = 未知，按「已经很久」处理。
+  statusSince = 0,
+  // 最近一次看到登录页的时刻。登录成功后主窗口可能先出来、树后挂上，这段时间不许重启。
+  lastLoginAt = 0,
+  confirmMs = 90_000,
+  loginLatchMs = 300_000,
 } = {}) {
   const status = health?.status ?? 'down'
+  const canRestart = phase === 'init' || phase === 'recover'
   if (status === 'ok') return { phase: 'steady', status, healthy: true, restart: false, alert: '' }
   if (status === 'login') {
     return { phase, status, restart: false, login: true, alert: '微信停在登录页（窗口缩小），需要人工登录；不自动重启' }
@@ -173,10 +193,12 @@ export function treeAction({
       restart: false,
       alert: phase === 'init'
         ? '无障碍树在，但会话列表读不到（微信可能停在别的页面）；不自动重启，先用 OCR'
-        : '无障碍树不完整（窗口在，会话列表读不到）；按约定使用中不自动重启，只提醒',
+        : phase === 'recover'
+          ? '微信重启后无障碍树不完整（会话列表读不到）；不自动重启，先用 OCR'
+          : '无障碍树不完整（窗口在，会话列表读不到）；按约定使用中不自动重启，只提醒',
     }
   }
-  if (phase !== 'init') {
+  if (!canRestart) {
     return {
       phase,
       status,
@@ -190,7 +212,30 @@ export function treeAction({
       status,
       restart: false,
       exhausted: true,
-      alert: `初始化时微信一直没连上无障碍树，已重启 ${attempts} 次；停止自动重启，只提醒`,
+      alert: phase === 'recover'
+        ? `微信重启后一直没连上无障碍树，已重启 ${attempts} 次；停止自动重启，只提醒`
+        : `初始化时微信一直没连上无障碍树，已重启 ${attempts} 次；停止自动重启，只提醒`,
+    }
+  }
+  // 2026-11-04：登录页 -> 主窗口的过渡里，主窗口刚出现、无障碍树还没挂上，
+  // 单次采样就是 down。此时重启微信等于把正在登录的人踢下去。
+  if (lastLoginAt && now - lastLoginAt < loginLatchMs) {
+    return {
+      phase,
+      status,
+      restart: false,
+      wait: true,
+      alert: '刚看到过微信登录页，先等无障碍树挂上；不自动重启',
+    }
+  }
+  // down 必须持续一段时间才算「没连上」；单次采样不下结论。
+  if (statusSince && now - statusSince < confirmMs) {
+    return {
+      phase,
+      status,
+      restart: false,
+      wait: true,
+      alert: '无障碍树还没连上，先观察一会儿；不自动重启',
     }
   }
   if (retryAfter > now) {
@@ -204,9 +249,13 @@ export function treeAction({
     status,
     restart: true,
     attempt: attempts + 1,
-    alert: attempts === 0
-      ? '初始化时微信没连上无障碍树：先确认无障碍总线，再重启微信'
-      : `初始化时微信仍没连上无障碍树：重启第 ${attempts + 1} 次`,
+    alert: phase === 'recover'
+      ? attempts === 0
+        ? '微信重启后没连上无障碍树：先确认无障碍总线，再重启微信'
+        : `微信重启后仍未连上无障碍树：重启第 ${attempts + 1} 次`
+      : attempts === 0
+        ? '初始化时微信没连上无障碍树：先确认无障碍总线，再重启微信'
+        : `初始化时微信仍没连上无障碍树：重启第 ${attempts + 1} 次`,
   }
 }
 

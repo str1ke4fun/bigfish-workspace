@@ -20,18 +20,38 @@ const str = (v) => String(v ?? '').trim()
 const PREVIEW_SENDER = /^([^:：\n]{1,24})[:：]\s*(\S[\s\S]*)$/u
 const SYSTEM_PREFIX = /^(?:\[(?:Link|Sticker|Image|File|Voice|Video|Animation|Emoji|图片|表情|文件|语音|视频)\]|系统消息|撤回了一条消息|你撤回了一条消息)$/iu
 
-/** 预览里能不能读出「谁: 什么」。读不出返回空。 */
+// 预览头里的时间、星期和提示词，都可能是「名字: 内容」的假象。
+const CLOCK = /^\d{1,2}[:：]\d{2}$/
+const DAY_WORD = /^(?:Yesterday|Today|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|昨天|今天|周[一二三四五六日天]|星期[一二三四五六日天])$/i
+
+/**
+ * 预览里能不能读出「谁: 什么」。读不出返回空。
+ * 昵称不按字符类别或词典过滤：纯 emoji、纯数字也能是发言人，
+ * 只是这种名字要两次不同观察才建档（needsEvidence）。
+ */
 export function parsePreviewSender(preview) {
   const raw = str(preview)
-  if (!raw) return { sender: null, text: '', confidence: 'unknown' }
+  if (!raw) return { sender: null, text: '', confidence: 'unknown', needsEvidence: false }
   const m = raw.match(PREVIEW_SENDER)
-  if (!m) return { sender: null, text: raw, confidence: 'unknown' }
+  if (!m) return { sender: null, text: raw, confidence: 'unknown', needsEvidence: false }
   const who = str(m[1])
   const body = str(m[2])
-  if (!who || !body || SYSTEM_PREFIX.test(who)) return { sender: null, text: raw, confidence: 'unknown' }
+  if (!who || !body || SYSTEM_PREFIX.test(who)) {
+    return { sender: null, text: raw, confidence: 'unknown', needsEvidence: false }
+  }
   // 预览里常见的系统后缀，不算发言人
-  if (/^(?:你|You)$/i.test(who)) return { sender: null, text: body, confidence: 'unknown' }
-  return { sender: who, text: body, confidence: 'medium' }
+  if (/^(?:你|You)$/i.test(who)) {
+    return { sender: null, text: body, confidence: 'unknown', needsEvidence: false }
+  }
+
+  // 时间头（如「14:02 开会」）的冒号把时间切进了 who，首段也要查。
+  const head = raw.split(/\s+/)[0] ?? ''
+  const nameLength = [...who].length
+  if (
+    CLOCK.test(who) || DAY_WORD.test(who) || CLOCK.test(head) || DAY_WORD.test(head)
+    || nameLength < 1 || nameLength > 24
+  ) return { sender: null, text: raw, confidence: 'unknown', needsEvidence: false }
+  return { sender: who, text: body, confidence: 'medium', needsEvidence: !/\p{L}/u.test(who) }
 }
 
 /** 私聊：侧栏预览通常没有「发送者:」前缀。group 名单只用于展示，不用于发送授权。 */

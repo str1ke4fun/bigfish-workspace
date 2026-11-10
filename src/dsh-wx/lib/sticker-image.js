@@ -132,6 +132,79 @@ export function cellContentFraction(gray, w, h, x, y, cw, ch, bg = backgroundGra
 }
 
 /**
+ * 与背景明显不同的像素的包围盒。用于把表情从周围留白里裁出来，
+ * 让面板格（84x84，白底）和聊天气泡（132px，聊天背景）能用同一套 dHash 比对。
+ * 一个都没有就返回 null，不拿整块区域冒充。
+ */
+export function contentBounds(gray, w, h, { bg = backgroundGray(gray), tol = 6 } = {}) {
+  let minX = w; let minY = h; let maxX = -1; let maxY = -1
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (Math.abs(gray[y * w + x] - bg) <= tol) continue
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+    }
+  }
+  if (maxX < 0) return null
+  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 }
+}
+
+/**
+ * 聊天行里最大的那块前景（4 邻接连通）。
+ *
+ * 一行消息的截图包含头像、气泡、留白；整行 dHash 会被布局带偏。
+ * 这里只找面积最大的连通块，并用 minSideRatio 排除头像那种小方块；
+ * 找不到够大的就连最大的一块返回，回执阶段还会用 pHash 再验一次。
+ */
+export function largestRegion(gray, w, h, {
+  bg = backgroundGray(gray), tol = 10, minSideRatio = 0.4, pad = 2,
+} = {}) {
+  const seen = new Uint8Array(w * h)
+  const stack = []
+  let best = null
+  let bestBig = null
+  const minSide = Math.max(1, Math.round(minSideRatio * h))
+  for (let i = 0; i < w * h; i++) {
+    if (seen[i] || Math.abs(gray[i] - bg) <= tol) continue
+    stack.length = 0
+    stack.push(i)
+    seen[i] = 1
+    let minX = w; let minY = h; let maxX = -1; let maxY = -1
+    while (stack.length) {
+      const j = stack.pop()
+      const x = j % w
+      const y = (j - x) / w
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+      if (x > 0 && !seen[j - 1] && Math.abs(gray[j - 1] - bg) > tol) { seen[j - 1] = 1; stack.push(j - 1) }
+      if (x + 1 < w && !seen[j + 1] && Math.abs(gray[j + 1] - bg) > tol) { seen[j + 1] = 1; stack.push(j + 1) }
+      if (y > 0 && !seen[j - w] && Math.abs(gray[j - w] - bg) > tol) { seen[j - w] = 1; stack.push(j - w) }
+      if (y + 1 < h && !seen[j + w] && Math.abs(gray[j + w] - bg) > tol) { seen[j + w] = 1; stack.push(j + w) }
+    }
+    const cand = {
+      x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1,
+      area: (maxX - minX + 1) * (maxY - minY + 1),
+    }
+    if (!best || cand.area > best.area) best = cand
+    if (Math.min(cand.w, cand.h) >= minSide && (!bestBig || cand.area > bestBig.area)) bestBig = cand
+  }
+  const hit = bestBig ?? best
+  if (!hit) return null
+  const x = Math.max(0, hit.x - pad)
+  const y = Math.max(0, hit.y - pad)
+  return {
+    x,
+    y,
+    w: Math.min(w - x, hit.w + pad * 2),
+    h: Math.min(h - y, hit.h + pad * 2),
+  }
+}
+
+/**
  * 按已知网格找格子。不是“看图猜图案”，而是“按标定好的格子逐格验货”：
  * 只有内容占比达到阈值的格子才算一张表情，所以第二行只有 2 张、后面空白都不会多出条目。
  *

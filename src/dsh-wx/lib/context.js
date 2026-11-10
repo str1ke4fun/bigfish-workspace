@@ -19,19 +19,72 @@ import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from
 import { join } from 'node:path'
 
 import { archiveLedger, DEFAULT_RETENTION_DAYS } from './archive.js'
-import { chatIdFor, createLedger, dedupeKeyOf, msgIdOf } from './ledger.js'
-import { attributeMessages, requesterOf } from './speaker.js'
+import { isIgnoredChat } from './capture.js'
+import { chatIdFor, createLedger, dedupeKeyOf, msgIdOf, normalizeText } from './ledger.js'
+import { attributeMessages, parsePreviewSender, requesterOf } from './speaker.js'
 import { searchSummaryDocs, writeDailySummaries } from './summaries.js'
 import { createTaskBoard } from './tasks.js'
+import { kindOfLabel, parseSidebarTime } from './transcript.js'
 import { CARD_MAX, formatCards, rrf, searchLexical } from './retrieval.js'
 
 export const DEFAULT_DIR = '/home/str1k3/.dsh-wx'
 export const QUERY_LOG_KEEP_MS = 7 * 24 * 3600_000
 export const CANDIDATE_MAX = 20
 export const RECENT_MAX = 20
+export const HISTORY_MAX = 20
+export const HISTORY_RECENT = 8
+export const RECORDED_MAX = 20
+export const RECORDED_DEFAULT = 20
 
 const str = (v) => String(v ?? '').trim()
 const identitySanitize = (t) => ({ text: String(t ?? ''), dropped: 0 })
+
+/** 整屏采集与预览记录的去重窗口：预览只是同一句话的另一种来源。 */
+export const PREVIEW_DUPLICATE_WINDOW_MS = 30 * 60_000
+
+/**
+ * 整屏采集前，去掉已经被最近预览记录代表的正文。
+ * 只按归一正文匹配；每条预览记录最多抵消一条消息，预览记录本身不动。
+ *
+ * @param {{messages?:object[], docs?:object[], now?:number, windowMs?:number}} [req]
+ * @returns {{messages:object[], dropped:object[]}} dropped 是被这条正文代表、因而没再入账的预览记录
+ */
+export function dropPreviewDuplicates({
+  messages = [], docs = [], now = Date.now(), windowMs = PREVIEW_DUPLICATE_WINDOW_MS,
+} = {}) {
+  const cutoff = Number(now) - Math.max(0, Number(windowMs) || 0)
+  const pool = new Map()
+  for (const d of docs ?? []) {
+    if (d?.source !== 'preview') continue
+    const at = Date.parse(String(d.capturedAt ?? d.at ?? ''))
+    if (!Number.isFinite(at) || at < cutoff) continue
+    const key = normalizeText(d.text)
+    if (!key) continue
+    const list = pool.get(key) ?? []
+    list.push(d)
+    pool.set(key, list)
+  }
+  if (!pool.size) return { messages: [...(messages ?? [])], dropped: [] }
+
+  const kept = []
+  const dropped = []
+  for (const m of messages ?? []) {
+    const key = normalizeText(m?.text)
+    const representatives = key ? (pool.get(key) ?? []) : []
+    if (representatives.length) {
+      dropped.push(representatives.shift())
+      continue
+    }
+    kept.push(m)
+  }
+  return { messages: kept, dropped }
+}
+
+/** 列表里的时间：简化 ISO，固定宽度，便于扫读。 */
+const listTimeText = (iso) => {
+  const t = Date.parse(String(iso ?? ''))
+  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 16).replace('T', ' ') : '时间未知'
+}
 
 /**
  * @param {object} [opts]
@@ -111,10 +164,11 @@ export function createContextStore({
    */
   function ingest({
     chat, chatId: explicitChatId = '', preview = '', why = 'unknown', requester = {}, inbound = null,
-    isDM = null, source = 'ingest',
+    isDM = null, source = 'ingest', ignoreChats = [],
   } = {}) {
     const chatName = str(chat)
     if (!chatName) return { ok: false, why: '会话名为空' }
+    if (isIgnoredChat(chatName, ignoreChats)) return { ok: false, why: '服务号会话不采集' }
     const chatId = chatIdOf(chatName, explicitChatId)
     const meta = chatMeta(chatName)
     const dm = isDM === null ? meta.isDM : isDM === true
@@ -156,10 +210,13 @@ export function createContextStore({
    */
   function capture({
     chat, chatId: explicitChatId = '', messages = [], source = 'tree',
-    isDM = null, preview = '', outbox = [], taskId = '',
+    isDM = null, preview = '', outbox = [], taskId = '', ignoreChats = [],
   } = {}) {
     const chatName = str(chat)
-    if (!chatName) return { ok: false, why: '会话名为空', added: 0 }
+    if (!chatName) return { ok: false, why: '会话名为空', added: 0, skipped: 0, records: [], dropped: [], chatId: '' }
+    if (isIgnoredChat(chatName, ignoreChats)) {
+      return { ok: false, why: '服务号会话不采集', added: 0, skipped: 0, records: [], dropped: [], chatId: '' }
+    }
     const chatId = chatIdOf(chatName, explicitChatId)
     const meta = chatMeta(chatName)
     const attributed = attributeMessages({
@@ -170,10 +227,170 @@ export function createContextStore({
       outbox,
       now: now(),
     })
+    // 整屏采集（树 / 后台轮转）时，预览已经记过的同一句话不再从正文重复入账。
+    // 发送回执（source:'sent'）不走这条：她发的话可能与预览同文，仍然要记。
+    const isFull = source === 'tree' || source === 'capture'
+    let toAppend = attributed
+    let dropped = []
+    if (isFull) {
+      const deduped = dropPreviewDuplicates({ messages: attributed, docs: ledger.allDocs(chatId), now: now() })
+      toAppend = deduped.messages
+      dropped = deduped.dropped
+    }
     // 只有调用方明确说「这段属于某个任务」时才绑定。把当前会话看到的每条消息
     // 都挂到活动任务上，会让「同一条线」把无关的最近消息也带进检索结果。
-    const r = ledger.append(chatId, attributed, { chatName, source, taskId: str(taskId) })
-    return { ...r, chatId }
+    // 整屏对齐忽略预览行，避免预览插进尾部后打断「正文 + 上一条」的去重键。
+    const r = ledger.append(chatId, toAppend, {
+      chatName, source, taskId: str(taskId), ignorePreviewAlignment: isFull,
+    })
+    return { ...r, chatId, dropped }
+  }
+
+  /**
+   * 侧栏预览入账：不点开会话，只把「预览里说了什么」追加进台账。
+   * 服务号先拒；群聊读不出发言人就保持 null，绝不从正文猜。
+   * 同一个会话名可能同时出现在侧栏和目录里，chatId 仍以目录优先，避免两边分叉。
+   *
+   * @param {object} [req]
+   * @param {string} req.chat
+   * @param {string} [req.chatId]
+   * @param {string} [req.preview]
+   * @param {string} [req.time] 侧栏时间文本（14:02 / 昨天 09:05）
+   * @param {number} [req.unread]
+   * @param {boolean|null} [req.isDM] 缺省时查目录
+   * @param {string|number} [req.at] 调用方已有的 ISO 时间，优先于侧栏时间
+   * @param {string[]} [req.ignoreChats]
+   */
+  function capturePreview({
+    chat, chatId: explicitChatId = '', preview = '', time = '', unread = null,
+    isDM = null, at = '', ignoreChats = [],
+  } = {}) {
+    const chatName = str(chat)
+    if (isIgnoredChat(chatName, ignoreChats)) {
+      return { ok: true, chatId: '', added: 0, skipped: 0, sender: null, kind: 'text', why: 'ignored' }
+    }
+    if (!chatName) {
+      return { ok: false, chatId: '', added: 0, skipped: 0, sender: null, kind: 'text', why: '会话名为空' }
+    }
+
+    const chatId = chatIdOf(chatName, explicitChatId)
+    const meta = chatMeta(chatName)
+    const dm = isDM === null ? meta.isDM : isDM === true
+    const pv = parsePreviewSender(preview)
+    // 单聊的发言人就是会话名；群聊只认预览头，读不出就留 null。
+    const sender = dm ? chatName : pv.sender
+    const senderConfidence = dm ? 'high' : (pv.sender ? pv.confidence : 'unknown')
+    const text = pv.text
+    const kind = kindOfLabel(text)
+
+    let atText = typeof at === 'number' && Number.isFinite(at) ? new Date(at).toISOString() : str(at)
+    let atConfidence = 'medium'
+    if (!atText) {
+      const parsed = parseSidebarTime(time, now())
+      if (parsed.at) {
+        atText = parsed.at
+      } else {
+        // 侧栏时间读不出时用采集时间兜底，并明确标低置信度。
+        atText = new Date(now()).toISOString()
+        atConfidence = 'low'
+      }
+    }
+
+    // 未读数变化会改变侧栏指纹，但正文没变时不再追加同一条预览。
+    // 只看紧挨着的上一条：中间隔了别的消息，就是一次新的出现。
+    const last = ledger.recent(chatId, 1)[0] ?? null
+    if (last?.source === 'preview' && normalizeText(last.text) === normalizeText(text) &&
+      (last.sender ?? null) === (sender ?? null)) {
+      return { ok: true, chatId, added: 0, skipped: 1, sender, kind }
+    }
+
+    const msg = { sender, senderConfidence, direction: 'in', kind, text, at: atText, atConfidence }
+    if (unread !== null && unread !== undefined) msg.unreadBefore = unread
+    const captured = ledger.append(chatId, [msg], { chatName, source: 'preview' })
+    return {
+      ok: captured.ok,
+      chatId,
+      added: captured.added,
+      skipped: captured.skipped,
+      sender,
+      kind,
+      ...(captured.ok ? {} : { why: captured.why }),
+    }
+  }
+
+  /**
+   * 只读历史：按会话名查台账，不建任务、不写事件流、不跨会话。
+   * 服务号直接拒绝；查询结果正文统一过注入的 sanitize。
+   *
+   * @param {object} [req]
+   * @param {string} req.chat
+   * @param {string} [req.chatId]
+   * @param {string} [req.query]
+   * @param {number} [req.hours] 只保留该时间窗内（按台账 at）的记录
+   * @param {number} [req.limit]
+   * @param {string[]} [req.ignoreChats]
+   */
+  function historyForChat({
+    chat, chatId: explicitChatId = '', query = '', hours = 0, limit = HISTORY_RECENT, ignoreChats = [],
+  } = {}) {
+    const chatName = str(chat)
+    if (isIgnoredChat(chatName, ignoreChats)) {
+      return { ok: false, chatId: '', text: '', cards: [], shown: 0, why: '不记录服务号的会话。' }
+    }
+    if (!chatName) return { ok: false, chatId: '', text: '', cards: [], shown: 0, why: '会话名为空' }
+
+    const chatId = chatIdOf(chatName, explicitChatId)
+    const n = Math.max(1, Math.min(HISTORY_MAX, Number(limit) || HISTORY_RECENT))
+    const cut = Number(hours) > 0 ? now() - Number(hours) * 3600_000 : 0
+    let docs = ledger.searchDocs(chatId)
+    if (cut) {
+      // 时间读不出的记录不猜，直接排除在时间窗之外。
+      docs = docs.filter((d) => {
+        const t = Date.parse(String(d.at ?? ''))
+        return Number.isFinite(t) && t >= cut
+      })
+    }
+    if (!docs.length) return { ok: true, chatId, text: '这个会话还没有可查的记录。', cards: [], shown: 0 }
+
+    const q = str(query)
+    let rows
+    if (!q) {
+      rows = docs.slice(-n).map((doc) => ({ doc, score: 0, reasons: ['最近'] }))
+    } else {
+      rows = searchLexical(docs, q, { now: now(), limit: CANDIDATE_MAX }).slice(0, n)
+      if (!rows.length) return { ok: true, chatId, text: '没有找到相关的上下文。', cards: [], shown: 0 }
+    }
+    const out = formatCards(rows, { max: n, sanitize })
+    return { ok: true, chatId, ...out }
+  }
+
+  /**
+   * 有台账记录的会话列表：只读，跳过服务号；已有旧记录仍在盘上，只是不再列出。
+   * @param {{limit?:number, ignoreChats?:string[]}} [req]
+   */
+  function listRecordedChats({ limit = RECORDED_DEFAULT, ignoreChats = [] } = {}) {
+    const n = Math.max(1, Math.min(RECORDED_MAX, Number(limit) || RECORDED_DEFAULT))
+    const rows = []
+    for (const chatId of ledger.chats()) {
+      const st = ledger.stats(chatId)
+      const last = ledger.window(chatId, { limit: 1 })[0] ?? null
+      const chatName = str(last?.chatName) || str(chatId)
+      if (isIgnoredChat(chatName, ignoreChats)) continue
+      rows.push({ chat: chatName, chatId, count: st.count, lastAt: st.lastAt })
+    }
+    rows.sort((a, b) => {
+      const ta = Date.parse(String(a.lastAt ?? ''))
+      const tb = Date.parse(String(b.lastAt ?? ''))
+      return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
+    })
+    const chats = rows.slice(0, n)
+    const lines = chats.map((c) => `- ${c.chat}｜${listTimeText(c.lastAt)}｜${c.count} 条`)
+    return {
+      ok: true,
+      text: lines.length ? lines.join('\n') : '还没有任何会话记录。',
+      chats,
+      shown: chats.length,
+    }
   }
 
   /** 出站回执：挂到任务上，不因为发过一条就自动 done。 */
@@ -194,12 +411,15 @@ export function createContextStore({
   /**
    * 任务内检索。没有 chatId 参数；传了也要和任务对得上。
    *
-   * @param {{taskId:string, query?:string, before?:string, limit?:number, chatId?:string}} req
+   * @param {{taskId:string, query?:string, before?:string, limit?:number, chatId?:string, ignoreChats?:string[]}} req
    */
-  async function contextForTask({ taskId, query = '', before = '', limit = CARD_MAX, chatId = '' } = {}) {
+  async function contextForTask({ taskId, query = '', before = '', limit = CARD_MAX, chatId = '', ignoreChats = [] } = {}) {
     const t0 = now()
     const task = board.get(taskId)
     if (!task) return { ok: false, why: '没有这个任务。', text: '', cards: [] }
+    if (isIgnoredChat(task.chatName, ignoreChats)) {
+      return { ok: false, why: '服务号会话不采集', text: '', cards: [] }
+    }
     if (chatId && str(chatId) !== task.chatId) {
       return { ok: false, why: '只能查当前任务自己的会话。', text: '', cards: [] }
     }
@@ -257,13 +477,16 @@ export function createContextStore({
   /**
    * 当前会话最近几条，供耳朵写进通知，让她一进来就知道刚才聊到哪。
    * 只读当前会话；不跨会话、不写事件流。
-   * @param {{chat:string, chatId?:string, limit?:number, hours?:number, includeOut?:boolean}} req
+   * @param {{chat:string, chatId?:string, limit?:number, hours?:number, includeOut?:boolean, ignoreChats?:string[]}} req
    */
   function recentContext({
-    chat, chatId: explicitChatId = '', limit = 8, hours = 6, includeOut = true,
+    chat, chatId: explicitChatId = '', limit = 8, hours = 6, includeOut = true, ignoreChats = [],
   } = {}) {
     const chatName = str(chat)
     if (!chatName) return { ok: false, why: '会话名为空', lines: [], text: '' }
+    if (isIgnoredChat(chatName, ignoreChats)) {
+      return { ok: false, why: '服务号会话不采集', lines: [], text: '' }
+    }
     const chatId = chatIdOf(chatName, explicitChatId)
     const n = Math.max(1, Math.min(RECENT_MAX, Number(limit) || 8))
     const cut = Number(hours) > 0 ? now() - Number(hours) * 3600_000 : 0
@@ -318,7 +541,8 @@ export function createContextStore({
   }
 
   return {
-    board, ledger, summariesDir, ingest, capture, recentContext, maintain, recordReply, done, snooze,
+    board, ledger, summariesDir, ingest, capture, capturePreview, historyForChat, listRecordedChats,
+    recentContext, maintain, recordReply, done, snooze,
     contextForTask, summary, inbox, stats, logQuery,
   }
 }

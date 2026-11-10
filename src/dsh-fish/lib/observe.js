@@ -529,6 +529,7 @@ export function registerObserve(ctx, deps = {}) {
         sessionPreset: (await homeStatus(root))?.preset ?? '',
         restrict: readRestrictState(),
         restrictEnabled: config?.tools?.restrict !== false,
+        exposure: deps.exposure,
       })
       send(res, 200, r)
     }],
@@ -967,6 +968,7 @@ export function registerObserve(ctx, deps = {}) {
           sessionPreset: (await homeStatus(root))?.preset ?? '',
           restrict: readRestrictState(),
           restrictEnabled: config?.tools?.restrict !== false,
+          exposure: deps.exposure,
         })
       } catch (err) {
         checks = { summary: `自检跑不动：${String(err?.message ?? err)}`, items: [] }

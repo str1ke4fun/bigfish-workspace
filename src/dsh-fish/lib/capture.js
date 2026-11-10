@@ -21,6 +21,7 @@ import { loadConfig, dateKey } from './settings.js'
 import { toJsonSchema } from './toolschema.js'
 import { inWake } from './wakewin.js'
 import { refreshSelfDoc } from './selfdoc.js'
+import { registerTool } from './tool-result.js'
 
 /**
  * 防注入：把不可信的第三方文本包成"素材"。
@@ -50,7 +51,8 @@ export function debrief(text, kind = '素材') {
 export function registerCapture(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
 
-  return ctx.tools.register(
+  return registerTool(
+    ctx,
     defineTool({
       name: 'growth_commit',
       description:
@@ -107,17 +109,14 @@ export function registerCapture(ctx, deps = {}) {
           },
           required: ['ok', 'id', 'note'],
         },
-        // ⚠️ render 必须返回 ContentBlock 数组，签名是 (args, value)。
-        // 以前写成单个字符串、只收一个参数 → 运行时 content.some is not a function，
-        // 她收到的工具结果永远是 "Error: content.some is not a function"，
-        // 于是她以为没写进去，反复重试同一句（真机上连写 3 遍）。
-        // 回执走方括号，**不写成她能复述的句子**。
-        // 2026-10-24 用户反馈她说话「AI 味重」，举例是「留好了。就一句。没说别的。」
-        // 头三个字正是 letter 工具的回执原文——模型会把工具返回的话当自己的话接着说。
-        // 所以回执只描述机器状态，不进入她的语气；id 留着（revise 要用），但包在括号里。
-        render: (_args, out) =>
-          [{ type: 'text', text: out.ok ? `[已记下 ${out.id}]` : `[没记下：${out.note}]` }],
       },
+      // 模型投影：回执只描述机器状态，不写成她能复述的句子，也不回显她的原话。
+      // 单条写操作把 id 内联在正文里（revise 要用），不再另给 handle，
+      // 否则页脚会把同一个 id 重复一遍。
+      project: (out) =>
+        out?.ok
+          ? { text: `[已记下 · ${out.id}]` }
+          : { text: `[没记下：${out?.note ?? ''}]` },
       async execute(args, exec) {
         // 算当前的 day / stage —— 但**只用于写信封**，绝不回传给模型
         const { events } = await readEvents(root)
@@ -195,5 +194,6 @@ export function registerCapture(ctx, deps = {}) {
         }
       },
     }),
+    { core: deps.core },
   )
 }

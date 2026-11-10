@@ -24,6 +24,7 @@
 
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { rootDir, paths, readJson, writeAtomic } from './store.js'
 import { recentExchanges, renderCarry } from './talkmem.js'
 import { WAKE_TRIGGER } from './wakeconst.js'
@@ -59,7 +60,7 @@ function pathKey(p) {
 export async function ensureWorkspace(ctx, { root = rootDir(), title = TITLE_WORKSPACE } = {}) {
   const dir = await ensureHomeDir(root)
   const reg = readRegistry(ctx)
-  if (!reg?.create) return { ok: false, why: '宿主没有 workspaceRegistry 服务', dir }
+  if (!reg?.create) return { ok: false, why: '宿主没有 workspaceRegistry 服务', dir, retryable: true }
 
   let ws = null
   try {
@@ -108,7 +109,7 @@ export async function ensureWorkspace(ctx, { root = rootDir(), title = TITLE_WOR
  */
 export async function ensureTalkSession(ctx, { root = rootDir(), wsId, title = TITLE_SESSION, preset = '', log } = {}) {
   const sc = (() => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } })()
-  if (!sc?.create) return { ok: false, why: '宿主没有 sessionController 服务' }
+  if (!sc?.create) return { ok: false, why: '宿主没有 sessionController 服务', retryable: true }
   if (!wsId) return { ok: false, why: '没有工作区 id' }
 
   const reg = readRegistry(ctx)
@@ -262,16 +263,42 @@ async function markWoke(root, sessionId) {
 
 export async function bootstrapHome(ctx, { root = rootDir(), log, preset = '' } = {}) {
   const ws = await ensureWorkspace(ctx, { root })
-  if (!ws.ok) return { ok: false, why: ws.why, wsId: '', sessionId: '' }
+  if (!ws.ok) return { ok: false, why: ws.why, wsId: '', sessionId: '', retryable: ws.retryable }
 
   const ses = await ensureTalkSession(ctx, { root, wsId: ws.wsId, preset, log })
-  if (!ses.ok) return { ok: false, why: ses.why, wsId: ws.wsId, sessionId: '' }
+  if (!ses.ok) return { ok: false, why: ses.why, wsId: ws.wsId, sessionId: '', retryable: ses.retryable }
 
   // 唤醒**不放在这里**：talkSessionId 在屋子缺失时也会调 bootstrapHome，
   // 那样每次「第一次说话」都会多叫一次，她一轮被点两次火。只在明确的两个入口叫：
   // index.js 的启动、observe.js 的 POST /reset。
   log?.(`屋子就绪 · 工作区 ${ws.wsId} · 会话 ${ses.sessionId}${ses.reused ? '（复用）' : '（新建）'}${ses.preset ? ` · preset ${ses.preset}` : ''}`)
   return { ok: true, why: '', wsId: ws.wsId, sessionId: ses.sessionId, dir: ws.dir, reused: ses.reused, preset: ses.preset ?? '' }
+}
+
+/**
+ * 宿主服务（workspaceRegistry / sessionController）是异步出现的：
+ * 插件 apply 时它们可能还没挂上。这里只在「服务还没出现」时有界重试，
+ * 建会话失败等真实错误不重试，避免掩盖配置问题。
+ */
+export async function bootstrapHomeWithRetry(
+  ctx,
+  { root = rootDir(), preset = '', log, warn, attempts = 10, delayMs = 1500, signal } = {},
+) {
+  const max = Math.max(1, Number(attempts) || 1)
+  const wait = Math.max(0, Number(delayMs) || 0)
+  let last = { ok: false, why: 'not attempted', wsId: '', sessionId: '' }
+  for (let i = 1; i <= max; i += 1) {
+    if (signal?.aborted) {
+      return { ok: false, why: '已停用', retryable: false, aborted: true, wsId: '', sessionId: '' }
+    }
+    last = await bootstrapHome(ctx, { root, preset, log })
+    if (last.ok) return last
+    if (!last.retryable) return last
+    if (i === max) break
+    warn?.(`[dsh-fish] 屋子还没就绪（第 ${i}/${max} 次）：${last.why}，${wait}ms 后重试`)
+    await delay(wait, undefined, { signal }).catch(() => {})
+  }
+  return last
 }
 
 /** 供观测台显示「她住在哪」 */

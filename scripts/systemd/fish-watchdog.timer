@@ -1,0 +1,10 @@
+[Unit]
+Description=大肥鱼看门狗定时器
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

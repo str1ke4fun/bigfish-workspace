@@ -66,6 +66,25 @@ panel_find() {
   return 1
 }
 
+# 右键菜单也是独立小窗：class=wechat、WM_NAME 空、类型不是 UTILITY（和表情面板区分开）。
+# 只在“点了右键之后”用它；找不到就返回 1，不猜。
+menu_find() {
+  local id g name
+  local X=0 Y=0 WIDTH=0 HEIGHT=0
+  for id in $(xdotool search --class '^wechat$' 2>/dev/null); do
+    name=$(xprop -id "$id" WM_NAME 2>/dev/null | sed -n 's/^[^=]*= //p')
+    [ -z "$name" ] || continue
+    xwininfo -id "$id" 2>/dev/null | grep -q 'Map State: IsViewable' || continue
+    g=$(xdotool getwindowgeometry --shell "$id" 2>/dev/null) || continue
+    eval "$g"
+    [ "$WIDTH" -ge 100 ] && [ "$HEIGHT" -ge 60 ] || continue
+    [ "$((WIDTH * HEIGHT))" -lt 200000 ] || continue
+    echo "$id $X $Y $WIDTH $HEIGHT"
+    return 0
+  done
+  return 1
+}
+
 # 输入栏最左边的表情按钮：相对主窗 (347, 高度-33)。点它是开/关面板的可靠方式；
 # Alt+E 只在面板关着时可靠，面板开着时不会收起。
 emoji_button() {
@@ -131,6 +150,13 @@ case "$cmd" in
     node "$LIB_DIR/ocr-snapshot.mjs" 2>&1 | head -c 200000
     ;;
 
+  speakers)
+    # 这是给上层解析的接口，node 的失败码要跟着传出去；输出仍然限长。
+    out=$(node "$LIB_DIR/ocr-speakers.mjs" 2>&1); status=$?
+    printf '%s\n' "$out" | head -c 200000
+    exit "$status"
+    ;;
+
   chats)
     # 优先用无障碍树：它能给出当前会话名和完整会话列表；树不可用时再退回 OCR。
     # （OCR 只能按几何分组，未读红点行容易漏，且永远读不到当前会话。）
@@ -158,6 +184,20 @@ case "$cmd" in
     import -window "$1" -silent png:- 2>/dev/null \
       | convert png:- -crop "${w}x${h}+${x}+${y}" +repage -depth 8 rgb:- 2>/dev/null \
       | md5sum | cut -c1-12
+    ;;
+
+  menu-find)
+    menu_find || exit 1
+    ;;
+
+  menu-shot)
+    # 右键菜单截图：输出 "<windowId> <x> <y> <w> <h>"，坐标是屏幕绝对坐标。
+    out="${1:?要输出路径}"
+    mkdir -p "$(dirname "$out")"
+    p=$(menu_find) || { echo "没有找到右键菜单" >&2; exit 2; }
+    set -- $p
+    import -window "$1" -silent "$out" 2>/dev/null || { echo "菜单截图失败" >&2; exit 3; }
+    echo "$p"
     ;;
 
   panel-find)
@@ -192,7 +232,8 @@ case "$cmd" in
     ;;
 
   panel-click)
-    # 坐标相对面板左上角；只用于点页签/安全空白，不点表情格。
+    # 坐标相对面板左上角。扫描只点页签/安全空白；发送阶段由 sticker-send.js
+    # 在重新截图确认 pHash 之后才点目标格，这里不替调用方做安全判断。
     x="${1:?要 x}"; y="${2:?要 y}"
     p=$(panel_find) || { echo "面板没开" >&2; exit 2; }
     set -- $p
@@ -252,6 +293,17 @@ case "$cmd" in
     convert "$png" -crop "${w}x${h}+${x}+${y}" +repage -resize 128x128 "$out" 2>/dev/null \
       || { echo "缩略图失败" >&2; exit 3; }
     echo "$out"
+    ;;
+
+  win-gray)
+    # 主窗口内某块区域的灰度字节 → base64。坐标相对窗口左上角（不是屏幕坐标），
+    # 用于发送回执时裁表情气泡；不落盘、不碰鼠标。
+    x="${1:?x}"; y="${2:?y}"; w="${3:?w}"; h="${4:?h}"
+    p=$(pick) || { echo "找不到微信窗口" >&2; exit 2; }
+    set -- $p
+    import -window "$1" -silent png:- 2>/dev/null \
+      | convert png:- -crop "${w}x${h}+${x}+${y}" +repage -colorspace Gray -depth 8 gray:- 2>/dev/null \
+      | base64 -w0
     ;;
 
   sha256)
@@ -331,6 +383,14 @@ case "$cmd" in
     fi
     ;;
 
+  pid)
+    # 微信主进程 PID。MainPID 变了 = 微信被重启过；耳朵据此判断
+    # 「重启后无障碍树没回来」（见 tree.js restartEpisode）。
+    pid=$(systemctl show -p MainPID --value wechat-fish.service 2>/dev/null || true)
+    case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+    printf '{"ok":true,"pid":%s,"unit":"wechat-fish.service"}\n' "$pid"
+    ;;
+
   restart)
     # 只重启 wechat-fish.service 自己的主进程，靠 systemd Restart=always 拉回来。
     # 重启前核实：单元 active、MainPID 存在、comm 确实是微信；不满足就什么都不做。
@@ -403,7 +463,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|sha256 <file>}" >&2
+    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|speakers|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|pid|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|win-gray <x> <y> <w> <h>|sha256 <file>}" >&2
     exit 64
     ;;
 esac

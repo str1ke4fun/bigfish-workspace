@@ -28,25 +28,58 @@ async function withRoot(fn) {
 }
 
 /** 假宿主：tools / webServer / connection / sessionController / logger 全套 */
-function fakeCtx({ allow = true, promptImpl } = {}) {
+function fakeCtx({ allow = true, promptImpl, home = true, createReturn = null } = {}) {
   const tools = new Map()
   const routes = []
   const prompts = []
   const sessions = new Set()
   const creates = []
+  const workspaces = new Map()
+  const order = []
+  const provided = new Map()
   const ctx = {
-    tools: { register: (spec) => { tools.set(spec.name, spec); return () => tools.delete(spec.name) } },
+    tools: {
+      register: (spec) => {
+        order.push({ type: 'tool', name: spec.name })
+        tools.set(spec.name, spec)
+        return () => tools.delete(spec.name)
+      },
+    },
     webServer: { register: (r) => { routes.push(r); return () => {} } },
     connection: { requestRejection: () => (allow ? null : { status: 403, message: 'blocked' }) },
     sessionController: {
-      async create({ sessionId, cwd }) { creates.push({ sessionId, cwd }); if (sessions.has(sessionId)) throw new Error('exists'); sessions.add(sessionId) },
+      async create({ sessionId, cwd }) {
+        order.push({ type: 'create', sessionId })
+        creates.push({ sessionId, cwd })
+        if (sessions.has(sessionId)) throw new Error('exists')
+        sessions.add(sessionId)
+        return createReturn
+      },
       async prompt(payload) { prompts.push(payload); if (promptImpl) await promptImpl(payload) },
     },
     logger: { info() {}, warn() {}, error() {} },
     on() {},
     get(key) { return ctx[key] },
+    provide(name, value) {
+      provided.set(name, value)
+      return () => provided.delete(name)
+    },
   }
-  return { ctx, tools, routes, prompts, sessions, creates }
+  // bootstrapHome 现在会等服务晚就绪后最多重试约 15 秒；假宿主必须像个真宿主，
+  // 否则 boot 后面的工具/路由注册会被这段等待拖过各用例的 5 秒窗口。
+  // `home:false` 留给专门测「没有屋子」那条路的用例（手动唤醒的独立会话 id）。
+  if (home) {
+    ctx.workspaceRegistry = {
+      async create(path, title) {
+        const w = { id: `ws-${workspaces.size + 1}`, path, title, sessionIds: [] }
+        workspaces.set(w.id, w)
+        return w
+      },
+      get: (id) => workspaces.get(id) ?? null,
+      list: () => [...workspaces.values()],
+    }
+  }
+  return { ctx, tools, routes, prompts, sessions, creates, order, provided }
 }
 
 /** 等注册生效：apply() 的工具/路由登记不是同步可见的，固定 sleep 在慢机上会偶发不够
@@ -101,6 +134,48 @@ test('注册了 growth_commit 与观测台路由', async () => {
     assert.ok(paths_.includes('/dsh-fish'), '首页要注册')
     assert.ok(paths_.includes('/dsh-fish/state'))
     assert.ok(paths_.includes('/dsh-fish/config'))
+    h.dispose?.()
+  })
+})
+
+// 启动竞态回归：工具必须先注册，宿主建她的会话（agent/created）时才能在
+// restrictableNames 里看到它们；否则 restrict 会因「名字还没登记」自愈，
+// 把 her_tools / growth_commit 一起丢掉。
+test('所有工具注册都发生在屋子会话创建之前', async () => {
+  await withRoot(async (root) => {
+    const { ctx, tools, order } = fakeCtx()
+    const h = apply(ctx, { root })
+    await waitFor(() => tools.has('her_tools') && order.some((e) => e.type === 'create'))
+    await new Promise((r) => setTimeout(r, 50))
+
+    const firstCreate = order.findIndex((e) => e.type === 'create')
+    assert.ok(firstCreate >= 0, '假宿主应该建过会话')
+    const toolIdx = order.map((e, i) => (e.type === 'tool' ? i : -1)).filter((i) => i >= 0)
+    assert.ok(toolIdx.length > 0, '应该注册过工具')
+    assert.ok(toolIdx.every((i) => i < firstCreate), `工具注册必须全部先于建会话：${JSON.stringify(order)}`)
+    assert.ok(tools.has('her_tools'), 'her_tools 也要在 agent/created 之前注册')
+    h.dispose?.()
+  })
+})
+
+// 屋子会话建好后要登记给 surface，否则 web matcher 只能靠 cwd 命中——
+// 换个 cwd 的人口统计（比如宿主任意给出的会话）就会被判成未知。
+// noteHome 那条死路径已删；这里钉住真正生效的 reserve 登记。
+test('屋子会话 id 会登记成 web 面（走 surface.reserve）', async () => {
+  await withRoot(async (root) => {
+    const { ctx, provided } = fakeCtx({ createReturn: { sessionId: 'session-home-1' } })
+    const h = apply(ctx, { root })
+    const probe = {
+      session: { header: { id: 'session-home-1', cwd: '/definitely/not/her' } },
+    }
+    // reserve 发生在 bootstrapHome 返回之后，而 fishCore 挂上要早得多：
+    // 只等 fishCore 会出现「核心已在、还没 reserve」的竞态（隔离跑 50 次能红 2 次），
+    // 这里直接等到面判定真的变成 web。
+    const surface = await waitFor(
+      () => (provided.get('fishCore')?.surface?.current(probe) === 'web' ? 'web' : null),
+      5000,
+    )
+    assert.equal(surface, 'web', '屋子会话 id 必须单独登记（reserve），不能只靠 cwd')
     h.dispose?.()
   })
 })
@@ -402,7 +477,7 @@ test('唤醒消息只剩一句触发语，处境走 system prompt 段不进对�
 test('回归：手动唤醒的 dateKey 是纯日期，不污染 browse/日记/报告', async () => {
   await withRoot(async (root) => {
     await writeConfig(normalizeConfig({}), root)
-    const { ctx, sessions } = fakeCtx()
+    const { ctx, sessions } = fakeCtx({ home: false })
     const r = await wakeNow(ctx, { root })
     assert.equal(r.ok, true, JSON.stringify(r))
     const dk = dateKey()
@@ -432,7 +507,7 @@ test('回归：手动唤醒的 dateKey 是纯日期，不污染 browse/日记/�
 test('她的会话 cwd 是她自己的空房间，不是状态库根目录', async () => {
   await withRoot(async (root) => {
     await writeConfig(normalizeConfig({}), root)
-    const { ctx, creates } = fakeCtx()
+    const { ctx, creates } = fakeCtx({ home: false })
     const r = await wakeNow(ctx, { root })
     assert.equal(r.ok, true, JSON.stringify(r))
     assert.equal(creates.length, 1)

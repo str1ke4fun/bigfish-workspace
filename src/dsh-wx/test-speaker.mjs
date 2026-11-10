@@ -27,6 +27,45 @@ t('没有冒号就不猜', () => {
   assert.equal(r.sender, null)
   assert.equal(r.confidence, 'unknown')
 })
+t('时间头不是发言人', () => {
+  const clock = parsePreviewSender('14:02 开会')
+  assert.equal(clock.sender, null)
+  assert.equal(clock.text, '14:02 开会')
+  assert.equal(clock.confidence, 'unknown')
+  const day = parsePreviewSender('Yesterday 16:29 在吗')
+  assert.equal(day.sender, null)
+  assert.equal(day.text, 'Yesterday 16:29 在吗')
+  assert.equal(day.confidence, 'unknown')
+})
+t('词典词也可以是昵称，不再按提示词过滤', () => {
+  const r = parsePreviewSender('通知：明天记得带伞')
+  assert.equal(r.sender, '通知')
+  assert.equal(r.text, '明天记得带伞')
+  assert.equal(r.confidence, 'medium')
+  assert.equal(r.needsEvidence, false)
+})
+t('纯 emoji / 纯数字 / 纯标点昵称可读出，但要求二次证据', () => {
+  for (const who of ['🥰', '123456', '!!!']) {
+    const r = parsePreviewSender(`${who}: 在吗`)
+    assert.equal(r.sender, who)
+    assert.equal(r.needsEvidence, true)
+  }
+  assert.equal(parsePreviewSender('张三: 在吗').needsEvidence, false)
+})
+t('占位标记、撤回提示、空头、超长前缀都不算发言人', () => {
+  assert.equal(parsePreviewSender('[Link] 某链接').sender, null)
+  assert.equal(parsePreviewSender('你撤回了一条消息').sender, null)
+  assert.equal(parsePreviewSender(': 冒号前为空').sender, null)
+  assert.equal(parsePreviewSender('一二三四五六七八九十一二三四五六七八九十一二三四五: x').sender, null)
+})
+t('正常名字仍然认', () => {
+  const r = parsePreviewSender('计科4223薛长顺: 那里润')
+  assert.equal(r.sender, '计科4223薛长顺')
+  assert.equal(r.text, '那里润')
+  assert.equal(r.confidence, 'medium')
+  assert.equal(parsePreviewSender('Alice: hi').sender, 'Alice')
+  assert.equal(parsePreviewSender('张三：内容').sender, '张三')
+})
 t('单聊预览通常没有前缀', () => {
   assert.equal(looksLikeDirect('明天几点出发'), true)
   assert.equal(looksLikeDirect('甲: 明天几点出发'), false)

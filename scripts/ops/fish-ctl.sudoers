@@ -1,0 +1,3 @@
+# 只允许工作台用户通过 fish-ctl 管理大肥鱼的三个系统单元（脚本内部还有白名单）。
+# 安装：见 scripts/ops/README.md
+str1k3 ALL=(root) NOPASSWD: /usr/local/sbin/fish-ctl

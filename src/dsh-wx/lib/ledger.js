@@ -51,10 +51,14 @@ export function chatIdFor(name) {
 /**
  * 去重键：会话 + 发言人 + 类型 + 正文 + 上一条的摘要。
  * 滚动窗口会重复看到同一屏消息，用内容去重比时间戳可靠。
+ *
+ * 表情的正文都是 "[Sticker]"，连续发两张不同的表情时只靠正文会撞键；
+ * 出站表情带上 stickerId 才分得开。没有 stickerId 的旧记录保持原键不变。
  */
-export function dedupeKeyOf({ chatId, sender, kind = 'text', text, prev } = {}) {
+export function dedupeKeyOf({ chatId, sender, kind = 'text', text, prev, stickerId } = {}) {
   const prevKey = prev ? [prev.sender ?? '', prev.kind ?? '', prev.text ?? ''].join(SEP) : ''
-  const raw = [str(chatId), str(sender), str(kind), normalizeText(text), prevKey].join(SEP)
+  const extra = kind === 'sticker' && stickerId ? [str(stickerId)] : []
+  const raw = [str(chatId), str(sender), str(kind), normalizeText(text), ...extra, prevKey].join(SEP)
   return 'sha256:' + createHash('sha256').update(raw).digest('hex')
 }
 
@@ -183,7 +187,7 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
    *
    * @param {string} chatId
    * @param {Array<object>} messages
-   * @param {{source?:string, chatName?:string, capturedAt?:string, taskId?:string}} [meta]
+   * @param {{source?:string, chatName?:string, capturedAt?:string, taskId?:string, ignorePreviewAlignment?:boolean}} [meta]
    */
   function append(chatId, messages, meta = {}) {
     const id = str(chatId)
@@ -204,6 +208,7 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
         text,
         kind: str(raw.kind) || 'text',
         sender: raw.sender === null || raw.sender === undefined ? null : str(raw.sender) || null,
+        stickerId: str(raw.stickerId),
       })
     }
     // 重叠对齐只看「类型 + 正文」，不看发言人：发言人是从侧栏预览补出来的，
@@ -212,7 +217,14 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
     const sameContent = (a, b) => !!a && !!b
       && (a.kind ?? 'text') === (b.kind ?? 'text')
       && normalizeText(a.text) === normalizeText(b.text)
-    const tail = state.docs.slice(-Math.max(1, cand.length))
+      // 出站表情带 id：两张不同的表情正文相同，不能当成同一条对齐掉。
+      && ((!a.stickerId && !b.stickerId) || String(a.stickerId ?? '') === String(b.stickerId ?? ''))
+    // 整屏采集（tree）可以要求对齐时忽略预览行：预览是侧栏快照，插进整屏序列后
+    // 会打断「正文 + 上一条」的去重键，让同一屏的前几条重复入账。
+    const alignDocs = meta.ignorePreviewAlignment
+      ? state.docs.filter((d) => d?.source !== 'preview')
+      : state.docs
+    const tail = alignDocs.slice(-Math.max(1, cand.length))
     let overlap = 0
     for (let k = Math.min(cand.length, tail.length); k > 0; k--) {
       let ok = true
@@ -223,13 +235,13 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
     }
 
     const pending = []
-    let prev = overlap > 0 ? tail[tail.length - 1] : (state.docs.at(-1) ?? null)
+    let prev = overlap > 0 ? tail[tail.length - 1] : (alignDocs.at(-1) ?? null)
     let skipped = overlap
     let seq = state.docs.at(-1)?.seq ?? 0
 
     for (const item of cand.slice(overlap)) {
-      const { raw, text, kind, sender } = item
-      const dedupeKey = dedupeKeyOf({ chatId: id, sender, kind, text, prev })
+      const { raw, text, kind, sender, stickerId } = item
+      const dedupeKey = dedupeKeyOf({ chatId: id, sender, kind, text, prev, stickerId })
       const known = state.keyDoc.get(dedupeKey)
       if (known) {
         skipped += 1
@@ -247,12 +259,17 @@ export function createLedger({ dir = DEFAULT_LEDGER_DIR, now = Date.now, log } =
         direction: raw.direction === 'out' || raw.direction === 'in' ? raw.direction : 'unknown',
         kind,
         text,
+        quote: raw.quote && typeof raw.quote === 'object'
+          ? { author: str(raw.quote.author), text: normalizeText(raw.quote.text) }
+          : undefined,
+        unreadBefore: Number.isFinite(Number(raw.unreadBefore)) ? Math.max(0, Number(raw.unreadBefore)) : undefined,
         at: str(raw.at) || capturedAt,
         atConfidence: str(raw.atConfidence) || (raw.at ? 'medium' : 'low'),
         capturedAt,
         source: str(raw.source) || str(meta.source) || 'tree',
         dedupeKey,
         seq,
+        stickerId: stickerId || undefined,
         taskId: str(raw.taskId) || str(meta.taskId) || '',
       }
       state.keys.add(dedupeKey)

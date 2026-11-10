@@ -63,6 +63,19 @@ t('不同会话互不影响', () => {
   l.append('c1', [{ sender: '甲', text: '同一句' }])
   assert.equal(l.append('c2', [{ sender: '甲', text: '同一句' }]).added, 1)
 })
+t('引用与未读数入账；没有这两个字段就不写键', () => {
+  const d = dir()
+  const l = createLedger({ dir: d, now: () => T })
+  l.append('c_test', [{ sender: '甲', text: '引用测试', quote: { author: '张三', text: '原文' }, unreadBefore: 3 }], { chatName: '测试' })
+  l.append('c_test', [{ sender: '甲', text: '普通消息' }])
+  // 从盘上重读：JSON.stringify 丢掉 undefined，旧记录没有这两个键。
+  const [rec, plain] = createLedger({ dir: d, now: () => T }).recent('c_test', 10)
+  assert.equal(rec.quote.author, '张三')
+  assert.equal(rec.quote.text, '原文')
+  assert.equal(rec.unreadBefore, 3)
+  assert.equal('quote' in plain, false)
+  assert.equal('unreadBefore' in plain, false)
+})
 
 console.log('读')
 t('window：before + limit，按时间正序', () => {
@@ -119,6 +132,28 @@ t('repair 不认识的消息 → 拒绝，不写', () => {
   const r = l.repair('c1', { msgId: 'm_0000000000000000', sender: '甲' })
   assert.equal(r.ok, false)
   assert.match(r.why, /没有/)
+})
+
+console.log('表情')
+t('连续两张不同表情靠 stickerId 分开；重读同一张仍去重', () => {
+  const d = dir()
+  const l = createLedger({ dir: d, now: () => T })
+  const base = { sender: null, kind: 'sticker', text: '[Sticker]', direction: 'out', source: 'sent' }
+  assert.equal(l.append('c1', [{ ...base, stickerId: 'st_a' }]).added, 1)
+  // 正文和上一条完全相同，只有 stickerId 不同：必须入账，不能被当成同一条
+  assert.equal(l.append('c1', [{ ...base, stickerId: 'st_b' }]).added, 1)
+  assert.deepEqual(l.recent('c1', 5).map((x) => x.stickerId), ['st_a', 'st_b'])
+  // 同一张表情再读一遍：跳过
+  assert.equal(l.append('c1', [{ ...base, stickerId: 'st_b' }]).added, 0)
+  // 落盘后字段还在
+  const again = createLedger({ dir: d, now: () => T })
+  assert.deepEqual(again.recent('c1', 5).map((x) => x.stickerId), ['st_a', 'st_b'])
+})
+t('收到的表情没有 id：同一屏重复读仍然只入账一次', () => {
+  const l = createLedger({ dir: dir(), now: () => T })
+  const msg = { sender: '甲', kind: 'sticker', text: '[Sticker]', direction: 'in' }
+  assert.equal(l.append('c1', [msg]).added, 1)
+  assert.equal(l.append('c1', [msg]).added, 0)
 })
 
 console.log(`\n${n} 项通过`)

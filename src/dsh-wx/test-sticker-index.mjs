@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  INDEX_VERSION, annotate, emptyIndex, loadIndex, matchEntry, mergeScan, pruneStale, saveIndex,
-  thumbPath,
+  ART_HAMMING, INDEX_VERSION, annotate, emptyIndex, findEntry, loadIndex, matchEntry, mergeScan,
+  pruneStale, saveIndex, thumbPath,
 } from './lib/sticker-index.js'
 import { hamming } from './lib/sticker-image.js'
 
@@ -142,6 +142,86 @@ t('matchEntry 优先精确 sha，再取最近的 pHash', () => {
   assert.equal(matchEntry(idx.entries, { sha: 'nope', pHash: hash(4) }).pHash, hash(4))
   assert.equal(matchEntry(idx.entries, { sha: 'nope', pHash: 'ffffffffffffffff' }), null)
 })
+t('pHash 换帧后对不上，但 artHash 距离 ≤ 6：仍算同一张（动画表情兜底）', () => {
+  const near = (h) => h.slice(0, -1) + (h.endsWith('e') ? 'f' : 'e')
+  const first = mergeScan(emptyIndex(), [
+    { ...cell(0, { row: 0, col: 0 }), artHash: hash(2) },
+  ], { now: NOW }).index
+  assert.ok(hamming(hash(2), near(hash(2))) <= ART_HAMMING)
+  const changed = {
+    pHash: '5fffffffffffffff', sha: 'sha-frame-2', artHash: near(hash(2)), pos: { row: 0, col: 1 },
+  }
+  const hit = matchEntry(first.entries, changed)
+  assert.equal(hit?.id, 'st_' + hash(0))
+  const r = mergeScan(first, [changed], { now: NOW + 1000 })
+  assert.equal(r.added, 0)
+  assert.equal(r.matched, 1)
+  assert.equal(r.index.entries.length, 1)
+  assert.equal(r.index.entries[0].artHash, near(hash(2)))
+  assert.deepEqual(r.index.entries[0].pos, { row: 0, col: 1, order: 1 })
+})
+t('artHash 也对不上：仍算新条目，不硬合并', () => {
+  const first = mergeScan(emptyIndex(), [
+    { ...cell(0, { row: 0, col: 0 }), artHash: hash(2) },
+  ], { now: NOW }).index
+  const other = {
+    pHash: '5fffffffffffffff', sha: 'sha-other', artHash: hash(5), pos: { row: 0, col: 1 },
+  }
+  assert.ok(hamming(hash(2), hash(5)) > ART_HAMMING)
+  assert.equal(matchEntry(first.entries, other), null)
+  const r = mergeScan(first, [other], { now: NOW + 1000 })
+  assert.equal(r.added, 1)
+  assert.equal(r.index.entries.length, 2)
+})
+t('claimed：同一轮扫描里一条索引最多认一个格子', () => {
+  const idx = mergeScan(emptyIndex(), seven(), { now: NOW }).index
+  const claimed = new Set(['st_' + hash(0)])
+  assert.equal(matchEntry(idx.entries, { pHash: hash(0), artHash: '' }, { claimed }), null)
+  assert.equal(matchEntry(idx.entries, { pHash: hash(1), artHash: '' }, { claimed }).id, 'st_' + hash(1))
+})
+
+console.log('stale 重复合并')
+function legacyEntry(id, { pHash, artHash, stale = false, extra = {} }) {
+  return {
+    id, pHash, artHash, sha256: '', thumb: `thumbs/${id}.png`,
+    pos: { row: 0, col: 0, order: 0 }, text: '', textConf: 'none', desc: '', tags: [],
+    descConf: 'none', source: 'none', firstSeen: '', lastSeen: '',
+    stale, staleSince: stale ? iso(NOW) : null, updatedAt: null, aliases: [], ...extra,
+  }
+}
+t('stale 旧 id 与当前条目是同一张：元数据并入、旧 id 记别名、不重复计数', () => {
+  const near = (h) => h.slice(0, -1) + (h.endsWith('e') ? 'f' : 'e')
+  const active = legacyEntry('st_new', { pHash: hash(1), artHash: hash(2), extra: { tags: ['新'] } })
+  const stale = legacyEntry('st_old', {
+    pHash: hash(3), artHash: near(hash(2)), stale: true,
+    extra: { tags: ['旧', '猫'], text: '喔唷', textConf: 'high', desc: '白猫', descConf: 'medium', firstSeen: iso(NOW - 86_400_000) },
+  })
+  const index = { ...emptyIndex(), entries: [active, stale] }
+  const cellNow = { pHash: hash(1), artHash: hash(2), pos: { row: 0, col: 0 } }
+  const r = mergeScan(index, [cellNow], { now: NOW + 1000 })
+  assert.equal(r.matched, 1)
+  assert.equal(r.added, 0)
+  assert.equal(r.merged, 1)
+  assert.equal(r.index.entries.length, 1)
+  const e = r.index.entries[0]
+  assert.equal(e.id, 'st_new')
+  assert.deepEqual(e.aliases, ['st_old'])
+  assert.deepEqual(e.tags, ['新', '旧', '猫'])
+  assert.equal(e.text, '喔唷')
+  assert.equal(e.desc, '白猫')
+  assert.equal(e.firstSeen, iso(NOW - 86_400_000))
+  assert.equal(findEntry(r.index, 'st_old')?.id, 'st_new')
+})
+t('stale 但 artHash 差得远：不合并，保留为独立条目', () => {
+  const active = legacyEntry('st_new', { pHash: hash(1), artHash: hash(2) })
+  const stale = legacyEntry('st_old', { pHash: hash(3), artHash: hash(5), stale: true })
+  const index = { ...emptyIndex(), entries: [active, stale] }
+  const cellNow = { pHash: hash(1), artHash: hash(2), pos: { row: 0, col: 0 } }
+  const r = mergeScan(index, [cellNow], { now: NOW + 1000 })
+  assert.equal(r.merged, 0)
+  assert.equal(r.index.entries.length, 2)
+  assert.ok(r.index.entries.find((e) => e.id === 'st_old'))
+})
 
 console.log('人工标签与清理')
 t('补标签只改派生索引，字段受控', () => {
@@ -156,6 +236,14 @@ t('补标签只改派生索引，字段受控', () => {
   assert.equal(e.updatedAt, iso(NOW + 1000))
   assert.throws(() => annotate(idx, 'st_nope', { tags: ['x'] }))
   assert.throws(() => annotate(idx, id, { descConf: 'certain' }))
+})
+t('旧 id 作为别名仍能补标签', () => {
+  const active = legacyEntry('st_new', { pHash: hash(1), artHash: hash(2), extra: { aliases: ['st_old'] } })
+  const idx = { ...emptyIndex(), entries: [active] }
+  assert.equal(findEntry(idx, 'st_old')?.id, 'st_new')
+  const r = annotate(idx, 'st_old', { tags: ['旧称呼'] }, { now: NOW + 1000 })
+  assert.equal(r.entry.id, 'st_new')
+  assert.deepEqual(r.entry.tags, ['旧称呼'])
 })
 t('stale 超过 30 天才清理', () => {
   const first = mergeScan(emptyIndex(), seven(), { now: NOW }).index

@@ -1,0 +1,9 @@
+[Unit]
+Description=大肥鱼看门狗：宿主活着但耳朵停摆时重启
+After=network.target dsh-web.service
+
+[Service]
+Type=oneshot
+# 以 root 跑（要 systemctl restart dsh-web）；鱼根由脚本常量指定，不依赖 HOME。
+ExecStart=/usr/local/sbin/fish-watchdog
+Nice=10
