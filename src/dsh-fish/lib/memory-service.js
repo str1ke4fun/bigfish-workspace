@@ -12,7 +12,7 @@
  */
 
 import { channelOfAgent, appendEvent, readEvents, paths } from './store.js'
-import { validateEvent, HER_TYPES } from './schema.js'
+import { validateEvent, HER_TYPES, SURFACES } from './schema.js'
 import { deriveSelf } from './derive.js'
 import { similarity, ECHO_MIN_SIM } from './similarity.js'
 
@@ -50,23 +50,39 @@ function toMs(value) {
   return null
 }
 
-function resolveContext(core, opts = {}) {
-  const agent = opts.agent
-
-  // surface：opts.surface > core.surface.current(agent) > 'core'
-  let surface = opts.surface
-  if (surface === undefined || surface === null) {
-    surface = null
-    if (agent) {
-      try {
-        surface = core?.surface?.current?.(agent) ?? null
-      } catch {
-        surface = null
-      }
-    }
-    if (surface === null || surface === undefined) surface = 'core'
+function agentSurface(core, agent) {
+  if (!agent) return null
+  try {
+    return core?.surface?.current?.(agent) ?? null
+  } catch {
+    return null
   }
+}
 
+/**
+ * surface 解析。
+ *
+ * 一般类型：opts.surface > agent 推断 > 'core'。
+ * bili_reply 是例外：它在 schema 里必须显式写 surface（否则 BAD_SURFACE）。
+ * 门面若在这里把缺省值补成 'core'，等于替调用方绕过那条守卫，所以缺省时返回
+ * undefined，由 prepare() 拒掉；合法的 raw.surface 也算显式来源（兼容系统侧
+ * 直接构造事件对象的老写法）。
+ */
+function resolveSurface(core, opts, raw, type) {
+  if (opts.surface !== undefined && opts.surface !== null) return opts.surface
+  if (type === 'bili_reply') {
+    const rawSurface = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw.surface : undefined
+    if (rawSurface !== undefined && rawSurface !== null && SURFACES.includes(rawSurface)) {
+      return rawSurface
+    }
+  }
+  const fromAgent = agentSurface(core, opts.agent)
+  if (fromAgent !== null && fromAgent !== undefined) return fromAgent
+  if (type === 'bili_reply') return undefined
+  return 'core'
+}
+
+function resolveChannel(opts, surface, agent) {
   // channel：opts.channel > (B 站公开事实 → core) > channelOfAgent(agent) > 'core'
   // B 站 cwd 会让 channelOfAgent 返回 'web'；按 §5.2 公开内容必须写 core。
   let channel = opts.channel
@@ -76,8 +92,7 @@ function resolveContext(core, opts = {}) {
     else channel = 'core'
   }
   if (channel === undefined || channel === null) channel = 'core'
-
-  return { channel, surface }
+  return channel
 }
 
 /**
@@ -86,7 +101,6 @@ function resolveContext(core, opts = {}) {
  */
 function prepare(raw, opts = {}) {
   const source = opts.source ?? 'system'
-  const { channel, surface } = resolveContext(opts.core, opts)
 
   const isObject = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
   const type = isObject ? String(raw.type ?? '') : ''
@@ -95,6 +109,12 @@ function prepare(raw, opts = {}) {
   if (source === 'tool' && isObject && !HER_TYPES.includes(type)) {
     return { ok: false, why: 'NOT_HER_TYPE' }
   }
+
+  const surface = resolveSurface(opts.core, opts, raw, type)
+  // bili_reply 没有显式 surface（opts / 合法 raw / agent）时不能补 core，
+  // 否则 schema 的显式守卫就被门面绕过了。直接拒绝、不写盘。
+  if (surface === undefined) return { ok: false, why: 'BAD_SURFACE' }
+  const channel = resolveChannel(opts, surface, opts.agent)
 
   return {
     ok: true,
@@ -208,7 +228,10 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
     for (const ev of events) {
       if (!includeMeta && ev.type === 'meta') continue
       if (typeSet && !typeSet.has(ev.type)) continue
-      if (channel != null && ev.channel !== channel) continue
+      // 老事件没有 channel 字段——仓里所有读方的约定是 `channel ?? 'core'`。
+      // 这里既按同一口径过滤，也把补出来的 channel 交给调用方，避免下游再各自兜底。
+      const ch = ev.channel ?? 'core'
+      if (channel != null && ch !== channel) continue
       if (surface != null && ev.surface !== surface) continue
 
       if (hasWindow) {
@@ -217,7 +240,7 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
         if (sinceMs !== null && t < sinceMs) continue
         if (untilMs !== null && t > untilMs) continue
       }
-      out.push(ev)
+      out.push(ev.channel == null ? { ...ev, channel: ch } : ev)
     }
 
     const n = Number(limit)

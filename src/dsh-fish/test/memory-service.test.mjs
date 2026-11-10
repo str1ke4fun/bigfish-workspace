@@ -10,13 +10,13 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, appendFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { createMemoryService } from '../lib/memory-service.js'
 import { provideFishCore } from '../lib/core-service.js'
-import { readEvents } from '../lib/store.js'
+import { readEvents, paths } from '../lib/store.js'
 import { HER_TYPES, EVENT_SCHEMA_VERSION } from '../lib/schema.js'
 import { similarity } from '../lib/similarity.js'
 
@@ -189,6 +189,40 @@ test('appendSystem：source 固定 system，拒绝 HER_TYPES', async () => {
   })
 })
 
+test('bili_reply：缺显式 surface 时门面拒绝（不默认 core），显式/agent 可写', async () => {
+  await withRoot(async (root) => {
+    const m = mem(root)
+
+    const missing = await m.appendSystem('bili_reply', '对方回了', { reply: { bvid: 'BV1', rpid: '9' } })
+    assert.deepEqual(missing, { ok: false, why: 'BAD_SURFACE' })
+    assert.deepEqual(await diskEvents(root), [], '缺 surface 的 bili_reply 不能落盘')
+
+    const checked = await m.validate({ type: 'bili_reply', text: '先自检', reply: { bvid: 'BV1', rpid: '12' } })
+    assert.deepEqual(checked, { ok: false, why: 'BAD_SURFACE' })
+
+    const explicit = await m.appendSystem('bili_reply', '对方回了', {
+      surface: 'bili',
+      reply: { bvid: 'BV1', rpid: '9' },
+    })
+    assert.equal(explicit.ok, true, JSON.stringify(explicit))
+    assert.equal(explicit.event.surface, 'bili')
+    assert.equal(explicit.event.channel, 'core')
+
+    const viaAgent = await m.append(
+      { type: 'bili_reply', text: '又回了一条', reply: { bvid: 'BV1', rpid: '10' } },
+      { agent: agent('bili-3', join(root, 'home', 'bili')) },
+    )
+    assert.equal(viaAgent.ok, true, JSON.stringify(viaAgent))
+    assert.equal(viaAgent.event.surface, 'bili')
+
+    const viaRaw = await m.append({
+      type: 'bili_reply', text: '第三条', surface: 'bili', reply: { bvid: 'BV1', rpid: '11' },
+    })
+    assert.equal(viaRaw.ok, true, JSON.stringify(viaRaw))
+    assert.equal(viaRaw.event.surface, 'bili')
+  })
+})
+
 // ---------------------------------------------------------------- read
 
 test('read：默认排除 meta，includeMeta 才返回；types/channel/surface 过滤生效', async () => {
@@ -217,6 +251,26 @@ test('read：默认排除 meta，includeMeta 才返回；types/channel/surface �
     const onlyMeta = await m.read({ types: ['meta'], includeMeta: true })
     assert.equal(onlyMeta.length, 1)
     assert.equal(onlyMeta[0].type, 'meta')
+  })
+})
+
+test('read：没有 channel 字段的老事件按 core 返回（全仓 `channel ?? core` 约定）', async () => {
+  await withRoot(async (root) => {
+    const legacy = {
+      id: 'ev_LEGACY0000000000000000000',
+      type: 'utterance',
+      text: '老事件',
+      ts: '2026-01-01T00:00:00.000Z',
+    }
+    await appendFile(paths(root).events, JSON.stringify(legacy) + '\n', 'utf8')
+
+    const m = mem(root)
+    const coreRead = await m.read({ channel: 'core' })
+    assert.equal(coreRead.length, 1, '没有 channel 的老事件必须算 core，不能被过滤掉')
+    assert.equal(coreRead[0].id, legacy.id)
+    assert.equal(coreRead[0].channel, 'core', '返回给调用方时补上 channel，不留 undefined')
+
+    assert.deepEqual(await m.read({ channel: 'wx' }), [])
   })
 })
 
