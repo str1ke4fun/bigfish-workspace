@@ -26,10 +26,16 @@ import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { ensureBiliSession } from './outing.js'
 import { writeSelfDoc, refreshSelfDoc } from './selfdoc.js'
-import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
+import { registerToolRestrict, revealTools, getAgentToolState } from './restrict.js'
 import { provideFishCore } from './core-service.js'
 import { registerQqAdapter, qqExposure } from './qq-adapter.js'
-import { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry } from './tool-policy.js'
+import {
+  resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry,
+  contribute,
+  ownTools as policyOwnTools,
+  setAgentProbe,
+  setHostNamesProvider,
+} from './tool-policy.js'
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
 import { createToolLedger } from './tool-ledger.js'
@@ -108,6 +114,28 @@ export function apply(ctx, baseConfig = {}) {
     } catch (err) {
       logger.warn('[dsh-fish] fishCore 没挂上', err?.message ?? err)
     }
+
+    // ---- 工具策略贡献的宿主上下文（A1.4）----
+    // 必须早于任何 agent 创建：贡献（下面 B 站 3 个）要发生在首个 bili agent 之前。
+    // 宿主全局认得的工具名由这里提供给 tool-policy，用来和贡献方自报的名字求交集，
+    // 防止自报一个其实没注册成功的名字。
+    setHostNamesProvider(() => {
+      try {
+        const s = ctx.tools?.view?.()?.restrictableNames
+        return s ? new Set(s) : null
+      } catch { return null }
+    })
+    // 记录每个面第一次出现 agent 的时刻：晚贡献探测靠它。
+    const createdSurfaces = new Set()
+    try {
+      ctx.on?.('agent/created', ({ agent } = {}) => {
+        try {
+          const s = fishCore?.surface?.current?.(agent)
+          if (s) createdSurfaces.add(s)
+        } catch { /* ignore */ }
+      })
+    } catch { /* ignore */ }
+    setAgentProbe((s) => createdSurfaces.has(s))
 
     // ---- 工具返回契约：核心对象上挂包装器 ----
     // `core` 必须是 fishCore 同一个对象引用（dsh-wx / dsh-bili 通过宿主服务拿到它）；
@@ -202,7 +230,9 @@ export function apply(ctx, baseConfig = {}) {
         extra: config?.tools?.allow ?? [],
         // `her_tools` 必须并进 ownTools：它是本插件注册的，但老宿主/名单晚到的
         // 情况下 agent/created 可能还看不到它；不并进去会被宿主名单滤掉。
-        ownTools: [...FISH_TOOLS, 'her_tools'],
+        // 传函数而不是数组：贡献表可能在注册之后才更新，名单要在每个
+        // agent/created 现读（B 站 3 个工具就是贡献进来的）。
+        ownTools: () => [...policyOwnTools(), 'her_tools'],
         enabled: config?.tools?.restrict !== false,
         log: (...a) => logger.info(...a),
         onResult: (r) => { restrictState = r },
@@ -280,6 +310,34 @@ export function apply(ctx, baseConfig = {}) {
           logger.warn('[dsh-fish] 工具注册失败', err?.message ?? err)
         }
       }
+    }
+
+    // ---- B 站 3 个工具贡献进策略表（A1.4）----
+    // 必须早于第一个 bili agent 创建（下面的 bootstrapHome / ensureBiliSession 都会
+    // 建会话）。贡献方只为**自己刚注册成功**的名字担保：宿主有 ctx.tools.get 时
+    // 逐个确认，没有就按全部注册成功处理；tool-policy 若还能拿到全局名单会再求一次
+    // 交集。失败只记日志，不打断启动。
+    const biliWanted = [
+      { name: 'bili_look', summary: '看 B 站列表', tier: 'always', kind: 'read' },
+      { name: 'bili_watch', summary: '看一条视频的画面', tier: 'always', kind: 'read' },
+      { name: 'bili_speak', summary: '在评论区说话', tier: 'always', kind: 'send', safety: 'send' },
+    ]
+    const biliHostNames = new Set(
+      typeof ctx.tools?.get === 'function'
+        ? biliWanted.map((t) => t.name).filter((n) => ctx.tools.get(n))
+        : biliWanted.map((t) => t.name),
+    )
+    const biliContribution = contribute(
+      { id: 'bili', tools: biliWanted, groups: [] },
+      { hostNames: biliHostNames },
+    )
+    if (biliContribution.ok) {
+      disposers.push(biliContribution.off)
+    } else {
+      logger.warn(
+        `[dsh-fish] B 站工具没贡献进策略表：${biliContribution.why}` +
+        (biliContribution.detail ? `（${biliContribution.detail}）` : ''),
+      )
     }
 
     let home = { ok: false, why: 'not attempted', wsId: '', sessionId: '' }

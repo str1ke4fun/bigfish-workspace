@@ -33,7 +33,7 @@ import { registerRemind } from '../lib/remind.js'
 import { registerInbox } from '../lib/taskinbox.js'
 import { registerSpeak } from '../lib/speak.js'
 import { registerWatch } from '../lib/watch.js'
-import { FISH_TOOLS, HER_TOOLS } from '../lib/restrict.js'
+import { HER_TOOLS } from '../lib/restrict.js'
 import { runChecks } from '../lib/selfcheck.js'
 
 const LIB = fileURLToPath(new URL('../lib/', import.meta.url))
@@ -82,8 +82,15 @@ test('十个工具定义都长成宿主认的形状', () => {
   registerInbox(ctx, deps)
 
   assert.equal(ctx.defs.length, 10, '我们自己的工具是 10 个（外加宿主的 read_image）')
+  // 工具清单是这张测试自己的事实来源。B 站 3 个从 A1.4 起不再属于 FISH_TOOLS
+  // （它们是贡献条目），所以这里按完整的 10 个名字断言，而不是查 FISH_TOOLS。
+  const expected = [
+    'growth_commit', 'her_recall', 'her_leave',
+    'bili_look', 'bili_watch', 'bili_speak',
+    'her_remind', 'her_reminders', 'her_remind_cancel', 'her_inbox',
+  ]
   const names = ctx.defs.map((d) => d.name)
-  for (const n of names) assert.ok(FISH_TOOLS.includes(n), `${n} 不在 FISH_TOOLS 里`)
+  assert.deepEqual([...names].sort(), [...expected].sort())
 
   for (const d of ctx.defs) {
     assert.equal(typeof d.name, 'string')

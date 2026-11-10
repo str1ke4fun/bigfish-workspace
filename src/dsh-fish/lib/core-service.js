@@ -6,7 +6,8 @@
  *   - guard  ：防注入、防泄露的最后一道闸；
  *   - config ：配置的只读入口（写入在后续任务里接）；
  *   - tools  ：统一返回契约的包装器（Task 5/6 在 index.js 里接线）；
- *   - memory ：事件流的唯一写/读门面（A1.2，见 memory-service.js）。
+ *   - memory ：事件流的唯一写/读门面（A1.2，见 memory-service.js）；
+ *   - toolPolicy：工具策略贡献入口（A1.4，见 tool-policy.js）。
  *
  * 为什么要有这层：`dsh-wx` / `dsh-bili` 这类输入通道不能 import 本插件的内部文件，
  * 但面判定、过滤和工具返回契约必须只有一份实现。宿主服务名就是边界。
@@ -21,6 +22,7 @@ import { looksLikeRewriting, looksLikeSecret, sanitizeForeign, screenOutgoing } 
 import { DEFAULTS, loadConfig } from './settings.js'
 import { paths } from './store.js'
 import { createMemoryService } from './memory-service.js'
+import { contribute, ownTools, status, setAgentProbe, setHostNamesProvider } from './tool-policy.js'
 
 function asWarn(log) {
   if (typeof log === 'function') return log
@@ -104,6 +106,12 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc } = {})
   // refreshSelfDoc 由 index.js 注入（core-service 不 import selfdoc），未注入时
   // memory 照常读写，只是 refresh 返回 NO_REFRESH。
   core.memory = createMemoryService({ root: baseRoot, core, refreshSelfDoc })
+
+  // 工具策略贡献（A1.4）。dsh-bili / dsh-wx 从宿主服务拿到的必须是**同一个**
+  // core 对象上的入口；再 provide 一个服务会让两边看到两份状态。
+  core.toolPolicy = { contribute, ownTools, status, setAgentProbe, setHostNamesProvider }
+  // 设计 §7.2 保留的兼容别名：老代码用 `surface.contribute` 也照样能贡献。
+  registry.contribute = contribute
 
   let offProvide = null
   try {

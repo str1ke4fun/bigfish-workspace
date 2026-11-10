@@ -15,11 +15,51 @@
  * 宿主工具（shell、读写文件、子代理、技能、工作流、MCP）永远不写进这张表；
  * `read_image` 是唯一例外——它是宿主能力，只给用图的面，且需要图片路由。
  *
+ * ## 内置表 + 贡献表（2026-11-10 A1.4）
+ *
+ * 内置表 `BUILTIN` 是插件启动时就确定的部分：web/wx/qq/bili 四个面的 core
+ * 记忆工具，加上 wx/qq 自己注册的常驻与低频工具。它不可变。
+ *
+ * 别的插件（从 A2 起是 dsh-bili）通过 `contribute()` 往表里加自己的工具。
+ * 所有读入口（`resolveAllow` / `catalog` / `loadTargets` / `groupsFor` /
+ * `entriesFor` / `describeEntry`）都读同一份**合并视图**：内置表在前，贡献
+ * 条目按贡献顺序在后。贡献只影响下一次调用，不重算、不回写已经下发的 allow。
+ *
+ * ## 校验是整次拒绝
+ *
+ * `contribute()` 先校验整份 payload（id、面、每条工具的形状、名字冲突、宿主
+ * 是否真的注册过这些名字），任何一项不过就整次拒绝，视图**一点不变**。不会
+ * 出现“三个名字进去了两个”的半截状态。
+ *
+ * ## 晚贡献
+ *
+ * 贡献必须在该面的第一个 agent 创建之前完成。`setAgentProbe()` 让本模块能问
+ * “这个面是不是已经有会话了”；如果是，晚到的贡献返回
+ * `{ ok:false, why:'LATE_CONTRIBUTION', pending:true }`，不假装已生效。唯一
+ * 例外是同一个 id 带着完全相同的名字集合重复贡献——那是幂等重试，直接成功。
+ *
  * 纯模块：零依赖，不 import 插件内任何其他文件。
  */
 
 /** 动作语义。只用于分类和测试，不替代权限检查。 */
 export const KINDS = Object.freeze(['read', 'write', 'send', 'navigate', 'maintain', 'discover'])
+
+/** 策略表认的面。贡献只能落在这些面里。 */
+export const SURFACES = Object.freeze(['web', 'wx', 'qq', 'bili'])
+
+/**
+ * 本插件自己注册（内置表里归 dsh-fish 所有）的 7 个工具名。
+ * wx/qq 的工具由别的插件注册，不算在内；B 站 3 个从 A1.4 起改为贡献条目。
+ */
+export const OWN_TOOL_NAMES = Object.freeze([
+  'growth_commit',
+  'her_recall',
+  'her_leave',
+  'her_remind',
+  'her_reminders',
+  'her_remind_cancel',
+  'her_inbox',
+])
 
 const ALWAYS = 'always'
 const DEFERRED = 'deferred'
@@ -108,21 +148,15 @@ function qqDeferred() {
   ]
 }
 
-/** bili 面只有 3 个对话工具，第一版全部常驻，不设 deferred。 */
-function biliAlways() {
-  const s = 'bili'
-  return [
-    tool('bili_look', s, ALWAYS, '', '看 B 站列表', 'read'),
-    tool('bili_watch', s, ALWAYS, '', '看一条视频的画面', 'read'),
-    tool('bili_speak', s, ALWAYS, '', '在评论区说话', 'send', [], 'send'),
-  ]
-}
-
 /**
- * 策略表。一个工具只有一个 surface；deferred 一定有 group；
+ * 内置表。一个工具只有一个 surface；deferred 一定有 group；
  * always 的 group 为空串（`groupsFor` 会跳过）。
+ *
+ * 注意：这里**没有** bili 的对话工具。B 站 3 个工具从 A1.4 起由贡献方
+ * （本任务的 index.js，A2 起是 dsh-bili）在首个 bili agent 创建之前贡献进来；
+ * 贡献缺席时 bili 面只剩 coreEntries，和 web 面同构。
  */
-export const POLICY = Object.freeze([
+const BUILTIN = Object.freeze([
   ...coreEntries('web'),
 
   ...coreEntries('wx'),
@@ -133,8 +167,217 @@ export const POLICY = Object.freeze([
   ...qqDeferred(),
 
   ...coreEntries('bili'),
-  ...biliAlways(),
 ])
+
+// ---------------------------------------------------------------------------
+// 贡献表：模块级单例。
+//
+// 为什么是模块级：tool-policy 是“当前进程里策略表长什么样”的唯一来源，策略
+// 解析随时会从任意模块被调用（restrict / her_tools / 观测台），没有一个大家都
+// 拿得到的 ctx。同一进程里也只会有一份策略表。
+// ---------------------------------------------------------------------------
+
+/** id -> { id, surface, entries, groups, revoke }，Map 保留贡献顺序。 */
+const contributions = new Map()
+
+/** 默认不做晚贡献探测（老宿主 / 单测里没有 agent 生命周期）。 */
+let agentProbe = () => false
+
+/** 默认拿不到宿主全局名单（贡献方必须自己给 hostNames）。 */
+let hostNamesProvider = () => null
+
+/** 合并视图：内置表在前，贡献条目按贡献顺序在后。每次都现拼。 */
+function mergedView() {
+  const out = [...BUILTIN]
+  for (const rec of contributions.values()) out.push(...rec.entries)
+  return out
+}
+
+function badTool(index, field) {
+  return { ok: false, why: 'BAD_TOOL', detail: `tools[${index}].${field}` }
+}
+
+/** 把 Set / 数组 / 其它可迭代对象归一成 Set；null / 不可迭代 → null。 */
+function toNameSet(value) {
+  if (value == null) return null
+  try {
+    if (typeof value === 'string') return new Set([value])
+    if (typeof value[Symbol.iterator] !== 'function') return null
+    return new Set([...value].map((n) => String(n)))
+  } catch {
+    return null
+  }
+}
+
+function providerNames() {
+  try {
+    return hostNamesProvider?.() ?? null
+  } catch {
+    return null
+  }
+}
+
+function probeSaysLate(surface) {
+  try {
+    return agentProbe?.(surface) === true
+  } catch {
+    return false
+  }
+}
+
+function sameNames(entries, nextEntries) {
+  if (entries.length !== nextEntries.length) return false
+  const a = new Set(entries.map((e) => e.name))
+  return nextEntries.every((e) => a.has(e.name))
+}
+
+/**
+ * 贡献一批工具到策略表。
+ *
+ * 整次校验、整次生效或整次拒绝：
+ *   - `id` 非空字符串，否则 `BAD_ID`；
+ *   - `surface` 必须在 SURFACES 里，否则 `BAD_SURFACE`；
+ *   - `tools` 非空数组，每条形状合格（deferred 必须有 group），否则 `BAD_TOOL`；
+ *   - 名字不能与同一 payload、内置表、别的 id 的贡献重名，否则 `NAME_TAKEN`；
+ *     同 id 的重复贡献是替换，不算冲突；
+ *   - 名字必须在宿主真实注册过的集合里，否则 `NOT_REGISTERED`。
+ *     有效集合 = `opts.hostNames` 与 `setHostNamesProvider()` 的交集；只给了一个
+ *     就只用那一个；两个都没有 → `HOST_NAMES_UNKNOWN`；
+ *   - 该面已经有 agent 时晚贡献 → `LATE_CONTRIBUTION`（幂等重试除外）。
+ *
+ * 成功返回 `{ ok:true, off }`；`off()` 撤销这个 id 的贡献，可重复调用。同 id
+ * 重复贡献时旧条目的 `off()` 变成空操作（以最后一次为准）。
+ *
+ * @param {{ id: string, tools: Array<{name,summary,tier,kind,group?,requires?,safety?}>, groups?: string[] }} def
+ * @param {{ hostNames?: Iterable<string>|null, surface?: string }} [opts]
+ * @returns {{ ok: true, off: () => void } | { ok: false, why: string, detail?: string, pending?: boolean }}
+ */
+export function contribute(def, { hostNames = null, surface = 'bili' } = {}) {
+  const id = def?.id
+  if (typeof id !== 'string' || id.trim() === '') return { ok: false, why: 'BAD_ID' }
+  if (!SURFACES.includes(surface)) return { ok: false, why: 'BAD_SURFACE', detail: String(surface) }
+
+  const tools = def?.tools
+  if (!Array.isArray(tools) || tools.length === 0) {
+    return { ok: false, why: 'BAD_TOOL', detail: 'tools 必须是非空数组' }
+  }
+
+  const entries = []
+  const names = new Set()
+  for (let i = 0; i < tools.length; i += 1) {
+    const t = tools[i] ?? {}
+    if (typeof t.name !== 'string' || t.name.trim() === '') return badTool(i, 'name')
+    if (t.tier !== ALWAYS && t.tier !== DEFERRED) return badTool(i, 'tier')
+    if (!KINDS.includes(t.kind)) return badTool(i, 'kind')
+    if (typeof t.summary !== 'string') return badTool(i, 'summary')
+    if (t.requires !== undefined && !Array.isArray(t.requires)) return badTool(i, 'requires')
+    if (t.safety !== undefined && typeof t.safety !== 'string') return badTool(i, 'safety')
+    if (t.tier === DEFERRED && (typeof t.group !== 'string' || t.group.trim() === '')) {
+      return badTool(i, 'group')
+    }
+    // always 的 group 归一成空串：groupsFor 只认 deferred 的组。
+    const group = t.tier === DEFERRED ? t.group : ''
+    if (names.has(t.name)) return { ok: false, why: 'NAME_TAKEN', detail: t.name }
+    names.add(t.name)
+    entries.push(tool(t.name, surface, t.tier, group, t.summary, t.kind, t.requires ?? [], t.safety))
+  }
+
+  // 与内置表重名（任何面）
+  const builtinNames = new Set(BUILTIN.map((e) => e.name))
+  for (const n of names) {
+    if (builtinNames.has(n)) return { ok: false, why: 'NAME_TAKEN', detail: n }
+  }
+  // 与别的 id 的贡献重名；同 id 是替换，跳过自己
+  for (const [otherId, rec] of contributions) {
+    if (otherId === id) continue
+    for (const e of rec.entries) {
+      if (names.has(e.name)) return { ok: false, why: 'NAME_TAKEN', detail: e.name }
+    }
+  }
+
+  // 宿主名字校验：两个来源求交集；只给一个就只用那一个。
+  const given = toNameSet(hostNames)
+  const provided = toNameSet(providerNames())
+  let effective = null
+  if (given && provided) effective = new Set([...given].filter((n) => provided.has(n)))
+  else effective = given ?? provided
+  if (!effective) return { ok: false, why: 'HOST_NAMES_UNKNOWN' }
+  for (const n of names) {
+    if (!effective.has(n)) return { ok: false, why: 'NOT_REGISTERED', detail: n }
+  }
+
+  // 晚贡献：该面已经有 agent 了。同 id 同名字集合的重复贡献按幂等成功处理，
+  // 视图一点不动；其余一律拒绝，让调用方知道要重建会话。
+  const existing = contributions.get(id)
+  if (probeSaysLate(surface)) {
+    if (existing && existing.surface === surface && sameNames(existing.entries, entries)) {
+      return { ok: true, off: existing.revoke }
+    }
+    return { ok: false, why: 'LATE_CONTRIBUTION', pending: true }
+  }
+
+  const groups = Object.freeze(
+    (Array.isArray(def?.groups) ? def.groups : []).map((g) => String(g)).filter(Boolean),
+  )
+
+  const record = { id, surface, entries: Object.freeze(entries), groups, revoke: null }
+  let live = true
+  record.revoke = () => {
+    if (!live) return
+    live = false
+    // 已被同 id 的后来者替换时什么都不做——以最后一次为准。
+    if (contributions.get(id) === record) contributions.delete(id)
+  }
+  contributions.set(id, record)
+
+  return { ok: true, off: record.revoke }
+}
+
+/** 本插件内置的自有工具名 + 当前全部贡献名，按出现顺序去重。 */
+export function ownTools() {
+  const out = []
+  const seen = new Set()
+  for (const n of OWN_TOOL_NAMES) {
+    if (!seen.has(n)) { seen.add(n); out.push(n) }
+  }
+  for (const rec of contributions.values()) {
+    for (const e of rec.entries) {
+      if (!seen.has(e.name)) { seen.add(e.name); out.push(e.name) }
+    }
+  }
+  return out
+}
+
+/** 当前策略贡献的快照（观测 / 测试用）。 */
+export function status() {
+  return {
+    surfaces: [...SURFACES],
+    contributions: [...contributions.values()].map((rec) => ({
+      id: rec.id,
+      surface: rec.surface,
+      names: rec.entries.map((e) => e.name),
+      groups: [...rec.groups],
+    })),
+  }
+}
+
+/**
+ * 安装“这个面是不是已经有 agent 了”的探针。默认永远返回 false。
+ * 传 null / 非函数即复位成默认。
+ * @param {((surfaceId: string) => boolean) | null} fn
+ */
+export function setAgentProbe(fn) {
+  agentProbe = typeof fn === 'function' ? fn : () => false
+}
+
+/**
+ * 安装“宿主全局认得的工具名”的提供者。默认返回 null（贡献方必须自己给）。
+ * 传 null / 非函数即复位成默认。
+ * @param {(() => Iterable<string>|null) | null} fn
+ */
+export function setHostNamesProvider(fn) {
+  hostNamesProvider = typeof fn === 'function' ? fn : () => null
+}
 
 /** 能力谓词：caps 里必须严格为 true。 */
 function capsOk(entry, caps) {
@@ -160,7 +403,7 @@ function isVisible(entry, revealed) {
  * @returns {string[]} 可见工具名
  */
 export function resolveAllow({ surface, caps = {}, revealed = new Set(), hostNames = null } = {}) {
-  return POLICY
+  return mergedView()
     .filter((e) => e.surface === surface)
     .filter((e) => isVisible(e, revealed))
     .filter((e) => capsOk(e, caps))
@@ -173,7 +416,7 @@ export function resolveAllow({ surface, caps = {}, revealed = new Set(), hostNam
  * 只列本面、只列宿主已注册且能力满足的条目；宿主工具和别的面永不出现。
  */
 export function catalog({ surface, caps = {}, hostNames = null } = {}) {
-  return POLICY
+  return mergedView()
     .filter((e) => e.surface === surface && e.tier === DEFERRED)
     .filter((e) => capsOk(e, caps))
     .filter((e) => hostOk(e, hostNames))
@@ -208,21 +451,21 @@ function loadFailed(group) {
   return { ok: false, names: [], group, why: '这条路上打不开' }
 }
 
-/** 当前面的 deferred 组（去重，保持策略表顺序；always 的空组不算）。 */
+/** 当前面的 deferred 组（去重，保持合并视图顺序；always 的空组不算）。 */
 export function groupsFor(surface) {
   const out = []
-  for (const e of POLICY) {
+  for (const e of mergedView()) {
     if (e.surface === surface && e.group !== '' && !out.includes(e.group)) out.push(e.group)
   }
   return out
 }
 
-/** 当前面的全部策略条目（always + deferred），顺序同 POLICY。 */
+/** 当前面的全部策略条目（always + deferred），顺序同合并视图。 */
 export function entriesFor(surface) {
-  return POLICY.filter((e) => e.surface === surface)
+  return mergedView().filter((e) => e.surface === surface)
 }
 
 /** 按名字和面查一条策略；别的面的同名工具不算，找不到返回 null。 */
 export function describeEntry(name, surface) {
-  return POLICY.find((e) => e.name === name && e.surface === surface) ?? null
+  return mergedView().find((e) => e.name === name && e.surface === surface) ?? null
 }

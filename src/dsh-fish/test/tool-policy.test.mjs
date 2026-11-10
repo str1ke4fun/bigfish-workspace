@@ -37,8 +37,13 @@ test('qq 和 bili 只看见自己的面', () => {
   assert.ok(qq.includes('read_image'))
   assert.equal(qq.some((n) => /^(wx_|bili_)/.test(n)), false)
 
+  // B 站 3 个对话工具从 A1.4 起由贡献表提供；没有贡献方时 bili 只剩 5 条 core。
   const bili = resolveAllow({ surface: 'bili', caps })
-  for (const n of ['bili_look', 'bili_watch', 'bili_speak', 'read_image']) assert.ok(bili.includes(n), n)
+  for (const n of [...CORE, 'read_image']) assert.ok(bili.includes(n), n)
+  assert.equal(bili.length, 5, '没有贡献时 bili 只有 coreEntries')
+  for (const n of ['bili_look', 'bili_watch', 'bili_speak']) {
+    assert.equal(bili.includes(n), false, `${n} 应该由贡献表提供，不在内置表里`)
+  }
   assert.equal(bili.some((n) => /^(wx_|qq_)/.test(n)), false)
 })
 
