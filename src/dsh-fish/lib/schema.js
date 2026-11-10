@@ -29,7 +29,58 @@ export const ALL_TYPES = Object.freeze([
   // 系统侧写，她编不出来；不是她的判断，不进 beliefs，但 her_recall 翻得到，
   // 身份文档里也摆最近几条。这样她不在被叫醒的时候，也有一段"我今天看见过什么"。
   'saw',
+  // v3（2026-11-10）：别人在 B 站回复了她的评论（返回值已过 sanitizeForeign）。
+  // 系统侧写（不在 HER_TYPES 里），带结构化 reply 子对象，按 reply.rpid 去重。
+  // 不进 beliefs；只进 derive.facts.biliReplies，工作台与 B 站面用它列「待回复」。
+  'bili_reply',
 ])
+
+/**
+ * 事件来源面（v3）。与 `channel` 分工：
+ *   channel —— 隐私与召回边界（core / wx / qq / web），老事件已有；
+ *   surface —— 来源与展示位置（多了 bili），回答「这件事发生在哪」。
+ * B 站公开事实写 channel='core' + surface='bili'：公开内容可以跨面想起，
+ * 微信/QQ/屋子的对话原文仍然只留在各自 channel 里。
+ */
+export const SURFACES = Object.freeze(['core', 'web', 'wx', 'qq', 'bili'])
+
+/**
+ * B 站 meta 记账前缀（§5.4）。放在这里给 store 的读路径推断、测试与工作台共用，
+ * 避免「哪几个前缀算 B 站」在两处各写一份然后漂移。
+ * 这些前缀只描述历史事实；新增记账时优先写结构化事件，前缀是为旧数据兼容留的。
+ */
+export const BILI_META_PREFIXES = Object.freeze([
+  'browse:', 'looked:', 'watched:', 'comment:', 'creply:', 'cbody:', 'cseen:', 'my:', 'biliout:',
+])
+
+// saw 的文本由 browse.renderSaw 生成，第一段固定是「B站」；voice 没有这个标记，
+// 只能靠 refs 里的 BV 号认。
+const BILI_SAW_TEXT_RE = /^B站(?:｜|\s|$)/
+const BILI_BVID_RE = /BV[A-Za-z0-9]/
+
+/**
+ * 旧事件（v1/v2）没有 `surface` 字段，读的时候按 §5.4 推断，**不回写**。
+ *
+ * 铁律：这里只读、不判断对错、不抛错。事件流里可能有半截/损坏的行被上层放进来，
+ * 推断必须能对任何输入返回一个合法面（兜底 core）；真正的空白由 readEvents 的
+ * skipped 计数负责，不在这里制造第二个异常源。
+ */
+export function inferSurface(ev) {
+  if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return 'core'
+  const channel = typeof ev.channel === 'string' ? ev.channel : ''
+  if (channel === 'wx' || channel === 'qq' || channel === 'web') return channel
+
+  const type = typeof ev.type === 'string' ? ev.type : ''
+  const text = typeof ev.text === 'string' ? ev.text : ''
+
+  if (type === 'saw' || type === 'voice') {
+    const refs = Array.isArray(ev.refs) ? ev.refs : []
+    if (refs.some((r) => typeof r === 'string' && BILI_BVID_RE.test(r))) return 'bili'
+    if (BILI_SAW_TEXT_RE.test(text)) return 'bili'
+  }
+  if (BILI_META_PREFIXES.some((prefix) => text.startsWith(prefix))) return 'bili'
+  return 'core'
+}
 
 /**
  * 事件格式版本（2026-10-25，发布体检第 4 项）。
@@ -44,9 +95,12 @@ export const ALL_TYPES = Object.freeze([
  * 加版本号不等于做了迁移。真要改语义，必须同时写迁移函数并升这个数——
  * 只升数字不改读法，等于给自己发了一张假通行证。
  */
-export const EVENT_SCHEMA_VERSION = 2
+export const EVENT_SCHEMA_VERSION = 3
 // v2（2026-11-03）：只新增 `saw` 类型，v1 事件的字段语义一个没动。
-// 旧的 v1 事件照常读；读到 v3+ 时 store.readEvents 会跳过并计数。迁移说明见 CHANGELOG。
+// v3（2026-11-10）：新增 `surface` 与 `bili_reply`/`reply`。v1/v2 事件的字段语义仍不动：
+//   读的时候没有 `surface` 就按 §5.4 推断（store.readEvents），不迁移、不回写。
+// 读到比本版本新的事件时 store.readEvents 会跳过并计数（newer）——这是回退保护。
+// 迁移与回退说明见 CHANGELOG（A1 统一补）。
 
 /** 校验结果三档：她写 selfmod 的句子也照收，只打标记 */
 export const FLAGS = Object.freeze(['selfmod', 'unrecorded', 'weak', 'truncated'])
@@ -164,12 +218,28 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
     throw new Reject('NOT_HER_TYPE', `你不可以写 ${type} 类事件（允许：${HER_TYPES.join('/')}）`)
   }
 
-  const text = typeof raw.text === 'string' ? raw.text.trim() : ''
+  let text = typeof raw.text === 'string' ? raw.text.trim() : ''
+  // v3：别人的空回复不丢弃——"对方回了一个空的"本身是事实。
+  // 用固定占位句落盘，不新增 flag（设计 §5.3）。
+  if (type === 'bili_reply' && text.length === 0) text = '（对方发了一条空回复）'
   const needsText = type !== 'meta' && type !== 'absence'
   if (needsText && text.length === 0) throw new Reject('EMPTY_TEXT', 'text 不能为空')
   if (text.length > 2000) throw new Reject('TOO_LONG', 'text 超过 2000 字，请自己压缩后再写')
 
   let refs = Array.isArray(raw.refs) ? raw.refs.filter((x) => typeof x === 'string' && x.length > 0) : []
+
+  // v3：channel 是隐私边界（老事件没有该字段 → core），surface 是来源面。
+  // surface 写路径：传了就必须合法，未知值拒绝而不是静默落 core；
+  // 没传时按同一张推断表补默认值，保持 v1/v2 调用方的兼容（旧测试/旧写入不传 surface）。
+  const channel = raw.channel === 'qq' || raw.channel === 'wx' || raw.channel === 'web' ? raw.channel : 'core'
+  let surface
+  if (raw.surface === undefined || raw.surface === null) {
+    surface = inferSurface({ channel, type, text, refs })
+  } else if (SURFACES.includes(raw.surface)) {
+    surface = raw.surface
+  } else {
+    throw new Reject('BAD_SURFACE', `BAD_SURFACE: 未知 surface：${String(raw.surface)}（允许：${SURFACES.join('/')}）`)
+  }
   if (type === 'revise' && refs.length === 0) throw new Reject('REVISE_NEEDS_REF', 'revise 必须用 refs 指向被改写的旧事件')
 
   // 2026-10-27（0.5.8）：refs 从「必须写」升级成「必须写对」。
@@ -220,6 +290,10 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
     for (const f of raw.flags) if (FLAGS.includes(f) && !flags.includes(f)) flags.push(f)
   }
 
+  // v3：bili_reply 的结构化去重键。缺 reply / bvid / rpid 直接拒——
+  // 没有 rpid 就没法保证「同一条回复不重复写」，只能当脏数据挡在门外。
+  const reply = type === 'bili_reply' ? normalizeReply(raw.reply) : null
+
   return {
     id: typeof raw.id === 'string' && /^ev_[0-9A-Z]{26}$/.test(raw.id) ? raw.id : newId(now),
     v: EVENT_SCHEMA_VERSION,
@@ -230,7 +304,9 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
     source,
     // 2026-10-29：通道。core = 她自己/共同层（所有通道翻得到）；qq/wx/web = 只属于那条通道。
     // 老事件没有这个字段 → 按 core 读（B 站那些本来就在里面）。
-    channel: raw.channel === 'qq' || raw.channel === 'wx' || raw.channel === 'web' ? raw.channel : 'core',
+    channel,
+    // v3（2026-11-10）：来源面。写路径传了就必须合法；没传按 §5.4 推断补默认。
+    surface,
     text,
     refs,
     verdict: ['confirmed', 'refuted', 'refined'].includes(raw.verdict) ? raw.verdict : null,
@@ -238,6 +314,8 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
     flags,
     // R3：申请与裁决都带一个 grant 子对象，其余事件不带（undefined 不落 JSON）。
     ...(type === 'grant_offer' || type === 'grant' ? { grant: normalizeGrant(type, raw.grant) } : {}),
+    // v3：只有 bili_reply 带 reply；其他类型即使传了也丢掉，避免事件流里长出野字段。
+    ...(type === 'bili_reply' ? { reply } : {}),
     // 拒绝的形状（P1 第二块，2026-10-24）：原话照样留在 text 里，
     // 另外落一份「动作 + 对象」，让后来的她（和观测台）能分清
     // "不想看这个视频" 与 "不想被安排" 是两个不同的不。
@@ -270,4 +348,35 @@ function normalizeGrant(type, raw) {
   }
   if (type === 'grant' && g.expiresAt) out.expiresAt = str(g.expiresAt, 40) || null
   return out
+}
+
+/**
+ * bili_reply 的 reply 子对象（v3，设计 §5.3）。
+ *
+ * 去重键是 `rpid`：扫描回复时必须先取已有 `reply.rpid` 集合，再决定写不写。
+ * bvid / rpid 缺失或只有空白 → BAD_REPLY（错误信息里带 BAD_REPLY，日志能直接搜）；
+ * 其余字段只做「转字符串 + 截断」，不猜语义。不认识的字段丢弃，事件流不长野字段。
+ */
+function normalizeReply(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Reject('BAD_REPLY', 'BAD_REPLY: bili_reply 必须带 reply 对象（至少 bvid 与 rpid）')
+  }
+  const str = (v, max) => {
+    if (typeof v === 'string') return v.trim().slice(0, max)
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v).slice(0, max)
+    return ''
+  }
+  const bvid = str(raw.bvid, 32)
+  const rpid = str(raw.rpid, 64)
+  if (!bvid || !rpid) {
+    throw new Reject('BAD_REPLY', 'BAD_REPLY: reply.bvid 与 reply.rpid 不能为空（rpid 是去重键）')
+  }
+  return {
+    bvid,
+    rpid,
+    root: str(raw.root, 64),
+    parent: str(raw.parent, 64),
+    user: str(raw.user, 64),
+    mid: str(raw.mid, 64),
+  }
 }
