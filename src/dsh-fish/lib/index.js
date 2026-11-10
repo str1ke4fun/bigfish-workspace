@@ -25,7 +25,7 @@ import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { ensureBiliSession } from './outing.js'
-import { writeSelfDoc } from './selfdoc.js'
+import { writeSelfDoc, refreshSelfDoc } from './selfdoc.js'
 import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
 import { provideFishCore } from './core-service.js'
 import { registerQqAdapter, qqExposure } from './qq-adapter.js'
@@ -96,7 +96,13 @@ export function apply(ctx, baseConfig = {}) {
     // 判断这个 agent 属于哪个面。这里先只提供判定，本任务不改 restrict 的签名。
     let fishCore = null
     try {
-      const handle = provideFishCore(ctx, { root, herDir, log: (...a) => logger.warn(...a) })
+      const handle = provideFishCore(ctx, {
+        root,
+        herDir,
+        log: (...a) => logger.warn(...a),
+        // 身份文档刷新由这里注入：core-service / memory-service 都不直接 import selfdoc。
+        refreshSelfDoc: (r = root) => refreshSelfDoc(r, { log: (...a) => logger.warn(...a) }),
+      })
       fishCore = handle.core
       if (typeof handle.dispose === 'function') disposers.push(handle.dispose)
     } catch (err) {

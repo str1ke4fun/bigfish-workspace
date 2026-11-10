@@ -5,7 +5,8 @@
  *   - surface：这个会话属于哪个面（web / wx / qq / bili）；
  *   - guard  ：防注入、防泄露的最后一道闸；
  *   - config ：配置的只读入口（写入在后续任务里接）；
- *   - tools  ：统一返回契约的包装器（Task 5/6 在 index.js 里接线）。
+ *   - tools  ：统一返回契约的包装器（Task 5/6 在 index.js 里接线）；
+ *   - memory ：事件流的唯一写/读门面（A1.2，见 memory-service.js）。
  *
  * 为什么要有这层：`dsh-wx` / `dsh-bili` 这类输入通道不能 import 本插件的内部文件，
  * 但面判定、过滤和工具返回契约必须只有一份实现。宿主服务名就是边界。
@@ -19,6 +20,7 @@ import { createSurfaceRegistry } from './surface.js'
 import { looksLikeRewriting, looksLikeSecret, sanitizeForeign, screenOutgoing } from './guard.js'
 import { DEFAULTS, loadConfig } from './settings.js'
 import { paths } from './store.js'
+import { createMemoryService } from './memory-service.js'
 
 function asWarn(log) {
   if (typeof log === 'function') return log
@@ -30,10 +32,10 @@ function asWarn(log) {
  * 创建并登记 `fishCore` 服务。
  *
  * @param {{ get?: (name: string) => any, provide?: (name: string, value: any) => any }} ctx
- * @param {{ root?: string, herDir?: string, log?: Function|{warn?: Function} }} [opts]
+ * @param {{ root?: string, herDir?: string, log?: Function|{warn?: Function}, refreshSelfDoc?: Function }} [opts]
  * @returns {{ core: object, registry: object, dispose: () => void }}
  */
-export function provideFishCore(ctx, { root, herDir, log } = {}) {
+export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc } = {}) {
   const baseRoot = root || paths().root
   const homeDir = herDir || join(baseRoot, 'home')
 
@@ -96,6 +98,12 @@ export function provideFishCore(ctx, { root, herDir, log } = {}) {
     },
     tools: { wrap: null, wrapRender: null, reveal: null },
   }
+
+  // 事件流门面（A1.2）。挂在同一个 core 对象上：dsh-wx / dsh-bili 通过宿主服务
+  // 拿到的就是这一份，后续任务往里加字段两边都看得见。
+  // refreshSelfDoc 由 index.js 注入（core-service 不 import selfdoc），未注入时
+  // memory 照常读写，只是 refresh 返回 NO_REFRESH。
+  core.memory = createMemoryService({ root: baseRoot, core, refreshSelfDoc })
 
   let offProvide = null
   try {
