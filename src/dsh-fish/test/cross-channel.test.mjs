@@ -21,7 +21,8 @@ import { join } from 'node:path'
 
 import { crossChannel } from '../lib/guard.js'
 import { deriveSelf, DAY_MS } from '../lib/derive.js'
-import { appendEvent } from '../lib/store.js'
+import { buildStances } from '../lib/stance.js'
+import { appendEvent, readEvents } from '../lib/store.js'
 import { writeSelfDoc, selfDocPath } from '../lib/selfdoc.js'
 
 const T0 = Date.parse('2026-10-01T00:00:00Z')
@@ -92,6 +93,19 @@ test('crossChannel：日常动词「叫」不是点名介绍，别整句删掉',
   assert.equal(r.redacted, false)
 })
 
+test('crossChannel：叫外卖 / 叫车 这类动词短语不是点名介绍', () => {
+  const cases = [
+    '我朋友叫外卖，我们一起吃。',
+    '我朋友叫车，我在楼下等他。',
+    '我姐叫醒我，已经快迟到了。',
+  ]
+  for (const text of cases) {
+    const r = crossChannel(text, { from: 'wx', to: 'bili', rawTexts: [] })
+    assert.equal(r.text, text, `不该删：${text}`)
+    assert.equal(r.redacted, false, `不该标红：${text}`)
+  }
+})
+
 test('crossChannel：与来源通道原文连续 ≥12 字重合的整句去掉', () => {
   const raw = '下午三点在老地方见面别忘了'
   const safe = '我觉得人应该先照顾好自己，别总为了别人委屈自己。'
@@ -116,6 +130,11 @@ test('crossChannel：永不抛，异常输入走 guard-failed', () => {
   assert.doesNotThrow(() => crossChannel({ toString() { throw new Error('boom') } }, { from: 'wx', to: 'bili' }))
   const r = crossChannel({ toString() { throw new Error('boom') } }, { from: 'wx', to: 'bili' })
   assert.deepEqual(r, { text: '', redacted: true, why: 'guard-failed' })
+  // opts 为 null 也不能在参数解构阶段抛（F4）。
+  assert.doesNotThrow(() => crossChannel('我不喜欢热闹。', null))
+  assert.deepEqual(crossChannel('我不喜欢热闹。', null), {
+    text: '我不喜欢热闹。', redacted: false, why: '',
+  })
 })
 
 /* ------------------------------ derive ------------------------------ */
@@ -152,7 +171,7 @@ test('derive：viewSurface 与来源同面时原样，缺省时全部原样', ()
 
   const none = deriveSelf(wxFixture(), { now: T0 + 4 * DAY_MS })
   assert.ok(none.beliefs.some((b) => String(b.text).includes('小美')), '不带 viewSurface 时行为不变')
-  assert.ok(none.solid === undefined || Array.isArray(none.solid))
+  assert.ok(Array.isArray(none.solid), 'solid 始终是数组')
 })
 
 test('derive：privacyRedacted 按条计数，同一信念出现在 ranked/solid 不重复计数', () => {
@@ -169,15 +188,70 @@ test('derive：privacyRedacted 按条计数，同一信念出现在 ranked/solid
   assert.equal(m.facts.privacyRedacted, 3, '三条各自被删，不按 ranked+solid 重复计数')
 })
 
-test('derive：tensions / solid 也一起按 viewSurface 去引用化', () => {
+test('derive：tensions 也一起按 viewSurface 去引用化（冲突真实存在，去引用化后仍非空）', () => {
+  // 两条冲突分别长在 wx / qq：各自的原文窗口里没有对方，规则 4 不会把冲突吞掉。
   const evs = [
     ev('ev_seed', 'seed', 1, '种', { channel: 'core', surface: 'core', source: 'system' }),
-    ev('ev_a', 'utterance', 2, '我认为人应该对朋友小美毫无保留地帮忙。', { channel: 'wx', surface: 'wx' }),
-    ev('ev_b', 'utterance', 3, '我不认为人应该对朋友小美毫无保留地帮忙。', { channel: 'wx', surface: 'wx' }),
+    ev('ev_a', 'utterance', 2, '我闺蜜叫小美，我觉得人应该先照顾自己。', { channel: 'wx', surface: 'wx' }),
+    ev('ev_b', 'utterance', 3, '我朋友叫阿强，我觉得人不应该先照顾自己。', { channel: 'qq', surface: 'qq' }),
+  ]
+  const raw = deriveSelf(evs, { now: T0 + 4 * DAY_MS })
+  assert.equal(raw.tensions.length, 1, 'fixture 本身必须产出一条冲突')
+  assert.ok(/小美|阿强/.test(`${raw.tensions[0].a.text}${raw.tensions[0].b.text}`))
+
+  const m = deriveSelf(evs, { now: T0 + 4 * DAY_MS, viewSurface: 'bili' })
+  assert.equal(m.tensions.length, 1, '去引用化后冲突不能凭空消失')
+  for (const t of m.tensions) {
+    assert.equal(/小美|阿强|闺蜜|朋友叫/.test(`${t.a.text}${t.b.text}`), false)
+  }
+})
+
+test('derive：solid 也一起按 viewSurface 去引用化（mentions≥3，去引用化后仍非空）', () => {
+  // 同一条判断被反复提起：一条 wx，两条 qq 相似说法 → mentions = 3 → 固化。
+  const evs = [
+    ev('ev_seed', 'seed', 1, '种', { channel: 'core', surface: 'core', source: 'system' }),
+    ev('ev_solid', 'utterance', 4, '我朋友叫小美，我觉得朋友之间要互相照顾。', { channel: 'wx', surface: 'wx' }),
+    ev('ev_m1', 'utterance', 5, '我朋友叫小强，我觉得朋友之间要互相照顾。', { channel: 'qq', surface: 'qq' }),
+    ev('ev_m2', 'utterance', 6, '我朋友叫小明，我觉得朋友之间要互相照顾。', { channel: 'qq', surface: 'qq' }),
+  ]
+  const raw = deriveSelf(evs, { now: T0 + 7 * DAY_MS })
+  assert.ok(raw.solid.length >= 1, 'fixture 本身必须固化至少一条')
+  assert.ok(raw.solid.some((b) => /小美|小强|小明/.test(String(b.text))))
+
+  const m = deriveSelf(evs, { now: T0 + 7 * DAY_MS, viewSurface: 'bili' })
+  assert.ok(m.solid.length >= 1, '去引用化后固化条目不能凭空消失')
+  for (const b of m.solid) assert.equal(/小美|小强|小明/.test(String(b.text)), false)
+})
+
+test('derive：立场从 beliefs 生成，也继承 viewSurface 的去引用化', () => {
+  const evs = [
+    ev('ev_seed', 'seed', 1, '种', { channel: 'core', surface: 'core', source: 'system' }),
+    ev('ev_like_a', 'utterance', 2, '我朋友叫小美，我喜欢和朋友一起吃饭。', { channel: 'wx', surface: 'wx' }),
+    ev('ev_like_b', 'utterance', 3, '我朋友叫阿强，我喜欢和朋友一起吃饭。', { channel: 'qq', surface: 'qq' }),
+  ]
+  const raw = deriveSelf(evs, { now: T0 + 4 * DAY_MS })
+  raw.stageGate = { passed: ['trust', 'autonomy', 'competence'] }
+  const rawStances = buildStances(raw)
+  assert.ok(rawStances.length >= 1, '同向的两条判断应聚成一条立场')
+  assert.ok(rawStances.some((s) => /小美|阿强/.test(String(s.text))))
+
+  const m = deriveSelf(evs, { now: T0 + 4 * DAY_MS, viewSurface: 'bili' })
+  m.stageGate = { passed: ['trust', 'autonomy', 'competence'] }
+  const stances = buildStances(m)
+  assert.ok(stances.length >= 1, '去引用化后立场不能凭空消失')
+  for (const s of stances) assert.equal(/小美|阿强/.test(String(s.text)), false)
+})
+
+test('derive：meta 事件不参与规则 4 的比对（裁定 2）', () => {
+  const thought = '我觉得人应该先照顾好自己，别总为了别人委屈自己。'
+  const evs = [
+    ev('ev_seed', 'seed', 1, '种', { channel: 'core', surface: 'core', source: 'system' }),
+    ev('ev_thought', 'utterance', 2, thought, { channel: 'wx', surface: 'wx' }),
+    // 系统记账事件即使带着同样的长文本，也不能把这条纯想法挤掉。
+    ev('ev_meta', 'meta', 3, thought, { channel: 'wx', surface: 'wx' }),
   ]
   const m = deriveSelf(evs, { now: T0 + 4 * DAY_MS, viewSurface: 'bili' })
-  assert.equal(m.tensions.some((t) => String(t.a.text).includes('小美') || String(t.b.text).includes('小美')), false)
-  for (const b of m.solid) assert.equal(String(b.text).includes('小美'), false)
+  assert.ok(m.beliefs.some((b) => String(b.text).includes('照顾好自己')), 'meta 不能触发自我删除')
 })
 
 /* ------------------------------ bili facts ------------------------------ */
@@ -206,6 +280,27 @@ test('derive：biliSaid / biliReplies / biliThreads 只收最近 7 天、最多 
   assert.deepEqual(m.sharedBeliefs, m.facts.sharedBeliefs)
   // 对方回复不是她的判断。
   assert.equal(m.beliefs.some((b) => b.id === 'ev_reply'), false)
+})
+
+test('derive：B 站 utterance / revise 不成为判断，也不抬高 beliefCount（裁定 7）', () => {
+  const evs = [
+    ev('ev_seed', 'seed', 1, '种', { channel: 'core', surface: 'core', source: 'system' }),
+    ev('ev_web', 'utterance', 2, '我觉得人应该先照顾好自己。', { channel: 'web', surface: 'web' }),
+    ev('ev_bili', 'utterance', 3, '这期视频讲得挺实在。', {
+      channel: 'core', surface: 'bili', refs: ['BV1xx411c7mD', '1001'],
+    }),
+    ev('ev_bili_revise', 'revise', 4, '我觉得人应该先照顾自己，别硬扛。', {
+      channel: 'core', surface: 'bili', refs: [], verdict: 'refined',
+    }),
+  ]
+  const m = deriveSelf(evs, { now: T0 + 5 * DAY_MS })
+  // B 站说的话只进 biliSaid，不是她的判断。
+  assert.ok(m.facts.biliSaid.some((s) => s.id === 'ev_bili'))
+  assert.equal(m.beliefs.some((b) => b.id === 'ev_bili'), false)
+  assert.equal(m.beliefs.some((b) => b.id === 'ev_bili_revise'), false)
+  // web 面的同一条 utterance 仍然算判断、仍然计数。
+  assert.ok(m.beliefs.some((b) => b.id === 'ev_web'))
+  assert.equal(m.beliefCount, 1, '只有 web 那条计入 beliefCount')
 })
 
 test('derive：biliSaid 最多 5 条且只收 7 天内', () => {
@@ -243,6 +338,40 @@ test('身份文档：渲染时走 viewSurface=identity，微信原文不出现�
     const md = await readFile(selfDocPath(root), 'utf8')
     assert.equal(md.includes('小美'), false, '身份文档不被微信原文污染')
     assert.match(md, /我觉得人应该先照顾好自己/, '纯想法要能跨面进身份文档')
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+test('身份文档：narrative / refusals 里的微信原文也跨面抹掉，条目不能消失', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-cross-'))
+  try {
+    await appendEvent({ type: 'seed', text: '你不是助手。你刚开始存在。' }, { day: 1, stage: 1, source: 'system' }, root)
+    // narrative：点名介绍形式，跨面必须抹掉名字。
+    await appendEvent(
+      { type: 'utterance', channel: 'wx', surface: 'wx', text: '我一直觉得我闺蜜叫小美，人应该先照顾自己。' },
+      { day: 1, stage: 1, source: 'tool' },
+      root,
+    )
+    // refusal：引号里的原文，跨面必须抹掉；但「拒绝过」这一条本身要还在。
+    await appendEvent(
+      { type: 'refusal', channel: 'wx', surface: 'wx', text: '我不想再帮「小美」拿快递了，这件事真的够了。' },
+      { day: 1, stage: 1, source: 'tool' },
+      root,
+    )
+
+    const w = await writeSelfDoc(root)
+    assert.equal(w.ok, true, w.why)
+    const md = await readFile(selfDocPath(root), 'utf8')
+    assert.equal(md.includes('小美'), false, '身份文档不泄露微信原文')
+    assert.match(md, /## 你对自己的说法/, 'narrative 条目仍在')
+    assert.match(md, /## 你拒绝过/, 'refusals 条目仍在（计数不能因去引用化丢掉）')
+
+    // 对照：不带 viewSurface 时，同一份事件仍保留原文。
+    const { events } = await readEvents(root)
+    const raw = deriveSelf(events, {})
+    assert.ok(raw.narrative.text.includes('小美'))
+    assert.ok(raw.refusals.some((r) => r.what.includes('小美')))
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }

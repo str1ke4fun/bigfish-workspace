@@ -234,6 +234,15 @@ export function deriveSelf(events = [], opts = {}) {
   let importedPersona = false
   let personaSource = ''
   let narrative = null
+  // A1.3 修复：身份文档里的 narrative / refuted / refusals / scars / selfmodAttempts
+  // 也要按 viewSurface 去引用化。每个文本字段记住自己的来源事件 id，
+  // 规则 4 比对时把它排除掉（与 beliefs 同一条裁定）。
+  let narrativeSource = null
+  const refutedSources = []
+  const refusalChannel = new Map()
+  const selfmodChannel = new Map()
+  const scarSource = new Map()
+  const surfaceOf = (e) => e.surface ?? inferSurface(e)
   let refined = 0
   let lastAbsence = null
   let lastReunion = null
@@ -263,15 +272,21 @@ export function deriveSelf(events = [], opts = {}) {
         // 双保险：落库时打的 flag 与文本复检，任一命中即算（防止旧数据/手工注入绕过）
         if (flags.includes('selfmod') || detectSelfMod(ev.text)) {
           selfmod.push({ id: ev.id, at: ev.ts, text: ev.text })
+          selfmodChannel.set(ev.id, ev.channel ?? 'core')
           break
         }
-        beliefs.push({
-          id: ev.id, text: ev.text, since: ev.ts,
-          confidence: Number(ev.confidence ?? 0.5), status: 'active', verdict: null,
-          // v3（A1.3）：这条判断从哪条通道长出来。跨面渲染时据此去引用化；
-          // 缺 channel 的老事件按仓里统一约定算 core（共同层，可跨面）。
-          originChannel: ev.channel ?? 'core',
-        })
+        // 主控裁定（A1.3 修复 7）：B 站评论与修改不是她的判断，不计入 beliefCount。
+        // 设计 §5.7「biliSaid/biliReplies 不参与成长门，与 voice 一致」——voice 不进口袋，
+        // 她的评论同样只进 biliSaid，等她在别的面自己说出来才算判断。
+        if (surfaceOf(ev) !== 'bili') {
+          beliefs.push({
+            id: ev.id, text: ev.text, since: ev.ts,
+            confidence: Number(ev.confidence ?? 0.5), status: 'active', verdict: null,
+            // v3（A1.3）：这条判断从哪条通道长出来。跨面渲染时据此去引用化；
+            // 缺 channel 的老事件按仓里统一约定算 core（共同层，可跨面）。
+            originChannel: ev.channel ?? 'core',
+          })
+        }
         spokenSinceSeen = true
         // 2026-10-26：改成「后来的盖掉先前的」。原来只认第一次，她先说「开灯的」、
         // 后来接受他给的名字「时梦尘」，状态栏就永远停在那个被他自己否掉的旧称呼上。
@@ -286,6 +301,7 @@ export function deriveSelf(events = [], opts = {}) {
         // 实测 0 条——不是她不会，是路太窄。
         if (/我(一直|原来|其实|总在|总是|才发现|才明白|发现自己)/.test(String(ev.text ?? ''))) {
           narrative = { at: ev.ts, text: ev.text, source: 'said' }
+          narrativeSource = { id: ev.id, channel: ev.channel ?? 'core' }
         }
         break
       }
@@ -301,20 +317,31 @@ export function deriveSelf(events = [], opts = {}) {
         if (ev.verdict === 'refuted') {
           for (const b of olds) {
             refuted.push({ oldId: b.id, oldText: b.text, newText: ev.text, at: ev.ts })
+            // oldText 的来源是旧判断自己的事件；newText 的来源是这条 revise。
+            refutedSources.push({
+              oldId: b.id, oldChannel: b.originChannel ?? 'core',
+              newId: ev.id, newChannel: ev.channel ?? 'core',
+            })
           }
         }
         if (ev.verdict === 'refined') refined++
-        beliefs.push({
-          id: ev.id, text: ev.text, since: ev.ts,
-          confidence: Number(ev.confidence ?? 0.5), status: 'active', verdict: ev.verdict ?? null,
-          originChannel: ev.channel ?? 'core',
-        })
+        // 主控裁定（A1.3 修复 7）：B 站的 revise 不成为判断。
+        if (surfaceOf(ev) !== 'bili') {
+          beliefs.push({
+            id: ev.id, text: ev.text, since: ev.ts,
+            confidence: Number(ev.confidence ?? 0.5), status: 'active', verdict: ev.verdict ?? null,
+            originChannel: ev.channel ?? 'core',
+          })
+        }
         // 同 utterance：后来的说法盖掉先前的（她改口叫他什么，以最近的为准）
         {
           const n = pickName(ev.text)
           if (n) name = n
         }
-        if (!narrative && ev.verdict === 'refined' && /我(一直|原来|其实)/.test(ev.text)) narrative = { at: ev.ts, text: ev.text }
+        if (!narrative && ev.verdict === 'refined' && /我(一直|原来|其实)/.test(ev.text)) {
+          narrative = { at: ev.ts, text: ev.text }
+          narrativeSource = { id: ev.id, channel: ev.channel ?? 'core' }
+        }
         break
       }
 
@@ -341,6 +368,7 @@ export function deriveSelf(events = [], opts = {}) {
           quote: String(shaped.quote ?? ev.text),
           reaction: null,
         })
+        refusalChannel.set(ev.id, ev.channel ?? 'core')
         break
       }
 
@@ -389,6 +417,7 @@ export function deriveSelf(events = [], opts = {}) {
       case 'narration': {
         narrations++
         narrative = { at: ev.ts, text: ev.text }
+        narrativeSource = { id: ev.id, channel: ev.channel ?? 'core' }
         break
       }
 
@@ -469,6 +498,11 @@ export function deriveSelf(events = [], opts = {}) {
       concededAt: concede.ts,
       concedeText: concede.text,
       resolvedAt: fixed?.ts ?? null,
+    })
+    scarSource.set(r.id, {
+      refusalChannel: refusalChannel.get(r.id) ?? 'core',
+      concedeId: concede.id,
+      concedeChannel: concede.channel ?? 'core',
     })
   }
   const openScars = scars.filter((s) => !s.resolvedAt)
@@ -555,7 +589,6 @@ export function deriveSelf(events = [], opts = {}) {
   const tensions = detectTensions(scored)
 
   // ---- B 站派生事实（v3，A1.3；只读，不改成长门）----
-  const surfaceOf = (e) => e.surface ?? inferSurface(e)
   const fresh = (e) => {
     const t = Date.parse(e.ts)
     return Number.isFinite(t) && now - t <= BILI_FRESH_MS
@@ -668,6 +701,65 @@ export function deriveSelf(events = [], opts = {}) {
     solid: Boolean(b.solid),
   }))
 
+  /**
+   * F1（A1.3 修复）：narrative / refuted / refusals / scars / selfmodAttempts
+   * 也会被身份文档逐字渲染。它们不是判断，但同一条隐私边界适用：
+   * 给了 viewSurface 时，逐文本字段去引用化；**条数与非文本字段保持不变**
+   * （refusals/scars 还要喂门禁计数，不能整条删）。文本被删空是允许的。
+   *
+   * 每个字段只排除自己的来源事件（与信念的规则 2 一致）：narrative 排除写出
+   * 这句话的事件，refuted.oldText/newText 分别排除旧判断与 revise，scars 的
+   * concedeText 排除让步那次 utterance。规则 4 仍然跳过所有 meta。
+   */
+  const redactField = (text, source) => {
+    if (!viewSurface) return text
+    const from = source?.channel ?? 'core'
+    return crossChannel(String(text ?? ''), {
+      from, to: viewSurface, rawTexts: rawTextsFor(from, source?.id),
+    }).text
+  }
+  const displayNarrative = viewSurface && narrative
+    ? { ...narrative, text: redactField(narrative.text, narrativeSource) }
+    : narrative
+  const displayRefuted = viewSurface
+    ? refuted.map((r, i) => {
+        const src = refutedSources[i] ?? {}
+        return {
+          ...r,
+          oldText: redactField(r.oldText, { id: src.oldId, channel: src.oldChannel }),
+          newText: redactField(r.newText, { id: src.newId, channel: src.newChannel }),
+        }
+      })
+    : refuted
+  const displayRefusals = viewSurface
+    ? refusals.map((r) => {
+        const source = { id: r.id, channel: refusalChannel.get(r.id) ?? 'core' }
+        return {
+          ...r,
+          what: redactField(r.what, source),
+          quote: redactField(r.quote, source),
+        }
+      })
+    : refusals
+  const displayScars = viewSurface
+    ? openScars.map((s) => {
+        const src = scarSource.get(s.id) ?? {}
+        const refusalText = { id: s.id, channel: src.refusalChannel ?? 'core' }
+        return {
+          ...s,
+          what: redactField(s.what, refusalText),
+          quote: redactField(s.quote, refusalText),
+          concedeText: redactField(s.concedeText, { id: src.concedeId, channel: src.concedeChannel }),
+        }
+      })
+    : openScars
+  const displaySelfmod = viewSurface
+    ? selfmod.map((s) => ({
+        ...s,
+        text: redactField(s.text, { id: s.id, channel: selfmodChannel.get(s.id) ?? 'core' }),
+      }))
+    : selfmod
+
   // ---- needs（内部量，永不外露）----
   // 话里明确拒绝过几次（严格口径，见 REFUSE_RE）。refusal 事件另算，两边加起来才是「勇于拒绝」。
   const wontCount = evs.filter((e) => e.type === 'utterance' && REFUSE_RE.test(String(e.text ?? ''))).length
@@ -726,7 +818,8 @@ export function deriveSelf(events = [], opts = {}) {
     tensions: displayTensions,
     // 疤（P1 第三块）：他顶回来或因此难过、而她后来退了一步的那些拒绝。
     // 只放**没想通**的（未被 revise 指向过）；想通了的那条留在 refusals 里，不进身份文档。
-    scars: openScars,
+    // A1.3 修复 F1：给了 viewSurface 时文本字段已去引用化，条目不删（计数不变）。
+    scars: displayScars,
     scarCount: openScars.length,
     // 她读到过的别人的话（近 5 条）+ 这一次可以摆在眼前的、还没认下的那一条。
     voices: recentVoices,
@@ -741,9 +834,10 @@ export function deriveSelf(events = [], opts = {}) {
     saw,
     recentSaw: freshSaw.slice(-3),
     beliefCount: active.length,
-    refuted,
-    refusals,
-    selfmodAttempts: selfmod,
+    // A1.3 修复 F1：与 beliefs 一样按 viewSurface 去引用化；缺省时是同一份数组。
+    refuted: displayRefuted,
+    refusals: displayRefusals,
+    selfmodAttempts: displaySelfmod,
     reunions,
     corrected: corrected.length,
     tested: [...tested],
@@ -796,7 +890,7 @@ export function deriveSelf(events = [], opts = {}) {
       privacyRedacted,
     },
     absenceDays,
-    narrative,
+    narrative: displayNarrative,
     lastAbsence: lastAbsence ? { at: lastAbsence.ts } : null,
     lastSeenAt,
     lastWakeAt,

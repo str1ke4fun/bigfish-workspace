@@ -204,14 +204,15 @@ const IDENTITY_PATTERNS = [
  * 与设计原文的「@名字」同理：名字本身可识别，跨面前必须抹掉。
  */
 const NAME_INTRO_PATTERNS = [
-  // `(?!我|你|…)` 是必要的：「我妈叫我回家」不是点名介绍，不能整句删掉。
-  /我(?:有(?:个|一个|一位))?(?:的)?(?:闺蜜|朋友|好友|同事|同学|室友|邻居|对象|男朋友|女朋友|老公|老婆|哥哥|姐姐|弟弟|妹妹|哥|姐|弟|妹|妈妈|爸|妈|儿子|女儿|老板|领导|老师|医生|网友|发小)(?:叫|名叫|名字叫|名字是|姓)\s*(?![你我他她它去来回说别不])[^\s，。！？、,.!?;:：]{1,12}/g,
+  // 负向前瞻挡两类东西：
+  //   ① 代词/日常动词开头——「我妈叫我回家」「我朋友叫外卖」「我姐叫车」不是点名介绍；
+  //   ② `叫` 后面接的是动词补语而不是名字（外卖、车、醒、号、停、价、做、开、了/着/过…）。
+  // 合法的名字（小美、阿强）不以这些字开头，所以不会误伤。
+  /我(?:有(?:个|一个|一位))?(?:的)?(?:闺蜜|朋友|好友|同事|同学|室友|邻居|对象|男朋友|女朋友|老公|老婆|哥哥|姐姐|弟弟|妹妹|哥|姐|弟|妹|妈妈|爸|妈|儿子|女儿|老板|领导|老师|医生|网友|发小)(?:叫|名叫|名字叫|名字是|姓)\s*(?![你我他她它去来回说别不外车醒号停价做开了着过起上下出进到买卖打送借用])[^\s，。！？、,.!?;:：]{1,12}/g,
 ]
 
 /** 逐字重合的窗口长度（设计 §5.6 规则 4）。 */
 const OVERLAP_N = 12
-/** 比对「最近原始事件」时最多回看多少条：够长能覆盖一次聊天，又不把整份事件流读进内存。 */
-const RAW_WINDOW = 50
 
 function splitSentences(text) {
   const out = []
@@ -262,7 +263,9 @@ function hasOverlap(sentence, set) {
  *
  * @returns {{text:string, redacted:boolean, why:string}}
  */
-export function crossChannel(text, { from, to, rawTexts } = {}) {
+export function crossChannel(text, opts = {}) {
+  // 先兜住 opts 为 null，再解构：`crossChannel(text, null)` 也不能抛（永不抛契约）。
+  const { from, to, rawTexts } = opts ?? {}
   try {
     const original = String(text ?? '')
     if (!original) return { text: '', redacted: false, why: '' }
