@@ -461,7 +461,7 @@ git commit -m "feat(dsh-fish): fishCore 服务与 surface 判定"
 ```js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createToolLedger } from '../lib/tool-ledger.js'
@@ -533,7 +533,9 @@ test('超过 32KB 的结果落 artifact，台账只留 sha256', async () => {
 test('台账写失败不抛，只记 status', async () => {
   const root = await tmpRoot()
   try {
-    const ledger = createToolLedger({ root: join(root, 'not-a-dir'), guard })
+    const blocker = join(root, 'blocker')
+    await writeFile(blocker, 'x') // 用普通文件占位，mkdir 其下必然失败
+    const ledger = createToolLedger({ root: blocker, guard })
     const entry = await ledger.record({ name: 'x', arguments: {}, agent: {} }, { isError: false, value: { ok: true }, content: [] }, {})
     assert.equal(entry, null)
     assert.equal(ledger.status().failed >= 1, true)
@@ -1328,3 +1330,19 @@ git commit -m "test(dsh-fish): 工具暴露端到端闭环"
 - [ ] 报告中分别列出：本地单测、提交 SHA、未推送/未部署、未做真实模型调用。
 - [ ] 明确记录本辑未做：B 站独立出门会话、`dsh-bili` 拆包、事件 v3、QQ vendor 薄 fork。
 - [ ] 如果有实现偏差，追加在本文末尾“实现偏差”一节。
+
+---
+
+## 实现偏差（终版记录，2026-11-10）
+
+以下偏差都在逐任务审查或终审中确认过，均为有意选择，不是漏做：
+
+1. **`fishCore` 惰性解析**：计划里 `dsh-wx` 的 `reg()` 片段在 apply 阶段就 `ctx.get('fishCore')`；实际改为 `lazyRender` 在 render 时解析并只缓存成功结果。原因：profile bundle 里 `dsh-wx` 先于 `dsh-fish` 应用，`fishCore` 要等异步 `boot()`，apply 阶段判断会静默关掉投影（Task 9 Critical）。
+2. **台账只观察 `tools/result`**：不使用 `tools/post-execute`。宿主那里监听器抛错会把成功调用翻成 isError；`tools/result` 是只读观察点，写失败只记 `status()`。
+3. **`ownTools` 并入 `her_tools`**：`agent/created` 早于本插件注册工具，启动期宿主名单过滤必须把 `[...FISH_TOOLS, 'her_tools']` 并进去，否则她自己的工具被静默剥掉（Task 6 C1）。
+4. **工具注册整体移到 `bootstrapHomeWithRetry` 之前**：`restrict` 因「名字还没登记」报错时的自愈会按宿主人名单求交集，把 `her_tools` 一起丢掉。注册提前后竞态消失；自愈分支保留，并改为如实上报实际生效名单（终审 I3）。
+5. **`wx_ocr` 返回完整 JSON，投影侧截断**：先截 24k 再解析会把原始 JSON（含 `box`）回吐给模型并丢掉大部分文字。现在 `execute` 返回完整 JSON（台账落 artifact），模型投影只出可读文字；`fishCore` 缺席的降级渲染单独限 24k（终审 I2）。
+6. **未知 `qq_*` 原样放行并记入 `legacy`**：不做统一投影。整段替换会毁掉未来 vendor 工具已经渲染好的内容；只有策略表里的 7 个 QQ 名字走投影（Task 10 返修）。
+7. **计划内 Task 4 测试片段的两处修正**（`writeFile` import、用普通文件占位制造写失败）随本文件一并提交；这是计划文本的勘误，不影响实现。
+
+终版验证：`src/dsh-fish` 796/796、`src/dsh-wx` 67/67；所有提交只在 `dev` worktree，`main` 未动；未推送、未在 WSL 拉取、未部署重启，未做真实模型调用与消息收发验收。
