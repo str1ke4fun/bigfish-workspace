@@ -9,8 +9,10 @@
 
 import { idTime, detectSelfMod } from './schema.js'
 import { parseRefusal, REACTIONS, REACTION_HURTS, CONCEDE_WINDOW_MS, isConcede } from './refuse.js'
-// 评论区里别人的话（2026-10-24）：只借两个纯函数，derive 不反过来被 voices 依赖。
-import { findEcho, VOICE_FRESH_DAYS } from './voices.js'
+// 评论区里别人的话（2026-10-24）：只借纯函数；A0 起从 similarity.js 取，不再指向 voices。
+import { similarity, findEcho, VOICE_FRESH_DAYS } from './similarity.js'
+
+export { similarity }
 
 export const DAY_MS = 86_400_000
 export const STAGE_NAMES = ['信任', '自主', '主动', '整合']
@@ -178,30 +180,6 @@ export function growthDay(events, now = Date.now()) {
   if (!Number.isFinite(t0)) return Math.max(1, snap)
   const live = Math.floor((now - t0) / DAY_MS) + 1
   return Math.max(1, snap, live)
-}
-
-/** 字符二元组 Dice 相似度（跨情境一致与"新话"判定用） */
-export function similarity(a, b) {
-  const A = String(a ?? ''), B = String(b ?? '')
-  if (A === B) return 1
-  if (!A || !B) return 0
-  const grams = (s) => {
-    const m = new Map()
-    for (let i = 0; i < s.length - 1; i++) {
-      const g = s.slice(i, i + 2)
-      m.set(g, (m.get(g) || 0) + 1)
-    }
-    return m
-  }
-  const ga = grams(A), gb = grams(B)
-  let inter = 0, total = 0
-  for (const [g, c] of ga) {
-    total += c
-    const d = gb.get(g)
-    if (d) inter += Math.min(c, d)
-  }
-  for (const [, c] of gb) total += c
-  return total === 0 ? 0 : (2 * inter) / total
 }
 
 export function pickName(text) {
