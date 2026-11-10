@@ -398,8 +398,10 @@ test('derive：refusals / scars 的 object 也跨面去引用化（act 非空时
   const m = deriveSelf(events, { now: T0 + 4 * DAY_MS, viewSurface: 'identity' })
   assert.equal(m.refusals.length, 1, '去引用化后拒绝条目不能消失（计数不变）')
   assert.equal(m.refusals[0].act, '看', 'act 不是原文，必须保留')
-  assert.equal(m.refusals[0].object.includes(phone), false, 'refusals[].object 的手机号不能透出')
+  // 断言到具体文本：只查手机号的话，整句被规则 4 误删成空串也会「通过」——
+  // 那正是「排除自己的来源事件」写错时的样子（自己这句和自己是 12 字重合）。
+  assert.equal(m.refusals[0].object, '手机里的聊天记录，这件事真的够了。', 'refusals[].object 只抹掉手机号，不能整句删空')
   assert.equal(m.scars.length, 1, '去引用化后疤条目不能消失（计数不变）')
   assert.equal(m.scars[0].act, '看')
-  assert.equal(m.scars[0].object.includes(phone), false, 'scars[].object 的手机号不能透出')
+  assert.equal(m.scars[0].object, '手机里的聊天记录，这件事真的够了。', 'scars[].object 只抹掉手机号，不能整句删空')
 })
