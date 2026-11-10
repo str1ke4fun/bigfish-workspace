@@ -287,7 +287,7 @@ export function apply(ctx, baseConfig = {}) {
     } catch (err) {
       home = { ok: false, why: String(err?.message ?? err).slice(0, 160), wsId: '', sessionId: '' }
     }
-    // 重试期间插件被停用：不继续挂工具、开定时器，静默收尾。
+    // 重试期间插件被停用：不继续挂观测路由、开定时器，静默收尾（工具此前已注册，由 disposers 统一注销）。
     if (bootAbort.signal.aborted) return
     if (!home.ok) logger.warn(`[dsh-fish] 屋子没建起来：${home.why}`)
     else {

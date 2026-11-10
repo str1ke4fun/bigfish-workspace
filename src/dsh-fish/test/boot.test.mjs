@@ -165,12 +165,16 @@ test('屋子会话 id 会登记成 web 面（走 surface.reserve）', async () =
   await withRoot(async (root) => {
     const { ctx, provided } = fakeCtx({ createReturn: { sessionId: 'session-home-1' } })
     const h = apply(ctx, { root })
-    await waitFor(() => provided.get('fishCore')?.surface, 5000)
-    const core = provided.get('fishCore')
-    assert.ok(core, 'fishCore 应该挂上')
-    const surface = core.surface.current({
+    const probe = {
       session: { header: { id: 'session-home-1', cwd: '/definitely/not/her' } },
-    })
+    }
+    // reserve 发生在 bootstrapHome 返回之后，而 fishCore 挂上要早得多：
+    // 只等 fishCore 会出现「核心已在、还没 reserve」的竞态（隔离跑 50 次能红 2 次），
+    // 这里直接等到面判定真的变成 web。
+    const surface = await waitFor(
+      () => (provided.get('fishCore')?.surface?.current(probe) === 'web' ? 'web' : null),
+      5000,
+    )
     assert.equal(surface, 'web', '屋子会话 id 必须单独登记（reserve），不能只靠 cwd')
     h.dispose?.()
   })
