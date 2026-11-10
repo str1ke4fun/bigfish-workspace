@@ -64,9 +64,29 @@ function nameSet(value) {
   return new Set()
 }
 
-function safeCatalog(policy, surface, caps) {
+/**
+ * 宿主名单：null / undefined 表示「拿不到名单」，按旧行为不做宿主过滤；
+ * 空集合是真实状态（宿主一个都没注册），要照常把目录清空。
+ */
+function hostNameSet(value) {
+  if (value == null) return null
+  return nameSet(value)
+}
+
+/** 策略条目的能力谓词：requires 里每一项都必须在 caps 里严格为 true。 */
+function capsOk(entry, caps) {
+  const requires = Array.isArray(entry?.requires) ? entry.requires : []
+  return requires.every((c) => caps?.[c] === true)
+}
+
+/** 宿主真的注册过这个名字才列出/讲；hostNames 为 null 时不做这层过滤。 */
+function hostOk(entry, hostNames) {
+  return !hostNames || hostNames.has(String(entry?.name ?? ''))
+}
+
+function safeCatalog(policy, surface, caps, hostNames) {
   try {
-    const list = policy?.catalog?.({ surface, caps })
+    const list = policy?.catalog?.({ surface, caps, hostNames })
     return Array.isArray(list) ? list : []
   } catch {
     return []
@@ -229,8 +249,12 @@ function project(result, args) {
 
     if (action === 'load') {
       const opened = Array.isArray(data.opened) ? data.opened.map((n) => String(n)) : []
+      const alreadyOpen = Array.isArray(data.alreadyOpen) ? data.alreadyOpen.map((n) => String(n)) : []
       const head = data.already ? '[已经开着]' : '[已打开]'
-      return { text: `${head} ${opened.length ? opened.join('、') : '好了'}` }
+      const fresh = opened.length ? opened.join('、') : '好了'
+      // 混合请求：这次打开的新工具与早就开着的名字都要说清楚，不能只说一句「已经开着」。
+      const tail = alreadyOpen.length ? `；${alreadyOpen.join('、')} 早就开着` : ''
+      return { text: `${head} ${fresh}${tail}` }
     }
 
     return { text: String(result?.message ?? '') }
@@ -284,12 +308,14 @@ export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
       const agent = exec?.agent
       const surface = currentSurface(core, agent)
       if (!surface) return failure('NO_SURFACE', CATALOG_FAILED)
+      const state = currentState(core, agent)
+      const open = nameSet(state?.allow)
+      const hostNames = hostNameSet(state?.hostNames)
 
       if (action === 'search') {
-        const open = nameSet(currentState(core, agent)?.allow)
         const query = String(args?.query ?? '').trim().toLowerCase()
         const items = []
-        for (const entry of safeCatalog(policy, surface, caps)) {
+        for (const entry of safeCatalog(policy, surface, caps, hostNames)) {
           const name = typeof entry?.name === 'string' ? entry.name : ''
           if (!name || open.has(name)) continue
           const summary = String(entry?.summary ?? '')
@@ -306,14 +332,19 @@ export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
 
       if (action === 'describe') {
         // 先按当前面过滤：只认策略表里、属于这个面的名字。宿主工具、别的面、
-        // 不存在的名字一律跳过——绝不能拿它们去读实时工具表，否则会把宿主的
-        // 说明和参数名带进她的上下文。
-        const names = parseNames(args?.names)
-          .filter((name) => policyEntry(policy, name, surface, caps) !== null)
-          .slice(0, MAX_DESCRIBE)
-        const items = names.map((name) => {
-          const live = liveTool(exec, name)
+        // 不存在的名字、宿主没注册的名字一律跳过——绝不能拿它们去读实时工具表，
+        // 否则会把宿主的说明和参数名带进她的上下文。
+        const picked = []
+        for (const name of parseNames(args?.names)) {
           const entry = policyEntry(policy, name, surface, caps)
+          if (!entry || !hostOk(entry, hostNames)) continue
+          picked.push({ name, entry })
+          if (picked.length >= MAX_DESCRIBE) break
+        }
+        const items = picked.map(({ name, entry }) => {
+          // 能力不满足：中性地说用不了，不读实时工具表、不给参数。
+          if (!capsOk(entry, caps)) return { name, summary: '这个现在用不了', params: [] }
+          const live = liveTool(exec, name)
           const summary = oneLine(live?.description)
             || String(entry?.summary ?? '').trim()
             || '没有说明'
@@ -323,7 +354,6 @@ export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
       }
 
       if (action === 'load') {
-        const open = nameSet(currentState(core, agent)?.allow)
         const group = String(args?.group ?? '').trim()
         const requested = parseNames(args?.names)
 
@@ -348,7 +378,7 @@ export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
         // 就到此为止，绝不把坏名字送进 reveal。
         let targets = null
         try {
-          targets = policy?.loadTargets?.({ surface, caps, hostNames: null, ...selector })
+          targets = policy?.loadTargets?.({ surface, caps, hostNames, ...selector })
         } catch {
           targets = null
         }
@@ -373,10 +403,13 @@ export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
         const freshlyOpened = targetNames.length
           ? targetNames
           : (Array.isArray(resolved.added) ? resolved.added.map((n) => String(n)) : [])
-        const opened = [...new Set([...already, ...freshlyOpened])]
+        // 这次真正打开的名字；already 是请求里本来就开着的（只回显，不再开）。
+        const opened = [...new Set(freshlyOpened)].filter((n) => !already.includes(n))
         return {
           ok: true,
-          data: already.length ? { opened, already: true } : { opened },
+          data: already.length
+            ? { opened, alreadyOpen: already }
+            : { opened },
         }
       }
 

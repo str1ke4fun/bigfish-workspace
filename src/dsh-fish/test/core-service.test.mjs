@@ -28,6 +28,16 @@ test('provideFishCore 暴露 surface/guard/config，并登记 web/wx/qq/bili', (
   assert.equal(ctx.get('fishCore'), undefined)
 })
 
+test('noteHome 死路径已删；屋子会话走 surface.reserve 登记', () => {
+  const ctx = fakeCtx()
+  const { core, dispose } = provideFishCore(ctx, { root: '/tmp/fish-root', herDir: '/tmp/fish-root/home' })
+  assert.equal(core.surface.noteHome, undefined, '没人调用的第二道保险已删，避免误以为有 homeSessionId 兜底')
+  assert.equal(core.surface.current(agent('home-9', '/tmp/elsewhere')), null)
+  core.surface.reserve('home-9', 'web')
+  assert.equal(core.surface.current(agent('home-9', '/tmp/elsewhere')), 'web')
+  dispose()
+})
+
 test('qq 按 onebot- 前缀判定，未知会话 null', () => {
   const ctx = fakeCtx()
   const { core, dispose } = provideFishCore(ctx, { root: '/tmp/fish-root', herDir: '/tmp/fish-root/home' })

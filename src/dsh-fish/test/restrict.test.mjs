@@ -249,7 +249,8 @@ test('restrict 因为「名字还没登记」抛错时：按交集再收一次�
   // 旧实现整段进 catch，那一条会话全开。现在要求：捡回名单、按交集再收。
   const ctx = fakeCtx()
   const say = []
-  registerToolRestrict(ctx, { herDir: 'C:\h', log: (m) => say.push(m) })
+  const seen = []
+  registerToolRestrict(ctx, { herDir: 'C:\h', log: (m) => say.push(m), onResult: (r) => seen.push(r) })
 
   const calls = []
   let first = true
@@ -278,6 +279,14 @@ test('restrict 因为「名字还没登记」抛错时：按交集再收一次�
   assert.deepEqual(calls[1].allow, ['read_image'], '第二次只用宿主真认识的名字')
   assert.equal(guards.length, 1, '兜底守卫要在（先挂的，不受 restrict 失败影响）')
   assert.ok(say.some((m) => m.includes('先按认识的 1 个收窄')), '要如实说出这次少收了几个')
+
+  // 自愈之后，报告与实际生效的必须是同一份名单——否则自检会把「意图」当成「生效」。
+  assert.deepEqual(seen.at(-1).allow, calls[1].allow, 'onResult.allow 必须是宿主真正接受的那份')
+  const st = getAgentToolState(agent)
+  assert.deepEqual(st.allow, ['read_image'], 'guard 读的 Set 也要同步成宿主真正接受的名单')
+  assert.deepEqual(st.revealed, ['read_image'], 'revealed 同步为真正生效的名字')
+  assert.equal(guards[0]({ name: 'growth_commit' }), '这件事我做不到。', '被自愈丢掉的工具必须真的调不动')
+  assert.equal(guards[0]({ name: 'read_image' }), undefined)
 })
 
 test('restrict 一直失败时，兜底守卫仍然挂着（挡住 subagent 的那条路）', () => {

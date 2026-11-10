@@ -191,10 +191,10 @@ export function registerToolRestrict(ctx, {
 
   const onCreated = ({ agent } = {}) => {
     const hostNames = readHostNames(agent)
-    // 插件自己的工具在本插件注册前必然不在宿主的 restrictableNames 里：agent/created
-    // 由 bootstrapHome 建会话时同步发出，而本插件的工具注册还在它后面。它们一定由
-    // 本插件注册，所以只并 ownNames 不会放宽到别人的工具；宿主名单之外的其它名字
-    // 仍然要被滤掉。hostNames 为 null 表示根本拿不到名单，按旧行为不做宿主过滤。
+    // 插件自己的工具现在**先于** bootstrapHome 注册，正常情况下已经在宿主的
+    // restrictableNames 里；仍并 ownNames 是为了老宿主 / 名单晚到时不把自己的工具
+    // 滤掉。ownNames 只含本插件注册的名字，不会放宽到别人的工具；宿主名单之外的
+    // 其它名字仍然要被滤掉。hostNames 为 null 表示拿不到名单，按旧行为不做宿主过滤。
     const namesForPolicy = hostNames ? new Set([...hostNames, ...ownNames]) : null
 
     let surfaceId = null
@@ -308,6 +308,8 @@ export function registerToolRestrict(ctx, {
       }
       state.applyRestrict = applyRestrict
 
+      // 真正生效的名单。正常情况下等于 resolved；自愈时要改成宿主接受的那份。
+      let effective = resolved
       try {
         applyRestrict(resolved)
         applied += 1
@@ -323,12 +325,20 @@ export function registerToolRestrict(ctx, {
         if (!healed || usable.length === 0) throw err
         applyRestrict(usable)
         applied += 1
+        effective = usable
+        // guard 读的是 allowSet（同一个 Set）；自愈后必须同步，否则被丢掉的工具
+        // 还会在 guard 眼里是「允许」的——报告与执行两套标准。
+        allowSet.clear()
+        for (const n of usable) allowSet.add(n)
+        // revealed 也同步成真正生效的名字：后续 reveal 重算 allow 时不能把
+        // 自愈已经丢掉的工具又算回来。
+        state.revealed = new Set(usable)
         say(`[dsh-fish] 工具面收窄：有 ${resolved.length - usable.length} 个名字宿主还没登记，先按认识的 ${usable.length} 个收窄`)
       }
 
-      say(`[dsh-fish] 工具面收窄：她这条会话只留 ${resolved.length} 个工具${guardOk ? '，另有兜底守卫' : ''}`)
+      say(`[dsh-fish] 工具面收窄：她这条会话只留 ${effective.length} 个工具${guardOk ? '，另有兜底守卫' : ''}`)
       // 真的挂上了才算数——"注册了"和"生效了"必须分开报，否则自检会说谎。
-      onResult?.({ ok: true, applied, failed, why: 'applied', allow: resolved, guard: guardOk })
+      onResult?.({ ok: true, applied, failed, why: 'applied', allow: effective, guard: guardOk })
     } catch (err) {
       failed = String(err?.message ?? err).slice(0, 300)
       // 宿主的报错里带着「known global tools: a, b, c」全量名单（0.2.1-rc.3 实测）。
@@ -454,6 +464,9 @@ export function getAgentToolState(agent) {
   if (!state) return null
   return {
     surface: state.surface,
+    // 宿主真正注册过的名字（含本插件自有工具）。her_tools 的目录/说明要用它过滤；
+    // 拿不到名单时保持 null，调用方按旧行为不做宿主过滤。
+    hostNames: state.hostNames ? [...state.hostNames] : null,
     allow: [...state.allow],
     revealed: [...state.revealed],
     restrictDispose: state.restrictDispose,

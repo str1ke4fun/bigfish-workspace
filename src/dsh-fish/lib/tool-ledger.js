@@ -170,7 +170,7 @@ export function createToolLedger({
     const effects = sanitize(rawValue?.effects ?? null, redactState)
 
     // 大字段：先脱敏，再算 sha256（对脱敏后的字节），原始值绝不落盘。
-    // value / content / modelText 各自判断，一次调用可产生多个 artifact。
+    // args / value / content / modelText 各自判断，一次调用可产生多个 artifact。
     const artifacts = []
 
     function offload(data, suffix) {
@@ -184,6 +184,7 @@ export function createToolLedger({
       return { artifact: artifactPath, bytes, sha256 }
     }
 
+    const entryArgs = offload(args, 'args')
     const entryValue = offload(value, '')
     const entryContent = offload(content, 'content')
     const entryModelText = offload(modelText, 'modelText')
@@ -195,7 +196,7 @@ export function createToolLedger({
       surface: surfaceFor(exec, extra),
       sessionId: String(exec?.agent?.session?.header?.id ?? exec?.agent?.session?.id ?? ''),
       tool: String(exec?.name ?? ''),
-      args,
+      args: entryArgs,
       argsHash: `sha256:${sha256Hex(JSON.stringify(args))}`,
       redacted: redactState.redacted,
       ok,

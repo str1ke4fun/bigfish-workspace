@@ -40,14 +40,6 @@ export function provideFishCore(ctx, { root, herDir, log } = {}) {
   const warn = asWarn(log)
   const registry = createSurfaceRegistry({ log: warn ? { warn } : undefined })
 
-  // 她的屋子会话 id。reserve() 的预分配表已经优先命中，这里再留一份是因为
-  // 宿主在 create 期间就会触发 agent/created——那一刻预分配可能还没登记完。
-  let homeSessionId = ''
-
-  function noteHome(id) {
-    homeSessionId = String(id ?? '')
-  }
-
   const surfaceDisposers = [
     // bili：她刷站用的专属 cwd。不是这个目录就不算 bili。
     registry.register({
@@ -74,17 +66,14 @@ export function provideFishCore(ctx, { root, herDir, log } = {}) {
       match: ({ id }) => typeof id === 'string' && id.startsWith('onebot-'),
     }),
 
-    // web：屋子会话（id 或 cwd 命中），或 cwd 就是她的房间。
-    // 空 id 一定要挡住——`'' === ''` 会把「不知道是谁」默认成 web。
+    // web：cwd 就是她的房间。屋子会话 id 由 bootstrapHome 建完后调用
+    // `surface.reserve(id, 'web')` 登记（reserve 的预分配表优先于 matcher）；
+    // 不再维护一份看起来像第二道保险、实际没人写的 homeSessionId。
     registry.register({
       id: 'web',
-      match: ({ id, cwd }) =>
-        (homeSessionId !== '' && id === homeSessionId) || (homeDir !== '' && cwd === homeDir),
+      match: ({ cwd }) => homeDir !== '' && cwd === homeDir,
     }),
   ]
-
-  // 让调用方能提前登记屋子会话（bootstrapHome 建完会话后调）。
-  registry.noteHome = noteHome
 
   async function getConfig() {
     try {

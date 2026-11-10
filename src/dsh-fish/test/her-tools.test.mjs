@@ -8,6 +8,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { registerHerTools } from '../lib/tools.js'
+import {
+  catalog,
+  describeEntry,
+  entriesFor,
+  groupsFor,
+  loadTargets,
+  resolveAllow,
+} from '../lib/tool-policy.js'
 
 function fakeHost() {
   const defs = new Map()
@@ -32,10 +40,21 @@ function render(def, out) {
   return def.output.render({}, out)[0].text
 }
 
-function register({ core, policy: p = policy } = {}) {
+function register({ core, policy: p = policy, caps } = {}) {
   const h = fakeHost()
-  const dispose = registerHerTools(h.ctx, { core, policy: p })
+  const dispose = registerHerTools(h.ctx, { core, policy: p, caps })
   return { h, def: h.defs.get('her_tools'), dispose }
+}
+
+/** 真实的策略表入口：M1 要验证 hostNames / caps 贯穿 catalog、describe、load。 */
+const realPolicy = { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry }
+const realCaps = { hasGui: true, hasOcr: true, hasImageRoute: true }
+
+function wxCore(state) {
+  return {
+    surface: { current: () => 'wx' },
+    tools: { reveal: () => ({ ok: true, added: [] }), state: () => state },
+  }
 }
 
 test('search 只列当前面 deferred，最多 5 条，不改 revealed', async () => {
@@ -58,6 +77,70 @@ test('search 过滤掉已经开着的名字', async () => {
   const out = await def.execute({ action: 'search' }, { agent: {} })
   assert.deepEqual(out.data.items.map((i) => i.name), ['wx_click'])
   assert.equal(render(def, out).includes('wx_see'), false)
+})
+
+test('search 只列宿主名单里真的注册过的策略表工具', async () => {
+  const hostNames = new Set(['growth_commit', 'her_tools', 'read_image', 'wx_peek', 'wx_see'])
+  const { def } = register({
+    core: wxCore({ surface: 'wx', allow: [], hostNames }),
+    policy: realPolicy,
+    caps: realCaps,
+  })
+  const out = await def.execute({ action: 'search' }, { agent: {} })
+  assert.deepEqual(out.data.items.map((i) => i.name), ['wx_see'])
+})
+
+test('search 不列能力不满足的工具', async () => {
+  const hostNames = new Set(['wx_ocr', 'wx_see'])
+  const { def } = register({
+    core: wxCore({ surface: 'wx', allow: [], hostNames }),
+    policy: realPolicy,
+    caps: { hasGui: true }, // 没有 hasOcr
+  })
+  const out = await def.execute({ action: 'search' }, { agent: {} })
+  assert.deepEqual(out.data.items.map((i) => i.name), ['wx_see'])
+})
+
+test('describe 对宿主没注册的策略名字闭口不谈', async () => {
+  const hostNames = new Set(['wx_peek'])
+  const touched = []
+  const agent = { ctx: { tools: { get: (n) => { touched.push(n); return { description: '看屏幕' } } } } }
+  const { def } = register({
+    core: wxCore({ surface: 'wx', allow: [], hostNames }),
+    policy: realPolicy,
+    caps: realCaps,
+  })
+  const out = await def.execute({ action: 'describe', names: ['wx_see'] }, { agent })
+  assert.deepEqual(out.data.items, [])
+  assert.deepEqual(touched, [], '宿主没注册的名字不该去读实时工具表')
+  assert.match(render(def, out), /这里没有/)
+})
+
+test('describe 对能力不满足的工具明说用不了', async () => {
+  const hostNames = new Set(['wx_ocr'])
+  const { def } = register({
+    core: wxCore({ surface: 'wx', allow: [], hostNames }),
+    policy: realPolicy,
+    caps: { hasGui: true }, // 没有 hasOcr
+  })
+  const out = await def.execute({ action: 'describe', names: ['wx_ocr'] }, { agent: {} })
+  assert.equal(out.ok, true)
+  assert.equal(out.data.items[0].name, 'wx_ocr')
+  assert.match(render(def, out), /wx_ocr/)
+  assert.match(render(def, out), /用不了/)
+})
+
+test('load 宿主没注册的名字打不开', async () => {
+  const hostNames = new Set(['wx_peek'])
+  const { def } = register({
+    core: wxCore({ surface: 'wx', allow: [], hostNames }),
+    policy: realPolicy,
+    caps: realCaps,
+  })
+  const out = await def.execute({ action: 'load', names: ['wx_see'] }, { agent: {} })
+  assert.equal(out.ok, false)
+  assert.equal(out.code, 'LOAD_FAILED')
+  assert.match(render(def, out), /没打开/)
 })
 
 test('search 最多 5 条', async () => {
@@ -295,11 +378,14 @@ test('load 混合列表：已开的只回显，未开的真的打开', async () 
   const out = await def.execute({ action: 'load', names: ['wx_see', 'wx_click'] }, { agent: {} })
   assert.equal(out.ok, true)
   assert.deepEqual(revealedNames, ['wx_click'])
-  assert.deepEqual([...out.data.opened].sort(), ['wx_click', 'wx_see'])
-  assert.equal(out.data.already, true)
+  assert.deepEqual(out.data.opened, ['wx_click'], '这次真正打开的名字')
+  assert.deepEqual(out.data.alreadyOpen, ['wx_see'], '早就开着的名字单独列出')
+  assert.equal(out.data.already, undefined, '混合请求不是「已经开着」')
   const text = render(def, out)
+  assert.match(text, /\[已打开\]/, '要说这次真的打开了东西')
   assert.match(text, /wx_click/)
-  assert.match(text, /\[已经开着\]/)
+  assert.match(text, /wx_see.*早就开着|早就开着.*wx_see/)
+  assert.equal(text.includes('[已经开着]'), false)
 })
 
 test('load 别的面/宿主工具失败，不假装成功', async () => {

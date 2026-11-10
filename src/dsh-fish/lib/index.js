@@ -193,8 +193,8 @@ export function apply(ctx, baseConfig = {}) {
         policy,
         caps,
         extra: config?.tools?.allow ?? [],
-        // `her_tools` 必须并进 ownTools：她的屋子会话在本插件注册工具之前就触发
-        // agent/created，不并进去它会被宿主名单滤掉，她自己永远打不开。
+        // `her_tools` 必须并进 ownTools：它是本插件注册的，但老宿主/名单晚到的
+        // 情况下 agent/created 可能还看不到它；不并进去会被宿主名单滤掉。
         ownTools: [...FISH_TOOLS, 'her_tools'],
         enabled: config?.tools?.restrict !== false,
         log: (...a) => logger.info(...a),
@@ -243,6 +243,38 @@ export function apply(ctx, baseConfig = {}) {
       logger.warn('[dsh-fish] 身份段没挂上', err?.message ?? err)
     }
 
+    // ---- 工具：一个写（growth_commit）、一个看（bili_look）----
+    // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会看，或只会记不会看）。
+    // **必须先于 bootstrapHome**：屋子会话是在那里创建的，`agent/created` 同步发出；
+    // 工具若晚一步，restrict 会因「names unknown global tools …」自愈，把 her_tools
+    // 这类唯一能按需开工具的入口一起丢掉，这条会话终生降级。
+    if (bootAbort.signal.aborted) return
+    if (ctx.tools?.register) {
+      for (const reg of [
+        () => registerCapture(ctx, { root, core: fishCore ?? undefined }),
+        () => registerLook(ctx, { root, client: baseConfig.client }),
+        () => registerSpeak(ctx, { root, client: baseConfig.client }),
+        () => registerRecall(ctx, { root, core: fishCore ?? undefined }),
+        () => registerWatch(ctx, { root }),
+        // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
+        () => registerLetter(ctx, { root, core: fishCore ?? undefined }),
+        // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
+        () => registerRemind(ctx, { root, core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
+        // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
+        () => registerInbox(ctx, { core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
+        // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
+        () => registerHerTools(ctx, { core: fishCore, policy, caps }),
+      ]) {
+        try {
+          const d = reg()
+          if (typeof d === 'function') disposers.push(d)
+          else if (d && typeof d.dispose === 'function') disposers.push(() => d.dispose())
+        } catch (err) {
+          logger.warn('[dsh-fish] 工具注册失败', err?.message ?? err)
+        }
+      }
+    }
+
     let home = { ok: false, why: 'not attempted', wsId: '', sessionId: '' }
     try {
       home = await bootstrapHomeWithRetry(ctx, {
@@ -282,34 +314,6 @@ export function apply(ctx, baseConfig = {}) {
     // 真正进她上下文的是上面注册的 system prompt 段（每轮组装时现读文件）。
     const doc = await writeSelfDoc(root, { log: (...a) => logger.warn(...a) })
     if (!doc.ok) logger.warn(`[dsh-fish] 身份文件写不出来：${doc.why}`)
-
-    // 工具：一个写（growth_commit）、一个看（bili_look）。
-    // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会看，或只会记不会看）。
-    if (ctx.tools?.register) {
-      for (const reg of [
-        () => registerCapture(ctx, { root, core: fishCore ?? undefined }),
-        () => registerLook(ctx, { root, client: baseConfig.client }),
-        () => registerSpeak(ctx, { root, client: baseConfig.client }),
-        () => registerRecall(ctx, { root, core: fishCore ?? undefined }),
-        () => registerWatch(ctx, { root }),
-        // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
-        () => registerLetter(ctx, { root, core: fishCore ?? undefined }),
-        // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
-        () => registerRemind(ctx, { root, core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
-        // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
-        () => registerInbox(ctx, { core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
-        // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
-        () => registerHerTools(ctx, { core: fishCore, policy, caps }),
-      ]) {
-        try {
-          const d = reg()
-          if (typeof d === 'function') disposers.push(d)
-          else if (d && typeof d.dispose === 'function') disposers.push(() => d.dispose())
-        } catch (err) {
-          logger.warn('[dsh-fish] 工具注册失败', err?.message ?? err)
-        }
-      }
-    }
 
     // 观测台路由。`exposure` 是可见性状态（面登记、策略表、台账、QQ 投影 legacy），
     // 只读传给自检；任何一项没挂上都由 selfcheck 给出中性结论，不影响工具路径。

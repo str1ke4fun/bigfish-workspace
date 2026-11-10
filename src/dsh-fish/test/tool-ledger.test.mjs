@@ -127,6 +127,27 @@ test('content 与 modelText 超过上限也落 artifact', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('大参数也落 artifact，argsHash 仍然保留', async () => {
+  const root = await tmpRoot()
+  try {
+    const ledger = createToolLedger({ root, guard, maxInlineBytes: 64 })
+    const args = { query: 'x'.repeat(200), n: 3 }
+    const entry = await ledger.record(
+      { name: 'wx_context', arguments: args, agent: { session: { header: { id: 's1' } } } },
+      { isError: false, value: { ok: true }, content: [] },
+      { surface: 'wx' },
+    )
+    assert.equal(typeof entry.args, 'object')
+    assert.equal(entry.args.artifact, join(root, 'tool-ledger', 'artifacts', `${entry.id}.args.json`))
+    const text = await readFile(entry.args.artifact, 'utf8')
+    assert.deepEqual(JSON.parse(text), args)
+    assert.equal(entry.args.bytes, Buffer.byteLength(text, 'utf8'))
+    assert.equal(entry.args.sha256, createHash('sha256').update(text).digest('hex'))
+    assert.equal(entry.argsHash, `sha256:${createHash('sha256').update(JSON.stringify(args)).digest('hex')}`)
+    assert.equal(ledger.status().artifacts, 1)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('台账写失败不抛，只记 status', async () => {
   const root = await tmpRoot()
   try {

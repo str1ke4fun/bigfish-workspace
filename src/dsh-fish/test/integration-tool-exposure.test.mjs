@@ -263,7 +263,8 @@ test('面 → allow → restrict → her_tools → load → 新 allow/guard/台�
       assert.ok(wxAllow.includes(n), `wx 的 allow 里少了 ${n}`)
     }
 
-    // ---- 2. 注册 her_tools（生产顺序：agent/created 之后才注册工具）----
+    // ---- 2. 注册 her_tools（生产顺序已改为先注册工具再建会话，见 boot.test.mjs；
+    //         这里仍手动注册，测的是收窄之后按需揭示的闭环）----
     registerHerTools(ctx, { core, policy, caps })
     const herTools = defs.get('her_tools')
     assert.ok(herTools, 'her_tools 应该注册上')

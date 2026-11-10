@@ -28,24 +28,42 @@ async function withRoot(fn) {
 }
 
 /** 假宿主：tools / webServer / connection / sessionController / logger 全套 */
-function fakeCtx({ allow = true, promptImpl, home = true } = {}) {
+function fakeCtx({ allow = true, promptImpl, home = true, createReturn = null } = {}) {
   const tools = new Map()
   const routes = []
   const prompts = []
   const sessions = new Set()
   const creates = []
   const workspaces = new Map()
+  const order = []
+  const provided = new Map()
   const ctx = {
-    tools: { register: (spec) => { tools.set(spec.name, spec); return () => tools.delete(spec.name) } },
+    tools: {
+      register: (spec) => {
+        order.push({ type: 'tool', name: spec.name })
+        tools.set(spec.name, spec)
+        return () => tools.delete(spec.name)
+      },
+    },
     webServer: { register: (r) => { routes.push(r); return () => {} } },
     connection: { requestRejection: () => (allow ? null : { status: 403, message: 'blocked' }) },
     sessionController: {
-      async create({ sessionId, cwd }) { creates.push({ sessionId, cwd }); if (sessions.has(sessionId)) throw new Error('exists'); sessions.add(sessionId) },
+      async create({ sessionId, cwd }) {
+        order.push({ type: 'create', sessionId })
+        creates.push({ sessionId, cwd })
+        if (sessions.has(sessionId)) throw new Error('exists')
+        sessions.add(sessionId)
+        return createReturn
+      },
       async prompt(payload) { prompts.push(payload); if (promptImpl) await promptImpl(payload) },
     },
     logger: { info() {}, warn() {}, error() {} },
     on() {},
     get(key) { return ctx[key] },
+    provide(name, value) {
+      provided.set(name, value)
+      return () => provided.delete(name)
+    },
   }
   // bootstrapHome 现在会等服务晚就绪后最多重试约 15 秒；假宿主必须像个真宿主，
   // 否则 boot 后面的工具/路由注册会被这段等待拖过各用例的 5 秒窗口。
@@ -61,7 +79,7 @@ function fakeCtx({ allow = true, promptImpl, home = true } = {}) {
       list: () => [...workspaces.values()],
     }
   }
-  return { ctx, tools, routes, prompts, sessions, creates }
+  return { ctx, tools, routes, prompts, sessions, creates, order, provided }
 }
 
 /** 等注册生效：apply() 的工具/路由登记不是同步可见的，固定 sleep 在慢机上会偶发不够
@@ -116,6 +134,44 @@ test('注册了 growth_commit 与观测台路由', async () => {
     assert.ok(paths_.includes('/dsh-fish'), '首页要注册')
     assert.ok(paths_.includes('/dsh-fish/state'))
     assert.ok(paths_.includes('/dsh-fish/config'))
+    h.dispose?.()
+  })
+})
+
+// 启动竞态回归：工具必须先注册，宿主建她的会话（agent/created）时才能在
+// restrictableNames 里看到它们；否则 restrict 会因「名字还没登记」自愈，
+// 把 her_tools / growth_commit 一起丢掉。
+test('所有工具注册都发生在屋子会话创建之前', async () => {
+  await withRoot(async (root) => {
+    const { ctx, tools, order } = fakeCtx()
+    const h = apply(ctx, { root })
+    await waitFor(() => tools.has('her_tools') && order.some((e) => e.type === 'create'))
+    await new Promise((r) => setTimeout(r, 50))
+
+    const firstCreate = order.findIndex((e) => e.type === 'create')
+    assert.ok(firstCreate >= 0, '假宿主应该建过会话')
+    const toolIdx = order.map((e, i) => (e.type === 'tool' ? i : -1)).filter((i) => i >= 0)
+    assert.ok(toolIdx.length > 0, '应该注册过工具')
+    assert.ok(toolIdx.every((i) => i < firstCreate), `工具注册必须全部先于建会话：${JSON.stringify(order)}`)
+    assert.ok(tools.has('her_tools'), 'her_tools 也要在 agent/created 之前注册')
+    h.dispose?.()
+  })
+})
+
+// 屋子会话建好后要登记给 surface，否则 web matcher 只能靠 cwd 命中——
+// 换个 cwd 的人口统计（比如宿主任意给出的会话）就会被判成未知。
+// noteHome 那条死路径已删；这里钉住真正生效的 reserve 登记。
+test('屋子会话 id 会登记成 web 面（走 surface.reserve）', async () => {
+  await withRoot(async (root) => {
+    const { ctx, provided } = fakeCtx({ createReturn: { sessionId: 'session-home-1' } })
+    const h = apply(ctx, { root })
+    await waitFor(() => provided.get('fishCore')?.surface, 5000)
+    const core = provided.get('fishCore')
+    assert.ok(core, 'fishCore 应该挂上')
+    const surface = core.surface.current({
+      session: { header: { id: 'session-home-1', cwd: '/definitely/not/her' } },
+    })
+    assert.equal(surface, 'web', '屋子会话 id 必须单独登记（reserve），不能只靠 cwd')
     h.dispose?.()
   })
 })
