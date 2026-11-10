@@ -24,7 +24,6 @@ import { withWake } from './wakewin.js'
 import { detectAbsence } from './absence.js'
 import { createClient } from './bili.js'
 import { gather, browseCountToday, recordBrowse, itemsFromEvents } from './browse.js'
-import { backgroundBrowse } from './browsejob.js'
 import { renderWatchList } from './history.js'
 import { fetchCover, coverLines } from './cover.js'
 import { riskState, browsePlan, noteRisk } from './risk.js'
@@ -33,7 +32,6 @@ import { talkSessionId } from './home.js'
 import { WAKE_TRIGGER, WAKE_HINT } from './wakeconst.js'
 import { refreshSelfDoc } from './selfdoc.js'
 import { setWakeSection, clearWakeSection } from './identity.js'
-import { maybeOuting } from './outing.js'
 import { watchTurnEnd } from './turnend.js'
 
 const TICK_MS = 60_000
@@ -43,9 +41,16 @@ const WAKE_TIMEOUT_MS = 5 * 60_000
 // 90 秒足够；再久就说明卡住了，先把报告写出去，别让用户干等。
 const REPORT_WAIT_MS = 90_000
 
+// 最近一次 startScheduler 拿到的钩子表。wakeNow()（设置页「让她去刷 B 站」按钮、
+// observe.js 调用）没有 deps.hooks，但必须继续跑 wake 钩子（素材、风险提示），
+// 所以 wake() 在拿不到 deps.hooks 时退回这里。tick 不走这条兜底：
+// 没有显式传入的钩子就不该有后台活动。
+let activeHooks = null
+
 export function startScheduler(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
   const log = deps.log ?? ((...a) => console.log('[dsh-fish]', ...a))
+  activeHooks = deps.hooks ?? null
 
   // 每次 tick 的记忆（内存态，重启即清空；配额以 events.jsonl 为准）
   let lastTick = 0
@@ -75,40 +80,31 @@ export function startScheduler(ctx, deps = {}) {
       const { config } = await loadConfig(root)
       const dk = dateKey()
 
-      // ---- 后台刷站 + B 站出门 ----
-      // 刷站放在唤醒日程之前：她不醒的时候也要有"今天看见过什么"。
-      // 配额与唤醒共用，browsejob 会为还没发生的唤醒留一次。
-      // 用 running 串行化，避免网络慢时两轮叠在一起。
+      // ---- 调度钩子：后台刷站 + B 站出门（A1.5）----
+      // 钩子跑在这一次串行 tick 里，不另起定时器。刷站放在唤醒日程之前：
+      // 她不醒的时候也要有"今天看见过什么"。配额与唤醒共用，browsejob
+      // 会为还没发生的唤醒留一次。
       //
       // 出门（2026-11-10）：刷到的素材、以及评论区新回复，投进「去 B 站」那条会话
       // ——不是 home。以前回复渲染在 home 唤醒里，于是她在屋子里替 B 站回话，
       // 而 bili_speak 属于 bili 面，她根本看不见那个工具。
       // 带素材的出门在这里；只带回复的出门也由它自己判配额/间隔。
+      //
+      // 没有 hooks（fishCore 没挂上 / 单测路径）：什么都不做，不抛错。
       running = true
-      let bg = null
+      let tickRes = { changed: false }
       try {
-        bg = await backgroundBrowse({ root, config, events, dk, log, deps })
-        if (bg?.ok) {
-          // 新事件（saw / browse）已经落盘，后面的唤醒配额与身份文档都要读到。
-          events = (await readEvents(root)).events
-          await refreshSelfDoc(root, { log })
+        const h = deps.hooks ?? null
+        if (h?.runTick) {
+          tickRes = (await h.runTick({ now: new Date(), root, events, config, dk, deps })) ?? tickRes
         }
-        const out = await maybeOuting(ctx, {
-          root,
-          config,
-          events,
-          dk,
-          now: new Date(),
-          material: bg?.ok ? bg.text : '',
-          picks: bg?.ok ? bg.picks : [],
-          log,
-          ensureSession: deps.ensureBiliSession,
-          client: deps.client,
-          appendEvent: deps.appendEvent,
-        })
-        if (out?.ok) events = (await readEvents(root)).events
       } finally {
         running = false
+      }
+      if (tickRes?.changed) {
+        // 钩子写了新事件（saw / browse）：后面的唤醒配额与身份文档都要读到。
+        events = (await readEvents(root)).events
+        await refreshSelfDoc(root, { log })
       }
 
       // 日程：每天在时间窗内抽一个点。抽到的点已存在（今天已经安排过）就不再改。
@@ -154,6 +150,7 @@ export function startScheduler(ctx, deps = {}) {
     tick,
     dispose() {
       disposed = true
+      activeHooks = null
       if (timer) clearInterval(timer)
       if (wakeTimer) clearTimeout(wakeTimer)
       timer = null
@@ -293,7 +290,18 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
   // 顺序是刻意的：先看，再想。如果先出事件提示再塞素材，
   // 她就会先按模板说话、再拿素材硬套——那是模板，不是她。
   // 反过来（先看见世界的动静，再问她怎么想）才像一个人醒来的样子。
-  const look = await lookBeforeWake(root, model, config, dk, deps, log)
+  // A1.5：素材由 wake 钩子提供（本插件注册的 `bili-material` 就是原来的
+  // lookBeforeWake）。wakeNow() 走的是 activeHooks 兜底。
+  const emptyLook = { text: '', intro: '', picks: [], riskNote: '' }
+  let look = emptyLook
+  try {
+    const h = deps.hooks ?? activeHooks
+    if (h?.runWake) {
+      look = (await h.runWake({ now: new Date(), root, model, config, dk, events: deps.events ?? [], deps })) ?? emptyLook
+    }
+  } catch (err) {
+    log('wake hooks failed', err?.message ?? err)
+  }
   if (look.text) {
     parts.push('', look.intro, '', look.text)
     // 带链接的清单（2026-10-23 用户提）：她能说出"有一条是一个人跑不起来了"，

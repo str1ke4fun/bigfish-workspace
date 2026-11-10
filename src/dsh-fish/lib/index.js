@@ -22,9 +22,10 @@ import { registerLetter } from './letter.js'
 import { registerRemind } from './remind.js'
 import { registerInbox } from './taskinbox.js'
 import { registerObserve } from './observe.js'
-import { startScheduler } from './scheduler.js'
+import { startScheduler, lookBeforeWake } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
-import { ensureBiliSession } from './outing.js'
+import { ensureBiliSession, maybeOuting } from './outing.js'
+import { backgroundBrowse } from './browsejob.js'
 import { writeSelfDoc, refreshSelfDoc } from './selfdoc.js'
 import { registerToolRestrict, revealTools, getAgentToolState } from './restrict.js'
 import { provideFishCore } from './core-service.js'
@@ -419,14 +420,65 @@ export function apply(ctx, baseConfig = {}) {
     const obs = registerObserve(ctx, { root, version: VERSION, exposure })
     if (obs?.dispose) disposers.push(() => obs.dispose())
 
+    // ---- 调度钩子（A1.5）----
+    // 旧 scheduler 直调 backgroundBrowse / maybeOuting / lookBeforeWake；
+    // 现在这些行为由本插件注册到 core.schedule 上，scheduler 只负责在既有的
+    // 串行 tick 里跑一遍、在真要唤醒时取一次素材。A1 阶段行为不变；
+    // A2 的 dsh-bili 可以往同一张表上挂自己的刷站/素材。
+    const hooks = fishCore?.schedule
+    if (hooks) {
+      disposers.push(hooks.onTick({
+        id: 'bili-browse',
+        everyMs: 60_000,
+        order: 20,
+        // 参数与旧 scheduler.tick 里那段逐字对应（见 A1.5 brief）。
+        async fn(h) {
+          const hdeps = h.deps ?? {}
+          const bg = await backgroundBrowse({
+            root: h.root,
+            config: h.config,
+            events: h.events,
+            dk: h.dk,
+            log: hdeps.log,
+            deps: hdeps,
+          })
+          let evs = h.events
+          if (bg?.ok) evs = (await readEvents(h.root)).events
+          const out = await maybeOuting(ctx, {
+            root: h.root,
+            config: h.config,
+            events: evs,
+            dk: h.dk,
+            now: new Date(),
+            material: bg?.ok ? bg.text : '',
+            picks: bg?.ok ? bg.picks : [],
+            log: hdeps.log,
+            ensureSession: hdeps.ensureBiliSession,
+            client: hdeps.client,
+            appendEvent: hdeps.appendEvent,
+          })
+          return { changed: Boolean(bg?.ok || out?.ok) }
+        },
+      }))
+      disposers.push(hooks.onWake({
+        id: 'bili-material',
+        order: 20,
+        async fn(h) {
+          return lookBeforeWake(h.root, h.model, h.config, h.dk, h.deps ?? {}, h.deps?.log)
+        },
+      }))
+    }
+
     // 生物钟：把屋子信息一起传下去。她每晚醒来说话要落进**同一个**会话，
     // 不是每晚新开一个藏起来的会话（用户定案：打开侧栏就该看见她）。
+    // hooks 必须显式传给 scheduler：tick 只认这一次启动拿到的钩子表。
     scheduler = startScheduler(ctx, {
       root,
       herDir,
       wsId: home.wsId,
       sessionId: home.sessionId,
       ensureBiliSession: ensureBili ?? undefined,
+      hooks: hooks ?? null,
       log: (...a) => logger.info(...a),
     })
 

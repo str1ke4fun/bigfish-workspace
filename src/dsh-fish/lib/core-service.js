@@ -7,7 +7,9 @@
  *   - config ：配置的只读入口（写入在后续任务里接）；
  *   - tools  ：统一返回契约的包装器（Task 5/6 在 index.js 里接线）；
  *   - memory ：事件流的唯一写/读门面（A1.2，见 memory-service.js）；
- *   - toolPolicy：工具策略贡献入口（A1.4，见 tool-policy.js）。
+ *   - toolPolicy：工具策略贡献入口（A1.4，见 tool-policy.js）；
+ *   - schedule：调度钩子表（A1.5，见 schedule-hooks.js）——挂在 scheduler 的
+ *     既有串行 tick 上，不新建定时器。
  *
  * 为什么要有这层：`dsh-wx` / `dsh-bili` 这类输入通道不能 import 本插件的内部文件，
  * 但面判定、过滤和工具返回契约必须只有一份实现。宿主服务名就是边界。
@@ -23,6 +25,7 @@ import { DEFAULTS, loadConfig } from './settings.js'
 import { paths } from './store.js'
 import { createMemoryService } from './memory-service.js'
 import { contribute, ownTools, status, setAgentProbe, setHostNamesProvider } from './tool-policy.js'
+import { createScheduleHooks } from './schedule-hooks.js'
 
 function asWarn(log) {
   if (typeof log === 'function') return log
@@ -113,6 +116,10 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc } = {})
   // 设计 §7.2 保留的兼容别名：老代码用 `surface.contribute` 也照样能贡献。
   registry.contribute = contribute
 
+  // 调度钩子（A1.5）。dsh-bili 将来把自己的刷站/素材挂到同一张表上；
+  // 钩子由 scheduler 的串行 tick 调用，这里不创建任何定时器。
+  core.schedule = createScheduleHooks({ log: warn })
+
   let offProvide = null
   try {
     if (typeof ctx.provide === 'function') offProvide = ctx.provide('fishCore', core)
@@ -127,6 +134,7 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc } = {})
     for (const off of surfaceDisposers) {
       try { off() } catch { /* ignore */ }
     }
+    try { core.schedule.dispose() } catch { /* ignore */ }
     try { offProvide?.() } catch { /* ignore */ }
   }
 
