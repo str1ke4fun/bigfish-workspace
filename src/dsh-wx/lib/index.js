@@ -351,7 +351,7 @@ function promptText() {
     '- 发完以后在这个对话框里最多补一句：不复述发出去的内容，不解释过程，不点评别人的话。',
     `- 当前状态：${state}。`,
     p.requireMention
-      ? `- 只在被叫到的会话里说话：最近 ${p.mentionWindowMinutes} 分钟内有人 @ 你的会话才能按回车，别的地方会被拒绝；${p.mentionWindowMinutes} 分钟没再叫你，就停下。私聊不受这条限制${p.noMentionChats.length ? `（${p.noMentionChats.join('、')} 不用 @，也不受上面这条限制，随时能开口）` : ''}。`
+      ? `- 只在被叫到的会话里说话：从最近一次有人 @ 你起算 ${p.mentionWindowMinutes} 分钟内可以按回车，别的地方会被拒绝；超过 ${p.mentionWindowMinutes} 分钟窗口就关了，窗口不会自己续，要等下一次 @。私聊不受这条限制${p.noMentionChats.length ? `（${p.noMentionChats.join('、')} 不用 @，也不受上面这条限制，随时能开口）` : ''}。`
       : '- 目前没有「@ 才回」的限制，名单内的会话都可以开口。',
   ].join('\n')
 }

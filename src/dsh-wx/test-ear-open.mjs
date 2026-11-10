@@ -37,10 +37,32 @@ assert.deepEqual(
   { chat: 'Tina Yu', why: 'dm', preview: '在吗', unread: 0, key: 'capture:m_1' },
 )
 
-// 4. 群聊预览带「发送者:」前缀 → 不算单聊，不靠预览叫（群里只看 @）
+// 4. 群聊预览带「发送者:」前缀、正文没有 @ → 普通闲聊，不叫
 assert.equal(
   hit({ chat: '测试群A', row: row({ name: '测试群A', preview: '张三: 午安' }), captured: captured(rec({ text: '午安' })) }),
   null,
+)
+
+// 4b. 群聊开着时又有人 @ 她：去掉发送者前缀后正文对得上 → 叫她（2026-11-10 漏掉的那次）
+const atText = '@D33P533K 为什么不直接回答我的问题，到底是陀螺的问题还是人的问题'
+assert.deepEqual(
+  hit({
+    chat: '测试群A',
+    row: row({ name: '测试群A', preview: `安卓4224柚厨圣: ${atText}` }),
+    captured: captured(rec({ text: atText })),
+  }),
+  { chat: '测试群A', why: 'at', preview: `安卓4224柚厨圣: ${atText}`, unread: 0, key: 'capture:m_1' },
+)
+
+// 4c. 群里按配置叫名字、不带 @ 也算
+assert.deepEqual(
+  hit({
+    chat: '测试群A',
+    row: row({ name: '测试群A', preview: '张三: 大肥鱼在吗' }),
+    captured: captured(rec({ text: '大肥鱼在吗' })),
+    policy: { ...POLICY, trigger: ['大肥鱼'] },
+  })?.why,
+  'at',
 )
 
 // 5. 不在允许 / 免 @ 名单 → 不叫
