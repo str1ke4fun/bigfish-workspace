@@ -49,7 +49,14 @@ import { scanStickers } from './sticker-scan.js'
 import { sendSticker, targetEntry } from './sticker-send.js'
 import { collectSticker } from './sticker-collect.js'
 import { normalizeKeyword, searchSticker } from './sticker-search.js'
-import { lazyRender, projectWxContext, projectWxOcr, projectWxPeek } from './project.js'
+import {
+  boundedText,
+  clipPeekBody,
+  lazyRender,
+  projectWxContext,
+  projectWxOcr,
+  projectWxPeek,
+} from './project.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -158,6 +165,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 输出统一是一段文字：宿主只接受 string/object 这类 JSON schema。 */
 const textOut = { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: String(v ?? '') }] }
+// wx_ocr 的 execute 返回完整 JSON（台账会落 artifact），但 fishCore 缺席时
+// 旧渲染路径最多只该给 24k，不能把整段 JSON 塞进上下文。
+const ocrOut = { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: boundedText(v) }] }
 
 const OFF = '微信通道已关闭。'
 
@@ -307,8 +317,8 @@ function promptText() {
     '## 微信通道（dsh-wx）',
     '',
     '微信里的动作通过 15 个工具完成，没有 shell：',
-    '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。坐标是屏幕绝对坐标，可直接给 wx_click。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
-    '- wx_click：点击。label 可填会话名或按钮名；也可填 x/y。返回里会写落点是什么、点完当前会话是什么。',
+    '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。要点击时，把这里看到的名字或按钮名填给 wx_click 的 label。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
+    '- wx_click：点击。label 填会话名或按钮名，和 wx_peek 里的写法一致；x/y 只作内部回退，正常不用填。返回里会写落点是什么、点完当前会话是什么。',
     '- wx_type：输入文字，enter=true 时回车发送。发送前核对当前会话是否在允许名单内；发送后回报消息是否出现在列表末尾。文本不能含换行。',
     '- wx_key：按键。Return 视同发送，同样核对。',
     '- wx_see：截图存档。当前模型不支持图像输入，读不了截图。',
@@ -2232,7 +2242,7 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_peek',
-    description: '读取微信当前界面：当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息（无发言人）、可点击元素。坐标为屏幕绝对坐标，可直接用于 wx_click。树落后于屏幕时，返回末尾带 [提示]。',
+    description: '读取微信当前界面：当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息（无发言人）、可点击元素。要操作界面时用 wx_click 的 label 填这里看到的名字或按钮名。树落后于屏幕时，返回末尾带 [提示]。',
     parameters: { type: 'object', properties: {} },
     output: textOut,
     project: (out) => ({ text: projectWxPeek(out) }),
@@ -2242,17 +2252,17 @@ export function apply(ctx, config = {}) {
       if (!policy().enabled) throw new Error(OFF)
       const s = await look()
       if (s.source === 'ocr') return JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: 'OCR cannot verify the active conversation or authorize sending.' }, null, 2)
-      const body = s.raw.length > 12_000 ? s.raw.slice(0, 12_000) + '\n…（已截断）' : s.raw
       // 当前会话的气氛粗判 + 她自己记下的关于这个人的话（没有就是空串）
       let mood = ''
       try { mood = feed?.hint(s.parsed.current) ?? '' } catch { /* ignore */ }
-      return body + fresh.notice() + mood
+      // 尾巴（[提示] / 气氛）比正文更重要：先给它们留位置，再截正文。
+      return clipPeekBody(s.raw, fresh.notice() + mood)
     },
   })
 
   reg({
     name: 'wx_click',
-    description: '点击微信窗口里的一个位置。label 填会话名或按钮名（会话列表里的名字、Contacts、Chat Info 等）；或填 x/y（屏幕绝对坐标，来自 wx_peek）。返回落点是什么、点击后的当前会话。',
+    description: '点击微信窗口里的一个位置。首选 label：填 wx_peek 里看到的会话名或按钮名（会话列表里的名字、Contacts、Chat Info 等）。x/y 只作内部回退，正常不用填。返回落点是什么、点击后的当前会话。',
     parameters: {
       type: 'object',
       properties: {
@@ -2542,14 +2552,16 @@ export function apply(ctx, config = {}) {
     name: 'wx_ocr',
     description: '只读 OCR 观察微信窗口，返回侧栏识别行和消息区文字。OCR 不证明当前会话，不能用作发送授权。',
     parameters: { type: 'object', properties: {} },
-    output: textOut,
+    output: ocrOut,
     project: (out) => ({ text: projectWxOcr(out) }),
     isConcurrencySafe: () => true,
     execute: async (_args, exec) => {
       deny(exec)
       if (!policy().enabled) throw new Error(OFF)
       const data = await ocrRead()
-      return JSON.stringify(data, null, 2).slice(0, 24_000)
+      // 完整返回：台账会把大字段落 artifact（审计副本）。模型看到的由
+      // projectWxOcr 投影；fishCore 缺席时由 ocrOut 限长，不把整段 JSON 塞进上下文。
+      return JSON.stringify(data, null, 2)
     },
   })
 
