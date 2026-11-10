@@ -5,9 +5,10 @@
  *
  *   面判定 → allow → restrict → her_tools 目录 → load → 下一步 allow + guard + 台账
  *
- * 这条测试要抓的是「各模块单独都对、接起来却不对」的断点。Task 6 就出现过一次：
- * 启动期宿主名单里还没有本插件自己的工具，hostNames 过滤把自有工具整批剥掉。
- * 所以这里的接线必须照生产 index.js 抄一遍，而不是每个模块各测各的。
+ * 这条测试要抓的是「各模块单独都对、接起来却不对」的端到端断点，接线照生产
+ * index.js 抄一遍。生产里 agent/created 早于本插件注册自有工具，启动期把自有
+ * 工具并进宿主名单的时序由 test/restrict.test.mjs 的单测钉住；这里不复制那个
+ * 时序，只验证面 → allow → restrict → 揭示 → guard → 台账的闭环。
  *
  * 面判定按生产协议走：
  *   - web：会话 cwd 就是她的屋子，由 web matcher 命中；
@@ -42,11 +43,7 @@ import { createToolLedger } from '../lib/tool-ledger.js'
 /** 生产里 index.js 传给 registerToolRestrict 的 ownTools。 */
 const OWN_TOOLS = [...FISH_TOOLS, 'her_tools']
 
-/**
- * 宿主在 wx 面上真实注册过的工具名（假宿主按真名登记）。
- * 必须把自有工具一起列进来：agent/created 发生在插件注册工具之前，
- * 少了它们，启动期的 hostNames 过滤会把自有工具剥掉。
- */
+/** wx 面宿主真实注册过的工具名。 */
 const WX_HOST_TOOLS = [
   'read_image',
   'wx_peek', 'wx_send', 'wx_context', 'wx_task_done', 'wx_task_snooze',
@@ -55,6 +52,26 @@ const WX_HOST_TOOLS = [
   'wx_sticker_send', 'wx_sticker_collect', 'wx_sticker_search',
   'wx_history',
 ]
+
+/**
+ * 两个面共用同一份「真实宿主」名字集合。
+ *
+ * 关键：它必须包含别的面和宿主标准工具（bash / subagent / bili / qq）。policy
+ * 的 hostOk 过滤排在面过滤之后；如果 web 假宿主只登记自己的工具，跨面泄漏会先被
+ * hostOk 滤掉，`webAllow` 不含 `wx_*` 之类的断言就永远是绿的，抓不到真正的错误。
+ *
+ * 假宿主在 agent/created 时就能看到自有工具：这是端到端接线，不复制生产启动期
+ * 「宿主名单里还没登记自有工具」的时序（那段由 test/restrict.test.mjs 覆盖）。
+ */
+const HOST_TOOLS = [...new Set([
+  ...OWN_TOOLS,
+  'read_image',
+  'bash', 'subagent',
+  ...WX_HOST_TOOLS,
+  'bili_look', 'bili_watch', 'bili_speak',
+  'qq_send_image', 'qq_send_voice', 'qq_send_video', 'qq_send_file',
+  'qq_send_forward', 'qq_napcat_api', 'qq_group_history',
+])]
 
 /** wx 面策略表里的全部 deferred 工具：目录只该从这里出。 */
 const WX_DEFERRED = [
@@ -109,10 +126,12 @@ function fakeAgent({ id, cwd, hostNames }) {
   const known = new Set(hostNames)
   const calls = []
   const guards = []
+  const viewCalls = []
   let disposed = 0
   return {
     calls,
     guards,
+    viewCalls,
     get disposed() { return disposed },
     agent: {
       id,
@@ -120,8 +139,11 @@ function fakeAgent({ id, cwd, hostNames }) {
       ctx: {
         effect: () => {},
         tools: {
-          view() {
-            return { restrictableNames: new Set(known) }
+          // 宿主语义：view(agent) 是 agent 视角（祖先层也算），view() 是 global
+          // 视角。生产 readHostNames 必须走前者；后者这里故意留空，回归时会露馅。
+          view(scope) {
+            viewCalls.push(scope)
+            return { restrictableNames: scope ? new Set(known) : new Set() }
           },
           restrict(filter) {
             const allow = Array.isArray(filter?.allow) ? filter.allow : []
@@ -142,23 +164,33 @@ function fakeAgent({ id, cwd, hostNames }) {
   }
 }
 
-/** 轮询台账文件（监听器是 `void record(...)` 异步写入）。 */
-async function waitForLedgerEntry(file, predicate, timeoutMs = 2000) {
+/** 有上限的轮询：用来等异步落盘和 written 计数。 */
+async function pollUntil(check, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
+    if (await check()) return true
+    if (Date.now() > deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}
+
+/** 轮询台账文件（监听器是 `void record(...)` 异步写入）。 */
+async function waitForLedgerEntry(file, predicate, timeoutMs = 2000) {
+  let hit = null
+  await pollUntil(async () => {
     try {
       const text = await readFile(file, 'utf8')
       const entries = text.split('\n').filter(Boolean).map((line) => {
         try { return JSON.parse(line) } catch { return null }
       }).filter(Boolean)
-      const hit = entries.find(predicate)
-      if (hit) return hit
+      hit = entries.find(predicate) ?? null
+      return hit !== null
     } catch {
       /* 文件还没出现 / 最后一行还没写完：继续等 */
+      return false
     }
-    if (Date.now() > deadline) return null
-    await new Promise((resolve) => setTimeout(resolve, 25))
-  }
+  }, timeoutMs)
+  return hit
 }
 
 test('面 → allow → restrict → her_tools → load → 新 allow/guard/台账 闭环', async () => {
@@ -188,18 +220,16 @@ test('面 → allow → restrict → her_tools → load → 新 allow/guard/台�
     log: () => {},
     onResult: (r) => results.push(r),
   })
+  let offLedger = null
 
   try {
-    // web：cwd 就是她的屋子，命中 web matcher。
-    const web = fakeAgent({ id: 'web-1', cwd: herDir, hostNames: [...OWN_TOOLS, 'read_image'] })
+    // 两个 agent 看到的是同一份真实宿主名单：跨面工具确实被宿主注册了，
+    // 能不能看见只能由面策略决定——这样下面的跨面断言才真的在测面过滤。
+    const web = fakeAgent({ id: 'web-1', cwd: herDir, hostNames: HOST_TOOLS })
 
     // wx：id 由 dsh-wx 预先登记；cwd 故意不是屋子，证明面不是靠 cwd 猜出来的。
     core.surface.reserve('wx-1', 'wx')
-    const wx = fakeAgent({
-      id: 'wx-1',
-      cwd: join(root, 'wx-cwd'),
-      hostNames: [...OWN_TOOLS, ...WX_HOST_TOOLS],
-    })
+    const wx = fakeAgent({ id: 'wx-1', cwd: join(root, 'wx-cwd'), hostNames: HOST_TOOLS })
 
     // ---- 1. 面判定 + 启动期 allow/restrict ----
     ctx.emit('agent/created', { agent: web.agent })
@@ -209,6 +239,11 @@ test('面 → allow → restrict → her_tools → load → 新 allow/guard/台�
     assert.equal(results.at(-1).why, 'applied')
     assert.equal(results.at(-1).applied, 2)
 
+    // 生产取宿主名单必须用 agent 视角：view(agent)。若退回 global view()，
+    // 假宿主给的是一张空名单，这条会红。
+    assert.ok(web.viewCalls.some((scope) => scope === web.agent), 'readHostNames 必须走 view(agent)')
+    assert.ok(wx.viewCalls.some((scope) => scope === wx.agent), 'readHostNames 必须走 view(agent)')
+
     const webAllow = web.calls.at(-1)?.allow ?? []
     assert.ok(webAllow.includes('growth_commit'))
     assert.ok(webAllow.includes('her_tools'))
@@ -216,11 +251,14 @@ test('面 → allow → restrict → her_tools → load → 新 allow/guard/台�
     assert.equal(webAllow.some((n) => n.startsWith('wx_')), false, 'web 面不该看见 wx 工具')
     assert.equal(webAllow.some((n) => n.startsWith('bili_')), false)
     assert.equal(webAllow.some((n) => n.startsWith('qq_')), false)
+    for (const name of ['bash', 'subagent']) {
+      assert.equal(webAllow.includes(name), false, `${name} 不在策略表里，不该进 allow`)
+    }
 
     const wxAllow = wx.calls.at(-1)?.allow ?? []
     assert.ok(wxAllow.includes('wx_peek'), 'wx 面常驻工具要在')
     assert.equal(wxAllow.includes('wx_see'), false, 'deferred 工具一开始不该出现')
-    assert.equal(wxAllow.includes('bili_look'), false, '别面的工具不该串进来')
+    assert.equal(wxAllow.includes('bili_look'), false, '别面的工具不该串进来（宿主确实登记了它）')
     for (const n of ['growth_commit', 'her_tools', 'read_image', 'her_inbox']) {
       assert.ok(wxAllow.includes(n), `wx 的 allow 里少了 ${n}`)
     }
@@ -279,21 +317,25 @@ test('面 → allow → restrict → her_tools → load → 新 allow/guard/台�
     const webGuard = web.guards.at(-1)
     assert.equal(webGuard({ name: 'growth_commit' }), undefined)
     assert.equal(typeof webGuard({ name: 'wx_peek' }), 'string', 'web 面不该借到 wx 工具')
+    assert.equal(typeof webGuard({ name: 'subagent' }), 'string', '策略表之外的名字永远不放行')
 
     // ---- 6. 台账：tools/result 写一行完整记录 ----
+    // 时钟钉在 emit 之前：文件名取记录时刻的 UTC 日期，跨午夜时不会指错文件。
+    const fixed = Date.now()
     const ledger = createToolLedger({
       root,
       guard: { looksLikeSecret },
       log: () => {},
+      now: () => fixed,
       surfaceOf: (agent) => core.surface.current(agent),
     })
-    ledger.register(ctx)
+    offLedger = ledger.register(ctx)
 
     const exec = { name: 'wx_peek', agent: wx.agent, arguments: {} }
     const result = { isError: false, value: { ok: true }, content: [{ type: 'text', text: '看过了' }] }
     ctx.emit('tools/result', exec, result)
 
-    const day = new Date().toISOString().slice(0, 10)
+    const day = new Date(fixed).toISOString().slice(0, 10)
     const ledgerFile = join(root, 'tool-ledger', `${day}.jsonl`)
     const entry = await waitForLedgerEntry(ledgerFile, (e) => e.tool === 'wx_peek')
     assert.ok(entry, '台账文件应在 2 秒内写出 wx_peek')
@@ -302,9 +344,17 @@ test('面 → allow → restrict → her_tools → load → 新 allow/guard/台�
     assert.equal(entry.modelText, '看过了')
     assert.equal(entry.sessionId, 'wx-1')
     assert.equal(entry.ok, true)
+
+    // written++ 发生在 append 句柄关闭之后：等它落定再清理，Windows 上才不会 EBUSY。
+    assert.equal(
+      await pollUntil(() => ledger.status().written >= 1),
+      true,
+      '台账应在 2 秒内把 written 记上',
+    )
   } finally {
+    try { offLedger?.() } catch { /* ignore */ }
     try { offRestrict() } catch { /* ignore */ }
     try { handle.dispose() } catch { /* ignore */ }
-    await rm(root, { recursive: true, force: true })
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   }
 })
