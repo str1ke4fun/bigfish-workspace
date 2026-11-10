@@ -517,7 +517,7 @@ export function apply(ctx, config = {}) {
   })
 
   // ---- 会话目录 / 多会话 ----
-  // 目录是派生索引：侧栏每见到一次就合并一次；全量滚动扫描每 10 分钟一次。
+  // 目录是派生索引：侧栏每见到一次就合并一次；全量滚动扫描只在启动/登录后和工作台按钮点的时候做。
   // chatId 一旦分配就不换，台账、任务、向量缓存都靠它对齐。
   const directory = createDirectory({
     log: (m) => console.log('[dsh-wx] 会话目录：' + String(m ?? '').slice(0, 160)),
@@ -719,6 +719,9 @@ export function apply(ctx, config = {}) {
   let lastCurrentCapture = null   // captureCurrent 存下的 { chat, chatId, messages }
   let roundPreview = null         // 本轮 recordPreviews 的返回值，供 captureTick 入队
   const pendingCaptureHits = []   // 采集补扫到的 @，等下一轮投递
+  // 本进程里已经整屏采过的会话：第一次整屏时旧消息全是「新记录」，
+  // 不能拿台账当新消息的证据；之后才按台账驱动通知。
+  const openChatSeen = new Set()
   const capturedSinceStart = new Set()
   let captureHealth = { paused: false, pauseReason: '', queued: 0, lastAt: '', lastChat: '', lastResult: '', lastError: '' }
   let lastPauseLog = { reason: '', at: 0 }
@@ -1459,8 +1462,20 @@ export function apply(ctx, config = {}) {
   let lastHeldLog = 0
   let lastFailLog = 0
   let lastRelogin = 0
-  let lastScanAt = 0
   let scanning = false
+  // 全量目录扫描只在两个时候做：启动后/登录后的第一轮，和工作台按钮。
+  // 每轮快照本来就会合并侧栏可见行，全量扫描只补当前页看不到的会话和截断名；
+  // 它不产生台账，也不产生通知，没必要每 10 分钟滚一次侧栏。
+  let directoryScanArmed = true
+  let loginWasSeen = false
+  // 工作台按钮排进来的扫描请求：等耳朵这一轮空下来再做，返回结果给按钮。
+  let scanRequests = []
+  /** 排队请求一次全量目录扫描。耳朵不跑（没启动/被关掉）时按超时给一句人话。 */
+  const requestDirectoryScan = (timeoutMs = 30_000) => new Promise((resolve) => {
+    scanRequests.push(resolve)
+    const t = setTimeout(() => resolve({ ok: false, why: '耳朵没响应，过一会儿再试' }), timeoutMs)
+    t.unref?.()
+  })
 
   /**
    * 微信必须有自己的会话（不能借 QQ 的）：通道隔离全靠 session 分开。
@@ -1731,6 +1746,11 @@ export function apply(ctx, config = {}) {
   const wxService = {
     policy,
     canSend,
+    // 工作台按钮（dsh-fish 的 /wx/scan 路由）：补扫一次侧栏目录。
+    // 目录只是派生索引，扫它不改台账、不发通知。
+    scanDirectory: () => (policy().enabled
+      ? requestDirectoryScan()
+      : Promise.resolve({ ok: false, why: '微信通道已关闭' })),
     recentChats,
     inboxSummary: (opts) => contextStore.summary(opts),
     inbox: () => contextStore.inbox(),
@@ -2005,6 +2025,12 @@ export function apply(ctx, config = {}) {
       // 2026-10-29 夜里实测：替她点 Log In 会让手机端一直弹登录确认，人被烦死。
       // 所以只记账、不动手——登不登由人决定；treeAction 也明确不重启登录页。
       if (tree.status === 'login') {
+        loginWasSeen = true
+        // 登录页读不到侧栏，排队的扫描做不了；先把工作台那颗按钮的等待结掉。
+        if (scanRequests.length) {
+          const waiters = scanRequests.splice(0)
+          for (const done of waiters) done({ ok: false, why: '微信在登录页，登录后再扫' })
+        }
         if (Date.now() - lastRelogin > 10 * 60_000) {
           lastRelogin = Date.now()
           console.log(`[dsh-wx] 微信在登录页（窗口 ${tree.window?.w}x${tree.window?.h}），等人工登录`)
@@ -2014,6 +2040,19 @@ export function apply(ctx, config = {}) {
 
       // 树没连上、OCR 也没读到会话行：这一轮没有可看的东西，等树恢复/下一轮。
       if (!tree.ok && !ocrRecovered) return
+      // 刚从登录页回来：补一次全量目录扫描（登录后第一轮，目录可能落后了很久）。
+      if (loginWasSeen) {
+        loginWasSeen = false
+        directoryScanArmed = true
+      }
+      // 工作台按钮请求的扫描：在耳朵这一轮里做，和快照/滚动的单写者串行。
+      // 扫完就结束这一轮——侧栏被滚动过，旧快照不再适合做投递判断，下一轮重新对账。
+      if (scanRequests.length) {
+        const waiters = scanRequests.splice(0)
+        const res = await scanDirectoryNow().catch((err) => ({ ok: false, why: String(err?.message ?? err).slice(0, 160) }))
+        for (const done of waiters) done(res)
+        return
+      }
       roundParsed = parsed
       // 只有树健康时才写预览台账：partial/down/login 没有可信数据。
       // OCR 回退只用于识别 @，不拿它写预览。
@@ -2021,9 +2060,9 @@ export function apply(ctx, config = {}) {
       if (tree.ok && !ocrRecovered) roundPreview = recordPreviews(parsed)
       // 当前会话的发言人补全：失败只记日志，不阻塞本轮。
       await maybeOcrCurrent(p)
-      // 每 10 分钟把侧栏从头滚到尾一次，补齐当前页看不到的会话和全名。
-      if (!ocrRecovered && Date.now() - lastScanAt > 10 * 60_000) {
-        lastScanAt = Date.now()
+      // 启动 / 登录后的首轮补一次全量扫描；之后只在工作台按钮点的时候扫。
+      if (!ocrRecovered && directoryScanArmed) {
+        directoryScanArmed = false
         await scanDirectoryNow().catch((err) => {
           console.log('[dsh-wx] 目录扫描失败：' + String(err?.message ?? err).slice(0, 120))
         })
@@ -2047,13 +2086,21 @@ export function apply(ctx, config = {}) {
         : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats))
         .filter((m) => !isIgnoredChat(m.chat, p.ignoreChats))
       // 当前打开的会话没有未读角标时，侧栏判据看不到它新收到的消息。
-      // captureCurrent 这一轮新记下的入站正文如果和侧栏 preview 对得上，就补一条命中；
+      // 第一次看见这个会话，靠「这一轮新记的入站正文和侧栏 preview 对得上」认；
+      // 之后台账只追加新记录，新记下的入站就是证据（preview 没刷新也认）。
       // 先进 pendingCaptureHits，hostBusy / 15 秒节流 / 投递失败时下一轮还能重试。
       if (tree.ok && !ocrRecovered) {
         const openRow = (parsed.chats ?? []).find((c) => sameName(c.name, parsed.current)) ?? null
+        const openEntry = directory.entry(parsed.current)
         const openHit = openChatHit({
           chat: parsed.current, row: openRow, captured: s.capturedCurrent, policy: p,
+          // 第一次看见这个会话时整屏都是「新记录」，只能靠侧栏预览认出新消息；
+          // 之后台账只追加这一轮新记下的入站记录，台账本身就是新消息的证据。
+          requirePreviewMatch: !openChatSeen.has(String(parsed.current ?? '')),
+          isDM: openEntry?.kind === 'dm' ? true : (openEntry?.kind === 'group' ? false : null),
+          outbox: outboxFor(parsed.current),
         })
+        if (s.capturedCurrent?.ok) openChatSeen.add(String(parsed.current ?? ''))
         if (openHit && !pendingCaptureHits.some((h) => h.key === openHit.key)) {
           pendingCaptureHits.push(openHit)
           if (pendingCaptureHits.length > 20) pendingCaptureHits.shift()

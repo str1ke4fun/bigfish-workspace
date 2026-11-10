@@ -626,6 +626,28 @@ export function registerObserve(ctx, deps = {}) {
       } catch { send(res, 404, { error: 'no file' }) }
     }],
 
+    // 微信会话目录：工作台按钮触发一次全量侧栏扫描（登录后也会自动扫一次）。
+    // 目录是 dsh-wx 的派生索引，这里只转发，不读它的文件；失败给一句人话。
+    ['/wx/scan', async (req, res) => {
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      let wx = null
+      try { wx = ctx.get?.('wx') } catch { wx = null }
+      if (!wx?.scanDirectory) return send(res, 409, { error: '微信通道没在跑，先让它启动再扫。' })
+      let r = null
+      try { r = await wx.scanDirectory() } catch (err) {
+        return send(res, 500, { error: String(err?.message ?? err).slice(0, 160) })
+      }
+      if (!r || r.ok !== true) return send(res, 409, { ...(r ?? {}), error: (r && r.why) || '这次没扫成' })
+      // 只回能看的字段：整份目录不往界面丢。
+      send(res, 200, {
+        ok: true,
+        pages: Number(r.pages) || 0,
+        count: Array.isArray(r.chats) ? r.chats.length : 0,
+        complete: r.complete === true,
+        reason: String(r.reason ?? ''),
+      })
+    }],
+
     // 风控状态：冷却到什么时候、撞过几次。POST {clear:true} 立即解冻。
     ['/risk', async (req, res) => {
       if (req.method === 'POST') {

@@ -215,6 +215,38 @@ test('观测台 /state 不泄露 needs 数值', async () => {
   })
 })
 
+test('/wx/scan：微信没接上给人话，接上后只回扫描摘要', async () => {
+  await withRoot(async (root) => {
+    const { ctx, routes } = fakeCtx()
+    const h = apply(ctx, { root })
+    await new Promise((r) => setTimeout(r, 120))
+
+    const route = await waitFor(() => routes.find((r) => r.path === '/dsh-fish/wx/scan'))
+    assert.ok(route, '缺少 /wx/scan 路由')
+
+    const call = async (method) => {
+      const res = fakeRes()
+      await route.handler({ url: '/dsh-fish/wx/scan', method }, res)
+      return res
+    }
+
+    assert.equal((await call('GET')).code, 405)
+
+    const absent = await call('POST')
+    assert.equal(absent.code, 409)
+    assert.match(absent.json.error, /微信通道/)
+
+    ctx.wx = {
+      scanDirectory: async () => ({ ok: true, pages: 3, chats: [{}, {}, {}], complete: true, reason: 'bottom' }),
+    }
+    const ok = await call('POST')
+    assert.equal(ok.code, 200)
+    assert.deepEqual(ok.json, { ok: true, pages: 3, count: 3, complete: true, reason: 'bottom' })
+
+    h.dispose?.()
+  })
+})
+
 test('/state 与 /memory 把「对不上」和「记得很牢」报出来（2026-10-24 P0）', async () => {
   await withRoot(async (root) => {
     const { ctx, routes } = fakeCtx()

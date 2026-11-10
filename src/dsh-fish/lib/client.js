@@ -265,6 +265,9 @@ window.__ModuleLoader__.load({
       // 备份与恢复（2026-10-25）：只在数据页用，不进轮询。
       const [backupBusy, setBackupBusy] = useState(false)
       const [backupMsg, setBackupMsg] = useState('')
+      // 微信会话目录补扫（2026-11-10）：只在数据页按需触发，不进轮询。
+      const [wxScanBusy, setWxScanBusy] = useState(false)
+      const [wxScanMsg, setWxScanMsg] = useState('')
       let topEl = null
       const [sayText, setSayText] = useState('')
       const [said, setSaid] = useState([])
@@ -2302,6 +2305,27 @@ window.__ModuleLoader__.load({
                 disabled: !dataPaths?.root,
                 onClick: () => copyPath(dataPaths?.root || ''),
               }, dataPaths?.root ? '复制数据文件夹路径' : '路径还没读到')))),
+
+        group('微信会话目录',
+          '会话名目录是派生索引：侧栏每出现一次就合并一次，登录后会自动全量扫一遍。想现在补一次就点下面。',
+          h('p', { className: 'hint' }, '全量扫描只滚侧栏、不点开会话；有会话带着草稿时会跳过，不碰草稿。'),
+          h('div', { className: 'row' },
+            h('button', {
+              disabled: wxScanBusy,
+              onClick: async () => {
+                setWxScanBusy(true)
+                setWxScanMsg('')
+                try {
+                  const r = await jpost('/wx/scan', {})
+                  setWxScanMsg(`扫了 ${r.pages} 页，记下 ${r.count} 个会话${r.complete ? '（已经到底）' : '（没滚到底，过一会儿再试）'}。`)
+                } catch (e) {
+                  setWxScanMsg(e.message || '没扫成')
+                } finally {
+                  setWxScanBusy(false)
+                }
+              },
+            }, wxScanBusy ? '正在扫……' : '扫一遍会话列表')),
+          wxScanMsg ? h('p', { className: 'hint' }, wxScanMsg) : null),
 
         group('备份与恢复',
           '备份是一份 json：事件流、配置、日记、她的房间、头像都在里面。换台机器，或者想重开一局之前，先存一份。',

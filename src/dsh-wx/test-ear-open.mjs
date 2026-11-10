@@ -112,4 +112,33 @@ assert.equal(looksDM({ preview: '午安' }), true)
 assert.equal(looksDM({ preview: '张三: 午安' }), false)
 assert.equal(looksDM({ preview: '' }), false)
 
+// ---- 台账驱动（2026-11-10）：不是第一次看见这个会话时，新入账的入站记录就是证据 ----
+
+// 13. preview 没刷新（还是上一条 / 她自己的话）：台账里的新记录照样叫她
+assert.deepEqual(
+  hit({ captured: captured(rec({ text: '你在吗' })), requirePreviewMatch: false }),
+  { chat: 'cat不到flag的cat', why: 'exempt', preview: '你在吗', unread: 0, key: 'capture:m_1' },
+)
+
+// 14. 会话滚出侧栏（row=null）：免 @ 私聊照样叫；群聊仍要正文里有 @
+assert.equal(hit({ row: null, captured: captured(rec({ text: '在吗' })), requirePreviewMatch: false })?.why, 'exempt')
+assert.equal(hit({
+  chat: '测试群A', row: null, isDM: false,
+  captured: captured(rec({ text: '午安' })), requirePreviewMatch: false,
+}), null)
+assert.equal(hit({
+  chat: '测试群A', row: null, isDM: false,
+  captured: captured(rec({ text: atText })), requirePreviewMatch: false,
+})?.why, 'at')
+
+// 15. 她自己的话被发言人归因误记成入站：和 outbox 对得上 → 不叫
+assert.equal(hit({
+  captured: captured(rec({ text: '午安。我这儿中午照旧' })),
+  requirePreviewMatch: false,
+  outbox: ['午安。我这儿中午照旧'],
+}), null)
+
+// 16. 首次看见这个会话时仍然只认 preview：整屏旧消息不能被当成新消息
+assert.equal(hit({ captured: captured(rec({ text: '你在吗' })), requirePreviewMatch: true }), null)
+
 console.log('ear-open: 全部通过')
