@@ -7,7 +7,8 @@
  *   - 这里是 schema 之外唯一会提到"阶段/需要"的地方，且都只用于选事件。
  */
 
-import { idTime, detectSelfMod } from './schema.js'
+import { idTime, detectSelfMod, inferSurface } from './schema.js'
+import { crossChannel } from './guard.js'
 import { parseRefusal, REACTIONS, REACTION_HURTS, CONCEDE_WINDOW_MS, isConcede } from './refuse.js'
 // 评论区里别人的话（2026-10-24）：只借纯函数；A0 起从 similarity.js 取，不再指向 voices。
 import { similarity, findEcho, VOICE_FRESH_DAYS } from './similarity.js'
@@ -16,6 +17,14 @@ export { similarity }
 
 export const DAY_MS = 86_400_000
 export const STAGE_NAMES = ['信任', '自主', '主动', '整合']
+/** B 站派生事实的窗口（设计 §5.7）：最近 7 天、最多 5 条。 */
+const BILI_FRESH_MS = 7 * DAY_MS
+const BILI_FRESH_LIMIT = 5
+/**
+ * 跨面去引用化时回看的来源通道原文条数。
+ * 够覆盖一次聊天（规则 4 只查连续 ≥12 字重合），又不把整份事件流读进每一次比较。
+ */
+const CROSS_RAW_WINDOW = 50
 const STAGE_WEIGHTS = [0.27, 0.54, 0.87, 1.0]
 const GATE_ORDER = ['trust', 'autonomy', 'competence']
 
@@ -98,8 +107,9 @@ export function detectTensions(beliefs = [], { minSim = 0.5, limit = 3 } = {}) {
       const sim = similarity(ca, cb)
       if (sim < minSim) continue
       out.push({
-        a: { id: a.id, text: a.text, since: a.since },
-        b: { id: b.id, text: b.text, since: b.since },
+        // originChannel 给跨面去引用化用：两条冲突可能分别从 wx 与 qq 长出来。
+        a: { id: a.id, text: a.text, since: a.since, originChannel: a.originChannel ?? 'core' },
+        b: { id: b.id, text: b.text, since: b.since, originChannel: b.originChannel ?? 'core' },
         sim: Number(sim.toFixed(2)),
         at: b.since || a.since,
       })
@@ -258,6 +268,9 @@ export function deriveSelf(events = [], opts = {}) {
         beliefs.push({
           id: ev.id, text: ev.text, since: ev.ts,
           confidence: Number(ev.confidence ?? 0.5), status: 'active', verdict: null,
+          // v3（A1.3）：这条判断从哪条通道长出来。跨面渲染时据此去引用化；
+          // 缺 channel 的老事件按仓里统一约定算 core（共同层，可跨面）。
+          originChannel: ev.channel ?? 'core',
         })
         spokenSinceSeen = true
         // 2026-10-26：改成「后来的盖掉先前的」。原来只认第一次，她先说「开灯的」、
@@ -294,6 +307,7 @@ export function deriveSelf(events = [], opts = {}) {
         beliefs.push({
           id: ev.id, text: ev.text, since: ev.ts,
           confidence: Number(ev.confidence ?? 0.5), status: 'active', verdict: ev.verdict ?? null,
+          originChannel: ev.channel ?? 'core',
         })
         // 同 utterance：后来的说法盖掉先前的（她改口叫他什么，以最近的为准）
         {
@@ -540,6 +554,120 @@ export function deriveSelf(events = [], opts = {}) {
   const solid = ranked.filter((b) => b.solid).slice(0, 8)
   const tensions = detectTensions(scored)
 
+  // ---- B 站派生事实（v3，A1.3；只读，不改成长门）----
+  const surfaceOf = (e) => e.surface ?? inferSurface(e)
+  const fresh = (e) => {
+    const t = Date.parse(e.ts)
+    return Number.isFinite(t) && now - t <= BILI_FRESH_MS
+  }
+  const bvidOf = (e) => {
+    const reply = e.reply && typeof e.reply === 'object' ? e.reply : null
+    if (reply && reply.bvid) return String(reply.bvid)
+    const refs = Array.isArray(e.refs) ? e.refs : []
+    return refs.find((r) => typeof r === 'string' && /^BV[0-9A-Za-z]+$/.test(r)) ?? null
+  }
+  const rpidOf = (e) => {
+    const reply = e.reply && typeof e.reply === 'object' ? e.reply : null
+    if (reply && reply.rpid != null) return String(reply.rpid)
+    const refs = Array.isArray(e.refs) ? e.refs : []
+    return typeof refs[1] === 'string' ? refs[1] : null
+  }
+  const biliSaid = evs
+    .filter((e) => e.type === 'utterance' && surfaceOf(e) === 'bili' && fresh(e))
+    .slice(-BILI_FRESH_LIMIT)
+    .map((e) => ({
+      id: e.id, at: e.ts, text: String(e.text ?? ''),
+      bvid: bvidOf(e), rpid: rpidOf(e),
+    }))
+  const biliReplies = evs
+    .filter((e) => e.type === 'bili_reply' && fresh(e))
+    .slice(-BILI_FRESH_LIMIT)
+    .map((e) => {
+      const reply = e.reply && typeof e.reply === 'object' ? e.reply : null
+      return {
+        id: e.id, at: e.ts, text: String(e.text ?? ''),
+        bvid: bvidOf(e), rpid: rpidOf(e),
+        root: reply ? String(reply.root ?? '') : '',
+        parent: reply ? String(reply.parent ?? '') : '',
+        user: reply ? String(reply.user ?? '') : '',
+        reply,
+      }
+    })
+  // 按 bvid 聚合她的评论与对方回复；没有 bvid 的退到 root/rpid 分组。
+  const threadMap = new Map()
+  const threadOf = (key, bvid) => {
+    if (!threadMap.has(key)) threadMap.set(key, { bvid: bvid ?? null, said: [], replies: [] })
+    return threadMap.get(key)
+  }
+  for (const s of biliSaid) threadOf(s.bvid || `said:${s.id}`, s.bvid)
+    .said.push({ id: s.id, at: s.at, text: s.text, rpid: s.rpid })
+  for (const r of biliReplies) {
+    const key = r.bvid || (r.root ? `root:${r.root}` : `reply:${r.rpid ?? r.id}`)
+    threadOf(key, r.bvid).replies.push({
+      id: r.id, at: r.at, text: r.text, rpid: r.rpid, user: r.user,
+    })
+  }
+  const biliThreads = [...threadMap.values()].map((t) => ({
+    ...t, count: t.said.length + t.replies.length,
+  }))
+
+  // ---- 跨面去引用化（设计 §5.6 / 主控裁定 4）----
+  // 只在调用方明确给出 viewSurface 时生效：唤醒规划、成长门、观测台都不带它，
+  // 必须继续看到完整文本（主控裁定 5）。
+  const viewSurface = opts.viewSurface == null ? '' : String(opts.viewSurface)
+  let privacyRedacted = 0
+  const rawTextsFor = (channel, excludeId) => evs
+    .filter((e) => e.type !== 'meta' && (e.channel ?? 'core') === channel && e.id !== excludeId)
+    .slice(-CROSS_RAW_WINDOW)
+    .map((e) => String(e.text ?? ''))
+  /**
+   * 规则 4 的比对对象必须是「别人的原文 + 来源通道的其它事件」，
+   * **排除这条信念自己的来源事件**：否则每一条从 wx 说出的纯想法都会
+   * 在自己的原文上命中 12 字重合而自我删除（主控裁定 2）。
+   * meta 一律不参与比对：那是系统记账，不是可以泄露的原文。
+   *
+   * 同一个 id 会出现在 ranked / solid / tensions 三处；缓存保证
+   * `privacyRedacted` 按条计数，不按渲染次数重复计数。
+   */
+  const redactCache = new Map()
+  const redactOne = (b) => {
+    const cacheKey = b.id ?? `${b.originChannel ?? 'core'}:${b.text ?? ''}`
+    if (redactCache.has(cacheKey)) return redactCache.get(cacheKey)
+    const from = b.originChannel ?? 'core'
+    const out = !viewSurface || from === 'core'
+      ? { ...b }
+      : (() => {
+          const r = crossChannel(String(b.text ?? ''), {
+            from, to: viewSurface, rawTexts: rawTextsFor(from, b.id),
+          })
+          if (r.redacted && r.text === '') privacyRedacted++
+          return { ...b, text: r.text, redacted: r.redacted }
+        })()
+    redactCache.set(cacheKey, out)
+    return out
+  }
+  const displayRanked = viewSurface
+    ? ranked.map(redactOne).filter((b) => String(b.text ?? '') !== '')
+    : ranked
+  const displaySolid = viewSurface
+    ? solid.map(redactOne).filter((b) => String(b.text ?? '') !== '')
+    : solid
+  // 信念、固化、冲突、立场（persona 从 beliefs 生成）必须一起换掉：
+  // 只换 beliefs 会从 tensions 里把同一句微信原文漏出去。
+  const displayTensions = viewSurface
+    ? tensions
+        .map((t) => ({ ...t, a: redactOne(t.a), b: redactOne(t.b) }))
+        .filter((t) => String(t.a.text ?? '') !== '' && String(t.b.text ?? '') !== '')
+    : tensions
+  const sharedBeliefs = displayRanked.map((b) => ({
+    id: b.id,
+    text: b.text,
+    since: b.since,
+    confidence: b.confidence,
+    originChannel: b.originChannel ?? 'core',
+    solid: Boolean(b.solid),
+  }))
+
   // ---- needs（内部量，永不外露）----
   // 话里明确拒绝过几次（严格口径，见 REFUSE_RE）。refusal 事件另算，两边加起来才是「勇于拒绝」。
   const wontCount = evs.filter((e) => e.type === 'utterance' && REFUSE_RE.test(String(e.text ?? ''))).length
@@ -591,10 +719,11 @@ export function deriveSelf(events = [], opts = {}) {
     name,
     // 2026-10-24 起 beliefs 按**显著性**排（不是时间）。固化/常被提起的在前，
     // 靠后的才是"更早以前"——遗忘不再是无差别的时间截断。
-    beliefs: ranked,
-    ranked,
-    solid,
-    tensions,
+    // A1.3：给了 viewSurface 时，这里已经是去引用化后的副本（缺省时与 ranked 同一份）。
+    beliefs: displayRanked,
+    ranked: displayRanked,
+    solid: displaySolid,
+    tensions: displayTensions,
     // 疤（P1 第三块）：他顶回来或因此难过、而她后来退了一步的那些拒绝。
     // 只放**没想通**的（未被 revise 指向过）；想通了的那条留在 refusals 里，不进身份文档。
     scars: openScars,
@@ -602,6 +731,12 @@ export function deriveSelf(events = [], opts = {}) {
     // 她读到过的别人的话（近 5 条）+ 这一次可以摆在眼前的、还没认下的那一条。
     voices: recentVoices,
     freshVoice,
+    // v3 派生事实（设计 §5.7）：B 站面提示段与工作台直接读。
+    // 同时放进 facts 与顶层：计划契约定的是 facts.*，B 站提示段的接口描述则直接写字段名。
+    biliSaid,
+    biliReplies,
+    biliThreads,
+    sharedBeliefs,
     // 后台刷站看见过的东西：全部条数 + 最近 7 天的三条（身份文档用）。
     saw,
     recentSaw: freshSaw.slice(-3),
@@ -633,9 +768,10 @@ export function deriveSelf(events = [], opts = {}) {
       corrected: corrected.length,
       reunions: reunions.length,
       reunionAfterAbsence,
-      // 判断之间对不上几处 / 固化了几条（2026-10-24，P0）
-      tensions: tensions.length,
-      solid: solid.length,
+      // 判断之间对不上几处 / 固化了几条（2026-10-24，P0）。
+      // A1.3：跨面渲染被删掉的整条不再计数，界面与她看到的文本一致。
+      tensions: displayTensions.length,
+      solid: displaySolid.length,
       // 他听完她的拒绝之后怎么反应（P1 第二块）：四类计数 + 有后果的那两种之和。
       // hurts 是第三块「疤」的唯一入口——被接受过的不算疤。
       reactions,
@@ -650,6 +786,14 @@ export function deriveSelf(events = [], opts = {}) {
       voicesEchoed,
       // 看过的条数（不是认同的条数）。只给观测台/自检看，不进身份文档的数字。
       saw: saw.length,
+      // v3（A1.3）：B 站派生事实。biliSaid/biliReplies 不参与成长门；
+      // sharedBeliefs 是跨面可见、已按 viewSurface 去引用化的判断。
+      biliSaid,
+      biliReplies,
+      biliThreads,
+      sharedBeliefs,
+      // 本次渲染有多少条判断因为隐私规则整条没渲染（设计 §5.6 规则 5 的计数）。
+      privacyRedacted,
     },
     absenceDays,
     narrative,

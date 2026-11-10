@@ -312,7 +312,11 @@ export async function writeSelfDoc(root = rootDir(), { log } = {}) {
   try {
     const { events } = await readEvents(root)
     const { config } = await loadConfig(root)
-    const model = deriveSelf(events, { growthDays: config.growthDays })
+    // A1.3：身份文档是所有面共用的，所以渲染目标面记为 identity。
+    // derive 在这里就完成跨面去引用化——persona.js 从 model.beliefs 生成
+    // 「你说过的话 / 固化 / 冲突 / 立场」，只在这一处换掉，所有段落一起生效，
+    // 也不会因为某个渲染入口忘了调 guard 而漏出微信/QQ 原文。
+    const model = deriveSelf(events, { growthDays: config.growthDays, viewSurface: 'identity' })
     const text = renderSelfDoc(model, {
       budget: config?.memory?.docBudget,
       carry: await activeCarry(root),
