@@ -10,6 +10,7 @@ B 站的行为本来就能跑，但数据和宿主能力还焊在 core 里。这
 - 评论回复改成三态：已观察（`bili_reply` 事件，按 `reply.rpid` 去重）→ 已呈现（`cseen:<rpid>` meta，投递成功才写）→ 已回复（`creply:` meta）。投递失败保留未呈现状态，下一轮扫描会再投。旧 `cseen:<日期> <rpid>` 按「已回复」读。
 - `bili_speak` 成功后写 `utterance`（实际发出的原话）+ `my:<rpid>` 去重；`bili_watch` 写当天 `saw`；`bili_look` 的 `saw` / `voice` 带 v3 字段。
 - 配置新增 `lib/config-service.js`（`/config` 仍走同一白名单）、`lib/owner-service.js`（凭据返回 `CredentialHandle`，JSON/字符串化一律 `[redacted]`）、`lib/tool-ledger-service.js`（按日期/会话/工具读台账与 artifact）、`core.self`（身份文本与刷新）。
+- 评审修复：B 站面的 `her_recall` 只翻共同层（B 站会话的 cwd 会被判成 `web`，以前可召回网页屋子的原话）；屋子唤醒的处境段按会话隔离（turn/end 与 90 秒兜底不再清掉出门会话的处境）；`sessions.find` 先查 `bili-session.json`，重启后不重复建出门会话；回复人昵称过 `sanitizeForeign` 并压成一行、限 64 字。
 - 验收：`node --test` 全绿（排除 `update.test.mjs` 的真实网络用例）；新增 `test/integration-memory-v3.test.mjs` 对照新旧路径。**未做真实 DSH 运行与消息收发验收。**
 
 ### 出门会话（原「未发布 — 2026-11-10」）

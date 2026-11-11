@@ -141,7 +141,7 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc, identi
   // 处境与会话（A1.6）。dsh-bili 搬出去后只能走这两个入口；同样挂在同一个 core
   // 对象上，别 provide 第二份。
   core.prompt = createPromptService({ ctx, surface: registry, log: warn })
-  core.sessions = createSessionService({ ctx, surface: registry, log: warn })
+  core.sessions = createSessionService({ ctx, surface: registry, root: baseRoot, log: warn })
 
   let offProvide = null
   try {

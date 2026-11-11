@@ -12,7 +12,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { resolve } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 
 /** 宿主服务可能还没挂上；get / 属性两条路都试，永不抛。 */
 function readService(ctx, name) {
@@ -27,9 +28,9 @@ function pathKey(p) {
 }
 
 /**
- * @param {{ ctx?: object, surface?: object, log?: Function }} [opts]
+ * @param {{ ctx?: object, surface?: object, root?: string, log?: Function }} [opts]
  */
-export function createSessionService({ ctx, surface, log } = {}) {
+export function createSessionService({ ctx, surface, root = '', log } = {}) {
   const reserve = (id, face) => {
     if (!id || !face) return
     try { surface?.reserve?.(id, face) } catch { /* 面登记失败不挡创建 */ }
@@ -123,8 +124,20 @@ export function createSessionService({ ctx, surface, log } = {}) {
   }
 
   async function find({ title = '', surface: face = '' } = {}) {
-    const rows = await list({ surface: face })
     const want = String(title ?? '')
+    // 先查 B 站记下的出门会话（设计 §7.8）：重启后它还没被 reserve，
+    // surface.current 会把它判成 web，只查宿主列表等于看不见它，A2 会重复建会话。
+    if (face === 'bili' && root) {
+      const saved = await readFile(join(root, 'bili-session.json'), 'utf8')
+        .then((s) => JSON.parse(s))
+        .catch(() => null)
+      if (saved?.sessionId && (!want || String(saved.title ?? '') === want)) {
+        const id = String(saved.sessionId)
+        reserve(id, 'bili')
+        return { sessionId: id, wsId: String(saved.wsId ?? ''), title: String(saved.title ?? want) }
+      }
+    }
+    const rows = await list({ surface: face })
     return rows.find((x) => String(x?.title ?? '') === want) ?? null
   }
 

@@ -90,9 +90,11 @@ export function looksLikeSecret(text) {
  * 只删掉那些冒充系统消息的行，并把超长的、像指令的东西压成一句。
  *
  * @param {string} text
+ * @param {{notice?: boolean}} [opts] notice=false 时不追加「跳过了几行」——
+ *   昵称这类只取一段标签的外来文本，提示语本身会变成名字的一部分。
  * @returns {{text:string, dropped:number}}
  */
-export function sanitizeForeign(text) {
+export function sanitizeForeign(text, { notice = true } = {}) {
   const raw = String(text ?? '')
   if (!raw) return { text: '', dropped: 0 }
   let dropped = 0
@@ -106,7 +108,7 @@ export function sanitizeForeign(text) {
     kept.push(line)
   }
   let out = kept.join('\n')
-  if (dropped) {
+  if (dropped && notice) {
     // 不告诉她是"有人在攻击你"——那等于把敌意翻译给她听。
     out += `\n（这段里有 ${dropped} 行没能读懂，跳过了。）`
   }

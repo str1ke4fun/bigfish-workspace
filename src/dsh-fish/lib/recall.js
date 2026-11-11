@@ -144,11 +144,16 @@ export function registerRecall(ctx, deps = {}) {
       async execute(args, exec) {
         try {
           const { events } = await readEvents(root)
-          // 只翻共同层 + 当前通道：别的通道的事翻不到，这是有意的
-          const channel = channelOfAgent(exec?.agent)
+          // 只翻共同层 + 当前通道：别的通道的事翻不到，这是有意的。
+          // B 站面例外：B 站会话的 cwd 是 home/bili，channelOfAgent 会把它判成 web，
+          // 按它翻会把网页屋子里说过的话召回进 B 站——公开面只给共同层。
+          let channel = channelOfAgent(exec?.agent)
+          try {
+            if (deps.core?.surface?.current?.(exec?.agent) === 'bili') channel = ''
+          } catch { /* 面判定不可用就按通道走 */ }
           const mine = events.filter((e) => {
             const c = e.channel ?? 'core'
-            return c === 'core' || c === channel
+            return c === 'core' || (channel !== '' && c === channel)
           })
           const { rows } = searchEvents(mine, args?.query, { days: args?.days })
           return { found: rows.length > 0, text: renderRecall(rows) }

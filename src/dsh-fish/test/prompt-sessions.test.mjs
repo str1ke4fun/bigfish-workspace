@@ -10,6 +10,9 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { createPromptService } from '../lib/prompt-service.js'
 import { createSessionService } from '../lib/session-service.js'
@@ -214,4 +217,26 @@ test('sessions.find / list 按面过滤，prompt 带 signal 与 queue 模式', a
   assert.equal(call.req.mode, 'queue')
   assert.equal(call.req.content[0].text, '看一眼')
   assert.equal(typeof call.signal.throwIfAborted, 'function')
+})
+
+test('sessions.find 先查 bili-session.json：重启后还没 reserve 的出门会话也能认领', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-sessions-'))
+  try {
+    await writeFile(join(root, 'bili-session.json'), JSON.stringify({
+      sessionId: 'bil-saved', wsId: 'ws-1', title: '去 B 站',
+    }))
+    const surface = createSurfaceRegistry()
+    const sc = fakeSc()
+    const { ctx } = fakeCtx({ sc })
+    const s = createSessionService({ ctx, surface, root })
+
+    assert.equal(surface.current({ session: { header: { id: 'bil-saved' } } }), null, '前提：还没登记时按面查不到')
+    const hit = await s.find({ title: '去 B 站', surface: 'bili' })
+    assert.equal(hit?.sessionId, 'bil-saved')
+    assert.equal(hit?.wsId, 'ws-1')
+    assert.equal(surface.current({ session: { header: { id: 'bil-saved' } } }), 'bili', '认领后补登记 bili 面')
+    assert.equal(await s.find({ title: '别的标题', surface: 'bili' }), null, '标题不匹配不硬认')
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
 })

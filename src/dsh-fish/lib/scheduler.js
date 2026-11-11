@@ -465,10 +465,11 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
     }).catch(() => null)
   }
 
-  const watcher = watchTurnEnd(ctx, sessionId, () => { void writeReport(); clearWakeSection() })
+  // 处境按会话隔离：全局槽会在 turn/end、失败或 90 秒兜底时把出门会话的处境一起清掉。
+  const watcher = watchTurnEnd(ctx, sessionId, () => { void writeReport(); clearWakeSection(sessionId) })
 
   // 处境走 system prompt 段；对话里只留这一句（她看到的是「有人来了」，不是剧本）。
-  setWakeSection(wakeText)
+  setWakeSection(wakeText, sessionId)
   try {
     await withWake(async () => {
       await sc.prompt(
@@ -516,11 +517,11 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
     // 免得残留到下一轮（他之后主动聊天时会看到她上一次的处境）。
     setTimeout(() => {
       try { watcher.off?.() } catch { /* ignore */ }
-      clearWakeSection()
+      clearWakeSection(sessionId)
     }, REPORT_WAIT_MS).unref?.()
   } catch (err) {
-    // 这一次没起来，处境要立刻清掉。
-    clearWakeSection()
+    // 这一次没起来，处境要立刻清掉——只清这一条会话。
+    clearWakeSection(sessionId)
     await appendEvent(
       { type: 'meta', text: `wakefail:${dk} ${String(err?.message ?? err).slice(0, 120)}` },
       { day: model.day, stage: model.stage, source: 'timer' },

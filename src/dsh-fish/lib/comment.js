@@ -194,6 +194,10 @@ export async function scanReplies(o = {}) {
       if (mine && s.mid === mine) continue          // 她自己又补了一句，不算"别人回她"
       const dirty = sanitizeForeign(s.text)
       if (!dirty.text.trim()) continue               // 整条都是指令味，丢掉
+      // 昵称也是外来文本：它会被原样拼进素材（`- ${who}：…`），
+      // 换个行就能伪造一条素材。同样过 sanitizeForeign，再压成一行、限 64 字。
+      const user = sanitizeForeign(String(s.user ?? ''), { notice: false })
+        .text.replace(/\s+/g, ' ').trim().slice(0, 64)
       // 观察态先落盘（v3）：bili_reply 是「我看到有人回我了」这个事实本身。
       // 写失败不挡本轮投递——下轮扫描会补写；但投递成功与否由 cseen 决定。
       if (memory && !observed.has(String(s.rpid))) {
@@ -205,12 +209,12 @@ export async function scanReplies(o = {}) {
             rpid: String(s.rpid),
             root: String(c.rpid),
             parent: String(s.parent ?? c.rpid),
-            user: String(s.user ?? ''),
+            user,
             mid: String(s.mid ?? ''),
           },
         }).catch(() => {})
       }
-      out.push({ bvid: c.bvid, aid, rootRpid: c.rpid, rpid: s.rpid, user: s.user, text: dirty.text, ctime: s.ctime })
+      out.push({ bvid: c.bvid, aid, rootRpid: c.rpid, rpid: s.rpid, user, text: dirty.text, ctime: s.ctime })
     }
   }
   return out.sort((a, b) => a.ctime - b.ctime)

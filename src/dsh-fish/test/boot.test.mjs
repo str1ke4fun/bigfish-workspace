@@ -12,7 +12,7 @@ import { startScheduler, wakeNow } from '../lib/scheduler.js'
 import { rememberKnownTools } from '../lib/restrict.js'
 import { dateKey } from '../lib/settings.js'
 import { writeSelfDoc } from '../lib/selfdoc.js'
-import { clearWakeSection, getWakeSection } from '../lib/identity.js'
+import { clearWakeSection, getWakeSection, setWakeSection } from '../lib/identity.js'
 import { WAKE_TRIGGER } from '../lib/wakeconst.js'
 
 async function withRoot(fn) {
@@ -504,8 +504,9 @@ test('唤醒消息只剩一句触发语，处境走 system prompt 段不进对�
     assert.ok(!text.includes('autonomy'), '不能泄露字段名')
     assert.ok(!text.includes('第 1 天'), '处境正文不该再进对话')
 
-    // 处境必须还在——只是换了通道（system prompt 段，见 attachIdentity）
-    const wake = getWakeSection()
+    // 处境必须还在——只是换了通道（system prompt 段，见 attachIdentity）。
+    // 而且挂在**这次唤醒的会话**上，不是全局槽：全局槽会把出门会话的处境一起清掉。
+    const wake = getWakeSection(r.sessionId)
     assert.ok(wake.length > 0, '这次唤醒的处境不能为空')
     assert.ok(wake.includes('第 1 天') || wake.includes('醒'), '处境正文要在 wake 段里')
     assert.ok(wake.length < 1200, `处境段过长：${wake.length} 字`)
@@ -517,6 +518,18 @@ test('唤醒消息只剩一句触发语，处境走 system prompt 段不进对�
     assert.ok(doc.includes('撒娇'), 'N1 禁令要在身份文档里')
     assert.ok(doc.includes('好感度'), 'N2 禁令要在身份文档里')
     assert.ok(doc.includes('growth_commit'), '工具说明要在身份文档里')
+  })
+})
+
+test('唤醒失败只清自己的处境，不把出门会话的处境一起清掉', async () => {
+  await withRoot(async (root) => {
+    await writeConfig(normalizeConfig({ browse: { enabled: false } }), root)
+    const { ctx } = fakeCtx({ promptImpl: async () => { throw new Error('boom') } })
+    setWakeSection('出门的处境', 'ses-bili')
+    const r = await wakeNow(ctx, { root })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(getWakeSection('ses-bili'), '出门的处境', '出门会话的处境不能被子屋的失败清掉')
+    assert.equal(getWakeSection(r.sessionId), '', '这次唤醒自己的处境要清掉')
   })
 })
 
