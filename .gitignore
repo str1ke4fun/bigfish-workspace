@@ -4,6 +4,7 @@
 !/README.md
 !/AGENTS.md
 !/ARCHITECTURE.md
+/.merge-backup-*/
 /payload/
 /sandbox/
 # Machine-specific installation, migration and diagnostic scripts stay local.
