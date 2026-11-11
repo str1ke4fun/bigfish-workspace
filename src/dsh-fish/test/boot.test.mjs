@@ -444,6 +444,25 @@ test('dispose 之后不再有后台活动（定时器真的停了）', async () 
   })
 })
 
+// A1.5：scheduler 不再直调 B 站模块，行为由本插件注册到 core.schedule 上。
+// 这里钉住生产路径仍把刷站/出门与唤醒素材这两个钩子挂上去（index.js:428-469）；
+// 接线本身（scheduler 真的调用它们）见 test/schedule-wiring.test.mjs。
+test('index.js 往 core.schedule 注册 bili-browse / bili-material', async () => {
+  await withRoot(async (root) => {
+    const { ctx, provided } = fakeCtx()
+    const h = apply(ctx, { root })
+    try {
+      const core = await waitFor(() => provided.get('fishCore'))
+      assert.ok(core, 'fishCore 必须挂上')
+      const st = core.schedule.status()
+      assert.ok(st.tick.some((x) => x.id === 'bili-browse'), '后台刷站/出门的 tick 钩子丢了')
+      assert.ok(st.wake.some((x) => x.id === 'bili-material'), '唤醒素材的 wake 钩子丢了')
+    } finally {
+      h.dispose?.()
+    }
+  })
+})
+
 test('scheduler.tick 在时间窗外不唤醒', async () => {
   await withRoot(async (root) => {
     // 窗口设成一个必然不含"现在"的区间（当前分钟往后推 3 小时开，1 分钟后关）

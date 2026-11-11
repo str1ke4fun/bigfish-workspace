@@ -51,6 +51,8 @@ export function startScheduler(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
   const log = deps.log ?? ((...a) => console.log('[dsh-fish]', ...a))
   activeHooks = deps.hooks ?? null
+  // 记一份本实例的归属：dispose 只清自己留下的兜底，不误伤后来启动的 scheduler。
+  const ownHooks = activeHooks
 
   // 每次 tick 的记忆（内存态，重启即清空；配额以 events.jsonl 为准）
   let lastTick = 0
@@ -150,7 +152,7 @@ export function startScheduler(ctx, deps = {}) {
     tick,
     dispose() {
       disposed = true
-      activeHooks = null
+      if (activeHooks === ownHooks) activeHooks = null
       if (timer) clearInterval(timer)
       if (wakeTimer) clearTimeout(wakeTimer)
       timer = null
@@ -573,7 +575,9 @@ export async function wakeNow(ctx, deps = {}) {
       log(`屋子没接上，这次手动唤醒用独立会话（会落进「未分组」）：${sessionId}`)
     }
   }
-  await wake(ctx, root, model, config, decision, dk, log, { ...deps, sessionId })
+  // 已经读过的事件流一并交给 wake 钩子：A2 的钩子按 §7.3 约定用 ctx.events，
+  // 不该在手动唤醒时拿到空数组。lookBeforeWake 自己回读，中间没有写入，等价。
+  await wake(ctx, root, model, config, decision, dk, log, { ...deps, sessionId, events })
   return { ok: true, template: decision.template?.id, sessionId }}
 
 /**
