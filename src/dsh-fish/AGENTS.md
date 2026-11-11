@@ -69,7 +69,7 @@
 node --test
 ```
 
-当前基线 **813 个**：`--test-isolation=none` 下可能有跨文件假红（ULID / cover）；用独立进程跑 `node --test` 应全绿。任何一条红都不许提交——包括看起来"不是我弄的"那条。
+当前基线 **943 个**（`node --test` 含 `update.test.mjs`；排除它的真实网络用例后 931 个）：`--test-isolation=none` 下可能有跨文件假红（ULID / cover）；用独立进程跑 `node --test` 应全绿。任何一条红都不许提交——包括看起来"不是我弄的"那条。
 
 按环境挑跑法：
 
