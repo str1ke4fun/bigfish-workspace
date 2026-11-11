@@ -26,6 +26,8 @@ import { paths } from './store.js'
 import { createMemoryService } from './memory-service.js'
 import { contribute, ownTools, status, setAgentProbe, setHostNamesProvider } from './tool-policy.js'
 import { createScheduleHooks } from './schedule-hooks.js'
+import { createPromptService } from './prompt-service.js'
+import { createSessionService } from './session-service.js'
 
 function asWarn(log) {
   if (typeof log === 'function') return log
@@ -120,6 +122,11 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc } = {})
   // 钩子由 scheduler 的串行 tick 调用，这里不创建任何定时器。
   core.schedule = createScheduleHooks({ log: warn })
 
+  // 处境与会话（A1.6）。dsh-bili 搬出去后只能走这两个入口；同样挂在同一个 core
+  // 对象上，别 provide 第二份。
+  core.prompt = createPromptService({ ctx, surface: registry, log: warn })
+  core.sessions = createSessionService({ ctx, surface: registry, log: warn })
+
   let offProvide = null
   try {
     if (typeof ctx.provide === 'function') offProvide = ctx.provide('fishCore', core)
@@ -135,6 +142,7 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc } = {})
       try { off() } catch { /* ignore */ }
     }
     try { core.schedule.dispose() } catch { /* ignore */ }
+    try { core.prompt.dispose() } catch { /* ignore */ }
     try { offProvide?.() } catch { /* ignore */ }
   }
 

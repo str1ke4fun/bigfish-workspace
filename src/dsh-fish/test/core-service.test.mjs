@@ -64,3 +64,15 @@ test('schedule 钩子表挂在 core 上：六个成员齐全，dispose 后 statu
   assert.equal(core.schedule.status().disposed, true)
   dispose()
 })
+
+test('prompt / sessions 挂在同一个 core 上，成员齐全', () => {
+  const ctx = fakeCtx()
+  const { core, dispose } = provideFishCore(ctx, { root: '/tmp/fish-root', herDir: '/tmp/fish-root/home' })
+  for (const key of ['setWake', 'clearWake', 'getWake', 'wakeSectionFor', 'withWake', 'watchTurnEnd', 'section']) {
+    assert.equal(typeof core.prompt?.[key], 'function', `core.prompt.${key} 必须是函数`)
+  }
+  for (const key of ['create', 'find', 'prompt', 'rename', 'list']) {
+    assert.equal(typeof core.sessions?.[key], 'function', `core.sessions.${key} 必须是函数`)
+  }
+  dispose()
+})
