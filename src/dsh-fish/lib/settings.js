@@ -174,6 +174,17 @@ export const DEFAULTS = {
   },
 }
 
+/**
+ * `fishCore.config.patch` 允许写的顶层键（A1.7）。
+ * 与观测台 `/config` 的白名单同源；`persona` 永远不在其中——人格不是配置项。
+ * 新增可调项时这里和 DEFAULTS 一起加，漏了会被 patch 整次拒绝而不是静默写坏。
+ */
+export const CONFIG_PATCH_KEYS = [
+  'growthDays', 'wakesPerDay', 'window', 'daily', 'diary', 'absenceAfterDays',
+  'avoid', 'browse', 'video', 'comment', 'notify', 'chat', 'memory',
+  'tools', 'observe', 'ui',
+]
+
 const LIMITS = {
   growthDays: [7, 180],
   wakesPerDay: [0, 4],
@@ -182,6 +193,7 @@ const LIMITS = {
   'diary.keepDays': [0, 3650],
   absenceAfterDays: [1, 30],
   'browse.topN': [1, 20],
+  'browse.rankingTids': [0, 4],
   'browse.deepRead': [0, 40],
   'browse.danmaku': [0, 30],
   'browse.perDay': [0, 4],
@@ -275,6 +287,12 @@ export function normalizeConfig(raw = {}) {
   cfg.browse.voices = cfg.browse.voices !== false
   cfg.browse.keywords = dedupe(cfg.browse.keywords)
   cfg.browse.window = validWindow(cfg.browse.window, DEFAULTS.browse.window)
+
+  // 看画面：布尔严格化。界面/插件都可能把 "yes"、0 之类的值直接塞进来，
+  // 留成字符串会让 `if (cfg.video.enabled)` 把 "false" 当成真的。
+  cfg.video = { ...DEFAULTS.video, ...cfg.video }
+  cfg.video.enabled = Boolean(cfg.video.enabled)
+  cfg.video.ocr = Boolean(cfg.video.ocr)
 
   // 提醒：布尔严格化 + lastShown 只收字符串（它的值是日期键，不是数字）
   cfg.notify = { ...DEFAULTS.notify, ...cfg.notify }

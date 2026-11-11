@@ -42,7 +42,7 @@ import { registerHerTools } from './tools.js'
 import { createToolLedger } from './tool-ledger.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
-import { clearWakeSection, registerIdentity } from './identity.js'
+import { clearWakeSection, registerIdentity, identityText } from './identity.js'
 import { looksLikeRewriting, looksLikeSecret, sanitizeForeign, screenOutgoing } from './guard.js'
 
 import { logBoot, makeLogger } from './log.js'
@@ -102,6 +102,9 @@ export function apply(ctx, baseConfig = {}) {
     // 必须在 registerToolRestrict 之前挂上：限制监听器（Task 6 起）要靠 surface
     // 判断这个 agent 属于哪个面。这里先只提供判定，本任务不改 restrict 的签名。
     let fishCore = null
+    // 台账实例在 fishCore 之后才建；用 getter 注入，fishCore.toolLedger 在
+    // 调用时取到当时的值（没挂上就是 NO_LEDGER），不必为了顺序把台账往前挪。
+    let ledger = null
     try {
       const handle = provideFishCore(ctx, {
         root,
@@ -109,6 +112,9 @@ export function apply(ctx, baseConfig = {}) {
         log: (...a) => logger.warn(...a),
         // 身份文档刷新由这里注入：core-service / memory-service 都不直接 import selfdoc。
         refreshSelfDoc: (r = root) => refreshSelfDoc(r, { log: (...a) => logger.warn(...a) }),
+        // 身份文本同理：fishCore.self.identity 读的就是她当前那份文档。
+        identityText: (r = root) => identityText(r),
+        toolLedger: () => ledger,
       })
       fishCore = handle.core
       if (typeof handle.dispose === 'function') disposers.push(handle.dispose)
@@ -150,8 +156,8 @@ export function apply(ctx, baseConfig = {}) {
     // 必须放在 fishCore 之后：surfaceOf 靠它判定这次调用来自哪个面。
     // 放在工具注册之前：插件启动期间已经发生的调用也要被看见。
     // 监听器内部自己吞错，台账写失败绝不能把成功的工具调用变成 isError。
-    // 实例在 try 外留一个引用：/selfcheck 要读 ledger.status()，外部闭包拿不到 try 里的 const。
-    let ledger = null
+    // 实例在 try 外留一个引用（boot 开头已声明）：/selfcheck 要读 ledger.status()，
+    // 外部闭包拿不到 try 里的 const；fishCore.toolLedger 也通过 getter 读它。
     try {
       ledger = createToolLedger({
         root,

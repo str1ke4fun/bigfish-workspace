@@ -11,7 +11,7 @@
  */
 
 import { readEvents, rootDir, paths, readDaily, listDiary, readOwner } from './store.js'
-import { loadConfig, updateConfig, configFileInfo, dateKey, validateToolNames } from './settings.js'
+import { loadConfig, updateConfig, configFileInfo, dateKey, validateToolNames, CONFIG_PATCH_KEYS } from './settings.js'
 import { deriveSelf, consistency, novelty } from './derive.js'
 // 「稳定」单独一个文件（2026-10-26）：它要同时看事件流与她的自我描述，
 // 依赖方向必须是 quality → derive + persona，不能反过来塞进 derive（会成环）。
@@ -283,7 +283,9 @@ export function registerObserve(ctx, deps = {}) {
         // 两个都不是性格，但必须在这里登记，否则观测台「保存」会被 400 挡回来。
         // persona 不在这里：它是导入动作的副产物（见 lib/import.js），
         // 不给「从设置页直接改」的入口——否则就等于给了一个「关掉那两条禁令」的开关。
-        const allowed = ['growthDays', 'wakesPerDay', 'window', 'daily', 'diary', 'absenceAfterDays', 'avoid', 'browse', 'video', 'comment', 'notify', 'chat', 'memory', 'tools', 'observe', 'ui']
+        // 与 fishCore.config.patch 共用同一份白名单（settings.CONFIG_PATCH_KEYS），
+        // 两处各写一份迟早会漂移：观测台能存、插件拒绝，或反过来。
+        const allowed = CONFIG_PATCH_KEYS
         const bad = Object.keys(patch).filter((k) => !allowed.includes(k))
         if (bad.length) return send(res, 400, { error: `不允许修改：${bad.join(', ')}` })
         // 白名单必须真的存在（2026-10-24）：宿主 restrict 遇到不认识的名字会抛错，
