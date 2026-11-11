@@ -187,11 +187,15 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
     }
   }
 
-  function commit(text, { type = 'utterance', refs = [], verdict, confidence, agent } = {}) {
+  function commit(text, {
+    type = 'utterance', refs = [], verdict, confidence, agent, surface, channel,
+  } = {}) {
     const raw = { type, text, refs }
     if (verdict !== undefined) raw.verdict = verdict
     if (confidence !== undefined) raw.confidence = confidence
-    return append(raw, { source: 'tool', agent })
+    // surface/channel 显式传入优先（B 站公开言论：surface='bili'、channel='core'）；
+    // 不传时仍按 agent 推断，老调用点不受影响。
+    return append(raw, { source: 'tool', agent, surface, channel })
   }
 
   function appendSystem(type, text, opts = {}) {

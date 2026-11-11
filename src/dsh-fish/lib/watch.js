@@ -85,11 +85,28 @@ export function registerWatch(ctx, deps = {}) {
         })
         if (!r.ok) return { ok: false, path: '', text: '', note: r.why }
 
+        // 同一天同一条只写一次 saw（设计 §6.3）：先看 watched 记账，再决定写不写。
+        const watchedBefore = ev.events.some((e) => e?.type === 'meta' && String(e.text ?? '') === `watched:${dk} ${bvid}`)
         await appendEvent(
           { type: 'meta', text: `watched:${dk} ${bvid}` },
           { source: 'system' },
           root,
         ).catch(() => {})
+
+        if (!watchedBefore) {
+          // 画面里认出的字也是 B 站公开内容：sanitize 后截断到 2000，当记忆而不是指令。
+          const body = useOcr && r.extra?.ok ? sanitizeForeign(r.extra.text).text : ''
+          const sawText = [r.title || bvid, body].filter(Boolean).join('\n').slice(0, 2000)
+          if (deps.memory) {
+            await deps.memory.appendSystem('saw', sawText, { surface: 'bili', channel: 'core', refs: [bvid] }).catch(() => {})
+          } else {
+            await appendEvent(
+              { type: 'saw', text: sawText, refs: [bvid], surface: 'bili', channel: 'core' },
+              { source: 'system' },
+              root,
+            ).catch(() => {})
+          }
+        }
 
         // 路径一律给正斜杠：宿主渲染 markdown 图片时会拿路径拼 /api/file，
         // C:\... 这种反斜杠写法在客户端解析后取不到文件，图片就显示成「无法预览」

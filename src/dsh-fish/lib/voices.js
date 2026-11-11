@@ -134,7 +134,7 @@ export function recentVoiceKeys(events = [], { now = Date.now(), ttlDays = VOICE
  * 一轮浏览结束后调用：选一条、落盘。永不抛出（记账失败不该毁掉这次浏览）。
  * @returns {object|null} 落盘的那条（带 why/across），没选到就是 null
  */
-export async function recordVoice({ packs = [], events = [], model = {}, root, cfg = {}, rng = Math.random } = {}) {
+export async function recordVoice({ packs = [], events = [], model = {}, root, cfg = {}, rng = Math.random, memory = null } = {}) {
   try {
     if (cfg?.browse?.voices === false) return null
     if (process.env.FISH_NO_VOICES === '1') return null
@@ -143,11 +143,13 @@ export async function recordVoice({ packs = [], events = [], model = {}, root, c
     const seen = recentVoiceKeys(events)
     const v = chooseVoice(comments, { seen, rng })
     if (!v) return null
-    await appendEvent(
-      { type: 'voice', text: v.text.slice(0, VOICE_MAX), refs: v.bvid ? [v.bvid] : [] },
-      { day: Number(model?.day ?? 0), stage: Number(model?.stage ?? 1), source: 'system' },
-      root,
-    )
+    const day = Number(model?.day ?? 0)
+    const stage = Number(model?.stage ?? 1)
+    const text = v.text.slice(0, VOICE_MAX)
+    const refs = v.bvid ? [v.bvid] : []
+    // 评论区里的原话是 B 站公开事实：surface=bili、channel=core，任何面都召回得到。
+    if (memory) await memory.appendSystem('voice', text, { surface: 'bili', channel: 'core', refs, day, stage })
+    else await appendEvent({ type: 'voice', text, refs, surface: 'bili', channel: 'core' }, { day, stage, source: 'system' }, root)
     return v
   } catch {
     return null

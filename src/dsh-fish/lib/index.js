@@ -296,10 +296,10 @@ export function apply(ctx, baseConfig = {}) {
     if (ctx.tools?.register) {
       for (const reg of [
         () => registerCapture(ctx, { root, core: fishCore ?? undefined }),
-        () => registerLook(ctx, { root, client: baseConfig.client }),
-        () => registerSpeak(ctx, { root, client: baseConfig.client }),
+        () => registerLook(ctx, { root, client: baseConfig.client, memory: fishCore?.memory }),
+        () => registerSpeak(ctx, { root, client: baseConfig.client, memory: fishCore?.memory }),
         () => registerRecall(ctx, { root, core: fishCore ?? undefined }),
-        () => registerWatch(ctx, { root }),
+        () => registerWatch(ctx, { root, memory: fishCore?.memory }),
         // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
         () => registerLetter(ctx, { root, core: fishCore ?? undefined }),
         // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
@@ -462,6 +462,8 @@ export function apply(ctx, baseConfig = {}) {
             ensureSession: hdeps.ensureBiliSession,
             client: hdeps.client,
             appendEvent: hdeps.appendEvent,
+            core: fishCore ?? undefined,
+            memory: hdeps.memory,
           })
           return { changed: Boolean(bg?.ok || out?.ok) }
         },
@@ -485,6 +487,9 @@ export function apply(ctx, baseConfig = {}) {
       sessionId: home.sessionId,
       ensureBiliSession: ensureBili ?? undefined,
       hooks: hooks ?? null,
+      // A1.8：刷站/素材/出门的写入与处境都从 fishCore 走；deps 原样传进钩子。
+      core: fishCore ?? undefined,
+      memory: fishCore?.memory,
       log: (...a) => logger.info(...a),
     })
 

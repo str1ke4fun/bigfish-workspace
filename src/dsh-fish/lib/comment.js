@@ -122,12 +122,42 @@ export function herCommentsRecent(events, days = REPLY_LOOKBACK_DAYS, now = Date
   return out.map(({ bvid, rpid, dk }) => ({ bvid, rpid, dk }))
 }
 
-/** 已经提醒过她的回复 rpid 集合 */
+/**
+ * 已经提醒过她的回复 rpid 集合。
+ *
+ * 两种写法都要认（设计 §6.2）：
+ *   - v2：`cseen:<日期> <rpid>` —— 当时写的是「已回」；
+ *   - v3：`cseen:<rpid>`        —— 现在写的是「已呈现」。
+ * 对「别再提醒一次」来说两者等价，版本差异只在工作台三态上体现。
+ */
 export function seenReplies(events, dk = dateKey()) {
   const s = new Set()
   for (const t of metas(events, `cseen:`)) {
-    const [, rpid] = t.split(' ')
-    if (rpid) s.add(Number(rpid))
+    const parts = t.slice('cseen:'.length).trim().split(/\s+/)
+    const id = parts.length >= 2 ? parts[1] : parts[0]
+    if (id) s.add(Number(id))
+  }
+  return s
+}
+
+/** 已经写成 `bili_reply` 的回复 rpid（v3 观察态；String 与事件里的去重键同型）。 */
+export function observedReplies(events) {
+  const s = new Set()
+  for (const ev of events ?? []) {
+    if (ev?.type !== 'bili_reply') continue
+    const id = String(ev?.reply?.rpid ?? '')
+    if (id) s.add(id)
+  }
+  return s
+}
+
+/** 她已经回过的回复 rpid（`creply:<日期> <bvid> <rootRpid> <parentRpid> [新rpid]`）。 */
+export function repliedReplies(events) {
+  const s = new Set()
+  for (const t of metas(events, 'creply:')) {
+    const parts = t.trim().split(/\s+/)
+    const parent = parts[3]
+    if (parent) s.add(String(parent))
   }
   return s
 }
@@ -145,7 +175,10 @@ export async function scanReplies(o = {}) {
   const client = o.client ?? createClient({})
   const events = o.events ?? (await readEvents(root)).events
   const dk = o.dateKey ?? dateKey()
-  const seen = seenReplies(events, dk)
+  const seen = seenReplies(events, dk)         // 已呈现 / 已回 / 旧 cseen：不再投递
+  const observed = observedReplies(events)     // 已有 bili_reply：不再重复观察
+  const replied = repliedReplies(events)       // 已回：不再进待回列表
+  const memory = o.memory ?? null
   const mine = await loginMid(root)
   const out = []
 
@@ -157,10 +190,26 @@ export async function scanReplies(o = {}) {
     if (!r.ok) continue
     for (const s of r.data ?? []) {
       if (!s.rpid || !s.text) continue
-      if (seen.has(s.rpid)) continue
+      if (seen.has(s.rpid) || replied.has(String(s.rpid))) continue
       if (mine && s.mid === mine) continue          // 她自己又补了一句，不算"别人回她"
       const dirty = sanitizeForeign(s.text)
       if (!dirty.text.trim()) continue               // 整条都是指令味，丢掉
+      // 观察态先落盘（v3）：bili_reply 是「我看到有人回我了」这个事实本身。
+      // 写失败不挡本轮投递——下轮扫描会补写；但投递成功与否由 cseen 决定。
+      if (memory && !observed.has(String(s.rpid))) {
+        await memory.appendSystem('bili_reply', dirty.text, {
+          surface: 'bili',
+          channel: 'core',
+          reply: {
+            bvid: c.bvid,
+            rpid: String(s.rpid),
+            root: String(c.rpid),
+            parent: String(s.parent ?? c.rpid),
+            user: String(s.user ?? ''),
+            mid: String(s.mid ?? ''),
+          },
+        }).catch(() => {})
+      }
       out.push({ bvid: c.bvid, aid, rootRpid: c.rpid, rpid: s.rpid, user: s.user, text: dirty.text, ctime: s.ctime })
     }
   }
@@ -303,11 +352,15 @@ export async function postReply(o = {}) {
     { day: 0, stage: 1, source: 'system' },
     root,
   ).catch(() => {})
-  await appendEvent(
-    { type: 'meta', text: `cseen:${dk} ${parent}` },
-    { day: 0, stage: 1, source: 'system' },
-    root,
-  ).catch(() => {})
+  // v3 呈现标记：`cseen:<rpid>`（旧写法 `cseen:<日期> <rpid>` 是"已回"，不再新写）。
+  // 回过的这条必然已经呈现过；补一条只在缺的时候，避免重复。
+  if (!metas(events, 'cseen:').some((t) => t.trim() === `cseen:${parent}`)) {
+    await appendEvent(
+      { type: 'meta', text: `cseen:${parent}` },
+      { day: 0, stage: 1, source: 'system' },
+      root,
+    ).catch(() => {})
+  }
   // 回复正文也留一份，工作台足迹才说得清她回了什么（2026-11-03）。
   if (rpid) {
     await appendEvent(

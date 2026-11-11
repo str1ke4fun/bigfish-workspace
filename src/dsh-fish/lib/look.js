@@ -108,9 +108,9 @@ export async function lookOnce(o = {}) {
     }
 
     // 评论区里别人的话（2026-10-24，用户 m02454）：她自己去看的时候也可能读到一句。
-    const voice = await recordVoice({ packs, events, model: o.model, root, cfg })
+    const voice = await recordVoice({ packs, events, model: o.model, root, cfg, memory: o.memory })
     // 她自己点开看过的东西也进记忆（2026-11-03）：下一次 her_recall 翻得到。
-    await recordSaw(root, packs, o.model)
+    await recordSaw(root, packs, o.model, { memory: o.memory })
     // 身份文件跟着变：否则「我最近刷到的」要等到下次重启/写判断才更新。
     await refreshSelfDoc(root).catch(() => {})
 
@@ -143,7 +143,7 @@ function describeErr(r) {
 /**
  * 注册工具。
  * @param {object} ctx
- * @param {{root?:string, client?:object}} deps
+ * @param {{root?:string, client?:object, memory?:object}} deps
  */
 export function registerLook(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
@@ -194,6 +194,7 @@ export function registerLook(ctx, deps = {}) {
           cfg: config,
           root,
           client: deps.client,
+          memory: deps.memory,
         })
         return { ok: r.ok, text: r.text, note: r.note }
       },

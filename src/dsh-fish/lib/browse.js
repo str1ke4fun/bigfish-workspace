@@ -273,18 +273,18 @@ export function renderSaw(p) {
  * 与 `voice` 的分工：voice 是"评论区里别人的一句原话"，最多一条；
  * saw 是"她看过哪几条视频"，每条视频一条。两者都不进 beliefs。
  */
-export async function recordSaw(root, packs, model, { max = 6 } = {}) {
+export async function recordSaw(root, packs, model, { max = 6, memory = null } = {}) {
   let n = 0
   for (const p of (packs ?? []).slice(0, Math.max(0, max))) {
     const bvid = String(p?.video?.bvid ?? '')
     const text = renderSaw(p)
     if (!bvid || !text) continue
+    const day = Number(model?.day ?? 0)
+    const stage = Number(model?.stage ?? 1)
     try {
-      await appendEvent(
-        { type: 'saw', text, refs: [bvid] },
-        { day: Number(model?.day ?? 0), stage: Number(model?.stage ?? 1), source: 'system' },
-        root,
-      )
+      // 看过什么是 B 站公开事实：surface=bili、channel=core，任何面都召回得到。
+      if (memory) await memory.appendSystem('saw', text, { surface: 'bili', channel: 'core', refs: [bvid], day, stage })
+      else await appendEvent({ type: 'saw', text, refs: [bvid], surface: 'bili', channel: 'core' }, { day, stage, source: 'system' }, root)
       n++
     } catch { /* 记账失败不影响这次浏览 */ }
   }
@@ -472,10 +472,10 @@ export async function gather(client, model, cfg, o = {}) {
 
     // 评论区里别人的话：从刚读到的一堆热评里挑一条留给她（可能挑不到）。
     // 挑不到是正常的——占比要小是用户明确要求的，不是每次都非得有。
-    const voice = await recordVoice({ packs, events, model, root: o.root, cfg })
+    const voice = await recordVoice({ packs, events, model, root: o.root, cfg, memory: o.memory })
     // 看过的视频本身也留一笔（2026-11-03）。之前只有 `browse:` 的 JSON 记账，
     // 而 recall 跳过 meta——她刷完站等于什么都没记住。saw 是给她的记忆，不是报告。
-    await recordSaw(o.root, packs, model)
+    await recordSaw(o.root, packs, model, { memory: o.memory })
 
     return {
       ok: true,

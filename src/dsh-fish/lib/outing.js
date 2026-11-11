@@ -303,12 +303,14 @@ export async function maybeOuting(ctx, opts = {}) {
 
     // 评论区：只在她能说话、且在说话时段内才看；扫描本身按 20 分钟节流。
     let replies = ''
+    let waiting = []
     const cw = Array.isArray(config?.comment?.window) ? config.comment.window : ['00:00', '23:59']
     if (config?.comment?.enabled === true && inWindow({ window: cw }, now)) {
       const scanAt = replyScanAt.get(root) ?? 0
       if (now.getTime() - scanAt >= replyScanGapMs(config)) {
         replyScanAt.set(root, now.getTime())
-        const waiting = await scanReplies({ root, events, dateKey: dk, client: opts.client }).catch(() => [])
+        const memory = opts.memory ?? opts.core?.memory ?? null
+        waiting = await scanReplies({ root, events, dateKey: dk, client: opts.client, memory }).catch(() => [])
         replies = renderReplies(waiting)
       }
     }
@@ -336,13 +338,28 @@ export async function maybeOuting(ctx, opts = {}) {
     const sc = readController(ctx)
     if (!sc?.prompt) return { ok: false, why: '宿主没有 sessionController.prompt' }
 
+    // fishCore 接口（A1.8）：处境段与会话投递都走插件内核；注入缺席时退回原内部实现，
+    // 这样 core 内联运行时与 A2 搬包后的 dsh-bili 共用同一套语义。
+    const prompt = opts.core?.prompt ?? null
+    const sessions = opts.core?.sessions ?? null
+    const setWake = (text) => (prompt ? prompt.setWake(sid, text) : setWakeSection(text, sid))
+    const clearWake = () => (prompt ? prompt.clearWake(sid) : clearWakeSection(sid))
+    const wakeNow = () => (prompt ? prompt.getWake(sid) : getWakeSection(sid))
+
     const ac = new AbortController()
     const kill = setTimeout(() => ac.abort(), OUTING_TIMEOUT_MS)
-    const watcher = watchTurnEnd(ctx, sid, () => clearWakeSection(sid))
+    const watcher = prompt
+      ? prompt.watchTurnEnd(sid, () => clearWake())
+      : watchTurnEnd(ctx, sid, () => clearWakeSection(sid))
 
-    setWakeSection(wakeText, sid)
+    setWake(wakeText)
     try {
       await withWake(async () => {
+        if (sessions) {
+          const r = await sessions.prompt(sid, BILI_TRIGGER, { signal: ac.signal })
+          if (!r?.ok) throw new Error(r?.why ?? '投递失败')
+          return
+        }
         await sc.prompt(
           {
             requestId: `bili-${dk}-${Date.now()}`,
@@ -361,16 +378,23 @@ export async function maybeOuting(ctx, opts = {}) {
           root,
         )
       } catch { /* 记账失败不影响这次出门已经发生的事实 */ }
+
+      // 投递成功才写 cseen（v3 呈现态）。失败保留 bili_reply，下一轮扫描会再投。
+      for (const w of waiting) {
+        try {
+          await append({ type: 'meta', text: `cseen:${w.rpid}` }, { day: 0, stage: 1, source: 'system' }, root)
+        } catch { /* 少一条呈现标记最多重复投递一次，不静默丢 */ }
+      }
       log(`出门（${material ? '带素材' : '带回复'}）`)
       setTimeout(() => {
         try { watcher.off?.() } catch { /* ignore */ }
         // 只清自己写的那一段：这 90 秒里可能已经有下一次出门挂上了新的处境。
-        if (getWakeSection(sid) === wakeText) clearWakeSection(sid)
+        if (wakeNow() === wakeText) clearWake()
       }, OUTING_CLEAR_MS).unref?.()
       return { ok: true, sessionId: sid }
     } catch (err) {
       try { watcher.off?.() } catch { /* ignore */ }
-      clearWakeSection(sid)
+      clearWake()
       log(`出门失败：${String(err?.message ?? err).slice(0, 120)}`)
       return { ok: false, why: String(err?.message ?? err).slice(0, 120) }
     } finally {

@@ -247,7 +247,7 @@ export async function lookBeforeWake(root, model, config, dk, deps, log) {
       : { ...config, browse: { ...config.browse, topN: bp.topN, deepRead: bp.deepRead } }
 
     const client = deps.client ?? createClient({ log: (...a) => log?.('bili', ...a) })
-    const r = await gather(client, model, cfg2, { root, dk, events })
+    const r = await gather(client, model, cfg2, { root, dk, events, memory: deps.memory })
     if (!r.ok || !r.text) {
       if (/COOLDOWN|-352|-412|-509|风控/.test(String(r.code ?? r.note ?? ''))) noteRisk(root, r.code ?? 'COOLDOWN', deps.now ?? new Date())
       if (r.note) log?.('browse empty', r.note)
