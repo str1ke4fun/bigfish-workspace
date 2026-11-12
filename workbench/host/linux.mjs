@@ -1,11 +1,9 @@
 /**
- * linux.mjs —— Linux（树莓派）上的 host：脏活就在本机，直接跑。
+ * linux.mjs —— Linux/WSL 上的 host：脏活就在本机，直接跑。
  *
- * 和 Windows 那边的接口一模一样，所以 server.mjs 和页面一行都不用改。
- * 差别只有三处：
- *  - 没有 wsl.exe，命令直接 bash -lc；
- *  - 不需要保活（机器常开，服务由 systemd 管）；
- *  - 通知走 notify-send / wall，没有就静默。
+ * 命令直接 bash -lc；不需要保活（机器常开，服务由 systemd 管）；
+ * 通知走 notify-send / wall，没有就静默。
+ * Windows 桌面工作台已退役，不再有 wsl.exe 转发分支。
  */
 import { execFile, spawn } from 'node:child_process'
 
