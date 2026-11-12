@@ -1,3 +1,5 @@
+// 已软删除（2026-11-12）：B 站实现以 src/dsh-bili/lib/ 为准，dsh-fish 运行时不再
+// 引用本文件；保留仅为回滚与对照。新增代码不要 import 这里。
 /**
  * speak.js —— 她在 B 站开口：bili_speak 工具
  *

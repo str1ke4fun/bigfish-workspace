@@ -161,6 +161,8 @@
 
 旧设置页 section（`settings.section`）已注销，不再挂载；`lib/client.js`、`exports["./client"]` 与 `dsh.client` 保留，恢复注册即可回滚。
 
+**B 站模块已软删除**：`lib/` 下的 `bili`、`browse`、`browsejob`、`comment`、`cover`、`footprint`、`history`、`look`、`ocr`、`outing`、`risk`、`speak`、`video`、`voices`、`watch` 迁到 `src/dsh-bili/lib/` 后不再被 dsh-fish 运行时引用，文件头都标了「已软删除」；保留只为回滚与对照，新增代码不要 import。`cookie`/`posix`/`similarity`/`tool`/`toolschema` 是与 B 站无关的共享工具，dsh-fish 仍在使用，不在软删除范围内。
+
 不在浏览器里直连 `/dsh-fish`——那条路由被 connection 的信任栅栏守着，要的是 App 内置的登录 cookie，浏览器地址栏直接敲只会拿到 401。工作台通过 BFF 在服务端完成 token 换取与 cookie 缓存，浏览器只看到 `/api/fish/*`。
 
 工作台能看：已成长天数 / 当前阶段 / 下一个成长瓶颈 / 她自己说过的话 / 认知重构 / 勇于拒绝 / 没想通的事 / 读到别人的说法 / 最近事件 / 日记。
