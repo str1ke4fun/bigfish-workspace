@@ -63,7 +63,7 @@ B 站能力今天整包长在 `src/dsh-fish` 里：从没独立成包，`dsh-bil
 - 不新增人格设置入口；B 站配置仍是环境参数（`AGENTS.md` 第 2 条）。
 - 不做 QQ 的调度迁移；QQ 仍按旧调度。
 - 不改宿主（DSH）代码；只用现有 `ctx.tools` / `systemPrompt.section` / `webServer` / `sessionController` / `workspaceRegistry`。
-- 不把 `dsh-mem` 引进来。当前「记忆层」就是 core（person core），`dsh-wx` 里对 `dsh-mem` 的调用是可选降级路径，与本设计无关。
+- 不把 `dsh-mem` 引进来。当前「记忆层」就是 core（person core）；`dsh-wx` 里残留的可选调用已于 2026-11-12 移除。
 - 不删除或重写任何历史事件；v3 只新增字段与类型。
 
 ---

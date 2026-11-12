@@ -76,7 +76,6 @@ const INBOX = '/home/str1k3/.dsh-wx/inbound.jsonl'
 const HER_DIR = '/home/str1k3/.dsh-fish/home'
 // 说话频率的判定放在两个通道共用的一个文件里（QQ 那边是 vendor 补丁，用的是同一份）
 const SPEECH = '/home/str1k3/dsh-plugins/speech/speech.mjs'
-const MEM_LIVE = '/home/str1k3/dsh-plugins/dsh-mem/lib/livewx.js'
 const KEEP = 20
 
 /**
@@ -736,14 +735,6 @@ export function apply(ctx, config = {}) {
     return captureQueue
   }
 
-  // 流水账 + 读气氛：由 dsh-mem 提供。拿不到就当没有，微信照常工作。
-  // 依赖方向是 dsh-wx → dsh-mem（和上面的说话频率同一个办法：动态 import 一个固定路径）。
-  let feed = null
-  import(MEM_LIVE).then((m) => {
-    feed = m.createWxFeed({ log: (s) => console.log('[dsh-wx] 流水账：' + s) })
-    console.log('[dsh-wx] 流水账已接上（dsh-mem/livewx）')
-  }).catch((e) => console.log('[dsh-wx] 没接上流水账（dsh-mem 不可用）：' + String(e?.message ?? e).slice(0, 120)))
-
   const treeStats = { calls: 0, lastMs: 0, since: Date.now() }
   const fresh = createFreshness((m) => console.log('[dsh-wx] 树：' + m))
   // 树的重试发生在两段：插件刚挂上（init），以及**检测到微信被重启过**（recover）。
@@ -784,8 +775,6 @@ export function apply(ctx, config = {}) {
     treeStats.calls++
     treeStats.lastMs = Date.now() - t0
     const parsed = parseTree(raw)
-    // 流水账：屏幕上出现的新消息当场记下（耳朵每 5 秒也走这里，所以她没点开的会话里的新话也记得到）
-    try { feed?.observe(parsed) } catch { /* 记不下不影响用 */ }
     const region = pixels ? sidebarRegion(parsed) : null
     let hash = ''
     if (region) {
@@ -1162,7 +1151,6 @@ export function apply(ctx, config = {}) {
       if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
     }
 
-    try { feed?.willSend(allowed.chat, body) } catch { /* ignore */ }
     await run(['key', 'Return'])
     await sleep(900)
 
@@ -1182,15 +1170,6 @@ export function apply(ctx, config = {}) {
       : inPreview
         ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
         : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
-    try {
-      feed?.noteOut({
-        chat: allowed.chat,
-        text: body,
-        receipt: receipt.replace(/^回执：/, ''),
-        sent: inMsgs || inPreview ? true : 'unconfirmed',
-      })
-    } catch { /* ignore */ }
-
     // 回执确认了才落台账：没看到就不假装发过。
     let outMsgId = ''
     if (inMsgs || inPreview) {
@@ -2299,11 +2278,8 @@ export function apply(ctx, config = {}) {
       if (!policy().enabled) throw new Error(OFF)
       const s = await look()
       if (s.source === 'ocr') return JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: 'OCR cannot verify the active conversation or authorize sending.' }, null, 2)
-      // 当前会话的气氛粗判 + 她自己记下的关于这个人的话（没有就是空串）
-      let mood = ''
-      try { mood = feed?.hint(s.parsed.current) ?? '' } catch { /* ignore */ }
-      // 尾巴（[提示] / 气氛）比正文更重要：先给它们留位置，再截正文。
-      return clipPeekBody(s.raw, fresh.notice() + mood)
+      // 尾巴（[提示]）比正文更重要：先给它留位置，再截正文。
+      return clipPeekBody(s.raw, fresh.notice())
     },
   })
 
@@ -2402,8 +2378,6 @@ export function apply(ctx, config = {}) {
       await sleep(300)
       const second = await gateSend()
       await speechGate(second.chat)
-      // 回车之前先登记「这句是她的」：回车后第一次读屏就能把它认成她说的，而不是对方说的
-      try { feed?.willSend(second.chat, text) } catch { /* ignore */ }
       await run(['key', 'Return'])
       await sleep(900)
       const after = await look({ confirm: false })
@@ -2419,7 +2393,6 @@ export function apply(ctx, config = {}) {
         : inPreview
           ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
           : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
-      try { feed?.noteOut({ chat: second.chat, text, receipt: receipt.replace(/^回执：/, ''), sent: inMsgs || inPreview ? true : 'unconfirmed' }) } catch { /* ignore */ }
       if (inMsgs || inPreview) {
         noteOutbox(second.chat, text)
         try {
