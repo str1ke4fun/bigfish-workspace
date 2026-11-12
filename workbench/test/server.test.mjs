@@ -2,7 +2,8 @@ import test, { before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { once } from 'node:events'
-import { mkdtempSync, readFileSync, statSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, statSync, rmSync, symlinkSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -101,6 +102,34 @@ function rawRequest(path, { method = 'GET', headers = {}, body = '' } = {}) {
     req.end()
   })
 }
+
+test('通过符号链接启动也算入口（systemd 的 /opt/fish/workbench 用法）', async () => {
+  const dir = mkdtempSync(join(tmp, 'link-'))
+  const link = join(dir, 'server.mjs')
+  symlinkSync(new URL('../server.mjs', import.meta.url), link)
+  const child = spawn(process.execPath, [link], {
+    env: {
+      ...process.env,
+      WORKBENCH_PORT: '0',
+      WORKBENCH_HOME: home,
+      WORKBENCH_DATA: join(dir, 'data'),
+      WORKBENCH_DISABLE_WATCH: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const started = await new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), 5000)
+    child.stdout.on('data', (c) => {
+      out += c
+      if (out.includes('工作台: http')) { clearTimeout(t); resolve(true) }
+    })
+    child.stderr.on('data', (c) => { out += c })
+    child.on('exit', () => { clearTimeout(t); resolve(false) })
+  })
+  child.kill()
+  assert.equal(started, true, `符号链接启动没有监听：${out}`)
+})
 
 test('首页带 CSP / nosniff，并加载外部脚本', async () => {
   const r = await fetch(`http://127.0.0.1:${port}/`)

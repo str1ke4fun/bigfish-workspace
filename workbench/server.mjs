@@ -3,8 +3,8 @@
 // 平台层只剩 Linux/WSL：host/linux.mjs 本机直跑；Windows 桌面交付已退役。
 import { createServer } from 'node:http'
 import { readFile, writeFile, mkdir, readdir, unlink, stat } from 'node:fs/promises'
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { qqState, tailLines } from './qq-watch.mjs'
 import { createHost } from './host/index.mjs'
@@ -1077,5 +1077,9 @@ export async function start(port = PORT) {
   })
 }
 
-const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url
+// /opt/fish/workbench 是指向工作树的符号链接：argv[1] 是链接路径，而 ESM 的
+// import.meta.url 已经解析成真实路径，直接比字符串会判成「不是入口」然后静默退出。
+// 两边都 realpath 再比；测试 import 本文件时 argv[1] 是测试运行器，仍然为 false。
+const real = (p) => { try { return realpathSync(resolve(p)) } catch { return null } }
+const isMain = Boolean(process.argv[1]) && real(process.argv[1]) === real(fileURLToPath(import.meta.url))
 if (isMain) await start()
