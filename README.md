@@ -20,12 +20,12 @@
 | [`src/dsh-fish`](src/dsh-fish/) | 成长、事件存储、记忆、对话、B 站工具与界面 |
 | [`src/dsh-wx`](src/dsh-wx/) | 微信客户端交互与消息触发逻辑 |
 | [`src/speech`](src/speech/) | 交流频率与配额控制 |
-| [`workbench/`](workbench/) | 8788 管理入口：通道桥 + 鱼侧 BFF（P0） |
+| [`workbench/`](workbench/) | 8788 统一管理入口：通道桥 + 鱼侧 BFF + 八个页面（P0–P4） |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 拆分完成后的目标架构与各层接口说明 |
 
 核心插件运行在 DSH 宿主中，需要 Node.js 20 或更新版本。微信桥接还依赖 Linux 图形环境和外部客户端辅助程序，当前仓库尚不包含完整的微信运行依赖；QQ 接入也尚未包含完整源码。
 
-当前已落地：按面工具可见性与自检、B 站独立出门会话（浏览与回复不再投进屋子）、core 与 B 站之间的反向依赖清理、事件 schema v3 与跨面去引号，以及 8788 工作台的 P0 骨架（源码入仓、BFF、运行数据目录）。`dsh-bili` 拆包与工作台 P1–P4（只读页、写操作、入口切换、注销旧面板 slot）仍在按 [`ARCHITECTURE.md`](ARCHITECTURE.md) 与 [`单入口设计`](docs/superpowers/specs/2026-11-12-workbench-single-entry-design-v2.md) 推进。
+当前已落地：按面工具可见性与自检、B 站独立出门会话（浏览与回复不再投进屋子）、core 与 B 站之间的反向依赖清理、事件 schema v3 与跨面去引号；`dsh-bili` 已拆包；8788 工作台的 P0–P4 源码已落地（BFF、只读页、写操作、旧入口标记与停轮询、注销旧面板 slot）。线上部署与双入口实测仍待执行；分段与验收见 [`ARCHITECTURE.md`](ARCHITECTURE.md) 与 [`单入口设计`](docs/superpowers/specs/2026-11-12-workbench-single-entry-design-v2.md)。
 
 ## 开发验证
 

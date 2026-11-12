@@ -99,33 +99,25 @@ test('client.js 能被 ModuleLoader 装载，且导出了 apply / inject', async
   assert.equal(typeof exports.FishSection, 'function')
 })
 
-test('apply 注册到 settings.section，id 与 label 都对', async () => {
+test('P4：apply 不再注册 settings.section，但组件与导出保留', async () => {
   const react = fakeReact()
   const { exports } = await loadClient({ react })
 
   const registered = []
+  let touched = false
   const ctx = {
-    effect: (fn) => { fn(); return () => {} },
+    effect: (fn) => { touched = true; fn(); return () => {} },
     slots: {
-      inject(name, fn, label) {
-        assert.equal(name, 'settings.section')
-        assert.equal(label, 'dsh-fish: settings section')
-        fn()
-        return () => {}
-      },
-      register(meta, Component) {
-        registered.push({ meta, Component })
-        return () => {}
-      },
+      inject() { touched = true; throw new Error('不该再注入 settings.section') },
+      register() { registered.push(true); return () => {} },
     },
   }
   exports.apply(ctx)
 
-  assert.equal(registered.length, 1)
-  assert.equal(registered[0].meta.name, 'settings.section')
-  assert.equal(registered[0].meta.id, 'fish')
-  assert.equal(typeof registered[0].meta.label, 'function')
-  assert.equal(registered[0].meta.label(), '大肥鱼')
+  assert.equal(touched, false, 'apply 不碰宿主 slots')
+  assert.equal(registered.length, 0)
+  assert.equal(typeof exports.FishSection, 'function', '组件保留，回滚只需恢复注册')
+  assert.deepEqual(exports.inject, ['slots'], '宿主契约不变')
 })
 
 test('组件在"还没有数据"时也能渲染，不抛错', async () => {

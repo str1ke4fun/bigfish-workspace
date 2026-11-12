@@ -2410,18 +2410,18 @@ window.__ModuleLoader__.load({
     const inject = ['slots']
     const NAMES = { nav: '大肥鱼' }
 
+    // P4：设置 section 不再挂载，管理入口只剩 8788 工作台。
+    // `client.js`、`exports["./client"]`、`dsh.client` 与 FishSection 都保留；
+    // 回滚只需把下面注释里的注册恢复。`ctx` 参数保留是为了不动宿主契约。
     function apply(ctx) {
-      ctx.effect(
-        () =>
-          ctx.slots.inject('settings.section', () =>
-            ctx.slots.register(
-              { name: 'settings.section', id: NS, order: 7, label: () => NAMES.nav },
-              FishSection,
-            ),
-            'dsh-fish: settings section',
-          ),
-        'dsh-fish: settings section',
-      )
+      void ctx
+      // 回滚时恢复：
+      // ctx.effect(
+      //   () => ctx.slots.inject('settings.section', () => ctx.slots.register(
+      //     { name: 'settings.section', id: NS, order: 7, label: () => NAMES.nav }, FishSection,
+      //   ), 'dsh-fish: settings section'),
+      //   'dsh-fish: settings section',
+      // )
     }
 
     exports.apply = apply
