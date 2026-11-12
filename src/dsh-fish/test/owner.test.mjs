@@ -205,6 +205,27 @@ test('/owner 路由：POST 能存 uid 与昵称', async () => {
   }
 })
 
+test('/config 路由：persona 被 HTTP 白名单拒绝，且配置不落盘', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-persona-'))
+  try {
+    const ctx = fakeCtx()
+    ctx.cfg.connection = { requestRejection: () => null }
+    registerObserve(ctx, { root })
+    const before = await callRoute(ctx.routes, '/config', 'GET')
+    assert.equal(before.status, 200)
+
+    const r = await callRoute(ctx.routes, '/config', 'POST', { persona: { name: '别人' } })
+    assert.equal(r.status, 400)
+    assert.match(String(r.body.error), /不允许修改/)
+
+    const after = await callRoute(ctx.routes, '/config', 'GET')
+    assert.deepEqual(after.body.config, before.body.config, '被拒绝的 patch 不许改动配置')
+    assert.equal(Object.hasOwn(after.body.config, 'persona'), false)
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
 // ---- 2026-10-27：领养人与 cookie 账号拆开（owner.mid 是大号，account 是登录的小号） ----
 
 test('publicOwner 带只读登录账号，且仍不含 cookie', () => {
