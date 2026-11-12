@@ -3,25 +3,22 @@
  *
  * 一次工具调用会产出两样东西：
  *   1. 完整返回对象：宿主、台账、后续事件流都能看到全貌（大结果不在这里裁剪）；
- *   2. 模型投影：模型真正读进上下文的那一小段话（`PROJECTION`）。
+ *   2. 模型投影：模型真正读进上下文的那一小段话。
  *
  * 两份必须分离，原因有二：
  *   - 投影里能写「已翻到第 3 条，编号 1=ev_xxx」这种只有模型需要的话；
  *   - 完整结果可以留给宿主审计，不必为了省 token 把数据砍掉。
  *
  * 约束（改这里之前先读）：
- *   - 包装器绝不能往工具路径里抛新错：`execute` 里算投影全部 try/catch；
+ *   - 包装器绝不能往工具路径里抛新错：投影计算全部走 safeProject 兜底；
  *   - `wrapTool` 只处理返回**对象**的工具；返回字符串的旧工具用 `wrapRenderOnly`，
  *     返回值类型不变，投影推迟到 render 时算；
- *   - `Object.defineProperty` 对 null / 原始值 / 冻结对象会抛，挂投影前必须判断。
+ *   - **返回值必须是纯 JSON**：不挂符号、不挂不可枚举键，也不留 `undefined` 字段。
+ *     宿主在 render 之前会按 lossless JSON 规则快照返回值，多一个键就整条打回
+ *     （2026-11-12 her_recall / growth_commit 就是这么坏的）。
  *
  * 零依赖：这个文件只用语言内置能力。
  */
-
-/** 模型投影挂在完整结果上的符号（不可枚举，序列化时不会出现）。 */
-export const PROJECTION = Symbol('fish.projection')
-/** 调用元数据（开始时间等），同样是不可枚举旁路。 */
-export const CALL_META = Symbol('fish.callMeta')
 
 const FALLBACK_TEXT = '[结果没能显示出来]'
 const UNKNOWN_ERROR_TEXT = '没做成，再试一次'
@@ -74,10 +71,6 @@ export function universalOutputSchema() {
     },
     additionalProperties: true,
   }
-}
-
-function isExtensibleObject(value) {
-  return value !== null && typeof value === 'object' && Object.isExtensible(value)
 }
 
 /** 算投影；`project` 缺失或抛错都退回一句安全的话。 */
@@ -136,59 +129,41 @@ export function renderProjection(projection) {
 
 /**
  * 包装返回**对象**的工具：
- *   - `execute` 在拿到完整结果后算一次投影，挂在 `PROJECTION` 上；
- *   - `output.render` 只读那份投影，不再调用 `project`；
+ *   - `execute` 原样返回工具结果，不往结果上挂任何东西；
+ *   - `output.render` 拿宿主给的快照现算投影；
  *   - 出错统一翻成 `ToolError`（原始 `err.message` 不外泄）。
  *
- * 不修改入参 `def`。`def.project` 收到的是原始返回值（不是包装后的信封）。
+ * 不修改入参 `def`，也不修改返回值。
+ *
+ * 2026-11-12（宿主 0.2.1-rc.5）：以前把投影挂在返回对象的 `PROJECTION` / `CALL_META`
+ * 符号上，render 直接读。新宿主在 render 之前先用 lossless JSON 的规则快照工具返回值
+ * （`Reflect.ownKeys` + 只认可枚举字符串键），非枚举符号键会让整个结果被判成
+ * `INVALID_TOOL_OUTPUT: value is not lossless JSON`——her_recall / growth_commit /
+ * her_leave 全被这条打回。而且新宿主传给 render 的本来就是脱敏快照副本，
+ * 挂在原对象上的符号根本读不到。所以投影改在 render 里现算：
+ * 纯函数、便宜、两条宿主路径都成立。
  */
 export function wrapTool(def, { core } = {}) {
   const base = def ?? {}
   const output = base.output ?? {}
   const schema = base.outputSchema ?? output.schema ?? universalOutputSchema()
 
-  const wrapped = {
+  return {
     ...base,
     output: {
       ...output,
       schema,
-      render: (args, result) => {
-        // 结果不是可扩展对象时 execute 挂不上符号，这里现算一次。
-        const projection = result?.[PROJECTION] ?? safeProject(base.project, result, args, viewOf(core))
-        return renderProjection(projection)
-      },
+      render: (args, result) => renderProjection(safeProject(base.project, result, args, viewOf(core))),
     },
     execute: async (args, exec) => {
-      const startedAt = Date.now()
-      let result
       try {
-        result = await base.execute?.(args, exec)
+        return await base.execute?.(args, exec)
       } catch (err) {
         if (err instanceof ToolError) throw err
         throw new ToolError('TOOL_FAILED', projectError(err), { cause: err })
       }
-
-      let projection
-      try {
-        projection = safeProject(base.project, result, args, viewOf(core, exec?.agent))
-      } catch {
-        projection = { text: FALLBACK_TEXT }
-      }
-
-      // null / 原始值 / 冻结对象上 defineProperty 会抛；工具路径抛错是这里最不能引入的事。
-      if (isExtensibleObject(result)) {
-        try {
-          Object.defineProperty(result, PROJECTION, { value: projection, enumerable: false })
-          Object.defineProperty(result, CALL_META, { value: { startedAt }, enumerable: false })
-        } catch {
-          // 代理对象之类拒绝挂属性：保持返回原样，render 会现算。
-        }
-      }
-      return result
     },
   }
-
-  return wrapped
 }
 
 /**
