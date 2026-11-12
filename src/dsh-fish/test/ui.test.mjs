@@ -101,6 +101,14 @@ test('插件页顺序：「关于」在「为什么默认只放这几个」之�
   assert.ok(!/toolsCard,\s*\n\s*aboutCard/.test(body[1]), '「关于」不能紧跟工具卡')
 })
 
+test('旧入口：设置 section 标出 8788 工作台，且不再自动轮询', async () => {
+  const src = await readFile(CLIENT, 'utf8')
+  assert.ok(src.includes('旧入口：管理入口已迁到 8788 工作台'))
+  assert.ok(src.includes("href: 'http://127.0.0.1:8788/'"), '要能点进工作台')
+  assert.ok(!src.includes('setInterval(peek, 30_000)'), '状态不再每 30 秒自动刷新')
+  assert.ok(!src.includes('setInterval(poll, 60_000)'), '提醒不再每 60 秒自动拉取')
+})
+
 test('页签选中态不许拿正文墨色当底色（2026-10-25 深色主题下白块，浅色主题下黑块）', async () => {
   const src = await readFile(CLIENT, 'utf8')
   // brand-primary 其实是「正文墨色」：浅色主题 #0f1115（近黑），深色主题 #f9fafb（近白）。
