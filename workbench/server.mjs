@@ -43,9 +43,12 @@ function note(who, text, ok = true) {
 const host = createHost({ appDir: HERE })
 const asHer = (cmd, o) => host.sh(cmd, o)
 
-// 鱼侧 BFF：P0 只开 GET /api/fish/status，其余路由按阶段在 routes.mjs 里登记。
+// 鱼侧 BFF：阶段在 routes.mjs 里按表项登记，这里只决定现在开到哪一档。
+// P0 只有 status；P1 开全部只读；P2 再开写。`WORKBENCH_PHASES=P0` 可以退回上一档。
+const PHASES = String(process.env.WORKBENCH_PHASES || 'P0,P1')
+  .split(',').map((s) => s.trim()).filter(Boolean)
 const fishBff = createFishBff({
-  phases: ['P0'],
+  phases: PHASES,
   version: VERSION,
   entryOrigin: process.env.FISH_ENTRY_ORIGIN || 'http://127.0.0.1:8711',
   webOrigin: process.env.FISH_WEB_ORIGIN || 'http://127.0.0.1:8710',
@@ -745,6 +748,8 @@ export const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/status') return send(res, 200, await status())
+    // 总览的「动作日志」：只读最近 20 条，不触发任何检查。
+    if (p === '/api/status.log') return send(res, 200, { rows: log.slice(0, 20) })
     if (p === '/api/watch' && req.method === 'GET') {
       return send(res, 200, { ok: true, settings: readWatch(), login: qqLogin })
     }

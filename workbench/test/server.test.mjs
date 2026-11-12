@@ -37,6 +37,10 @@ before(async () => {
       res.writeHead(200, { 'content-type': 'application/json' })
       return res.end(JSON.stringify({ ok: true, phase: 'awake-idle', label: '在吃大白饭', today: { wakes: 1 } }))
     }
+    if (url.pathname === '/dsh-fish/config' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ ok: true, config: { growthDays: 7 } }))
+    }
     res.writeHead(404, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ ok: false, error: 'NOT_FOUND' }))
   })
@@ -107,9 +111,46 @@ test('GET /api/fish/status 经 BFF 返回上游状态', async () => {
   assert.equal(body.today.wakes, 1)
 })
 
-test('未登记路径 404，未开放阶段 404', async () => {
+test('未登记路径 404；P1 只放只读方法，写方法 405', async () => {
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/fish/nope`)).status, 404)
-  assert.equal((await fetch(`http://127.0.0.1:${port}/api/fish/config`)).status, 404)
+  const post = await fetch(`http://127.0.0.1:${port}/api/fish/status`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assert.equal(post.status, 405)
+})
+
+test('P1 放行只读 GET：config 能穿过阶段门控到达上游', async () => {
+  const r = await fetch(`http://127.0.0.1:${port}/api/fish/config`)
+  assert.equal(r.status, 200)
+  const body = await r.json()
+  assert.equal(body.config.growthDays, 7)
+})
+
+test('有副作用的 GET 拒绝跨站触发', async () => {
+  for (const path of [
+    '/api/fish/comment',
+    '/api/fish/comment-body?bvid=BV1xx411c7mD&rpid=1',
+    '/api/fish/selfcheck?net=1',
+    '/api/fish/inbox',
+    '/api/fish/paths',
+    '/api/fish/sheet/BV1xx411c7mD',
+    '/api/fish/update?ms=6000',
+  ]) {
+    const cross = await rawRequest(path, {
+      headers: { 'sec-fetch-site': 'cross-site', origin: 'http://evil.example', accept: 'application/json' },
+    })
+    assert.equal(cross.status, 403, path)
+  }
+})
+
+test('/api/status.log 只读最近动作，不触发检查', async () => {
+  const r = await fetch(`http://127.0.0.1:${port}/api/status.log`)
+  assert.equal(r.status, 200)
+  const body = await r.json()
+  assert.ok(Array.isArray(body.rows))
+  assert.ok(body.rows.length <= 20)
 })
 
 test('运行数据落在 WORKBENCH_DATA，启动时创建 frames/', async () => {

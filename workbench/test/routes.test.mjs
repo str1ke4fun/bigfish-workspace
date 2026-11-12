@@ -81,6 +81,9 @@ test('upstreamPath 按拆包前后前缀生成', () => {
   assert.equal(upstreamPath(status, '', ''), '/dsh-fish/status')
   const sheet = ROUTES.find((r) => r.path === 'sheet')
   assert.equal(upstreamPath(sheet, '/BV1xx411c7mD', '?x=1'), '/dsh-bili/sheet/BV1xx411c7mD?x=1')
+  // BFF 叫 bili/status 是为了分组，dsh-bili 实际只注册 /status。
+  const biliStatus = ROUTES.find((r) => r.path === 'bili/status')
+  assert.equal(upstreamPath(biliStatus, '', ''), '/dsh-bili/status')
   // A2：B 站行全部改走 dsh-bili，非 B 行仍走 dsh-fish。
   for (const p of ['bili/status', 'browse', 'history', 'footprint', 'comment', 'comment-body', 'cover', 'risk', 'sheet', 'ledger', 'outings']) {
     const r = ROUTES.find((x) => x.path === p)

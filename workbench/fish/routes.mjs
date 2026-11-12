@@ -4,6 +4,7 @@
 //   path        相对 /api/fish/ 的路径，可含 /（如 log/export）
 //   methods     { 方法: 从这里开始暴露的阶段 }；阶段未开的方法不对外
 //   upstream    'fish' → /dsh-fish/*；'bili' → /dsh-bili/*（A2 拆包只改这一列）
+//   target      上游路径与 BFF 路径不同名时用，例如 bili/status → /dsh-bili/status
 //   pattern     只允许一个额外路径段，且必须命中的正则（cover / sheet / media）
 //   maxBody     请求体上限，默认 256 KB
 //   timeoutMs   上游超时，默认 30 秒
@@ -43,14 +44,14 @@ export const ROUTES = [
   { path: 'import', methods: { GET: 'P1', POST: 'P2' }, upstream: 'fish', maxBody: 256 * 1024, timeoutMs: 60_000 },
   { path: 'reset', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024, timeoutMs: 60_000 },
   { path: 'paths', methods: { GET: 'P1' }, upstream: 'fish', sideEffect: true },
-  { path: 'update', methods: { GET: 'P1' }, upstream: 'fish', timeoutMs: 60_000 },
+  { path: 'update', methods: { GET: 'P1' }, upstream: 'fish', timeoutMs: 60_000, sideEffect: true },
   { path: 'avatar', methods: { GET: 'P1', POST: 'P2' }, upstream: 'fish', maxBody: 4_000_000 },
   { path: 'avatar/info', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'media', methods: { GET: 'P1' }, upstream: 'fish', pattern: /^principle-[a-z]+\.svg$/, binary: true },
   { path: 'wx/scan', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024, timeoutMs: 120_000 },
 
   // ---- B 站 ----
-  { path: 'bili/status', methods: { GET: 'P1' }, upstream: 'bili' },
+  { path: 'bili/status', methods: { GET: 'P1' }, upstream: 'bili', target: 'status' },
   { path: 'browse', methods: { GET: 'P1' }, upstream: 'bili' },
   { path: 'history', methods: { GET: 'P1' }, upstream: 'bili' },
   { path: 'footprint', methods: { GET: 'P1' }, upstream: 'bili' },
@@ -58,7 +59,7 @@ export const ROUTES = [
   { path: 'comment-body', methods: { GET: 'P1' }, upstream: 'bili', timeoutMs: 120_000, sideEffect: true },
   { path: 'cover', methods: { GET: 'P1' }, upstream: 'bili', pattern: /^BV[0-9A-Za-z]{10}$/, binary: true, sideEffect: true },
   { path: 'risk', methods: { GET: 'P1', POST: 'P2' }, upstream: 'bili', maxBody: 64 * 1024, timeoutMs: 60_000 },
-  { path: 'sheet', methods: { GET: 'P1' }, upstream: 'bili', pattern: /^BV[0-9A-Za-z]{10}$/, binary: true, timeoutMs: 120_000 },
+  { path: 'sheet', methods: { GET: 'P1' }, upstream: 'bili', pattern: /^BV[0-9A-Za-z]{10}$/, binary: true, timeoutMs: 120_000, sideEffect: true },
   { path: 'ledger', methods: { GET: 'P1' }, upstream: 'bili', timeoutMs: 60_000 },
   { path: 'outings', methods: { GET: 'P1' }, upstream: 'bili' },
 ]
@@ -120,5 +121,6 @@ export function enabledMethods(route, phases) {
 }
 
 export function upstreamPath(route, suffix, search = '') {
-  return `${UPSTREAM_PREFIX[route.upstream]}${route.path.startsWith('/') ? '' : '/'}${route.path}${suffix}${search}`
+  const target = route.target ?? route.path
+  return `${UPSTREAM_PREFIX[route.upstream]}${target.startsWith('/') ? '' : '/'}${target}${suffix}${search}`
 }

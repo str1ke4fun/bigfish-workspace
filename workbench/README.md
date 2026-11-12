@@ -4,7 +4,7 @@
 调度和校验仍然在 `src/dsh-fish`（A2 后 B 站部分在 `src/dsh-bili`）。
 
 - 设计：`docs/superpowers/specs/2026-11-12-workbench-single-entry-design-v2.md`
-- 当前阶段：P0（源码入仓 + BFF 骨架 + 数据目录迁移准备）
+- 当前阶段：P1（八项导航与只读页面；写操作 P2）
 - 零依赖，Node.js 20+
 
 ## 启动
@@ -27,6 +27,7 @@ node server.mjs
 | `FISH_ENTRY_ORIGIN` | `http://127.0.0.1:8711` | 聊天入口/一次性 token |
 | `FISH_WEB_ORIGIN` | `http://127.0.0.1:8710` | dsh 宿主与插件路由 |
 | `WORKBENCH_VERSION` | `0.1.0` | BFF 的 `User-Agent` 版本 |
+| `WORKBENCH_PHASES` | `P0,P1` | 放开的阶段，逗号分隔；调试时可用 `P0` 退回只读骨架 |
 | `WORKBENCH_DISABLE_WATCH` | 未设置 | 设为 `1` 时不起 QQ 掉线观察循环（测试用） |
 
 `WORKBENCH_DATA` 下放 `watch.json`、`frames/`。启动时自动 `mkdir -p`。
@@ -47,15 +48,33 @@ node server.mjs
 Content-Length 等传输头）；浏览器的 `Origin`、`Referer`、`Sec-Fetch-*`、`Cookie` 一律剥离。
 token/cookie 不写日志、不进 `/api/fish/*` 响应。
 
-路由白名单在 `fish/routes.mjs`，P0 只开放 `GET /api/fish/status`。未登记路径 404，
-未登记方法 405，body 超限 413，默认 256 KB / 30 秒。阶段与阶段的对应关系写在表里，
-P1 只读、P2 写；A2 拆包只改 `upstream` 列。
+路由白名单在 `fish/routes.mjs`。每条路由标注阶段（`P0` / `P1` / `P2`）和上游
+（`fish` → `src/dsh-fish`，`bili` → `src/dsh-bili`）。未登记路径 404，阶段未开 404，
+未登记方法 405，body 超限 413，默认 256 KB / 30 秒。A2 拆包只改 `upstream` 列；
+上游路径与 BFF 路径不同名时用 `target`（当前只有 `bili/status` → `/dsh-bili/status`）。
+
+当前 P1 只放 `GET`：
+
+- 总览：`status`、`state`、`bili/status`、`tools`、`events`、`beliefs`、`inbox`、`home`、`away`；
+- B 站：`owner`、`bili/status`、`history`、`comment`、`comment-body`、`cover`、`outings`、`risk`、`ledger`、`sheet`、`footprint`；
+- 记忆：`events`、`diary`、`reports`、`beliefs`、`templates`；
+- 工具与规则：`tools`、`config`、`rules`、`selfcheck`；
+- 数据：`log`、`paths`、`update`、`avatar/info`、`avatar`、`log/export`、`backup`。
+
+通道页的 QQ / 微信 / 语音 / 画面走工作台本地 `/api/*`，不经 BFF。
+
+工作台进程自己维护的只读接口只有 `GET /api/status.log`（最近 20 条动作，不触发检查）。
+`/comment` 只在进入 B 站页或点刷新时请求一次，不做自动轮询。
+
+**已知偏差**：上游 `GET /inbox` 和 `GET /paths` 本身会写一次文件（前者重写信箱文件，
+标记已读仍是 POST；后者补路径）。P1 暂不拆分读写，只靠路由表里的 `sideEffect: true`
+做同源校验；等 P2 拆出真正的写接口后去掉这个标记。
 
 ## 安全边界
 
 - 所有请求校验 `Host` 为 `127.0.0.1:<port>` 或 `localhost:<port>`，防 DNS rebinding；
 - 写请求校验 `Origin` 同源，`Sec-Fetch-Site: cross-site` 直接拒绝；
-- 有副作用的 GET（评论扫描、自检、封面懒加载等）拒绝跨站触发；
+- 有副作用的 GET（评论扫描、自检、封面/抽帧懒加载、查更新等）拒绝跨站触发；
 - 静态文件只服务 `index.html` 与 `assets/`，先 `resolve` 再 `relative`，拒绝 `..`、
   编码斜杠、反斜杠、绝对路径；
 - 所有响应 `X-Content-Type-Options: nosniff`；HTML 带 CSP；

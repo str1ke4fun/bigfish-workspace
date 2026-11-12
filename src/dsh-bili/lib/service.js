@@ -33,8 +33,8 @@ function isBvid(x) {
 }
 
 function riskPayload(root) {
-  const st = riskState(root)
-  return st
+  // 页面要显示解除时刻，所以 riskState 一并给出 until（只读一次 risk.json）。
+  return riskState(root)
 }
 
 export function createBiliService({ root, version = '0.1.0', log, makeClient } = {}) {
@@ -191,7 +191,14 @@ export function createBiliService({ root, version = '0.1.0', log, makeClient } =
       scanEveryMin: Number(c.scanEveryMin ?? 30),
       window: c.window ?? [],
       mine: herComments(evs, dk),
-      waiting: replies.slice(0, 5).map((x) => ({ rpid: x.rpid, bvid: x.bvid, user: x.user, text: x.text })),
+      waiting: replies.slice(0, 5).map((x) => ({
+        rpid: x.rpid,
+        bvid: x.bvid,
+        user: x.user,
+        text: x.text,
+        // B 站 ctime 是秒；页面用 at 显示「什么时候回的」。
+        at: x.ctime ? new Date(x.ctime * 1000).toISOString() : '',
+      })),
       waitingCount: replies.length,
     }
   }

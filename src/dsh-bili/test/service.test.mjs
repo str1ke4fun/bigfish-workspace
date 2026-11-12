@@ -93,12 +93,23 @@ test('commentBody / comment / cover：非法参数与缺图都明确失败', asy
 })
 
 test('risk：读状态、POST clear 解冻，返回 cleared 标记', async () => {
-  await withService(async ({ service }) => {
+  await withService(async ({ service, root }) => {
     const before = await service.risk()
     assert.equal(before.cooling, false)
+    assert.equal(before.until, 0)
     assert.equal(before.cleared, false)
+
+    const until = Date.now() + 5 * 60_000
+    await writeFile(join(root, 'risk.json'), JSON.stringify({ until, code: '-352', at: '', strikes: 1 }))
+    const cooling = await service.risk()
+    assert.equal(cooling.cooling, true)
+    assert.equal(cooling.until, until)
+    assert.equal(cooling.code, '-352')
+    assert.equal(cooling.strikes, 1)
+
     const after = await service.risk({ clear: true })
     assert.equal(after.cleared, true)
+    assert.equal(after.until, 0)
   })
 })
 

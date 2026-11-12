@@ -77,7 +77,7 @@ export function clearRisk(root) {
 
 /**
  * 现在能不能去碰 B 站。
- * @returns {{cooling:boolean, remainMin:number, code:string, strikes:number}}
+ * @returns {{cooling:boolean, remainMin:number, code:string, strikes:number, until:number}}
  */
 export function riskState(root, now = new Date()) {
   const r = readRisk(root)
@@ -87,6 +87,7 @@ export function riskState(root, now = new Date()) {
     remainMin: remainMs > 0 ? Math.ceil(remainMs / 60_000) : 0,
     code: r.code,
     strikes: r.strikes,
+    until: r.until,
   }
 }
 

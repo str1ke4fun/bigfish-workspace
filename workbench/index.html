@@ -9,15 +9,26 @@
 <body>
 <header>
   <h1>工作台</h1>
+  <span class="hint" id="fish-strip"></span>
   <span class="hint" id="clock">—</span>
 </header>
 
-<nav class="tabs" aria-label="工作台导航">
-  <button data-view="channels" class="on">通道</button>
-  <button data-view="fish">鱼</button>
+<nav class="tabs" aria-label="工作台导航" role="tablist">
+  <button data-page="overview">总览</button>
+  <button data-page="bili">B 站</button>
+  <button data-page="memory">记忆</button>
+  <button data-page="env">环境</button>
+  <button data-page="channels">通道</button>
+  <button data-page="tools">工具与规则</button>
+  <button data-page="data">数据与运维</button>
+  <button data-page="principles">原理</button>
 </nav>
 
-<main id="view-channels">
+<main data-page="overview"></main>
+<main data-page="bili" hidden></main>
+<main data-page="memory" hidden></main>
+<main data-page="env" hidden></main>
+<main data-page="channels" hidden>
   <section class="card">
     <h2><span class="dot" id="qq-dot"></span>QQ <span class="meta" id="qq-label">—</span></h2>
     <div class="row">
@@ -152,29 +163,13 @@
   <section class="card" id="log">
     <h2>动作日志</h2>
     <ul id="log-list"></ul>
+    <div class="meta" id="chan-updated">—</div>
   </section>
 </main>
 
-<main id="view-fish" hidden>
-  <section class="card" id="fish-card">
-    <h2><span class="dot" id="fish-dot"></span>鱼 <span class="meta" id="fish-label">—</span></h2>
-    <div class="meta" id="fish-detail">正在读 /api/fish/status…</div>
-    <dl class="fish-stats">
-      <div><dt>今天醒来</dt><dd id="fish-wakes">—</dd></div>
-      <div><dt>发呆</dt><dd id="fish-idle">—</dd></div>
-      <div><dt>浏览</dt><dd id="fish-browsed">—</dd></div>
-      <div><dt>说话</dt><dd id="fish-said">—</dd></div>
-      <div><dt>评论</dt><dd id="fish-comments">—</dd></div>
-      <div><dt>日记</dt><dd id="fish-dairies">—</dd></div>
-    </dl>
-    <div class="row">
-      <button id="fish-refresh">刷新</button>
-      <span class="meta" id="fish-msg"></span>
-    </div>
-    <pre id="fish-raw" class="meta fish-raw"></pre>
-    <div class="meta">P0：这里先只读插件的 <code>/dsh-fish/status</code>，其余页面按阶段接入。聊天仍从「通道 → 她」打开。</div>
-  </section>
-</main>
+<main data-page="tools" hidden></main>
+<main data-page="data" hidden></main>
+<main data-page="principles" hidden></main>
 
 <script type="module" src="/assets/app.js"></script>
 </body>
