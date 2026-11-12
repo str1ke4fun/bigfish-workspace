@@ -1,7 +1,7 @@
 # 大肥鱼工作台单入口设计
 
 - 日期：2026-11-11
-- 状态：待评审
+- 状态：已被 `2026-11-12-workbench-single-entry-design-v2.md` 取代；原稿保留作对照
 - 范围：把面向人的管理入口从插件自带 UI 迁到 8788 工作台；插件继续拥有运行时、调度、数据与 HTTP 契约
 - 修订：`ARCHITECTURE.md` §1、§6.8、§10；`2026-11-10-bili-workbench-integration-design-v2.md` §10（A3）
 
