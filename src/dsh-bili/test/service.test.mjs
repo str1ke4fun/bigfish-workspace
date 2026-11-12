@@ -14,9 +14,9 @@ import { fakeCore } from './helpers.mjs'
 
 const BV = 'BV1xx411c7mD'
 
-async function withService(fn, { events = [], config = {} } = {}) {
+async function withService(fn, { events = [], config = {}, ledger } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'bili-service-'))
-  const { core } = fakeCore({ events, config })
+  const { core } = fakeCore({ events, config, ledger })
   setCore(core)
   try {
     return await fn({ service: createBiliService({ root }), root, events })
@@ -137,6 +137,19 @@ test('ledger：服务不在时给 NO_LEDGER，在时原样转发查询', async (
     assert.equal(r.query.limit, 5)
     assert.ok(Array.isArray(r.rows))
   })
+})
+
+test('ledger：core 返回行数组时归一成 rows，不出现数字键', async () => {
+  const rows = [
+    { ts: '2026-11-12T02:00:00.000Z', tool: 'bili_look', ok: true },
+    { ts: '2026-11-12T02:01:00.000Z', tool: 'bili_watch', ok: false },
+  ]
+  await withService(async ({ service }) => {
+    const r = await service.ledger({ limit: 5 })
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.rows, rows)
+    assert.equal(Object.hasOwn(r, '0'), false, '数组不能展开成数字键')
+  }, { ledger: rows })
 })
 
 test('sheet：非法 bvid 直接 null，不去抽帧', async () => {

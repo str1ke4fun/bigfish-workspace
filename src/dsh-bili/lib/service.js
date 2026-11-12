@@ -239,7 +239,10 @@ export function createBiliService({ root, version = '0.1.0', log, makeClient } =
     }
     try {
       const r = await svc.read({ date, session, tool, limit })
-      return { ok: true, ...(r ?? {}) }
+      // fishCore.toolLedger.read 返回行数组；直接展开会变成 {"0":…}，
+      // 工作台读 rows 永远是空。对象形式（别的宿主/老实现）也认。
+      if (Array.isArray(r)) return { ok: true, rows: r }
+      return { ok: true, rows: [], ...(r ?? {}) }
     } catch (err) {
       return { ok: false, code: 'LEDGER_READ_FAILED', why: String(err?.message ?? err).slice(0, 160), rows: [] }
     }

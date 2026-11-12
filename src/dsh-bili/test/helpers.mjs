@@ -51,7 +51,8 @@ export function fakeCore({
       refresh: async () => { calls.refresh += 1; return { ok: true } },
     },
     toolLedger: {
-      read: async (q) => ({ ...ledger, query: q }),
+      // 真 core 返回行数组；数组不能展开（会变成数字键），对象形式留给查询回显。
+      read: async (q) => (Array.isArray(ledger) ? ledger : { ...ledger, query: q }),
     },
     tools: { wrap: null, wrapRender: null, reveal: null },
     toolPolicy: {
