@@ -1,14 +1,27 @@
-// B 站页：足迹、评论、待回复、登录、风控、出门、证据。全部只读。
+// B 站页：足迹、评论、待回复、登录、风控、出门、证据。读为主，P2 写登录/解冻/叫醒/界面偏好。
 //
 // `/comment` 只在进入页面或点「刷新」时调一次，不自动轮询——
 // 它会真的去 B 站看有没有人回她。抽帧（/sheet）只在点开单条视频时加载。
-import { $, el, clear, card, fish, fmtTime, clock, fillStats, errorText, hint, asText } from '../lib.js'
+import { $, el, clear, card, fish, postFish, fmtTime, clock, fillStats, errorText, writeError, hint, asText } from '../lib.js'
 
 const state = { owner: null, status: null, risk: null, outings: null, history: null, footprint: null, comment: null, ledger: null }
 
 function build(root) {
-  state.ownerCard = card('登录', { note: '只读展示；保存 cookie 与验证在 P2。' })
-  state.ownerCard.body.append(el('div', { class: 'plain', id: 'bili-owner' }))
+  state.ownerCard = card('登录', { note: 'cookie 只上行不下行：输入框永远空着，存过之后只显示「已保存」。' })
+  state.ownerCard.body.append(
+    el('div', { class: 'plain', id: 'bili-owner' }),
+    el('div', { class: 'grid2' },
+      el('label', { class: 'field' }, el('span', { class: 'meta', text: '领养人 mid' }), el('input', { type: 'text', id: 'bili-owner-mid' })),
+      el('label', { class: 'field' }, el('span', { class: 'meta', text: '昵称（@ 用）' }), el('input', { type: 'text', id: 'bili-owner-name' })),
+    ),
+    el('label', { class: 'field' }, el('span', { class: 'meta', text: 'cookie' }), el('input', { type: 'password', id: 'bili-owner-cookie', placeholder: '留空 = 不改' })),
+    el('div', { class: 'meta', text: '「发评论时 @ 领养人」只在一个地方改：环境 → 评论组。这里不重复放开关。' }),
+    el('div', { class: 'row' },
+      el('button', { id: 'bili-owner-save', class: 'primary', text: '保存登录信息', onclick: () => saveOwner() }),
+      el('button', { id: 'bili-owner-test', text: '测试这份 cookie', onclick: () => testOwner() }),
+      el('span', { class: 'meta', id: 'bili-owner-msg' }),
+    ),
+  )
 
   state.statusCard = card('浏览统计')
   state.statusCard.body.append(el('dl', { class: 'fish-stats', id: 'bili-stats' }))
@@ -19,11 +32,26 @@ function build(root) {
   state.commentCard = card('评论足迹与待回复', { note: '进入页面或点刷新时才问 B 站；正文按需现取。' })
   state.commentCard.body.append(el('div', { class: 'plain', id: 'bili-mine' }), el('div', { id: 'bili-waiting' }))
 
-  state.outingCard = card('出门', { note: '只读；不提供「替她发评论」。' })
-  state.outingCard.body.append(el('dl', { class: 'fish-stats', id: 'bili-outing' }))
+  state.outingCard = card('出门', { note: '不提供「替她发评论」；这里只有手动叫她去看 B 站。' })
+  state.outingCard.body.append(
+    el('dl', { class: 'fish-stats', id: 'bili-outing' }),
+    el('div', { class: 'row' },
+      el('button', { id: 'bili-wake-browse', text: '人工触发：让她去看 B 站', onclick: () => wakeBrowse() }),
+      el('span', { class: 'meta', id: 'bili-wake-msg' }),
+    ),
+  )
 
   state.riskCard = card('风控')
   state.riskCard.body.append(el('div', { class: 'plain', id: 'bili-risk' }))
+
+  const uiCard = card('界面偏好', { note: '只影响这一版界面怎么显示，与她的成长无关。' })
+  uiCard.body.append(
+    el('label', { class: 'chk' }, el('input', { type: 'checkbox', id: 'bili-hint-dismissed' }), el('span', { text: '不再提示「B 站登录还没存」' })),
+    el('div', { class: 'row' },
+      el('button', { id: 'bili-ui-save', class: 'small', text: '保存界面偏好', onclick: () => saveUi() }),
+      el('span', { class: 'meta', id: 'bili-ui-msg' }),
+    ),
+  )
 
   const evidence = card('证据', { note: '抽帧只在点开单条视频时加载；台账只读。' })
   evidence.body.append(
@@ -44,7 +72,7 @@ function build(root) {
   const refreshBtn = el('button', { class: 'primary', text: '刷新', onclick: () => refresh() })
   const bar = el('div', { class: 'row page-bar' }, refreshBtn, el('span', { class: 'meta', id: 'bili-msg' }))
   root.append(bar, state.ownerCard.root, state.statusCard.root, state.historyCard.root,
-    state.commentCard.root, state.outingCard.root, state.riskCard.root, evidence.root)
+    state.commentCard.root, state.outingCard.root, state.riskCard.root, uiCard.root, evidence.root)
 
   $('#bili-ledger-load').addEventListener('click', () => loadLedger())
 }
@@ -61,10 +89,13 @@ function renderOwner(r) {
   if (!r.ok) { box.append(hint(errorText(r), 'bad')); return }
   const o = r.data || {}
   state.owner = o
+  $('#bili-owner-mid').value = o.mid || ''
+  $('#bili-owner-name').value = o.name || ''
+  $('#bili-owner-cookie').value = ''
   box.append(
     el('div', { text: o.hasCookie ? `cookie：已存${o.hasCsrf ? '（带 csrf）' : '（没有 csrf，可能不能发言）'}` : 'cookie：还没存' }),
     el('div', { class: 'meta', text: `要 @ 的人：${o.name || '—'}${o.mid ? '（mid ' + o.mid + '）' : ''} · 登录账号：${o.account?.name || '还没认出来'}` }),
-    el('div', { class: 'meta', text: `评论时 @ 领养人：${o.atOwner === false ? '关' : '开'}` }),
+    el('div', { class: 'meta', text: `评论时 @ 领养人：${o.atOwner === false ? '关' : '开'}（在环境页评论组里改）` }),
   )
 }
 
@@ -180,8 +211,96 @@ function renderRisk(r) {
   state.riskCard.setMeta(x.cooling ? '冷却中' : '正常', x.cooling ? 'warn' : 'ok')
   box.append(
     el('div', { text: x.cooling ? `风控冷却到 ${x.until ? fmtTime(x.until) : '—'}` : '没在冷却。' }),
-    el('div', { class: 'meta', text: `撞过的次数：${x.strikes ?? 0}${x.code ? ' · 最近一次 ' + x.code : ''} · 解冻（POST /risk）在 P2。` }),
+    el('div', { class: 'meta', text: `撞过的次数：${x.strikes ?? 0}${x.code ? ' · 最近一次 ' + x.code : ''}` }),
+    el('div', { class: 'row' },
+      el('button', { class: 'small', text: '解冻（二次确认）', onclick: () => clearRisk() }),
+      el('span', { class: 'meta', id: 'bili-risk-msg' }),
+    ),
   )
+}
+
+async function saveOwner() {
+  const msg = $('#bili-owner-msg')
+  const btn = $('#bili-owner-save')
+  // 只发用户真的填了的字段：GET /owner 失败或还没回读时，输入框是空的，
+  // 无条件发空串会把已经存好的 mid/昵称清掉。
+  const body = {}
+  const mid = $('#bili-owner-mid').value.trim()
+  const nickname = $('#bili-owner-name').value.trim()
+  const cookie = $('#bili-owner-cookie').value.trim()
+  if (mid) body.mid = mid
+  if (nickname) body.nickname = nickname
+  if (cookie) body.cookie = cookie
+  if (!Object.keys(body).length) { msg.textContent = '没有要保存的内容。'; return }
+  btn.disabled = true
+  msg.textContent = '保存中…'
+  try {
+    const r = await postFish('owner', body)
+    if (!r.ok) {
+      // 上游 400 把原因放在 note 里（例如 cookie 里没认出 B 站的键），别吞掉。
+      msg.textContent = r.data?.note || r.data?.error || writeError(r)
+      return
+    }
+    const d = r.data || {}
+    $('#bili-owner-cookie').value = ''
+    await refresh({ comment: false })
+    msg.textContent = d.note || (d.ok === false ? `没存上${d.note ? '：' + d.note : '。'}` : '存下了。')
+  } finally { btn.disabled = false }
+}
+
+async function testOwner() {
+  const msg = $('#bili-owner-msg')
+  const btn = $('#bili-owner-test')
+  btn.disabled = true
+  msg.textContent = '联网验证中…'
+  try {
+    const r = await postFish('owner', { test: true })
+    if (!r.ok) { msg.textContent = r.data?.note || writeError(r); return }
+    const d = r.data || {}
+    await refresh({ comment: false })
+    msg.textContent = d.note || (d.ok ? '可以说话。' : '还不行。')
+  } finally { btn.disabled = false }
+}
+
+async function wakeBrowse() {
+  const msg = $('#bili-wake-msg')
+  const btn = $('#bili-wake-browse')
+  btn.disabled = true
+  msg.textContent = '叫醒中…'
+  try {
+    const r = await postFish('wake?focus=browse', {})
+    if (!r.ok) {
+      // 409 的 body 同时带 error 与 why（「今天已经叫过三次了」这类）。
+      msg.textContent = r.data?.error || r.data?.why || writeError(r)
+      return
+    }
+    const d = r.data || {}
+    if (d.ok) await refresh({ comment: false })
+    msg.textContent = d.ok ? '叫醒了，这一轮她会去看 B 站首页。' : `没叫：${d.why || d.error || '这次没叫醒'}`
+  } finally { btn.disabled = false }
+}
+
+async function clearRisk() {
+  if (!confirm('确认解冻？现在就会允许她继续碰 B 站。')) return
+  const r = await postFish('risk', { clear: true })
+  if (!r.ok) { $('#bili-risk-msg').textContent = r.data?.error || writeError(r); return }
+  const d = r.data || {}
+  await refresh({ comment: false })
+  // renderRisk 会重建这一段，消息要在刷新之后写到新节点上。
+  const msg = $('#bili-risk-msg')
+  if (msg) msg.textContent = d.cleared ? '已解冻。' : '解冻请求发出去了。'
+}
+
+async function saveUi() {
+  const msg = $('#bili-ui-msg')
+  const btn = $('#bili-ui-save')
+  btn.disabled = true
+  try {
+    const r = await postFish('config', { ui: { ownerHintDismissed: $('#bili-hint-dismissed').checked } })
+    if (!r.ok) { msg.textContent = writeError(r); return }
+    if (r.data?.ok === false) { msg.textContent = `没存上：${r.data.error || '上游拒绝'}`; return }
+    msg.textContent = '已保存。'
+  } finally { btn.disabled = false }
 }
 
 function renderFootprint(r) {
@@ -246,14 +365,18 @@ async function loadLedger() {
   }
 }
 
-async function refresh() {
+async function refresh({ comment = true } = {}) {
   $('#bili-msg').textContent = '读取中…'
-  const [owner, status, history, footprint, comment, outings, risk] = await Promise.all([
+  // /comment 会真的去 B 站扫回复：只在进入页面和点「刷新」时调。
+  // 写操作后的回读传 comment:false，不把调试点击变成外部流量。
+  const commentReq = comment ? fish('comment') : Promise.resolve({ ok: true, data: null, skipped: true })
+  const [owner, status, history, footprint, commentRes, outings, risk, config] = await Promise.all([
     fish('owner'), fish('bili/status'), fish('history?days=14'), fish('footprint?days=30'),
-    fish('comment'), fish('outings'), fish('risk'),
+    commentReq, fish('outings'), fish('risk'), fish('config'),
   ])
+  if (config.ok) $('#bili-hint-dismissed').checked = config.data?.config?.ui?.ownerHintDismissed === true
   renderOwner(owner)
-  renderComment(comment)
+  if (!commentRes.skipped) renderComment(commentRes)
   renderStatus(status)
   renderHistory(history)
   renderFootprint(footprint)

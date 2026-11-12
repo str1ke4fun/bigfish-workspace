@@ -20,6 +20,17 @@ test('路由表本身没有重复路径，字段合法', () => {
   }
 })
 
+test('P2 写路由的 body 上限与超时符合设计', () => {
+  const byPath = Object.fromEntries(ROUTES.map((r) => [r.path, r]))
+  assert.equal(byPath.say.maxBody, 12_000_000)
+  assert.equal(byPath.avatar.maxBody, 4_000_000)
+  assert.equal(byPath.import.maxBody, 200_000, '与上游 readBody 的 200_000 字节一致')
+  assert.equal(byPath['backup/restore'].maxBody, 96_000_000)
+  assert.equal(byPath['backup/restore'].timeoutMs, 300_000)
+  assert.equal(byPath.wake.timeoutMs, 180_000)
+  assert.equal(byPath['wx/scan'].methods.POST, 'P2')
+})
+
 test('P0 只开放 status 的 GET', () => {
   const enabled = ROUTES.filter((r) => enabledMethods(r, ['P0']).length > 0)
   assert.deepEqual(enabled.map((r) => r.path), ['status'])

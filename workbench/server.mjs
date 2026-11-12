@@ -29,9 +29,13 @@ const setHold = (sec) => asHer(`mkdir -p ${H}/.dsh-wx && printf '{"until":%s,"re
 const WX_SH = process.env.WX_SH || `${H}/dsh-plugins/dsh-wx/lib/wx.sh`
 
 const log = []
-function note(who, text, ok = true) {
+function note(who, text, ok = true, extra = null) {
   const d = new Date()
-  const row = { at: [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':'), who, text: String(text).slice(0, 300), ok }
+  // extra 给人工代操作留结构化字段：{ operator:'human', channel, target, action }。
+  const row = {
+    at: [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':'),
+    who, text: String(text).slice(0, 300), ok, ...(extra || {}),
+  }
   log.unshift(row)
   if (log.length > 80) log.pop()
   console.log(`[${row.at}] ${who} ${ok ? 'ok' : 'fail'} ${row.text}`)
@@ -45,7 +49,7 @@ const asHer = (cmd, o) => host.sh(cmd, o)
 
 // 鱼侧 BFF：阶段在 routes.mjs 里按表项登记，这里只决定现在开到哪一档。
 // P0 只有 status；P1 开全部只读；P2 再开写。`WORKBENCH_PHASES=P0` 可以退回上一档。
-const PHASES = String(process.env.WORKBENCH_PHASES || 'P0,P1')
+const PHASES = String(process.env.WORKBENCH_PHASES || 'P0,P1,P2')
   .split(',').map((s) => s.trim()).filter(Boolean)
 const fishBff = createFishBff({
   phases: PHASES,
@@ -409,11 +413,13 @@ async function qqHistory(kind, id, count = 30) {
   return { ok: true, self, items }
 }
 
-async function qqSend(kind, id, text) {
+async function qqSend(kind, id, text, name = '') {
   const action = kind === 'group' ? 'send_group_msg' : 'send_private_msg'
   const key = kind === 'group' ? 'group_id' : 'user_id'
   const r = await onebotCall(action, { [key]: Number(id), message: [{ type: 'text', data: { text } }] }, 45_000)
-  note('qq', `发到 ${kind === 'group' ? '群' : '私聊'} ${id}：${text.slice(0, 20)}`, r.ok)
+  const where = `${kind === 'group' ? '群' : '私聊'}${name ? `「${name}」` : ''} ${id}`
+  note('qq', `人工代操作 · 以她的身份发到 ${where}：${text.slice(0, 20)}`, r.ok,
+    { operator: 'human', channel: 'qq', target: where, action: 'send' })
   return { ok: r.ok, why: r.why, messageId: r.data?.message_id }
 }
 
@@ -876,7 +882,8 @@ export const server = createServer(async (req, res) => {
         [ -n "$BEST" ] && xdotool windowfocus "$BEST" 2>/dev/null
         xdotool type --delay 25 -- '${safe}'
       `)
-      note('wx', `输入 ${text.slice(0, 20)}`, r.ok)
+      note('wx', `人工代操作 · 在微信当前窗口输入 ${text.slice(0, 20)}`, r.ok,
+        { operator: 'human', channel: 'wx', target: '当前窗口', action: 'type' })
       return send(res, 200, { ok: r.ok, err: r.err })
     }
 
@@ -887,7 +894,8 @@ export const server = createServer(async (req, res) => {
         [ -n "$BEST" ] && xdotool windowfocus "$BEST" 2>/dev/null
         xdotool key --clearmodifiers '${key}'
       `)
-      note('wx', `按键 ${key}`, r.ok)
+      note('wx', `人工代操作 · 在微信当前窗口按键 ${key}`, r.ok,
+        { operator: 'human', channel: 'wx', target: '当前窗口', action: `key:${key}` })
       return send(res, 200, { ok: r.ok, err: r.err })
     }
 
@@ -908,8 +916,9 @@ export const server = createServer(async (req, res) => {
       const kind = b.kind === 'group' ? 'group' : 'private'
       const id = String(b.id || '').replace(/\D/g, '')
       const text = String(b.text || '').slice(0, 500)
+      const name = String(b.name || '').slice(0, 40)
       if (!id || !text) return send(res, 400, { error: '要 id 和 text' })
-      return send(res, 200, await qqSend(kind, id, text))
+      return send(res, 200, await qqSend(kind, id, text, name))
     }
 
     if (p === '/api/qq/scope' && req.method !== 'POST') {

@@ -1,13 +1,20 @@
-// 工具与规则：工具清单、规则分层、自检。工具白名单编辑在 P2。
-import { $, el, clear, card, fish, clock, errorText, hint, asText } from '../lib.js'
+// 工具与规则：工具清单、白名单编辑、规则分层、自检。
+import { $, el, clear, card, fish, postFish, clock, errorText, writeError, hint, asText } from '../lib.js'
+
+const state = { known: [] }
 
 function build(root) {
-  const toolsCard = card('工具清单', { note: '/tools 只给名字不给定义；白名单编辑在 P2。' })
+  const toolsCard = card('工具清单', { note: '/tools 只给名字不给定义；白名单保存后重启 DSH 才生效。' })
   toolsCard.body.append(
     el('div', { class: 'meta', id: 'tool-msg' }),
     el('div', { class: 'chips', id: 'tool-list' }),
     el('h3', { text: '当前工具白名单' }),
-    el('pre', { class: 'meta fish-raw', id: 'tool-allow' }),
+    el('label', { class: 'chk' }, el('input', { type: 'checkbox', id: 'tool-restrict' }), el('span', { text: '收窄工具面（只给她自己的工具 + 下面放行的）' })),
+    el('textarea', { id: 'tool-allow', class: 'doc', rows: '4', placeholder: '每行一个工具名；空 = 不放行额外工具' }),
+    el('div', { class: 'row' },
+      el('button', { id: 'tool-save', class: 'primary', text: '保存白名单', onclick: () => saveTools() }),
+      el('span', { class: 'meta', id: 'tool-save-msg' }),
+    ),
   )
 
   const rulesCard = card('规则分层', { note: '看规则在哪一层、有没有一张等她裁决的卡；没有「新建/编辑规则」。' })
@@ -29,18 +36,27 @@ async function refresh() {
   const [tools, rules, config] = await Promise.all([fish('tools'), fish('rules'), fish('config')])
   const list = $('#tool-list')
   clear(list)
+  const toolsCfg = config.ok ? config.data?.config?.tools : null
   if (tools.ok) {
     const known = tools.data?.known || []
+    state.known = known
     $('#tool-msg').textContent = `${known.length} 个工具 · 更新于 ${clock()}`
-    for (const name of known) list.append(el('span', { class: 'chip', text: name }))
+    for (const name of known) {
+      list.append(el('button', {
+        class: 'chip', text: name, title: '点一下加入白名单',
+        onclick: () => {
+          const box = $('#tool-allow')
+          const cur = box.value.split(/\s+/).filter(Boolean)
+          if (!cur.includes(name)) box.value = [...cur, name].join('\n')
+        },
+      }))
+    }
   } else {
+    state.known = []
     $('#tool-msg').textContent = `工具名读不到（按形状校验）：${errorText(tools)}`
   }
-
-  const allow = config.ok ? config.data?.config?.tools?.allow : null
-  $('#tool-allow').textContent = allow === undefined || allow === null
-    ? '（没设白名单 = 全量工具面）'
-    : asText(allow)
+  $('#tool-restrict').checked = toolsCfg ? toolsCfg.restrict !== false : true
+  $('#tool-allow').value = Array.isArray(toolsCfg?.allow) ? toolsCfg.allow.join('\n') : ''
 
   const ruleBox = $('#rule-body')
   clear(ruleBox)
@@ -49,7 +65,7 @@ async function refresh() {
   ruleBox.append(
     el('div', { class: 'meta', text: `申请开关：${r.offersOn === false ? '关' : '开'}` }),
     r.pending
-      ? el('div', { class: 'notice', text: `有一张待裁决的卡：${r.pending.rule || ''}${r.pending.why ? ' · ' + r.pending.why : ''}（裁决在 P2）` })
+      ? el('div', { class: 'notice', text: `有一张待裁决的卡：${r.pending.rule || ''}${r.pending.why ? ' · ' + r.pending.why : ''}（去「总览」页批准或驳回）` })
       : hint('现在没有待裁决的申请。', 'meta'),
   )
   const layers = r.layers
@@ -81,6 +97,26 @@ async function refresh() {
       el('span', { class: 'x', text: asText(h) }),
     ))))
   }
+}
+
+async function saveTools() {
+  const msg = $('#tool-save-msg')
+  const btn = $('#tool-save')
+  const names = $('#tool-allow').value.split(/[\s,，]+/).map((x) => x.trim()).filter(Boolean)
+  if (state.known.length) {
+    const unknown = names.filter((x) => !state.known.includes(x))
+    if (unknown.length) { msg.textContent = `这些名字不存在，没保存：${unknown.join('、')}`; return }
+  }
+  btn.disabled = true
+  msg.textContent = '保存中…'
+  try {
+    const r = await postFish('config', { tools: { restrict: $('#tool-restrict').checked, allow: names } })
+    if (!r.ok) { msg.textContent = writeError(r); return }
+    if (r.data?.ok === false) { msg.textContent = `没存上：${r.data.error || '上游拒绝'}`; return }
+    await refresh()
+    const next = $('#tool-save-msg')
+    if (next) next.textContent = `已保存 · 重启 DSH 后生效 · ${clock()}`
+  } finally { btn.disabled = false }
 }
 
 async function runCheck() {

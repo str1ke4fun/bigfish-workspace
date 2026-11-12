@@ -74,6 +74,14 @@ export function errorText(result) {
   return `读不到：${code}${up}`
 }
 
+/** 写失败时说「没成」，不说「读不到」——上游 409/400 的正文也带出来。 */
+export function writeError(result) {
+  if (!result) return '没成：没拿到响应'
+  const reason = result.data?.error || result.data?.why || result.data?.note || result.error || `HTTP ${result.status}`
+  const up = result.data?.upstreamStatus ? `（上游 ${result.data.upstreamStatus}）` : ''
+  return `没成：${reason}${up}`
+}
+
 /**
  * 取 `/api/fish/*`。返回 { ok, status, data, error }。
  * `ok` 只表示 HTTP 成功；业务结论在 `data.ok` / `data.code`，别混成一个。

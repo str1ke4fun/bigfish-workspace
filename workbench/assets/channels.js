@@ -1,5 +1,6 @@
-// 通道页：QQ / 微信 / 语音 / 她。原来就在工作台里，P1 只是把它从 app.js 拆出来，
-// 行为不变（3 秒轮询、画面 1 秒一帧），轮询只在通道页可见时跑。
+// 通道页：QQ / 微信 / 语音 / 她。3 秒轮询、画面 1 秒一帧，轮询只在通道页可见时跑。
+// P2 起 QQ 发送 / 微信打字、按键是「人工代操作」：按钮标注、二次确认，
+// 动作日志由服务端记，不写事件流。
 import { $, setDot } from './lib.js'
 
 const state = { qq: null, wx: null, her: null, frames: [] }
@@ -367,15 +368,17 @@ export function initChannels({ isActive = () => false } = {}) {
   })
 
   $('#chat-send').addEventListener('click', async () => {
-    // 人工代操作：以她的身份发一句。P2 才补确认弹层与动作日志展示。
+    // 人工代操作：以她的身份发一句。不写事件流，不算她的行为；动作日志由服务端记。
     const input = $('#chat-input')
     const text = input.value.trim()
     if (!text) return
     if (!chat.cur) { $('#chat-msg').textContent = '先点一个会话'; return }
+    const where = `${chat.cur.kind === 'group' ? '群' : '私聊'}「${chat.cur.name}」`
+    if (!confirm(`人工代操作：以她的身份把这句话发到${where}？\n\n${text.slice(0, 120)}`)) return
     $('#chat-msg').textContent = '发送中…'
     const r = await api('/api/qq/send', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ kind: chat.cur.kind, id: chat.cur.id, text }),
+      body: JSON.stringify({ kind: chat.cur.kind, id: chat.cur.id, name: chat.cur.name, text }),
     })
     $('#chat-msg').textContent = r.ok ? '发出去了' : `失败：${r.why || '未知'}`
     if (r.ok) { input.value = ''; openChat(chat.cur) }
@@ -443,6 +446,9 @@ export function initChannels({ isActive = () => false } = {}) {
     const btn = e.currentTarget
     btn.disabled = true; btn.textContent = '保存中…'
     try {
+      if ($('#scope-restart').checked && !confirm('保存后会把她的进程重启（约 10 秒，当前对话会中断）。继续？')) {
+        return
+      }
       const body = {
         requireMention: !!$('#scope-mention')?.checked,
         allowFrom: picked('#scope-friends'),
@@ -473,20 +479,25 @@ export function initChannels({ isActive = () => false } = {}) {
   })
 
   async function wxType(text) {
-    if (!text) return
-    await api('/api/wx/type', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) })
+    if (!text) return false
+    if (!confirm(`人工代操作：把这句打进微信当前窗口？\n\n${text.slice(0, 120)}`)) return false
+    const r = await api('/api/wx/type', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) })
+    if (r?.err) { $('#wx-meta').textContent = `人工打字失败：${r.err}`; return false }
+    return true
   }
   async function wxKey(key) {
-    await api('/api/wx/key', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key }) })
+    const label = key === 'Return' ? '回车（发送）' : '按键'
+    if (!confirm(`人工代操作：在微信当前窗口按${label}「${key}」？`)) return
+    const r = await api('/api/wx/key', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key }) })
+    if (r?.err) $('#wx-meta').textContent = `人工按键失败：${r.err}`
   }
 
   $('#wx-send').addEventListener('click', async () => {
     const el = $('#wx-text')
-    await wxType(el.value)
-    el.value = ''
+    if (await wxType(el.value)) el.value = ''
   })
   $('#wx-text').addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); await wxType(e.currentTarget.value); e.currentTarget.value = '' }
+    if (e.key === 'Enter') { e.preventDefault(); if (await wxType(e.currentTarget.value)) e.currentTarget.value = '' }
   })
   $('#wx-enter').addEventListener('click', () => wxKey('Return'))
   $('#wx-esc').addEventListener('click', () => wxKey('Escape'))
@@ -511,6 +522,24 @@ export function initChannels({ isActive = () => false } = {}) {
         `CU 看到：${r.screen} · ${r.elements} 个元素 · 可输入 [${(r.editables || []).join(', ')}] · ` +
         `bounds ${r.bounds?.width}×${r.bounds?.height} @ ${r.bounds?.x},${r.bounds?.y}`
     } finally { btn.disabled = false; btn.textContent = '识别界面' }
+  })
+
+  // 会话目录补扫走 BFF 到插件；只滚侧栏、不点开会话，也不碰草稿。
+  $('#wx-scan').addEventListener('click', async (e) => {
+    const btn = e.currentTarget
+    btn.disabled = true; btn.textContent = '正在扫…'
+    try {
+      const r = await api('/api/fish/wx/scan', {
+        method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: '{}',
+      })
+      if (r?.ok !== true) {
+        $('#wx-meta').textContent = `补扫没成：${r?.error || r?.why || '上游拒绝'}`
+        return
+      }
+      $('#wx-meta').textContent = `补扫了 ${r.pages ?? 0} 页，记下 ${r.count ?? 0} 个会话${r.complete ? '（已经到底）' : '（没滚到底，过一会儿再试）'}`
+    } finally {
+      btn.disabled = false; btn.textContent = '补扫会话目录'
+    }
   })
 
   $('#wx-close-extra').addEventListener('click', async (e) => {

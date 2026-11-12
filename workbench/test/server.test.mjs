@@ -14,6 +14,7 @@ let web
 let entry
 let workbench
 let port
+let upstreamWrites = 0
 
 async function listen(handler) {
   const server = http.createServer(handler)
@@ -27,7 +28,7 @@ function close(server) {
 }
 
 before(async () => {
-  web = await listen((req, res) => {
+  web = await listen(async (req, res) => {
     const url = new URL(req.url, 'http://x')
     if (url.pathname === '/') {
       res.writeHead(303, { 'set-cookie': 'dsh-auth-test=local; Path=/; HttpOnly' })
@@ -40,6 +41,25 @@ before(async () => {
     if (url.pathname === '/dsh-fish/config' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' })
       return res.end(JSON.stringify({ ok: true, config: { growthDays: 7 } }))
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const chunks = []
+      for await (const c of req) chunks.push(c)
+      const text = Buffer.concat(chunks).toString('utf8')
+      upstreamWrites += 1
+      let body = null
+      try { body = JSON.parse(text) } catch { body = text.slice(0, 40) }
+      if (body && body.fail === true) {
+        res.writeHead(500, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ ok: false, error: 'UPSTREAM_BOOM' }))
+      }
+      if (body && body.businessFalse === true) {
+        // 上游的「业务拒绝」是 200 + ok:false；BFF 不该把它改写成 HTTP 错误。
+        res.writeHead(200, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ ok: false, code: 'NOPE', why: '上游业务拒绝' }))
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ ok: true, path: url.pathname, body }))
     }
     res.writeHead(404, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ ok: false, error: 'NOT_FOUND' }))
@@ -172,6 +192,106 @@ test('伪造 Host 一律 403（DNS rebinding）', async () => {
   assert.equal(r.status, 403)
   const ok = await rawRequest('/api/fish/status', { headers: { host: `127.0.0.1:${port}` } })
   assert.equal(ok.status, 200)
+})
+
+test('P2 写请求经 BFF 到达上游，确认字面量原样传递', async () => {
+  const r = await fetch(`http://127.0.0.1:${port}/api/fish/reset`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ confirm: 'reset' }),
+  })
+  assert.equal(r.status, 200)
+  const body = await r.json()
+  assert.equal(body.path, '/dsh-fish/reset')
+  assert.deepEqual(body.body, { confirm: 'reset' })
+})
+
+test('P2 写请求拒绝跨站，且不发上游', async () => {
+  const before = upstreamWrites
+  const cross = await rawRequest('/api/fish/config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'http://evil.example', 'sec-fetch-site': 'cross-site' },
+    body: '{}',
+  })
+  assert.equal(cross.status, 403)
+  assert.equal(upstreamWrites, before)
+})
+
+test('P2 方法白名单：未登记方法 405', async () => {
+  const cases = [
+    ['say', 'DELETE'], ['decide', 'PUT'], ['reset', 'GET'],
+    ['notify', 'PUT'], ['inbox', 'PUT'], ['wake', 'GET'], ['owner', 'DELETE'],
+    ['log/clear', 'GET'], ['backup/restore', 'GET'], ['risk', 'DELETE'], ['wx/scan', 'GET'],
+  ]
+  for (const [path, method] of cases) {
+    const r = await fetch(`http://127.0.0.1:${port}/api/fish/${path}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: method === 'GET' ? undefined : '{}',
+    })
+    assert.equal(r.status, 405, `${method} ${path}`)
+  }
+})
+
+test('P2 上游 200 + business ok:false 原样透传，不改成 HTTP 错误', async () => {
+  for (const path of ['notify', 'inbox', 'decide', 'wake', 'owner', 'log/clear', 'risk', 'wx/scan']) {
+    const r = await fetch(`http://127.0.0.1:${port}/api/fish/${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ businessFalse: true }),
+    })
+    assert.equal(r.status, 200, path)
+    const body = await r.json()
+    assert.equal(body.ok, false, path)
+    assert.equal(body.why, '上游业务拒绝', path)
+  }
+})
+
+test('P2 body 上限按路由生效', async () => {
+  // /say 的上限是 12MB：300KB 能过，说明没有退回默认 256KB。
+  const say = await fetch(`http://127.0.0.1:${port}/api/fish/say`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'x'.repeat(300 * 1024) }),
+  })
+  assert.equal(say.status, 200)
+
+  // /import 收在 200_000 字节（上游 readBody 的上限）：190KB 能过，超一点就 413，
+  // 不让上游先 destroy 连接、把超长交接单变成 502。
+  const ok190 = await fetch(`http://127.0.0.1:${port}/api/fish/import`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'x'.repeat(190 * 1024) }),
+  })
+  assert.equal(ok190.status, 200)
+
+  const before = upstreamWrites
+  const big = await fetch(`http://127.0.0.1:${port}/api/fish/import`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'x'.repeat(196 * 1024) }),
+  })
+  assert.equal(big.status, 413)
+  assert.match(await big.text(), /BODY_TOO_LARGE/)
+  assert.equal(upstreamWrites, before)
+
+  // /avatar 上限 4MB。
+  const avatar = await fetch(`http://127.0.0.1:${port}/api/fish/avatar`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ data: 'x'.repeat(4_100_000) }),
+  })
+  assert.equal(avatar.status, 413)
+})
+
+test('P2 上游错误原样透传', async () => {
+  const r = await fetch(`http://127.0.0.1:${port}/api/fish/say`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ fail: true }),
+  })
+  assert.equal(r.status, 500)
+  assert.equal((await r.json()).error, 'UPSTREAM_BOOM')
 })
 
 test('跨站写请求 403，同源写请求可用', async () => {

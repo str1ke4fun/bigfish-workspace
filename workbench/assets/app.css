@@ -122,6 +122,18 @@
   .logbox, .doc { white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; background: #0b0e12; border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: 12px/1.6 ui-monospace, Consolas, monospace; margin: 0; }
   .avatar { max-width: 120px; max-height: 120px; border-radius: 10px; border: 1px solid var(--line); }
   .rule-layer { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; margin: 4px 0; }
+
+  /* ---- P2 写操作 ---- */
+  textarea.doc { display: block; width: 100%; min-height: 72px; resize: vertical; font-family: inherit; font-size: 13px; line-height: 1.7; }
+  input[type=number] { background: #0b0e12; border: 1px solid var(--line); color: var(--fg); border-radius: 8px; padding: 5px 8px; font: inherit; width: 9em; }
+  input[type=file] { color: var(--dim); font: inherit; font-size: 12px; max-width: 100%; }
+  input[type=file]::file-selector-button { background: #1f262e; color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; margin-right: 8px; font: inherit; font-size: 12px; cursor: pointer; }
+  input[type=file]::file-selector-button:hover { border-color: #3a4756; }
+  button:disabled { opacity: 0.55; cursor: progress; }
+  .chips button.chip { cursor: pointer; }
+  .rule-layer > summary { cursor: pointer; padding: 2px 0 6px; color: var(--dim); }
+  .rule-layer > summary code.key { color: var(--fg); }
+  .rule-layer[open] > summary { margin-bottom: 2px; }
   @media (max-width: 720px) {
     main { grid-template-columns: 1fr; padding: 10px 12px 20px; }
     .kv-row { grid-template-columns: 1fr; }

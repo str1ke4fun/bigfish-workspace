@@ -22,7 +22,7 @@ function build(root) {
   const diaryCard = card('日记', { note: '/diary?day=；设置为不可见时只给日期目录，不给正文。' })
   diaryCard.body.append(el('div', { class: 'row' }, el('span', { id: 'mem-diary-pick' })), el('div', { id: 'mem-diary' }))
 
-  const reportsCard = card('日报', { note: '预览与落盘走同一个 buildReport；导出的按钮在 P2 接入。' })
+  const reportsCard = card('日报', { note: '预览与落盘走同一个 buildReport；工作台只做只读预览，不提供导出。' })
   reportsCard.body.append(el('div', { class: 'row' }, el('span', { id: 'mem-report-pick' })), el('pre', { class: 'doc', id: 'mem-report' }))
 
   const beliefsCard = card('判断全文', { note: '判断、被推翻的、拒绝记录、自我修改尝试——原样列出，不做裁决。' })

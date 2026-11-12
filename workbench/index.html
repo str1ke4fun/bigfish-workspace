@@ -69,8 +69,8 @@
         <div class="chips" id="chat-list"></div>
         <div class="msgs" id="chat-msgs"><span class="hint meta">点上面的会话看消息</span></div>
         <div class="row">
-          <input type="text" id="chat-input" placeholder="以她的身份发一句…" />
-          <button id="chat-send" class="primary">发送</button>
+          <input type="text" id="chat-input" placeholder="人工代操作：以她的身份发一句…" />
+          <button id="chat-send" class="primary">人工发送</button>
           <button id="chat-refresh">刷新</button>
         </div>
         <div class="meta" id="chat-msg"></div>
@@ -115,6 +115,7 @@
       <button id="wx-save">存一张</button>
       <button id="wx-peek">识别界面</button>
       <button id="wx-close-extra" hidden>关掉多余界面</button>
+      <button id="wx-scan">补扫会话目录</button>
       <button id="gc">清理</button>
     </div>
     <div class="meta" id="wx-meta">—</div>
@@ -123,12 +124,12 @@
       <div class="empty" id="wx-empty">Linux/WSL 里没有桌面，这里是她的眼睛：微信窗口的实时画面（约 1 秒一帧）</div>
     </div>
     <div class="row">
-      <input type="text" id="wx-text" placeholder="往微信窗口里打字（回车发送）" />
-      <button id="wx-send">发送</button>
-      <button id="wx-enter">回车</button>
+      <input type="text" id="wx-text" placeholder="人工代操作：往微信窗口里打字" />
+      <button id="wx-send">人工打字</button>
+      <button id="wx-enter">人工回车</button>
       <button id="wx-esc">Esc</button>
     </div>
-    <div class="meta">点画面 = 点击那个坐标；打字会走 xdotool，跟真的在窗口前一样</div>
+    <div class="meta">点画面 = 点击那个坐标；打字/回车/按键都会真的作用在微信窗口上，发送前会再确认一次。这些是人替她操作，不算她说的。</div>
     <details class="scope" id="wx-scope">
       <summary>允许说话 <span class="meta" id="wx-scope-summary">—</span></summary>
       <div class="scope-body">

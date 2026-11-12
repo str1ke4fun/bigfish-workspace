@@ -4,7 +4,7 @@
 调度和校验仍然在 `src/dsh-fish`（A2 后 B 站部分在 `src/dsh-bili`）。
 
 - 设计：`docs/superpowers/specs/2026-11-12-workbench-single-entry-design-v2.md`
-- 当前阶段：P1（八项导航与只读页面；写操作 P2）
+- 当前阶段：P4 源码完成（八项导航、只读与写操作、旧入口停轮询并注销 `settings.section`）；线上部署与双入口实测待执行
 - 零依赖，Node.js 20+
 
 ## 启动
@@ -27,7 +27,7 @@ node server.mjs
 | `FISH_ENTRY_ORIGIN` | `http://127.0.0.1:8711` | 聊天入口/一次性 token |
 | `FISH_WEB_ORIGIN` | `http://127.0.0.1:8710` | dsh 宿主与插件路由 |
 | `WORKBENCH_VERSION` | `0.1.0` | BFF 的 `User-Agent` 版本 |
-| `WORKBENCH_PHASES` | `P0,P1` | 放开的阶段，逗号分隔；调试时可用 `P0` 退回只读骨架 |
+| `WORKBENCH_PHASES` | `P0,P1,P2` | 放开的阶段，逗号分隔；调试时可用 `P0,P1` 退回只读、`P0` 退回骨架 |
 | `WORKBENCH_DISABLE_WATCH` | 未设置 | 设为 `1` 时不起 QQ 掉线观察循环（测试用） |
 
 `WORKBENCH_DATA` 下放 `watch.json`、`frames/`。启动时自动 `mkdir -p`。
@@ -53,7 +53,7 @@ token/cookie 不写日志、不进 `/api/fish/*` 响应。
 未登记方法 405，body 超限 413，默认 256 KB / 30 秒。A2 拆包只改 `upstream` 列；
 上游路径与 BFF 路径不同名时用 `target`（当前只有 `bili/status` → `/dsh-bili/status`）。
 
-当前 P1 只放 `GET`：
+P1 只放 `GET`：
 
 - 总览：`status`、`state`、`bili/status`、`tools`、`events`、`beliefs`、`inbox`、`home`、`away`；
 - B 站：`owner`、`bili/status`、`history`、`comment`、`comment-body`、`cover`、`outings`、`risk`、`ledger`、`sheet`、`footprint`；
@@ -61,14 +61,38 @@ token/cookie 不写日志、不进 `/api/fish/*` 响应。
 - 工具与规则：`tools`、`config`、`rules`、`selfcheck`；
 - 数据：`log`、`paths`、`update`、`avatar/info`、`avatar`、`log/export`、`backup`。
 
+P2 放开的写方法（都要求同源 `Origin`，跨站直接 403）：
+
+| 路径 | 方法 | 说明 |
+| --- | --- | --- |
+| `config` | POST / PUT | 16 个白名单键，`persona` 永不接受 |
+| `notify` | POST | `{shown:true}` 或 `{enabled:boolean}` |
+| `inbox` | POST | 标为已读 |
+| `decide` | POST | `approve` / `reject` 待裁决申请 |
+| `say` | POST | 跟她说一句，可带图片，12MB / 120 秒 |
+| `wake` | POST | 人工叫醒，180 秒 |
+| `owner` | POST / PUT | B 站领养人，cookie 只上行不回显 |
+| `log/clear` | POST | 清空运行日志 |
+| `backup/restore` | POST | 恢复备份，96MB / 300 秒，前端要求输入 `restore` |
+| `import` | POST | 导入交接单，200KB（与上游 `readBody` 同一上限，超出直接 413） |
+| `reset` | POST | 重开一局，要求 `{confirm:"reset"}` |
+| `avatar` | POST | 上传/移除头像，4MB；原图上限 2MB 在页面侧先拦 |
+| `wx/scan` | POST | 微信会话目录补扫（通道页按钮；不是扫码登录） |
+| `risk` | POST | `{clear:true}` 解冻，页面二次确认 |
+
+确认弹层只是 UX，不是安全边界；上游自己的 `confirm` 字面量必须原样传递。
 通道页的 QQ / 微信 / 语音 / 画面走工作台本地 `/api/*`，不经 BFF。
+
+人工代操作（QQ 以她的身份发一句、微信窗口打字/回车/按键）在按钮文案和页面说明里
+显式标注，操作前二次确认；服务端把动作记为人工动作（操作者=人、通道、目标、结果），
+不写 `events.jsonl`，不算她的行为。
 
 工作台进程自己维护的只读接口只有 `GET /api/status.log`（最近 20 条动作，不触发检查）。
 `/comment` 只在进入 B 站页或点刷新时请求一次，不做自动轮询。
 
-**已知偏差**：上游 `GET /inbox` 和 `GET /paths` 本身会写一次文件（前者重写信箱文件，
-标记已读仍是 POST；后者补路径）。P1 暂不拆分读写，只靠路由表里的 `sideEffect: true`
-做同源校验；等 P2 拆出真正的写接口后去掉这个标记。
+**已知偏差**：上游 `GET /inbox` 会重写信箱文件、`GET /paths` 会补路径——两个读接口
+本身都会写一次文件，路由表因此用 `sideEffect: true` 做同源校验。P2 只给 `/inbox`
+补了「标为已读」的 POST，两个读接口的形状都暂不改；`/paths` 仍只有 GET。
 
 ## 安全边界
 

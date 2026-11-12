@@ -236,6 +236,24 @@ test('当前阶段未开放的路径当作不存在', async () => {
   }
 })
 
+test('P2 未开启时写方法 405，只读方法仍可用', async () => {
+  const f = await fixture({ phases: ['P0', 'P1'] })
+  try {
+    const post = await fetch(`${f.bff.origin}/api/fish/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    assert.equal(post.status, 405)
+    assert.equal((await fetch(`${f.bff.origin}/api/fish/config`)).status, 200)
+    // 只在 P2 出现的路由在 P1 当作不存在。
+    const reset = await fetch(`${f.bff.origin}/api/fish/reset`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })
+    assert.equal(reset.status, 404)
+  } finally { await f.close() }
+})
+
 test('请求体超限返回 413，不转发上游', async () => {
   const f = await fixture()
   try {

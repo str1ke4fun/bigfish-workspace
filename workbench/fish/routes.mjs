@@ -41,7 +41,9 @@ export const ROUTES = [
   { path: 'log/clear', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'backup', methods: { GET: 'P1' }, upstream: 'fish', binary: true, timeoutMs: 120_000 },
   { path: 'backup/restore', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 96_000_000, timeoutMs: 300_000 },
-  { path: 'import', methods: { GET: 'P1', POST: 'P2' }, upstream: 'fish', maxBody: 256 * 1024, timeoutMs: 60_000 },
+  // 上游 readBody 的硬上限是 200_000 字节，超过会直接 destroy 连接；BFF 先拦成 413，
+  // 别让超长交接单以「502 上游不可达」的面目出现。
+  { path: 'import', methods: { GET: 'P1', POST: 'P2' }, upstream: 'fish', maxBody: 200_000, timeoutMs: 60_000 },
   { path: 'reset', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024, timeoutMs: 60_000 },
   { path: 'paths', methods: { GET: 'P1' }, upstream: 'fish', sideEffect: true },
   { path: 'update', methods: { GET: 'P1' }, upstream: 'fish', timeoutMs: 60_000, sideEffect: true },
