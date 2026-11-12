@@ -152,6 +152,6 @@ export function plan(model, cfg, today, events = [], opts = {}) {
   if (Number(today.proactive ?? 0) >= maxProactive) return { action: 'skip', why: `今日主动唤醒已满(${today.proactive}/${maxProactive})` }
 
   const picked = pick(model, cfg, today, events, opts)
-  if (!picked) return { action: 'quiet', why: '没有满足条件的事件模板（今天不打扰）' }
+  if (!picked) return { action: 'quiet', why: '这一分钟没有满足条件的事件模板' }
   return { action: 'wake', ...picked }
 }

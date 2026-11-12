@@ -22,6 +22,7 @@ import { join } from 'node:path'
 import { startScheduler, wakeNow } from '../lib/scheduler.js'
 import { readEvents, appendEvent, writeConfig } from '../lib/store.js'
 import { normalizeConfig, dateKey } from '../lib/settings.js'
+import { CATALOG } from '../lib/events.js'
 
 async function withRoot(fn) {
   const root = await mkdtemp(join(tmpdir(), 'fish-wiring-'))
@@ -77,6 +78,78 @@ async function excludeNow(root) {
 }
 
 const emptyLook = () => ({ text: '', intro: '', picks: [], riskNote: '' })
+
+/**
+ * 造一个「今天一定会 quiet」的根：落点已过、窗口覆盖全天、所有模板都消耗或
+ * 条件不满足。用于测 quiet 事件本身，不碰唤醒路径。
+ */
+async function quietRoot(root) {
+  await writeConfig(
+    normalizeConfig({
+      window: ['00:00', '23:59'],
+      wakesPerDay: 1,
+      daily: { events: 3, questions: 2 },
+    }),
+    root,
+  )
+  const dk = dateKey()
+  await appendEvent(
+    { type: 'meta', text: `sched:${dk} ${new Date(Date.now() - 60_000).toISOString()}` },
+    { day: 0, stage: 1, source: 'timer' },
+    root,
+  )
+  await appendEvent(
+    { type: 'meta', text: `fired:${CATALOG.map((t) => t.id).join(',')}` },
+    { day: 0, stage: 1, source: 'timer' },
+    root,
+  )
+  return dk
+}
+
+function quietRows(events, dk) {
+  const marker = `quiet:${dk} `
+  return events.filter((e) => e?.type === 'meta' && String(e.text ?? '').startsWith(marker))
+}
+
+test('quiet 一天只记一条：写“还不想醒”，不是每分钟追加', async () => {
+  await withRoot(async (root) => {
+    const dk = await quietRoot(root)
+    const s = startScheduler(fakeCtx().ctx, { root, log: () => {} })
+    try {
+      await s.tick()
+    } finally {
+      s.dispose()
+    }
+
+    const { events } = await readEvents(root)
+    const rows = quietRows(events, dk)
+    assert.equal(rows.length, 1, '一次 tick 只该留一条 quiet')
+    assert.equal(rows[0].text, `quiet:${dk} 还不想醒`)
+  })
+})
+
+test('当天已有 quiet 标记：再 tick 也不会写第二条', async () => {
+  await withRoot(async (root) => {
+    const dk = await quietRoot(root)
+    await appendEvent(
+      { type: 'meta', text: `quiet:${dk} 无候选模板，今天不打扰` },
+      { day: 0, stage: 1, source: 'timer' },
+      root,
+    )
+
+    const s = startScheduler(fakeCtx().ctx, { root, log: () => {} })
+    try {
+      await s.tick()
+    } finally {
+      s.dispose()
+    }
+
+    const { events } = await readEvents(root)
+    const rows = quietRows(events, dk)
+    assert.equal(rows.length, 1, '历史里已经有 quiet 时不能再追加')
+    assert.equal(rows[0].text, `quiet:${dk} 无候选模板，今天不打扰`, '旧记录原样保留')
+  })
+})
 
 test('tick 接线：runTick 收到 Date 形式的 now、root 与非空 deps', async () => {
   await withRoot(async (root) => {

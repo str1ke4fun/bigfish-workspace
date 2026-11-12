@@ -118,7 +118,14 @@ export function startScheduler(ctx, deps = {}) {
       const decision = plan(model, config, counts, events, { squeeze: gapSqueeze(gapSinceLastWake(events)) })
 
       if (decision.action === 'quiet') {
-        await appendEvent({ type: 'meta', text: `quiet:${dk} 无候选模板，今天不打扰` }, { day: model.day, stage: model.stage, source: 'timer' }, root)
+        // quiet 只表示「这一分钟没有候选」，不是今天到此为止——候选可能过一会儿
+        // 才满足条件（14:33 那次唤醒就是等出来的），下一分钟还会重新算。
+        // 所以事件流里一天只留第一条，不要每分钟追加；wake / wakefail 照常记录。
+        const marker = `quiet:${dk} `
+        const noted = events.some((e) => e?.type === 'meta' && String(e.text ?? '').startsWith(marker))
+        if (!noted) {
+          await appendEvent({ type: 'meta', text: `${marker}还不想醒` }, { day: model.day, stage: model.stage, source: 'timer' }, root)
+        }
         return
       }
       if (decision.action === 'skip') {
