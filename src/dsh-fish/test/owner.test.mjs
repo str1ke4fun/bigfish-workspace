@@ -205,6 +205,65 @@ test('/owner 路由：POST 能存 uid 与昵称', async () => {
   }
 })
 
+test('/owner 路由：测 cookie 走 bili 服务的客户端，成功只回账号不回 cookie', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-ow5-'))
+  try {
+    const ctx = fakeCtx()
+    ctx.cfg.connection = { requestRejection: () => null }
+    registerObserve(ctx, { root })
+    await saveOwner({ mid: '42', nickname: '我', cookie: 'SESSDATA=s1; bili_jct=j1' }, root)
+
+    const me = { isLogin: true, mid: 10086, uname: '小鱼', canWrite: true }
+    const baseGet = ctx.get
+    ctx.get = (k) => (k === 'bili' ? { netClient: async () => ({ me: async () => me }) } : baseGet(k))
+
+    const r = await callRoute(ctx.routes, '/owner', 'POST', { test: true })
+    assert.equal(r.status, 200)
+    assert.equal(r.body.ok, true)
+    assert.equal(r.body.mid, '10086')
+    assert.equal(r.body.canWrite, true)
+    assert.equal(JSON.stringify(r.body).includes('s1'), false, 'cookie 原文不许出现在响应里')
+    const ow = await readOwner(root)
+    assert.equal(String(ow.account?.mid), '10086', '只写只读的 account，不动领养人那两格')
+    assert.equal(ow.mid, '42')
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+test('/owner 路由：测 cookie 时 B 站面没加载，回 503 而不是 ReferenceError', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-ow6-'))
+  try {
+    const ctx = fakeCtx()
+    ctx.cfg.connection = { requestRejection: () => null }
+    registerObserve(ctx, { root })
+    await saveOwner({ cookie: 'SESSDATA=s1; bili_jct=j1' }, root)
+
+    const r = await callRoute(ctx.routes, '/owner', 'POST', { test: true })
+    assert.equal(r.status, 503)
+    assert.match(String(r.body.error), /dsh-bili/)
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+test('/owner 路由：存 cookie 时 B 站面没加载，cookie 照样存下，不改 account', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-ow7-'))
+  try {
+    const ctx = fakeCtx()
+    ctx.cfg.connection = { requestRejection: () => null }
+    registerObserve(ctx, { root })
+
+    const r = await callRoute(ctx.routes, '/owner', 'POST', { cookie: 'SESSDATA=s1; bili_jct=j1' })
+    assert.equal(r.status, 200)
+    const ow = await readOwner(root)
+    assert.equal(ow.cookie, 'SESSDATA=s1; bili_jct=j1')
+    assert.equal(ow.account, undefined)
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
 test('/config 路由：persona 被 HTTP 白名单拒绝，且配置不落盘', async () => {
   const root = await mkdtemp(join(tmpdir(), 'fish-persona-'))
   try {

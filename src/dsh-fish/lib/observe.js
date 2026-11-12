@@ -68,6 +68,33 @@ const COOKIE_HINT = [
 
 const PREFIX = '/dsh-fish'
 
+/** 读一天 `browse:` 记账里的视频条目。纯函数、只认事件流，不依赖 B 站插件是否加载。 */
+function browseItemsFromEvents(events, dk) {
+  const out = []
+  const seen = new Set()
+  const prefix = `browse:${dk} `
+  for (const e of events ?? []) {
+    if (e?.type !== 'meta') continue
+    const t = String(e.text ?? '')
+    if (!t.startsWith(prefix)) continue
+    const json = t.slice(prefix.length).trim()
+    if (!json.startsWith('[')) continue
+    let arr
+    try {
+      arr = JSON.parse(json)
+    } catch {
+      continue // 坏行跳过，不让报告崩
+    }
+    for (const it of Array.isArray(arr) ? arr : []) {
+      const bvid = String(it?.bvid ?? '')
+      if (!bvid || seen.has(bvid)) continue
+      seen.add(bvid)
+      out.push(it)
+    }
+  }
+  return out
+}
+
 export function registerObserve(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
   const disposers = []
@@ -340,8 +367,11 @@ export function registerObserve(ctx, deps = {}) {
           // 探一次「这个 cookie 到底能不能说话」：能登录、能看到自己的 mid 与昵称。
           const ow = await readOwner(root)
           if (!ow?.cookie) return send(res, 200, { ok: false, note: '还没存 cookie。' })
+          // A2：客户端归 dsh-bili 管，这里不再自己 new（软删除后 createClient 已不在本插件）。
+          const svc = biliService(res)
+          if (!svc) return
           try {
-            const c = createClient({ cookie: ow.cookie })
+            const c = await svc.netClient()
             const me = await c.me()
             if (!me?.isLogin) return send(res, 200, { ok: false, note: '这个 cookie 登不上，可能过期了。' })
             // 2026-10-27：这里只记「这份 cookie 登的是哪个账号」（只读 account），
@@ -366,8 +396,10 @@ export function registerObserve(ctx, deps = {}) {
         // 认不出来不影响「cookie 已经存好了」这件事。
         if (r.ok && patch.cookie) {
           try {
-            const probe = createClient({ cookie: (await readOwner(root))?.cookie || '' })
-            const me = await probe.me()
+            // 客户端归 dsh-bili 管；没加载就只存 cookie，不认账号。
+            const svc = safeGet(ctx, 'bili')
+            const probe = typeof svc?.netClient === 'function' ? await svc.netClient() : null
+            const me = probe ? await probe.me() : null
             if (me?.isLogin && me.uname) {
               const r2 = await saveAccount(me, root)
               if (r2) return send(res, 200, { ...r, owner: r2, note: `${r.note || '存下了。'} 登录的是：${me.uname}（uid ${me.mid}）` })
@@ -583,7 +615,7 @@ export function registerObserve(ctx, deps = {}) {
       const diary = await readDaily('diaryDir', want, root).catch(() => null)
       const md = buildReport({
         dateKey: want,
-        items: itemsFromEvents(events, want),
+        items: browseItemsFromEvents(events, want),
         events,
         diary,
         diaryVisible: config?.diary?.visible === true,
