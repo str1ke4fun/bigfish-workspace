@@ -518,9 +518,9 @@ async function herStatus() {
   }
 }
 
-// ---------- QQ 掉线：认日志 + 弹 toast ----------
+// ---------- QQ 掉线：认日志 + 提醒 ----------
 // 手机 QQ 一上线就把 Linux 这边顶掉（日志里是 [KickedOffLine] 你的账号当前登录已失效），
-// 之后本地票据一起作废，只能扫码。这里 15 秒看一次日志，掉了就弹 Windows 通知并把新二维码丢到工作区，
+// 之后本地票据一起作废，只能扫码。这里按设置轮询日志，掉了就提醒并把新二维码丢到工作区，
 // 免得"她哑了"要你自己发现。
 const QQ_LOG = `${H}/napcat-console.log`
 const WATCH_PATH = join(DATA, 'watch.json')
