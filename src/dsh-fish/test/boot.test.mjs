@@ -444,10 +444,10 @@ test('dispose 之后不再有后台活动（定时器真的停了）', async () 
   })
 })
 
-// A1.5：scheduler 不再直调 B 站模块，行为由本插件注册到 core.schedule 上。
-// 这里钉住生产路径仍把刷站/出门与唤醒素材这两个钩子挂上去（index.js:428-469）；
-// 接线本身（scheduler 真的调用它们）见 test/schedule-wiring.test.mjs。
-test('index.js 往 core.schedule 注册 bili-browse / bili-material', async () => {
+// A2：B 站的刷站/出门与唤醒素材钩子搬到 dsh-bili，core 不再注册。
+// 生产路径「dsh-bili 把钩子挂上」由 src/dsh-bili/test 守着；这里钉住 core
+// 不越界替另一个插件注册（否则拆包后会出现两份钩子）。
+test('core 不再往 core.schedule 注册 bili-browse / bili-material', async () => {
   await withRoot(async (root) => {
     const { ctx, provided } = fakeCtx()
     const h = apply(ctx, { root })
@@ -455,8 +455,8 @@ test('index.js 往 core.schedule 注册 bili-browse / bili-material', async () =
       const core = await waitFor(() => provided.get('fishCore'))
       assert.ok(core, 'fishCore 必须挂上')
       const st = core.schedule.status()
-      assert.ok(st.tick.some((x) => x.id === 'bili-browse'), '后台刷站/出门的 tick 钩子丢了')
-      assert.ok(st.wake.some((x) => x.id === 'bili-material'), '唤醒素材的 wake 钩子丢了')
+      assert.ok(!st.tick.some((x) => x.id === 'bili-browse'), 'core 不该再挂后台刷站钩子')
+      assert.ok(!st.wake.some((x) => x.id === 'bili-material'), 'core 不该再挂唤醒素材钩子')
     } finally {
       h.dispose?.()
     }

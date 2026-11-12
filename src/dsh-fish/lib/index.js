@@ -14,25 +14,19 @@ import { rootDir, readEvents, appendEvent, readJson, paths, writeAtomic, ensureH
 import { loadConfig } from './settings.js'
 import { deriveSelf } from './derive.js'
 import { registerCapture } from './capture.js'
-import { registerLook } from './look.js'
-import { registerSpeak } from './speak.js'
 import { registerRecall } from './recall.js'
-import { registerWatch } from './watch.js'
 import { registerLetter } from './letter.js'
 import { registerRemind } from './remind.js'
 import { registerInbox } from './taskinbox.js'
 import { registerObserve } from './observe.js'
-import { startScheduler, lookBeforeWake } from './scheduler.js'
+import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
-import { ensureBiliSession, maybeOuting } from './outing.js'
-import { backgroundBrowse } from './browsejob.js'
 import { writeSelfDoc, refreshSelfDoc } from './selfdoc.js'
 import { registerToolRestrict, revealTools, getAgentToolState } from './restrict.js'
 import { provideFishCore } from './core-service.js'
 import { registerQqAdapter, qqExposure } from './qq-adapter.js'
 import {
   resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry,
-  contribute,
   ownTools as policyOwnTools,
   setAgentProbe,
   setHostNamesProvider,
@@ -287,19 +281,17 @@ export function apply(ctx, baseConfig = {}) {
       logger.warn('[dsh-fish] 身份段没挂上', err?.message ?? err)
     }
 
-    // ---- 工具：一个写（growth_commit）、一个看（bili_look）----
-    // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会看，或只会记不会看）。
+    // ---- 工具：core 自己的那几个 ----
+    // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会记，或只会记不会说）。
     // **必须先于 bootstrapHome**：屋子会话是在那里创建的，`agent/created` 同步发出；
     // 工具若晚一步，restrict 会因「names unknown global tools …」自愈，把 her_tools
     // 这类唯一能按需开工具的入口一起丢掉，这条会话终生降级。
     if (bootAbort.signal.aborted) return
     if (ctx.tools?.register) {
+      // A2：bili_look / bili_watch / bili_speak 由 dsh-bili 注册，core 不再挂。
       for (const reg of [
         () => registerCapture(ctx, { root, core: fishCore ?? undefined }),
-        () => registerLook(ctx, { root, client: baseConfig.client, memory: fishCore?.memory }),
-        () => registerSpeak(ctx, { root, client: baseConfig.client, memory: fishCore?.memory }),
         () => registerRecall(ctx, { root, core: fishCore ?? undefined }),
-        () => registerWatch(ctx, { root, memory: fishCore?.memory }),
         // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
         () => registerLetter(ctx, { root, core: fishCore ?? undefined }),
         // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
@@ -319,33 +311,8 @@ export function apply(ctx, baseConfig = {}) {
       }
     }
 
-    // ---- B 站 3 个工具贡献进策略表（A1.4）----
-    // 必须早于第一个 bili agent 创建（下面的 bootstrapHome / ensureBiliSession 都会
-    // 建会话）。贡献方只为**自己刚注册成功**的名字担保：宿主有 ctx.tools.get 时
-    // 逐个确认，没有就按全部注册成功处理；tool-policy 若还能拿到全局名单会再求一次
-    // 交集。失败只记日志，不打断启动。
-    const biliWanted = [
-      { name: 'bili_look', summary: '看 B 站列表', tier: 'always', kind: 'read' },
-      { name: 'bili_watch', summary: '看一条视频的画面', tier: 'always', kind: 'read' },
-      { name: 'bili_speak', summary: '在评论区说话', tier: 'always', kind: 'send', safety: 'send' },
-    ]
-    const biliHostNames = new Set(
-      typeof ctx.tools?.get === 'function'
-        ? biliWanted.map((t) => t.name).filter((n) => ctx.tools.get(n))
-        : biliWanted.map((t) => t.name),
-    )
-    const biliContribution = contribute(
-      { id: 'bili', tools: biliWanted, groups: [] },
-      { hostNames: biliHostNames },
-    )
-    if (biliContribution.ok) {
-      disposers.push(biliContribution.off)
-    } else {
-      logger.warn(
-        `[dsh-fish] B 站工具没贡献进策略表：${biliContribution.why}` +
-        (biliContribution.detail ? `（${biliContribution.detail}）` : ''),
-      )
-    }
+    // A2：B 站 3 个工具的策略表贡献由 dsh-bili 完成（它注册工具、自己担保名字），
+    // core 不再替另一个插件贡献。
 
     let home = { ok: false, why: 'not attempted', wsId: '', sessionId: '' }
     try {
@@ -381,33 +348,7 @@ export function apply(ctx, baseConfig = {}) {
       }
     }
 
-    // ---- 出门会话（2026-11-10）----
-    // 「大肥鱼出门 / 去 B 站」，工作区在 home/bili。B 站工具只在 bili 面可见，
-    // 没有这条会话，她就只被推送着看、没法自己打开视频或在评论区回话。
-    // 建失败不挡住启动：调度器每轮会再试（maybeOuting 内部会调 ensureBiliSession）。
-    let ensureBili = null
-    if (home.ok) {
-      try {
-        const out = await ensureBiliSession(ctx, {
-          root,
-          preset: config?.tools?.preset ?? '',
-          log: (...a) => logger.info(...a),
-        })
-        if (out.ok) {
-          logger.info(`[dsh-fish] 出门会话 ${out.sessionId}${out.reused ? '（复用）' : '（新建）'}`)
-          ensureBili = () => ensureBiliSession(ctx, {
-            root,
-            preset: config?.tools?.preset ?? '',
-            log: (...a) => logger.warn(...a),
-            wakeOnCreate: false,
-          })
-        } else {
-          logger.warn(`[dsh-fish] 出门会话没建起来：${out.why}`)
-        }
-      } catch (err) {
-        logger.warn('[dsh-fish] 出门会话出错', err?.message ?? err)
-      }
-    }
+    // A2：出门会话（「大肥鱼出门 / 去 B 站」）由 dsh-bili 建；core 不再碰 B 站。
 
     // ---- 身份文本再落一次盘：屋子建好之后 activeCarry 等才齐，内容可能变 ----
     // 这条改动之后它**不再被宿主注入**（那是旧的 AGENTS.md 通道），只是落盘副本；
@@ -426,56 +367,10 @@ export function apply(ctx, baseConfig = {}) {
     const obs = registerObserve(ctx, { root, version: VERSION, exposure })
     if (obs?.dispose) disposers.push(() => obs.dispose())
 
-    // ---- 调度钩子（A1.5）----
-    // 旧 scheduler 直调 backgroundBrowse / maybeOuting / lookBeforeWake；
-    // 现在这些行为由本插件注册到 core.schedule 上，scheduler 只负责在既有的
-    // 串行 tick 里跑一遍、在真要唤醒时取一次素材。A1 阶段行为不变；
-    // A2 的 dsh-bili 可以往同一张表上挂自己的刷站/素材。
-    const hooks = fishCore?.schedule
-    if (hooks) {
-      disposers.push(hooks.onTick({
-        id: 'bili-browse',
-        everyMs: 60_000,
-        order: 20,
-        // 参数与旧 scheduler.tick 里那段逐字对应（见 A1.5 brief）。
-        async fn(h) {
-          const hdeps = h.deps ?? {}
-          const bg = await backgroundBrowse({
-            root: h.root,
-            config: h.config,
-            events: h.events,
-            dk: h.dk,
-            log: hdeps.log,
-            deps: hdeps,
-          })
-          let evs = h.events
-          if (bg?.ok) evs = (await readEvents(h.root)).events
-          const out = await maybeOuting(ctx, {
-            root: h.root,
-            config: h.config,
-            events: evs,
-            dk: h.dk,
-            now: new Date(),
-            material: bg?.ok ? bg.text : '',
-            picks: bg?.ok ? bg.picks : [],
-            log: hdeps.log,
-            ensureSession: hdeps.ensureBiliSession,
-            client: hdeps.client,
-            appendEvent: hdeps.appendEvent,
-            core: fishCore ?? undefined,
-            memory: hdeps.memory,
-          })
-          return { changed: Boolean(bg?.ok || out?.ok) }
-        },
-      }))
-      disposers.push(hooks.onWake({
-        id: 'bili-material',
-        order: 20,
-        async fn(h) {
-          return lookBeforeWake(h.root, h.model, h.config, h.dk, h.deps ?? {}, h.deps?.log)
-        },
-      }))
-    }
+    // ---- 调度钩子（A1.5 / A2）----
+    // core 只把**同一张** fishCore.schedule 表交给 scheduler；dsh-bili 往表上
+    // 注册自己的刷站、出门与素材。core 不再注册 B 站钩子。
+    const hooks = fishCore?.schedule ?? null
 
     // 生物钟：把屋子信息一起传下去。她每晚醒来说话要落进**同一个**会话，
     // 不是每晚新开一个藏起来的会话（用户定案：打开侧栏就该看见她）。
@@ -485,7 +380,6 @@ export function apply(ctx, baseConfig = {}) {
       herDir,
       wsId: home.wsId,
       sessionId: home.sessionId,
-      ensureBiliSession: ensureBili ?? undefined,
       hooks: hooks ?? null,
       // A1.8：刷站/素材/出门的写入与处境都从 fishCore 走；deps 原样传进钩子。
       core: fishCore ?? undefined,

@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLIENT = join(HERE, '..', 'lib', 'client.js')
 const OBSERVE = join(HERE, '..', 'lib', 'observe.js')
+const BILI_SERVICE = join(HERE, '..', '..', 'dsh-bili', 'lib', 'service.js')
 
 test('数字框：打字超范围后离开输入框会收敛回上下限', async () => {
   const src = await readFile(CLIENT, 'utf8')
@@ -23,7 +24,8 @@ test('数字框：打字超范围后离开输入框会收敛回上下限', async
 })
 
 test('封面：lazyCover 从 view() 的 data 里取 pic', async () => {
-  const src = await readFile(OBSERVE, 'utf8')
+  // A2：封面实现搬到 dsh-bili 的服务层（core 只剩代理）。
+  const src = await readFile(BILI_SERVICE, 'utf8')
   // view() 返回 { ok, code, data:{ pic } }；直接读 v.pic 永远是 undefined，
   // 于是 /dsh-fish/cover/<BV> 一路 404，被 <img onError> 静默藏掉。
   assert.ok(src.includes('v?.data?.pic || v?.pic'), '要从 data 里取 pic')

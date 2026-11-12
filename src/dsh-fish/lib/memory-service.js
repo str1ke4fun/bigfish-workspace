@@ -252,6 +252,21 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
     return out.slice(0, cap)
   }
 
+  /**
+   * 全量事件（含 meta）。
+   *
+   * 为什么单独开一个方法：`read()` 的 2000 上限是给人看的召回窗口，
+   * 但面插件的去重/配额要看到完整历史（例如回复去重会扫所有 `bili_reply`）。
+   * 让它们拿 `read({limit:'all'})` 会把“召回范围”和“账本”混成一条路径。
+   */
+  async function readAll() {
+    try {
+      return (await readEvents(baseRoot)).events
+    } catch {
+      return []
+    }
+  }
+
   async function derive({ now, growthDays, viewSurface } = {}) {
     const { events } = await readEvents(baseRoot)
     return deriveSelf(events, { now, growthDays, viewSurface })
@@ -302,6 +317,7 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
     appendSystem,
     validate,
     read,
+    readAll,
     derive,
     refreshSelfDoc: refresh,
     similarity,

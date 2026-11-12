@@ -62,12 +62,12 @@ async function mockWeb() {
       res.writeHead(401, { 'content-type': 'application/json' })
       return res.end(JSON.stringify({ ok: false, error: 'UNAUTHORIZED' }))
     }
-    if (url.pathname === '/dsh-fish/risk' && state.force403 > 0) {
+    if (url.pathname === '/dsh-bili/risk' && state.force403 > 0) {
       state.force403 -= 1
       res.writeHead(403, { 'content-type': 'application/json', 'set-cookie': 'nope=1', location: '/evil' })
       return res.end(JSON.stringify({ ok: false, code: 'RISK', why: '风控中' }))
     }
-    if (url.pathname === '/dsh-fish/cover/BV1xx411c7mD') {
+    if (url.pathname === '/dsh-bili/cover/BV1xx411c7mD') {
       res.writeHead(200, {
         'content-type': 'image/png',
         'content-length': '4',

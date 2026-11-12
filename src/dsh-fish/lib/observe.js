@@ -21,12 +21,9 @@ import { wakeNow } from './scheduler.js'
 import { sayToHer } from './say.js'
 import { readInbox, markRead, writeInboxFile } from './inbox.js'
 import { listReports, buildReport } from './report.js'
-import { itemsFromEvents, browseCountToday } from './browse.js'
 import { readAway } from './away.js'
-import { coverPath, fetchCover } from './cover.js'
 import { avatarFile, avatarInfo, saveAvatar, removeAvatar } from './avatar.js'
 import fs from 'node:fs'
-import { commentCountToday, replyCountToday, herComments, scanReplies } from './comment.js'
 import { describeState, resetAll } from './reset.js'
 import { applyHandover, IMPORT_TEMPLATE } from './import.js'
 import { readHomeRecord, retireHomeSessions } from './retire.js'
@@ -50,12 +47,8 @@ import { refreshSelfDoc } from './selfdoc.js'
 import { readPending, markShown } from './notify.js'
 import { deriveStatus } from './status.js'
 import { publicOwner, saveOwner, saveAccount } from './owner.js'
-import { createClient } from './bili.js'
-import { historyFromEvents } from './history.js'
-import { footprintFromEvents } from './footprint.js'
 import { runChecks } from './selfcheck.js'
 import { readRestrictState, knownToolNames } from './restrict.js'
-import { riskState, clearRisk } from './risk.js'
 import { decodeBase64Image, saveImage } from './media.js'
 import { LOG_KEEP, LOG_MAX_BYTES, buildBundle, clearLog, logLine, logsDir, redactConfig, tailLog } from './log.js'
 // 「有没有新版」（2026-10-25 用户要求）：只读、只出网、不落盘。
@@ -65,11 +58,6 @@ import { checkUpdate, REPO_URL, normalizeVersion } from './update.js'
  * 引导文案：别人第一次装，本机没有现成 cookie。
  * 只写「怎么拿」，不写「拿谁的」——这段会原样显示在设置页上。
  */
-// 评论正文现取缓存（2026-11-03）：工作台点一次「读取正文」才打 B 站，
-// 同一个 rpid 10 分钟内不重复请求。只放内存，不落盘。
-const COMMENT_BODY_TTL_MS = 10 * 60_000
-const COMMENT_BODY_CACHE_MAX = 200
-const commentBodyCache = new Map()
 
 const COOKIE_HINT = [
   '在你的浏览器里登录 B 站 → 按 F12 → Application（应用）→ Cookies → https://www.bilibili.com',
@@ -80,55 +68,20 @@ const COOKIE_HINT = [
 
 const PREFIX = '/dsh-fish'
 
-/**
- * 封面图是懒下载的：设置页的 <img> 引到这条路由，第一次才真去取，之后命中缓存。
- *
- * 为什么不在浏览时就抓：她一天只看几条视频，但设置页可能十天没打开；
- * 抓了却没人看的图只会占着她的状态库。图片坏了也从来不影响她说话。
- *
- * @param {string} root
- * @param {string} bvid
- * @returns {Promise<string>} 本地文件路径；取不到就是空串
- */
-async function lazyCover(root, bvid) {
-  try {
-    const { events } = await readEvents(root)
-    let pic = ''
-    for (const e of events) {
-      const t = String(e?.text ?? '')
-      if (!t.startsWith('browse:')) continue
-      const sp = t.indexOf(' ')
-      if (sp < 0) continue
-      let list = []
-      try { list = JSON.parse(t.slice(sp + 1)) } catch { continue }
-      if (!Array.isArray(list)) continue
-      const hit = list.find((it) => it?.bvid === bvid && it?.pic)
-      if (hit) pic = String(hit.pic)
-    }
-    if (!pic) {
-      // 老档没存 pic：问一次 B 站，再把图存下来。
-      // 2026-10-24 修：这里原来从 './owner.js' 里 import readOwner，可那个文件
-      // 只导出 publicOwner / parseCookieInput / saveOwner —— readOwner 一直在 store.js，
-      // 已经在文件顶部 import 过。动态 import 拿到的是 undefined，一调就抛 TypeError，
-      // 被外层 catch 吞掉，于是封面永远 404。删掉这行遮蔽即可。
-      const ow = await readOwner(root)
-      const client = createClient({ cookie: ow?.cookie || '' })
-      const v = await client.view(bvid)
-      // view() 返回的是 { ok, code, data:{...} }——pic 在 data 里。
-      // 2026-10-24 修：这里原来直接读 v.pic，永远是 undefined，
-      // 于是设置页的历史列表每张封面都 404，被 <img onError> 藏掉了。
-      pic = v?.data?.pic || v?.pic || ''
-    }
-    if (!pic) return ''
-    return await fetchCover({ root, bvid, pic })
-  } catch {
-    return ''
-  }
-}
-
 export function registerObserve(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
   const disposers = []
+
+  // A2：B 站路由不再直调模块，统一转给 dsh-bili 提供的 `bili` 服务。
+  // 服务没挂上（插件没装/还没启动）时返回 503，不静默给空数据。
+  function biliService(res) {
+    const svc = safeGet(ctx, 'bili')
+    if (!svc) {
+      send(res, 503, { error: 'B 站面没在跑（dsh-bili 未加载）' })
+      return null
+    }
+    return svc
+  }
 
   // ---- 信任栅栏：失败即拒绝 ----
   function guarded(handler) {
@@ -426,84 +379,44 @@ export function registerObserve(ctx, deps = {}) {
       send(res, 405, { error: 'method not allowed' })
     }],
 
+    // A2：以下 B 站路由都是代理，实现与 `/dsh-bili/*` 完全同一份（service.js）。
     ['/browse', async (req, res) => {
-      const { events } = await readEvents(root)
-      const { config } = await loadConfig(root)
-      const dk = dateKey()
-      const items = itemsFromEvents(events, dk)
-      const used = browseCountToday(events, dk)
-      // 「看过的全部」这个列表只给 BV 号，不给标题——标题可以去报告里看。
-      // 理由：这里是状态窗，报告才是"她今天看了什么"的正式记录，两处别分叉。
-      const lookedAll = []
-      for (const e of events) {
-        if (e?.type !== 'meta') continue
-        const t = String(e.text ?? '')
-        if (t.startsWith('looked:')) lookedAll.push(t.slice(7))
-      }
-      send(res, 200, {
-        enabled: Boolean(config?.browse?.enabled),
-        perDay: Number(config?.browse?.perDay ?? 0),
-        usedToday: used,
-        topN: Number(config?.browse?.topN ?? 0),
-        keywords: config?.browse?.keywords ?? [],
-        items,
-        lookedCount: lookedAll.length,
-        lookedRecent: lookedAll.slice(-20).reverse(),
-        avoidKeywords: config?.avoid?.keywords ?? [],
-        avoidMids: config?.avoid?.upMids ?? [],
-        minDuration: Number(config?.avoid?.minDuration ?? 0),
-      })
+      const svc = biliService(res)
+      if (!svc) return
+      send(res, 200, await svc.browse())
     }],
 
     // 她看过什么（2026-10-23 用户提：想回她却不知道她看的哪条）。
-    // 只读事件流里已有的 browse: 记账，不新增落盘。
     ['/history', async (req, res) => {
+      const svc = biliService(res)
+      if (!svc) return
       const url = new URL(req.url, 'http://x')
-      const days = Math.max(1, Math.min(180, Number(url.searchParams.get('days')) || 14))
-      const { events } = await readEvents(root)
-      const groups = historyFromEvents(events, { days })
-      const total = groups.reduce((a, g) => a + g.items.length, 0)
-      send(res, 200, { days, total, groups })
+      send(res, 200, await svc.history({ days: url.searchParams.get('days') }))
     }],
 
     // 她在 B 站留下的两串足迹（2026-11-03，用户要求）。
-    // 只读事件流：看过的视频（browse / saw / looked / watched 合并去重）
-    // 和发过的评论/回复（comment / creply；正文有 cbody 就用，没有就显示可现取）。
     ['/footprint', async (req, res) => {
+      const svc = biliService(res)
+      if (!svc) return
       const url = new URL(req.url, 'http://x')
-      const days = Math.max(1, Math.min(3650, Number(url.searchParams.get('days')) || 365))
-      const limit = Math.max(1, Math.min(1000, Number(url.searchParams.get('limit')) || 500))
-      const { events } = await readEvents(root)
-      send(res, 200, footprintFromEvents(events, { days, limit }))
+      send(res, 200, await svc.footprint({
+        days: url.searchParams.get('days'),
+        limit: url.searchParams.get('limit'),
+      }))
     }],
 
     // 老评论没有 cbody 时，按 rpid 现取一次正文。
     // 只接受合法 BV 号 + 正整数 rpid；不接 URL、不接 aid，避免把这里变成任意转发口。
     ['/comment-body', async (req, res) => {
+      const svc = biliService(res)
+      if (!svc) return
       const url = new URL(req.url, 'http://x')
-      const bvid = String(url.searchParams.get('bvid') ?? '').trim()
-      const rpid = Number(url.searchParams.get('rpid')) || 0
-      if (!/^BV[0-9A-Za-z]{10}$/.test(bvid) || !rpid) {
-        return send(res, 400, { error: '参数不对：需要 bvid 和 rpid' })
-      }
-      const key = `${bvid}:${rpid}`
-      const hit = commentBodyCache.get(key)
-      if (hit && Date.now() - hit.at < COMMENT_BODY_TTL_MS) {
-        return send(res, 200, { ok: true, ...hit.data, cached: true })
-      }
-      const ow = await readOwner(root)
-      const client = createClient({ cookie: ow?.cookie || '', log: () => {} })
-      const v = await client.view(bvid)
-      const aid = Number(v?.data?.aid) || 0
-      if (!aid) return send(res, 404, { error: '找不到这个视频' })
-      const d = await client.replyDetail(aid, rpid)
-      if (!d.ok) return send(res, 502, { error: d.message || '没读到这条评论' })
-      const data = { ...d.data, at: d.data?.ctime ? new Date(d.data.ctime * 1000).toISOString() : null }
-      commentBodyCache.set(key, { at: Date.now(), data })
-      while (commentBodyCache.size > COMMENT_BODY_CACHE_MAX) {
-        commentBodyCache.delete(commentBodyCache.keys().next().value)
-      }
-      send(res, 200, { ok: true, ...data })
+      const r = await svc.commentBody({
+        bvid: url.searchParams.get('bvid'),
+        rpid: url.searchParams.get('rpid'),
+      })
+      if (!r.ok) return send(res, r.status ?? 500, { error: r.error })
+      send(res, 200, { ok: true, ...r.data })
     }],
 
     // 环境自检：它现在到底能不能工作。`?net=0` 跳过联网（不想碰 B 站时用）。
@@ -511,11 +424,10 @@ export function registerObserve(ctx, deps = {}) {
       const url = new URL(req.url, 'http://x')
       const net = url.searchParams.get('net') !== '0'
       const { config } = await loadConfig(root)
-      const client = net
-        // 2026-10-25 修：readOwner 是 async，原来漏了 await → cookie 永远是空串，
-        // 自检的联网检查因此是个「没登录的匿名请求」，风控更容易踩。
-        ? createClient({ cookie: (await readOwner(root))?.cookie || '', log: () => {} })
-        : null
+      // A2：联网客户端由 dsh-bili 服务提供（带着同一份 cookie）。服务不在时
+      // 跳过联网检查，自检其余项照跑。
+      const svc = net ? safeGet(ctx, 'bili') : null
+      const client = svc && typeof svc.netClient === 'function' ? await svc.netClient() : null
       const r = await runChecks({
         root,
         config,
@@ -564,21 +476,16 @@ export function registerObserve(ctx, deps = {}) {
     ['/cover', async (req, res) => {
       const m = String(req.url ?? '').match(/^\/dsh-fish\/cover\/(BV[0-9A-Za-z]{10})/)
       if (!m) { send(res, 404, { error: 'no cover' }); return }
-      const file = coverPath(root, m[1]) || (await lazyCover(root, m[1]))
-      if (!file) { send(res, 404, { error: 'no cover' }); return }
-      try {
-        const buf = fs.readFileSync(file)
-        const ext = file.split('.').pop().toLowerCase()
-        const ct = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
-        res.writeHead(200, {
-          'content-type': ct,
-          'content-length': buf.length,
-          'cache-control': 'private, max-age=86400',
-        })
-        res.end(buf)
-      } catch {
-        send(res, 404, { error: 'no cover' })
-      }
+      const svc = biliService(res)
+      if (!svc) return
+      const r = await svc.cover(m[1])
+      if (!r) { send(res, 404, { error: 'no cover' }); return }
+      res.writeHead(200, {
+        'content-type': r.contentType,
+        'content-length': r.buf.length,
+        'cache-control': 'private, max-age=86400',
+      })
+      res.end(r.buf)
     }],
 
     // 头像（2026-10-24）：插件不自带任何图片，谁用谁自己传一张。
@@ -652,15 +559,15 @@ export function registerObserve(ctx, deps = {}) {
 
     // 风控状态：冷却到什么时候、撞过几次。POST {clear:true} 立即解冻。
     ['/risk', async (req, res) => {
+      const svc = biliService(res)
+      if (!svc) return
       if (req.method === 'POST') {
         let body = {}
         try { body = await readBody(req) } catch { body = {} }
-        const cleared = Boolean(body?.clear)
-        if (cleared) clearRisk(root)
-        send(res, 200, { ...riskState(root), cleared })
+        send(res, 200, await svc.risk({ clear: Boolean(body?.clear) }))
         return
       }
-      send(res, 200, riskState(root))
+      send(res, 200, await svc.risk())
     }],
 
     ['/reports', async (req, res) => {
@@ -927,28 +834,9 @@ export function registerObserve(ctx, deps = {}) {
     // 这里**只读**——真发评论走她的工具（bili_speak），不给人一个"代她发"的按钮。
     // 理由：代发就等于人替她说话，那她的人格是假的。
     ['/comment', async (req, res) => {
-      const { events } = await readEvents(root)
-      const { config } = await loadConfig(root)
-      const dk = dateKey()
-      const c = config.comment ?? {}
-      let replies = []
-      if (c.enabled === true) {
-        // 有人点开看才去问 B 站，避免没打开开关还每 30 分钟去敲一次接口
-        replies = await scanReplies({ root, events, dateKey: dk }).catch(() => [])
-      }
-      send(res, 200, {
-        enabled: c.enabled === true,
-        perDay: Number(c.perDay ?? 0),
-        usedToday: commentCountToday(events, dk),
-        replyPerDay: Number(c.replyPerDay ?? 0),
-        replyUsedToday: replyCountToday(events, dk),
-        replyToReplies: c.replyToReplies !== false,
-        scanEveryMin: Number(c.scanEveryMin ?? 30),
-        window: c.window ?? [],
-        mine: herComments(events, dk),
-        waiting: replies.slice(0, 5).map((x) => ({ rpid: x.rpid, bvid: x.bvid, user: x.user, text: x.text })),
-        waitingCount: replies.length,
-      })
+      const svc = biliService(res)
+      if (!svc) return
+      send(res, 200, await svc.commentStatus())
     }],
 
     // ---- 运行日志导出（2026-10-24）----
