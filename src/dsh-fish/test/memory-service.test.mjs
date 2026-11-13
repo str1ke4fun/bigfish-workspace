@@ -57,7 +57,7 @@ async function diskEvents(root) {
 
 // ---------------------------------------------------------------- append 基础
 
-test('append：v3 落盘；opts.surface 必须真的进磁盘（不能被 opts 吞掉）', async () => {
+test('append：v4 落盘；opts.surface 必须真的进磁盘（不能被 opts 吞掉）', async () => {
   await withRoot(async (root) => {
     const r = await mem(root).append({ type: 'saw', text: 'B站｜一个视频' }, { surface: 'bili' })
     assert.equal(r.ok, true, JSON.stringify(r))
@@ -67,7 +67,7 @@ test('append：v3 落盘；opts.surface 必须真的进磁盘（不能被 opts �
     assert.equal(r.event.source, 'system', 'append 默认 source 是 system')
 
     const [ev] = await diskEvents(root)
-    assert.equal(ev.v, 3)
+    assert.equal(ev.v, EVENT_SCHEMA_VERSION)
     assert.equal(ev.surface, 'bili')
     assert.equal(ev.channel, 'core')
     assert.equal(ev.source, 'system')
@@ -314,12 +314,12 @@ test('read：limit 默认 200，夹取 1..2000', async () => {
 
 // ---------------------------------------------------------------- validate / eventById
 
-test('validate：返回校验后的 v3 事件但不落盘；失败返回 ok:false', async () => {
+test('validate：返回校验后的 v4 事件但不落盘；失败返回 ok:false', async () => {
   await withRoot(async (root) => {
     const m = mem(root)
     const r = await m.validate({ type: 'utterance', text: '先看看' }, { channel: 'wx', surface: 'wx' })
     assert.equal(r.ok, true, JSON.stringify(r))
-    assert.equal(r.event.v, 3)
+    assert.equal(r.event.v, EVENT_SCHEMA_VERSION)
     assert.equal(r.event.channel, 'wx')
     assert.equal(r.event.surface, 'wx')
     assert.deepEqual(await diskEvents(root), [], 'validate 不写盘')

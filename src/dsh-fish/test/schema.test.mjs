@@ -24,6 +24,12 @@ test('她不能用工具写系统侧类型', () => {
     // revise 要 refs；narration 从 0.5.8 起也要（或写成「我没想清楚」）。
     const extra = t === 'revise' ? { refs: ['ev_01J9ZK0000000000000000000'] } : {}
     if (t === 'narration') extra.refs = ['ev_01J9ZK0000000000000000000']
+    if (t === 'person_note') {
+      extra.person = {
+        id: 'owner', name: '老哥', label: 'cat不到flag的cat',
+        channel: 'wx', chatId: '', kind: 'identity',
+      }
+    }
     assert.doesNotThrow(
       () => validateEvent({ type: t, text: '我有点在意那个视频里的人。', ...extra }, { day: 1, stage: 1, source: 'tool' }),
       `${t} 应当允许她写`,

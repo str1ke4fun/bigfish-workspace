@@ -39,9 +39,10 @@ const line = (ev) => JSON.stringify(ev) + '\n'
 
 // ---------------------------------------------------------------- 常量与白名单
 
-test('v3: 版本号与 surface 白名单', () => {
-  assert.equal(EVENT_SCHEMA_VERSION, 3)
-  assert.deepEqual([...SURFACES], ['core', 'web', 'wx', 'qq', 'bili'])
+test('schema: 版本号与 surface 白名单', () => {
+  assert.equal(EVENT_SCHEMA_VERSION, 4)
+  // v4（合并裁决 D2）：事件来源面同时加入 screen；它与会话面 surface.js 不是同一张表。
+  assert.deepEqual([...SURFACES], ['core', 'web', 'wx', 'qq', 'bili', 'screen'])
 })
 
 test('v3: BILI_META_PREFIXES 覆盖设计 §5.4 的全部前缀', () => {
@@ -69,7 +70,7 @@ test('v3: events.js 登记了全部系统侧类型（含 bili_reply）', () => {
 
 test('v3: 合法 surface 往返', () => {
   const ev = validateEvent({ type: 'saw', text: 'x', surface: 'bili' }, { source: 'system' })
-  assert.equal(ev.v, 3)
+  assert.equal(ev.v, EVENT_SCHEMA_VERSION)
   assert.equal(ev.surface, 'bili')
 })
 
@@ -102,7 +103,7 @@ test('v3: bili_reply 结构化去重键', () => {
     { type: 'bili_reply', text: '回了', surface: 'bili', reply: { bvid: 'BV1', rpid: '42' } },
     { source: 'system' },
   )
-  assert.equal(ev.v, 3)
+  assert.equal(ev.v, EVENT_SCHEMA_VERSION)
   assert.equal(ev.surface, 'bili')
   assert.equal(ev.reply.rpid, '42')
   assert.equal(ev.reply.bvid, 'BV1')
@@ -224,7 +225,7 @@ test('v3: v3 事件经 readEvents 往返保留 surface', async () => {
       { day: 1, stage: 1, source: 'system' },
       root,
     )
-    assert.equal(ev.v, 3)
+    assert.equal(ev.v, EVENT_SCHEMA_VERSION)
     assert.equal(ev.surface, 'bili')
 
     const r = await readEvents(root)

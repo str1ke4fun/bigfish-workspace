@@ -20,8 +20,11 @@ import { join } from 'node:path'
 import { readEvents, writeAtomic, readJson, rootDir, paths } from './store.js'
 import { HER_TYPES } from './schema.js'
 
-/** 她说的话：她自己提交的那几类。diary 不在里面（日记不进事件流）。 */
-const SPEAK_TYPES = new Set(HER_TYPES)
+/**
+ * 她说的话：她自己提交的那几类。diary 不在里面（日记不进事件流）。
+ * person_note（v4）是她对人的认知，不是「她说过的话」——不进信箱，也不算 say.js 的 said。
+ */
+const SPEAK_TYPES = new Set(HER_TYPES.filter((t) => t !== 'person_note'))
 
 function stateFile(root) {
   return join(paths(root).root, 'inbox-state.json')

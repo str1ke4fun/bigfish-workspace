@@ -201,6 +201,14 @@ test('buildInbox 在没有留话时不冒出 letters 字段值（0，不是 unde
   assert.equal(box.rows[0].letter, false)
 })
 
+test('person_note 不进信箱', () => {
+  const box = buildInbox([
+    { id: 'ev_n', type: 'person_note', ts: '2026-10-24T00:00:00Z', text: '人物笔记' },
+    { id: 'ev_u', type: 'utterance', ts: '2026-10-24T00:01:00Z', text: '嗯' },
+  ])
+  assert.deepEqual(box.rows.map((r) => r.id), ['ev_u'])
+})
+
 // ---------------------------------------------------------------- 工具面
 
 test('registerLetter 注册 her_leave，参数是合法 object schema', () => {

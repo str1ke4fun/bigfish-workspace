@@ -127,7 +127,9 @@ function prepare(raw, opts = {}) {
 }
 
 async function loadKnownIds(root, type) {
-  if (type !== 'revise' && type !== 'narration') return null
+  // person_note 的 refs/supersedes/revokes 同样做存在性校验；否则 fishCore.memory
+  // 的 validate 路径会绕过 schema 的 knownIds 守卫（合并裁决 D18/C12）。
+  if (type !== 'revise' && type !== 'narration' && type !== 'person_note') return null
   try {
     const { events } = await readEvents(root)
     return new Set(events.map((e) => e.id).filter(Boolean))

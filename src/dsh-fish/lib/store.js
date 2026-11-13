@@ -162,13 +162,14 @@ export function channelOfAgent(agent) {
 export async function appendEvent(raw, ctx = {}, root = rootDir()) {
   // 2026-10-27（0.5.8）：把「已有事件的 id 集合」交给校验器，让 refs 能真的查到。
   //
-  // 只在写 revise / narration 时才去读一遍全量事件流——这两类才带 refs 义务，
+  // 只在写 revise / narration / person_note 时才去读一遍全量事件流——这三类才带 id 义务，
   // 别的写（meta、diary、voice…）占绝大多数，不该为它们多读一次盘。
+  // person_note 的 refs/supersedes/revokes 也做存在性校验（设计 §10.1、合并裁决 D18）。
   // 读失败当「不知道有哪些 id」处理（knownIds = null），退化成 0.5.7 的只查非空，
   // 不能因为查不了就拒收她的正常写入。
   let knownIds = null
   const type = String(raw?.type ?? '')
-  if (type === 'revise' || type === 'narration') {
+  if (type === 'revise' || type === 'narration' || type === 'person_note') {
     try {
       const { events } = await readEvents(root)
       knownIds = new Set(events.map((e) => e.id).filter(Boolean))

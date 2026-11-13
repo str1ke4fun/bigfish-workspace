@@ -11,7 +11,7 @@
 import { parseRefusal } from './refuse.js'
 
 /** 允许她提交的类型（工具白名单）。系统侧另有两个 meta/answer 不开放给她。 */
-export const HER_TYPES = Object.freeze(['utterance', 'revise', 'reunion', 'narration', 'refusal'])
+export const HER_TYPES = Object.freeze(['utterance', 'revise', 'reunion', 'narration', 'refusal', 'person_note'])
 
 /** 全量类型表（含系统侧） */
 export const ALL_TYPES = Object.freeze([
@@ -33,6 +33,10 @@ export const ALL_TYPES = Object.freeze([
   // 系统侧写（不在 HER_TYPES 里），带结构化 reply 子对象，按 reply.rpid 去重。
   // 不进 beliefs；只进 derive.facts.biliReplies，工作台与 B 站面用它列「待回复」。
   'bili_reply',
+  // v4（2026-11-13）：她对一个人的认知（身份/印象/互动）。
+  // 她可以写（在 HER_TYPES 里）；不是 belief，不进 beliefs/facts/成长门/日报引用。
+  // 归属看 person.channel + person.chatId，事件顶层 channel 只表示她当时在哪写的。
+  'person_note',
 ])
 
 /**
@@ -41,8 +45,14 @@ export const ALL_TYPES = Object.freeze([
  *   surface —— 来源与展示位置（多了 bili），回答「这件事发生在哪」。
  * B 站公开事实写 channel='core' + surface='bili'：公开内容可以跨面想起，
  * 微信/QQ/屋子的对话原文仍然只留在各自 channel 里。
+ *
+ * v4（2026-11-13，合并裁决 D2）：加入 `screen`（屏幕陪伴会话的来源面）。
+ * 注意三张同名表的层义不同，别互相复制：
+ *   - 本表 = 事件来源面（落盘的 `surface` 字段，含 core）；
+ *   - `surface.js` 的 SURFACES = 会话面（谁在跟她说）；
+ *   - `tool-policy.js` 的 SURFACES = 工具面限制。
  */
-export const SURFACES = Object.freeze(['core', 'web', 'wx', 'qq', 'bili'])
+export const SURFACES = Object.freeze(['core', 'web', 'wx', 'qq', 'bili', 'screen'])
 
 /**
  * B 站 meta 记账前缀（§5.4）。放在这里给 store 的读路径推断、测试与工作台共用，
@@ -95,15 +105,53 @@ export function inferSurface(ev) {
  * 加版本号不等于做了迁移。真要改语义，必须同时写迁移函数并升这个数——
  * 只升数字不改读法，等于给自己发了一张假通行证。
  */
-export const EVENT_SCHEMA_VERSION = 3
+export const EVENT_SCHEMA_VERSION = 4
 // v2（2026-11-03）：只新增 `saw` 类型，v1 事件的字段语义一个没动。
 // v3（2026-11-10）：新增 `surface` 与 `bili_reply`/`reply`。v1/v2 事件的字段语义仍不动：
 //   读的时候没有 `surface` 就按 §5.4 推断（store.readEvents），不迁移、不回写。
+// v4（2026-11-13）：新增 `person_note`（带 person/supersedes/revokes）、`identity` flag，
+//   并在事件来源面里加入 `screen`。v3 事件照旧读，不迁移、不回写。
 // 读到比本版本新的事件时 store.readEvents 会跳过并计数（newer）——这是回退保护。
 // 迁移与回退说明见 CHANGELOG（A1 统一补）。
 
 /** 校验结果三档：她写 selfmod 的句子也照收，只打标记 */
-export const FLAGS = Object.freeze(['selfmod', 'unrecorded', 'weak', 'truncated'])
+export const FLAGS = Object.freeze(['selfmod', 'unrecorded', 'weak', 'truncated', 'identity'])
+
+/** person_note.person.channel：这条认知属于哪条通道（不是事件顶层 channel）。 */
+export const PERSON_CHANNELS = Object.freeze(['wx', 'web', 'core'])
+/** person_note.person.kind：身份事实 / 印象 / 一次互动。 */
+export const PERSON_KINDS = Object.freeze(['identity', 'impression', 'interaction'])
+
+/**
+ * person_note 的 person 子对象（v4，设计 §4.2）。
+ *
+ * 约束刻意和 normalizeGrant / normalizeReply 保持一致：只认白名单字段，
+ * 多余的键丢掉（事件流不长野字段）；字符串统一 trim + 截断；未知枚举直接拒。
+ * owner 的身份事实必须带 label——没有 label 的 owner 事实渲染不出来，写进来只是脏数据。
+ */
+function normalizePerson(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Reject('BAD_PERSON', 'person_note 必须带 person 对象')
+  }
+  const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+  const id = str(raw.id, 64)
+  const name = str(raw.name, 24)
+  const label = str(raw.label, 64)
+  const channel = PERSON_CHANNELS.includes(raw.channel) ? raw.channel : ''
+  const kind = PERSON_KINDS.includes(raw.kind) ? raw.kind : ''
+  const chatId = str(raw.chatId, 64)
+  const confidence = ['high', 'medium', 'unknown'].includes(raw.confidence) ? raw.confidence : 'unknown'
+  if (!name) throw new Reject('BAD_PERSON', 'person.name 不能为空')
+  if (!channel) throw new Reject('BAD_PERSON', `person.channel 必须是 ${PERSON_CHANNELS.join('/')}`)
+  if (!kind) throw new Reject('BAD_PERSON', `person.kind 必须是 ${PERSON_KINDS.join('/')}`)
+  if ((kind === 'impression' || kind === 'interaction') && !chatId) {
+    throw new Reject('BAD_PERSON', 'person.chatId 在 impression/interaction 时必填')
+  }
+  if (id === 'owner' && kind === 'identity' && !label) {
+    throw new Reject('BAD_PERSON', 'owner 身份事实必须带 person.label')
+  }
+  return { id, name, label, channel, chatId, kind, confidence }
+}
 
 /**
  * 「我这次没想清楚」的放行口（2026-10-27，0.5.8）。
@@ -249,6 +297,14 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
   }
   if (type === 'revise' && refs.length === 0) throw new Reject('REVISE_NEEDS_REF', 'revise 必须用 refs 指向被改写的旧事件')
 
+  // v4（2026-11-13）：person_note 的 person 子对象与两个「改口」数组。
+  // 只有 person_note 带这些字段；其他类型即使传了也丢掉，避免事件流长出野字段。
+  // refs/supersedes/revokes 在这里先规范化，下面的 knownIds 校验统一读这三份。
+  const person = type === 'person_note' ? normalizePerson(raw.person) : null
+  const idList = (v) => (Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === 'string' && x.length > 0))] : [])
+  const supersedes = type === 'person_note' ? idList(raw.supersedes) : []
+  const revokes = type === 'person_note' ? idList(raw.revokes) : []
+
   // 2026-10-27（0.5.8）：refs 从「必须写」升级成「必须写对」。
   //
   // 为什么：0.5.7 之前只查 refs 非空，所以她写一条 refs:['ev_XXX']——那个 id
@@ -258,10 +314,12 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
   //
   // 调用方（store.appendEvent）手里才有全量事件流，所以只在它传了 knownIds
   // 时才做存在性校验；不传的老调用（含测试里的直接构造）行为不变，保持向后兼容。
-  // 只查 revise 与 narration：这两类才是「我改口 / 我对自己有个说法」的声明，
+  // 只查 revise / narration / person_note：前两类是「我改口 / 我对自己有个说法」的声明，
+  // person_note 的 refs/supersedes/revokes 是「这条笔记指向/替换/撤销哪条」，同样必须能对上。
   // 别的事件带 refs 只是引用材料，不承担可核验的义务。
-  if (knownIds && (type === 'revise' || type === 'narration')) {
-    for (const id of refs) {
+  if (knownIds && (type === 'revise' || type === 'narration' || type === 'person_note')) {
+    const ids = type === 'person_note' ? [...refs, ...supersedes, ...revokes] : refs
+    for (const id of ids) {
       if (!knownIds.has(id)) {
         throw new Reject('REF_NOT_FOUND', `refs 里的 ${id} 在事件流里不存在。要指向具体的某一条，别写自己没查过的 id。`)
       }
@@ -293,8 +351,12 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
   if (detectSelfMod(text)) flags.push('selfmod')
   // 只有系统侧可以自带 flag。她（tool）传进来的 flags 一律忽略——
   // 否则她只要给自己打一个 selfmod，就能把不想留下的信念从 beliefs 里"消失"掉。
+  // v4 的唯一例外：tool 写 person_note 时保留 `identity`（owner 身份事实的审计标记，
+  // 不参与权限判断），其余 tool 写入仍然丢弃 identity/selfmod。
   if (source !== 'tool' && Array.isArray(raw.flags)) {
     for (const f of raw.flags) if (FLAGS.includes(f) && !flags.includes(f)) flags.push(f)
+  } else if (source === 'tool' && type === 'person_note' && Array.isArray(raw.flags)) {
+    for (const f of raw.flags) if (f === 'identity' && !flags.includes(f)) flags.push('identity')
   }
 
   // v3：bili_reply 的结构化去重键。缺 reply / bvid / rpid 直接拒——
@@ -323,6 +385,8 @@ export function validateEvent(raw, { day, stage, now = Date.now(), source = 'too
     ...(type === 'grant_offer' || type === 'grant' ? { grant: normalizeGrant(type, raw.grant) } : {}),
     // v3：只有 bili_reply 带 reply；其他类型即使传了也丢掉，避免事件流里长出野字段。
     ...(type === 'bili_reply' ? { reply } : {}),
+    // v4：只有 person_note 带 person/supersedes/revokes。
+    ...(type === 'person_note' ? { person, supersedes, revokes } : {}),
     // 拒绝的形状（P1 第二块，2026-10-24）：原话照样留在 text 里，
     // 另外落一份「动作 + 对象」，让后来的她（和观测台）能分清
     // "不想看这个视频" 与 "不想被安排" 是两个不同的不。
