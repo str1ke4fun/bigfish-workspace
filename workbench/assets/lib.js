@@ -152,6 +152,75 @@ export function asText(value) {
   try { return JSON.stringify(value, null, 2) } catch { return String(value) }
 }
 
+/** 逗号 / 空白分隔的输入转数组；空数组样本靠输入本身判断数字。 */
+export function parseList(text, sample) {
+  const parts = String(text || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean)
+  // 空数组合法（默认 keywords / upMids 都是 []），不能靠 sample.every 判类型：
+  // 空数组的 every 恒真，会把关键词全变成 NaN。退一步看这一次输入本身像不像数字。
+  const sampleNumeric = Array.isArray(sample) && sample.length > 0 && sample.every((x) => typeof x === 'number')
+  const numeric = sampleNumeric || (parts.length > 0 && parts.every((x) => /^-?\d+(\.\d+)?$/.test(x)))
+  return numeric ? parts.map(Number) : parts
+}
+
+/** 状态点 + 可选文字；文字始终在 `status-text` 里，不单独靠颜色表意。 */
+export function statusDot(level = '', text = '') {
+  const dot = el('span', { class: 'dot' + (level ? ' ' + level : '') })
+  if (text) dot.append(el('span', { class: 'status-text', text }))
+  return dot
+}
+
+/** “人工代操作”标记。 */
+export function humanChip() {
+  return el('span', { class: 'chip human', text: '人工' })
+}
+
+/**
+ * 分段控件。`set(id)` 只切选中态，不触发 onChange；
+ * 用户点击才回调，避免程序化切换时重复请求。
+ */
+export function segment(items, { value, onChange, label = '' } = {}) {
+  const root = el('div', { class: 'segment', role: 'tablist', 'aria-label': label })
+  const buttons = new Map()
+  const set = (id) => {
+    for (const [key, btn] of buttons) {
+      const on = key === id
+      btn.className = 'tab' + (on ? ' on' : '')
+      btn.setAttribute('aria-selected', on ? 'true' : 'false')
+    }
+  }
+  for (const item of items) {
+    const btn = el('button', {
+      class: 'tab',
+      type: 'button',
+      role: 'tab',
+      text: item.label,
+      onclick: () => {
+        set(item.id)
+        onChange?.(item.id)
+      },
+    })
+    buttons.set(item.id, btn)
+    root.append(btn)
+  }
+  set(value ?? items[0]?.id)
+  return { root, set }
+}
+
+/** 空态：一句话说明“还没有 / 这是起点，不是故障”。 */
+export function emptyState(text) {
+  return el('div', { class: 'empty-state', text })
+}
+
+/** 打开 8710 她的界面；成功返回地址，失败把原因交回页面。 */
+export async function openHer() {
+  const r = await local('/api/her/open')
+  if (!r.ok || !r.data?.url) {
+    return { ok: false, error: r.error || r.data?.error || '没拿到地址' }
+  }
+  window.open(r.data.url, '_blank')
+  return { ok: true, url: r.data.url }
+}
+
 /** 一次性填一组统计格。 */
 export function fillStats(node, rows) {
   clear(node)
