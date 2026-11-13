@@ -3,175 +3,32 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>工作台</title>
+<title>大肥鱼 · 她的工作台</title>
+<script src="/assets/theme-boot.js"></script>
+<link rel="stylesheet" href="/assets/theme.css" />
 <link rel="stylesheet" href="/assets/app.css" />
 </head>
 <body>
-<header>
-  <h1>工作台</h1>
-  <span class="hint" id="fish-strip"></span>
-  <span class="hint" id="clock">—</span>
-</header>
-
-<nav class="tabs" aria-label="工作台导航" role="tablist">
-  <button data-page="overview">总览</button>
-  <button data-page="bili">B 站</button>
-  <button data-page="memory">记忆</button>
-  <button data-page="env">环境</button>
-  <button data-page="channels">通道</button>
-  <button data-page="tools">工具与规则</button>
-  <button data-page="data">数据与运维</button>
-  <button data-page="principles">原理</button>
-</nav>
-
-<main data-page="overview"></main>
-<main data-page="bili" hidden></main>
-<main data-page="memory" hidden></main>
-<main data-page="env" hidden></main>
-<main data-page="channels" hidden>
-  <section class="card">
-    <h2><span class="dot" id="qq-dot"></span>QQ <span class="meta" id="qq-label">—</span></h2>
-    <div class="row">
-      <button data-act="qq/start" class="primary">启动</button>
-      <button data-act="qq/stop">停止</button>
-      <button data-act="qq/restart">重启</button>
-      <button id="qq-panel">NapCat 面板</button>
+<div class="shell">
+  <aside class="spine">
+    <a class="brand" href="#her/today"><b>大肥鱼</b><span>她的工作台</span></a>
+    <nav id="nav" class="spine-nav" aria-label="工作台导航"></nav>
+    <div class="spine-foot">
+      <button id="theme-toggle" aria-pressed="false">夜</button>
+      <button id="open-her">打开她的界面</button>
+      <span class="meta" id="shell-msg" role="status" aria-live="polite"></span>
+      <span class="meta" id="version">v0.1.0</span>
     </div>
-    <div class="row tok">
-      <span class="meta">WebUI</span>
-      <code id="qq-token">—</code>
-      <button id="qq-copy">复制</button>
-      <button id="qq-login">登录页</button>
-    </div>
-    <div class="meta" id="qq-meta">—</div>
-    <details class="scope" id="watch-box">
-      <summary>掉线提醒 <span class="meta" id="watch-summary">—</span></summary>
-      <div class="scope-line">
-        <label class="check"><input type="checkbox" id="watch-enabled" /> 掉了就提醒（页面内提示；有桌面时也发系统通知）</label>
-        <div class="row">
-          <span class="meta">每</span><input type="number" id="watch-poll" min="5" max="300" step="5" /><span class="meta">秒看一次日志</span>
-        </div>
-        <div class="row">
-          <span class="meta">没扫就一直提醒，隔</span><input type="number" id="watch-nag" min="0" max="180" /><span class="meta">分钟（0=只提醒一次）</span>
-        </div>
-        <label class="check"><input type="checkbox" id="watch-recover" /> 「QQ 回来了」也说一声</label>
-        <div class="row">
-          <button id="watch-save" class="primary">保存</button>
-          <button id="watch-test">试弹一条</button>
-          <span class="hint" id="watch-msg"></span>
-        </div>
-      </div>
-    </details>
-    <div class="stage"><img id="qq-qr" alt="" hidden /><div class="empty" id="qq-empty">二维码会在启动后出现在这里（NapCat 自动换码，页面跟着换）</div></div>
-    <details class="scope" id="qq-chat">
-      <summary>消息 <span class="meta" id="chat-summary">—</span></summary>
-      <div class="chat-body">
-        <div class="chips" id="chat-list"></div>
-        <div class="msgs" id="chat-msgs"><span class="hint meta">点上面的会话看消息</span></div>
-        <div class="row">
-          <input type="text" id="chat-input" placeholder="人工代操作：以她的身份发一句…" />
-          <button id="chat-send" class="primary">人工发送</button>
-          <button id="chat-refresh">刷新</button>
-        </div>
-        <div class="meta" id="chat-msg"></div>
-      </div>
-    </details>
-    <details class="scope">
-      <summary>说话范围 <span class="meta" id="scope-summary">—</span></summary>
-      <div class="scope-body">
-        <div class="scope-line"><b>私聊</b><span class="hint">勾上的人她才会回</span><div class="chips" id="scope-friends"></div></div>
-        <div class="scope-line"><b>群</b><span class="hint">勾上的群她才说话；把她拉进群后这里才出现</span><div class="chips" id="scope-groups"></div></div>
-        <div class="scope-line"><b>管理员</b><span class="hint">能下命令（/new /stop …）、改配置的人</span><div class="chips" id="scope-admins"></div></div>
-        <div class="scope-line"><label class="chk"><input type="checkbox" id="scope-mention" checked> 群里要 @ 她才回（不 @ 只旁观）</label></div>
-        <div class="row"><button id="scope-save" class="primary">保存</button><button id="scope-reload">刷新列表</button>
-          <label class="chk"><input type="checkbox" id="scope-restart" checked> 保存后重启她（约 10 秒）</label></div>
-        <div class="meta" id="scope-msg"></div>
-      </div>
-    </details>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot" id="speech-dot"></span>说话频率 <span class="meta" id="speech-label">—</span></h2>
-    <div class="scope-line"><label class="chk"><input type="checkbox" id="speech-enabled"> 启用（关掉 = 不限）</label></div>
-    <div class="scope-line"><b>同一会话两条之间至少隔</b>
-      <div class="row"><input type="number" id="speech-gap" min="0" max="3600" step="5" style="width:5.5em" /><span class="meta">秒（0 = 不看间隔）</span></div>
-    </div>
-    <div class="scope-line"><b>一分钟内最多</b>
-      <div class="row"><input type="number" id="speech-permin" min="1" max="1000" style="width:4.5em" /><span class="meta">条</span></div>
-    </div>
-    <div class="scope-line"><b>一小时内最多</b>
-      <div class="row"><input type="number" id="speech-perhour" min="1" max="10000" style="width:5em" /><span class="meta">条</span></div>
-    </div>
-    <div class="row"><button id="speech-save" class="primary">保存</button><button id="speech-reload">刷新</button></div>
-    <div class="meta">QQ 和微信共用这一份。间隔不够就等一会儿再说；一分钟/一小时额度用完，这一条就不发，工具里会写清楚已经说了几条。改完立刻生效，不用重启她。</div>
-    <div class="meta" id="speech-msg"></div>
-    <div class="chips" id="speech-stats"></div>
-  </section>
-  <section class="card">
-    <h2><span class="dot" id="wx-dot"></span>微信 <span class="meta" id="wx-label">—</span></h2>
-    <div class="row">
-      <button data-act="wx/start" class="primary">启动</button>
-      <button data-act="wx/stop">停止</button>
-      <button id="wx-save">存一张</button>
-      <button id="wx-peek">识别界面</button>
-      <button id="wx-close-extra" hidden>关掉多余界面</button>
-      <button id="wx-scan">补扫会话目录</button>
-      <button id="gc">清理</button>
-    </div>
-    <div class="meta" id="wx-meta">—</div>
-    <div class="stage">
-      <img id="wx-shot" alt="" hidden title="点一下 = 在微信窗口里点一下" />
-      <div class="empty" id="wx-empty">Linux/WSL 里没有桌面，这里是她的眼睛：微信窗口的实时画面（约 1 秒一帧）</div>
-    </div>
-    <div class="row">
-      <input type="text" id="wx-text" placeholder="人工代操作：往微信窗口里打字" />
-      <button id="wx-send">人工打字</button>
-      <button id="wx-enter">人工回车</button>
-      <button id="wx-esc">Esc</button>
-    </div>
-    <div class="meta">点画面 = 点击那个坐标；打字/回车/按键都会真的作用在微信窗口上，发送前会再确认一次。这些是人替她操作，不算她说的。</div>
-    <details class="scope" id="wx-scope">
-      <summary>允许说话 <span class="meta" id="wx-scope-summary">—</span></summary>
-      <div class="scope-body">
-        <div class="scope-line"><label class="chk"><input type="checkbox" id="wx-enabled"> 允许她在微信里说话（关掉 = 微信的工具全部拒绝；勾着还要过下面那条 @ 规则）</label><span class="hint" id="wx-now"></span></div>
-        <div class="scope-line"><label class="chk"><input type="checkbox" id="wx-mention" checked> 也要 @ 她才回（没被叫到的会话，按回车会被拒绝）</label>
-          <div class="row"><span class="meta">被 @ 之后还能说</span><input type="number" id="wx-mention-window" min="1" max="120" style="width:4.5em" /><span class="meta">分钟</span></div>
-          <span class="hint">耳朵看见侧栏里有人 @ 她就开窗；窗口过了就闭嘴，等下一个人叫她。手动 poke 也算一次 @。</span>
-        </div>        <div class="scope-line"><b>能开口的会话（群聊）</b><span class="hint">勾上的群她才敢按回车发出去；开了上面的 @ 规则时，还要在窗口内 @ 过她。名单空着 = 她开不了口。私聊请放到下面“不用 @”名单。名字要跟微信里显示的一致</span><div class="chips" id="wx-scope-chats"></div></div>
-        <div class="scope-line"><b>这些会话不用 @（最高权限：不管上面开没开 @ 规则，都直接能说）</b>
-          <span class="hint">勾上的会话不用等 @，也不受允许名单限制——它自己就是白名单；用来放私聊、自己的文件传输</span>
-          <div class="chips" id="wx-nomention-chats"></div>
-        </div>
-        <div class="row"><input type="text" id="wx-nomention-add" placeholder="手输会话名" /><button id="wx-nomention-add-btn">加</button></div>        <div class="row"><input type="text" id="wx-scope-add" placeholder="手输会话名，如 内部赤石群" /><button id="wx-scope-add-btn">加</button></div>
-        <div class="row"><button id="wx-scope-save" class="primary" disabled>保存</button><button id="wx-scope-reload">刷新候选</button></div>
-        <div class="meta" id="wx-scope-msg"></div>
-      </div>
-    </details>
-    <div class="thumbs" id="thumbs"></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot" id="her-dot"></span>她（8710 上的 DSH）<span class="meta" id="her-label">—</span></h2>
-    <div class="row">
-      <button id="her-open" class="primary">打开她的界面</button>
-      <button data-act="her/start">启动</button>
-      <button data-act="her/stop">停止</button>
-    </div>
-    <div class="meta" id="her-meta">—</div>
-    <div class="meta">就是 8710 上那台 DSH 的 Web UI，点开会带当前 token 跳过去（浏览器会看到 token，仅此入口）。</div>
-  </section>
-
-  <section class="card" id="log">
-    <h2>动作日志</h2>
-    <ul id="log-list"></ul>
-    <div class="meta" id="chan-updated">—</div>
-  </section>
-</main>
-
-<main data-page="tools" hidden></main>
-<main data-page="data" hidden></main>
-<main data-page="principles" hidden></main>
-
+  </aside>
+  <main class="work">
+    <header class="page-head">
+      <div><h1 id="page-title"></h1><span class="meta" id="page-sub"></span></div>
+      <div class="page-actions" id="page-actions"></div>
+    </header>
+    <nav id="subtabs" class="subtabs" role="tablist" aria-label="二级页签"></nav>
+    <section id="view" class="view"></section>
+  </main>
+</div>
 <script type="module" src="/assets/app.js"></script>
 </body>
 </html>

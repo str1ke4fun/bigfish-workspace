@@ -1,93 +1,229 @@
-// 工作台外壳：八项导航、页面切换、统一的 30s/60s 轮询。
-//
-// 页面模块各自只管渲染；轮询只在页面可见时跑，切走即停。
-// 通道页的 3 秒轮询由 channels.js 自己按「当前是不是通道页」判断。
-import { $, fish, local, clock } from './lib.js'
-import { initChannels, refreshChannels } from './channels.js'
-import { overview } from './pages/overview.js'
-import { bili } from './pages/bili.js'
-import { memory } from './pages/memory.js'
-import { env } from './pages/env.js'
-import { tools } from './pages/tools.js'
-import { data } from './pages/data.js'
-import { principles } from './pages/principles.js'
+// 工作台外壳：主题、路由、一级 / 二级注册表、共享轮询。
+// 业务页面只管自己的 DOM 和短周期刷新；外壳不包含任何页面逻辑。
+import { $, el, fish, local, openHer } from './lib.js'
+import { NAV, resolveRoute, shellBadge } from './nav.js'
+import { routeHash } from './router.js'
 
-const channels = {
-  id: 'channels',
-  label: '通道',
-  enter() {
-    if (!channels.ready) {
-      initChannels({ isActive: () => current === 'channels' })
-      channels.ready = true
-      return
-    }
-    refreshChannels()
+const view = $('#view')
+const navEl = $('#nav')
+const subtabs = $('#subtabs')
+const titleEl = $('#page-title')
+const subEl = $('#page-sub')
+const actions = $('#page-actions')
+const themeBtn = $('#theme-toggle')
+const herBtn = $('#open-her')
+const shellMsg = $('#shell-msg')
+
+const roots = new Map()
+const navButtons = new Map()
+const navStates = new Map()
+const badges = { her: null, bili: null, channels: null, system: null }
+let current = null
+let currentNav = ''
+let status = null
+let statusAt = ''
+let statusTimer = null
+
+const LEVEL_WORD = { ok: '正常', warn: '注意', bad: '需要你' }
+
+const ctx = {
+  get status() { return status },
+  get statusAt() { return statusAt },
+  go(nav, slug) { show(routeHash(nav, slug)) },
+  onStatus(fn) {
+    const handler = (event) => fn(event.detail)
+    window.addEventListener('workbench:status', handler)
+    return () => window.removeEventListener('workbench:status', handler)
   },
-  leave() {},
+  setBadge(navId, level) {
+    badges[navId] = level
+    paintBadges()
+  },
+  refreshStatus() { return pollStatus() },
+  actions,
 }
 
-const PAGES = [overview, bili, memory, env, channels, tools, data, principles]
-const byId = new Map(PAGES.map((p) => [p.id, p]))
-let current = ''
-
-function show(id) {
-  const page = byId.get(id) || overview
-  if (current === page.id) return
-  byId.get(current)?.leave?.()
-  current = page.id
-  document.body.dataset.page = current
-  for (const main of document.querySelectorAll('main[data-page]')) main.hidden = main.dataset.page !== current
-  for (const btn of document.querySelectorAll('.tabs button')) {
-    btn.classList.toggle('on', btn.dataset.page === current)
-    btn.setAttribute('aria-selected', btn.dataset.page === current ? 'true' : 'false')
+// ---------- 侧栏 ----------
+function buildNav() {
+  for (const group of NAV) {
+    const dot = el('span', { class: 'nav-dot', 'aria-hidden': 'true' })
+    const state = el('span', { class: 'nav-state' })
+    const btn = el('button', {
+      type: 'button',
+      class: 'spine-item',
+      onclick: () => show(routeHash(group.id, group.pages[0].slug)),
+    }, dot, el('span', { class: 'nav-label', text: group.label }), state)
+    navButtons.set(group.id, btn)
+    navStates.set(group.id, state)
+    navEl.append(btn)
   }
-  if (location.hash !== '#' + current) history.replaceState(null, '', '#' + current)
-  page.enter(document.querySelector(`main[data-page="${current}"]`))
 }
 
-// ---- 外壳轮询：/status 30 秒、/notify 60 秒，只在页面可见时跑 ----
-function setStrip(status, her) {
-  const strip = $('#fish-strip')
-  if (!strip) return
-  const bits = []
-  if (status) bits.push(`她：${status.label || status.phase || '—'}`)
-  if (her) bits.push(`8710 ${her.running ? '在跑' : '没在跑'}`)
-  strip.textContent = bits.join(' · ')
-  strip.title = status?.detail || ''
+function paintNav() {
+  for (const [id, btn] of navButtons) {
+    const on = id === currentNav
+    btn.classList.toggle('on', on)
+    if (on) btn.setAttribute('aria-current', 'page')
+    else btn.removeAttribute('aria-current')
+  }
 }
 
-async function shellStatus() {
-  if (document.hidden) return
-  const [st, her] = await Promise.all([fish('status'), local('/api/status')])
+function paintBadges() {
+  for (const group of NAV) {
+    const btn = navButtons.get(group.id)
+    if (!btn) continue
+    const level = badges[group.id]
+    const dot = btn.querySelector('.nav-dot')
+    if (dot) dot.className = 'nav-dot' + (level ? ' ' + level : '')
+    const word = navStates.get(group.id)
+    if (word) word.textContent = level ? LEVEL_WORD[level] : ''
+    btn.title = level ? `${group.label}：${LEVEL_WORD[level]}` : group.label
+  }
+}
+
+function paintSubtabs(group, page) {
+  subtabs.replaceChildren()
+  for (const item of group.pages) {
+    const on = item === page
+    subtabs.append(el('button', {
+      type: 'button',
+      class: 'tab' + (on ? ' on' : ''),
+      role: 'tab',
+      'aria-selected': on ? 'true' : 'false',
+      text: item.label,
+      onclick: () => show(routeHash(group.id, item.slug)),
+    }))
+  }
+}
+
+const DAY = () => new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' })
+
+function paintTitle(group, page) {
+  titleEl.textContent = `${group.label} · ${page.label}`
+  paintSub()
+}
+
+function paintSub() {
+  const bits = [DAY()]
+  if (statusAt && Number.isFinite(new Date(statusAt).getTime())) {
+    bits.push(`更新于 ${new Date(statusAt).toLocaleTimeString('zh-CN', { hour12: false })}`)
+  }
+  subEl.textContent = bits.join(' · ')
+}
+
+// ---------- 路由与挂载 ----------
+function show(rawHash) {
+  const route = resolveRoute(rawHash)
+  const hash = routeHash(route.nav, route.page.slug)
+  if (location.hash !== hash) history.replaceState(null, '', hash)
+
+  if (current === route.page) return
+  current?.leave?.()
+  current = route.page
+  currentNav = route.nav
+  document.body.dataset.nav = currentNav
+  document.body.dataset.page = current.id
+
+  const host = current.host || current.id
+  let root = roots.get(host)
+  if (!root) {
+    root = document.createElement('section')
+    root.className = 'page'
+    root.hidden = true
+    view.append(root)
+    roots.set(host, root)
+  }
+  for (const node of roots.values()) node.hidden = node !== root
+  root.dataset.page = current.id
+  actions.replaceChildren()
+
+  const group = NAV.find((n) => n.id === currentNav)
+  paintNav()
+  paintSubtabs(group, current)
+  paintTitle(group, current)
+  scheduleStatus(currentNav === 'channels' ? 0 : undefined)
+
+  try {
+    const result = current.enter(root, ctx)
+    if (result && typeof result.catch === 'function') result.catch((err) => showPageError(root, err))
+  } catch (err) {
+    showPageError(root, err)
+  }
+}
+
+function showPageError(root, err) {
+  root.append(el('div', { class: 'notice bad', text: `页面没打开：${err?.message || err}` }))
+}
+
+// ---------- 共享状态轮询 ----------
+async function pollStatus() {
+  const [st, localStatus] = await Promise.all([fish('status'), local('/api/status')])
+  status = localStatus.ok ? localStatus.data : null
+  statusAt = status?.at || ''
   const detail = {
     status: st.ok ? st.data : null,
     error: st.ok ? '' : st.error,
-    her: her.ok ? (her.data?.her ?? null) : null,
+    her: status?.her ?? null,
   }
-  setStrip(detail.status, detail.her)
+  // 旧页面仍监听 fish:status / fish:notify；新页面走 ctx.onStatus。
   window.dispatchEvent(new CustomEvent('fish:status', { detail }))
+  window.dispatchEvent(new CustomEvent('workbench:status', { detail: status }))
+  badges.her = shellBadge('her', status)
+  badges.channels = shellBadge('channels', status)
+  paintBadges()
+  paintSub()
+  return status
 }
 
-async function shellNotify() {
+function scheduleStatus(delay) {
+  clearTimeout(statusTimer)
+  const wait = delay ?? (currentNav === 'channels' ? 3000 : 30_000)
+  statusTimer = setTimeout(async () => {
+    if (!document.hidden) await pollStatus()
+    scheduleStatus()
+  }, wait)
+}
+
+async function pollNotify() {
   if (document.hidden) return
   const r = await fish('notify')
   window.dispatchEvent(new CustomEvent('fish:notify', { detail: r }))
 }
 
-document.querySelectorAll('.tabs button').forEach((btn) => {
-  btn.addEventListener('click', () => show(btn.dataset.page))
+// ---------- 主题与外壳动作 ----------
+function paintTheme() {
+  const night = document.documentElement.dataset.theme === 'night'
+  themeBtn.textContent = night ? '日' : '夜'
+  themeBtn.setAttribute('aria-pressed', night ? 'true' : 'false')
+  themeBtn.title = night ? '切到日间' : '切到夜间'
+}
+
+themeBtn.addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'night' ? 'day' : 'night'
+  document.documentElement.dataset.theme = next
+  try { localStorage.setItem('fish.theme', next) } catch { /* 无痕模式等，仍允许本次切换 */ }
+  paintTheme()
 })
-window.addEventListener('hashchange', () => show((location.hash || '#overview').slice(1)))
 
-const initial = (location.hash || '#overview').slice(1)
-show(byId.has(initial) ? initial : 'overview')
+herBtn.addEventListener('click', async () => {
+  herBtn.disabled = true
+  const r = await openHer()
+  if (shellMsg) shellMsg.textContent = r.ok ? '' : `没打开：${r.error}`
+  herBtn.disabled = false
+})
 
-shellStatus()
-shellNotify()
-setInterval(shellStatus, 30_000)
-setInterval(shellNotify, 60_000)
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { shellStatus(); shellNotify() } })
-
-// 页脚用同一个时钟，省得每个页面各写一份
-const clockEl = $('#clock')
-if (clockEl) setInterval(() => { clockEl.textContent = clock() }, 1000)
+// ---------- 启动 ----------
+buildNav()
+paintTheme()
+if (!location.hash) history.replaceState(null, '', routeHash('her', 'today'))
+show(location.hash)
+pollStatus()
+scheduleStatus()
+pollNotify()
+setInterval(pollNotify, 60_000)
+window.addEventListener('hashchange', () => show(location.hash))
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return
+  pollStatus()
+  pollNotify()
+})
