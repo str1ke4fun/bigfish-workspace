@@ -66,3 +66,16 @@ test('B站·今天不自动扫评论，只做两个快捷开关', () => {
   assert.match(s, /comment:\s*\{\s*enabled/)
   assert.doesNotMatch(s, /browse\.perDay|comment\.perDay|persona|innerHTML/)
 })
+
+test('B站·足迹只读，视频与评论分段', () => {
+  const s = src('bili-footprint.js')
+  assert.equal(biliFootprint.id, 'bili-footprint')
+  assert.equal(biliFootprint.slug, 'footprint')
+  for (const call of ["fish('history?days=", "fish('footprint?days=", "fish('comment-body?",
+    "fish('bili/status')"]) assert.ok(s.includes(call), call)
+  // 封面 / 抽帧是图片响应，走 /api/fish/cover|sheet/<bvid>，不是 JSON 助手。
+  assert.match(s, /\/api\/fish\/cover\//)
+  assert.match(s, /\/api\/fish\/sheet\//)
+  assert.match(s, /视频足迹[\s\S]*评论足迹/)
+  assert.doesNotMatch(s, /postFish|local\(|innerHTML/)
+})
