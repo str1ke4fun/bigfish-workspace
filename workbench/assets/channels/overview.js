@@ -54,6 +54,10 @@ function build(root, ctx) {
   root.append(SPEC.speech.root)
   buildHer(root)
   buildLog(root)
+  subscribe(ctx)
+}
+
+function subscribe(ctx) {
   SPEC.unsub?.()
   SPEC.unsub = ctx?.onStatus?.((status) => applyStatus(status))
 }
@@ -140,6 +144,8 @@ export const channelsOverview = {
   enter(root, ctx) {
     if (!SPEC.built) build(root, ctx)
     SPEC.ctx = ctx
+    // 离开页面时退订了；重进要接回 3 秒一次的状态。
+    subscribe(ctx)
     applyStatus(ctx.status)
     loadLog()
     SPEC.speech?.refresh?.()

@@ -11,7 +11,7 @@ const SECTIONS = [
   { id: 'maint', label: '维护' },
 ]
 
-const SPEC = { section: 'live', timer: null, wx: null, scope: null, frames: [], scopeDirty: false }
+const SPEC = { section: 'live', timer: null, wx: null, scope: null, frames: [] }
 
 // ---------- 骨架 ----------
 
@@ -59,9 +59,6 @@ function build(root, ctx) {
   SPEC.wxPerDay = el('input', { type: 'number', min: '0', max: '50', step: '1' })
   SPEC.wxProactive = el('div', { class: 'chips' })
   SPEC.wxNow = el('div', { class: 'meta' })
-  for (const node of [SPEC.wxEnabled, SPEC.wxMention, SPEC.wxWindow, SPEC.wxPerDay]) {
-    node.addEventListener('input', () => { SPEC.scopeDirty = true })
-  }
   SPEC.wxSave = el('button', { class: 'primary small', type: 'button', text: '保存', onclick: () => saveScope() })
   SPEC.wxMsg = el('span', { class: 'meta' })
   SPEC.scope.body.append(
@@ -103,6 +100,10 @@ function build(root, ctx) {
   root.append(SPEC.seg.root, ...Object.values(SPEC.sections))
   show(SPEC.section)
 
+  subscribe(ctx)
+}
+
+function subscribe(ctx) {
   SPEC.unsub?.()
   SPEC.unsub = ctx?.onStatus?.((status) => applyStatus(status))
 }
@@ -143,8 +144,8 @@ function applyStatus(status) {
   } else if (SPEC.section === 'live') {
     startFrames()
   }
-  // 正在改范围时不要被 3 秒一次的轮询重绘覆盖掉未保存的输入。
-  if (SPEC.scopeData && !SPEC.scopeDirty) renderScopeNow(SPEC.scopeData)
+  // 不在这里重画“允许说话”：轮询会盖掉还没保存的勾选与输入。
+  // 表单只在进入分段、点刷新、保存成功后更新。
 }
 
 function startFrames() {
@@ -228,7 +229,6 @@ async function loadScope() {
     return
   }
   SPEC.scopeData = r.data || {}
-  SPEC.scopeDirty = false
   renderScopeNow(SPEC.scopeData)
 }
 
@@ -243,7 +243,6 @@ function renderProactiveChats(p) {
   for (const name of chats) {
     const input = el('input', { type: 'number', min: '0', max: '50', step: '1', dataset: { chat: name } })
     input.value = p.proactiveChats?.[name] ?? ''
-    input.addEventListener('input', () => { SPEC.scopeDirty = true })
     SPEC.wxProactive.append(el('label', { class: 'field' }, el('span', { class: 'meta', text: name }), input))
   }
 }
@@ -271,10 +270,10 @@ function renderScopeNow(s) {
 
   clear(SPEC.wxAllow)
   if (!names.length) SPEC.wxAllow.append(hint(s.ok ? '窗口里没读到会话名（先让微信停在有对话的界面）' : `微信检测没返回候选${s.err ? '：' + s.err : ''}`))
-  for (const n of names) SPEC.wxAllow.append(scopeChip({ id: n, label: n, checked: (p.allowChats || []).includes(n), onToggle: () => { SPEC.scopeDirty = true } }))
+  for (const n of names) SPEC.wxAllow.append(scopeChip({ id: n, label: n, checked: (p.allowChats || []).includes(n) }))
   clear(SPEC.wxNoMention)
   if (!names2.length) SPEC.wxNoMention.append(hint(s.ok ? '还没有不用 @ 的会话' : '微信检测没读到会话，候选暂时为空'))
-  for (const n of names2) SPEC.wxNoMention.append(scopeChip({ id: n, label: n, checked: exempt.includes(n), onToggle: () => { SPEC.scopeDirty = true } }))
+  for (const n of names2) SPEC.wxNoMention.append(scopeChip({ id: n, label: n, checked: exempt.includes(n) }))
 
   SPEC.wxEnabled.checked = p.enabled === true
   SPEC.wxMention.checked = p.requireMention !== false
@@ -322,7 +321,6 @@ async function saveScope() {
   })
   const d = r.data || {}
   if (d.error || !r.ok) { SPEC.wxMsg.textContent = `没存上：${d.error || d.err || '接口没回话'}`; return }
-  SPEC.scopeDirty = false
   renderScopeNow({ ...SPEC.scopeData, policy: d.policy })
   SPEC.wxMsg.textContent = d.policy?.enabled
     ? `已保存：${(d.policy.allowChats || []).length} 个会话可以开口，立刻生效`
@@ -425,6 +423,8 @@ export const wx = {
   renderPanel(root, ctx) {
     if (SPEC.built && SPEC.root === root) {
       SPEC.ctx = ctx
+      // 离开页面时退订了；重进要接回 3 秒一次的状态。
+      subscribe(ctx)
       if (SPEC.section === 'live') startFrames()
       return
     }

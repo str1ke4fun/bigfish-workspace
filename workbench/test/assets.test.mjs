@@ -81,7 +81,7 @@ test('主动额度与微信限流字段在正式通道模块里', () => {
   assert.match(wx, /proactivePerDay/)
   assert.match(wx, /proactiveChats/)
   assert.match(wx, /proactiveUsed/)
-  assert.match(wx, /scopeDirty/, '编辑中的额度不能被 3 秒轮询重绘覆盖')
+  assert.doesNotMatch(wx, /renderScopeNow\(SPEC\.scopeData\)\s*\n\s*}\s*\n\s*\nfunction startFrames/, '轮询不能重画允许说话表单')
   const speech = read('channels/speech.js')
   assert.match(speech, /wxGap/)
   assert.match(speech, /wxPerMin/)

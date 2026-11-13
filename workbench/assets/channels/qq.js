@@ -51,6 +51,9 @@ function build(root, ctx) {
   SPEC.scopeMention = el('input', { type: 'checkbox' })
   SPEC.scopeRestart = el('input', { type: 'checkbox' })
   SPEC.scopeMsg = el('span', { class: 'meta' })
+  SPEC.scopeSave = el('button', { class: 'primary small', type: 'button', text: '保存', onclick: () => saveScope() })
+  // 读不到当前范围时，保存会把空名单写回去，必须先读到再放开。
+  SPEC.scopeSave.disabled = true
   SPEC.scope.body.append(
     el('div', { class: 'meta', text: '私聊' }), SPEC.scopeFriends,
     el('div', { class: 'meta', text: '群' }), SPEC.scopeGroups,
@@ -58,7 +61,7 @@ function build(root, ctx) {
     el('label', { class: 'chk' }, SPEC.scopeMention, el('span', { text: '群里要 @ 才回' })),
     el('label', { class: 'chk' }, SPEC.scopeRestart, el('span', { text: '保存后重启她的进程（约 10 秒，当前对话会中断）' })),
     el('div', { class: 'row' },
-      el('button', { class: 'primary small', type: 'button', text: '保存', onclick: () => saveScope() }),
+      SPEC.scopeSave,
       el('button', { class: 'small', type: 'button', text: '重新读取', onclick: () => loadScope() }),
       SPEC.scopeMsg,
     ),
@@ -114,6 +117,10 @@ function build(root, ctx) {
   root.append(SPEC.seg.root, ...Object.values(SPEC.sections))
   show(SPEC.section)
 
+  subscribe(ctx)
+}
+
+function subscribe(ctx) {
   SPEC.unsub?.()
   SPEC.unsub = ctx?.onStatus?.((status) => applyStatus(status))
 }
@@ -221,6 +228,7 @@ async function sendChat() {
 }
 
 async function loadScope() {
+  SPEC.scopeSave.disabled = true
   const r = await local('/api/qq/scope')
   if (!r.ok) {
     SPEC.scopeMsg.textContent = errorText(r)
@@ -231,6 +239,8 @@ async function loadScope() {
 
 function renderScope(s) {
   SPEC.scopeData = s
+  // 读成功才允许保存：否则空表单会覆盖掉已有名单。
+  SPEC.scopeSave.disabled = false
   const p = s.policy || {}
   const has = (arr, id) => (arr || []).map(String).includes(String(id))
   const withSaved = (list, saved) => {
@@ -263,9 +273,11 @@ function renderScope(s) {
 }
 
 async function saveScope() {
+  if (SPEC.scopeSave.disabled) return
   const restart = SPEC.scopeRestart.checked
   if (restart && !confirm('保存后会把她的进程重启（约 10 秒，当前对话会中断）。继续？')) return
   SPEC.scopeMsg.textContent = '保存中…'
+  SPEC.scopeSave.disabled = true
   const r = await local('/api/qq/scope', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -280,7 +292,11 @@ async function saveScope() {
     }),
   })
   const d = r.data || {}
-  if (d.error || !r.ok) { SPEC.scopeMsg.textContent = `没存上：${d.error || d.err || '接口没回话'}`; return }
+  if (d.error || !r.ok) {
+    SPEC.scopeMsg.textContent = `没存上：${d.error || d.err || '接口没回话'}`
+    SPEC.scopeSave.disabled = false
+    return
+  }
   renderScope({ ...SPEC.scopeData, policy: d.policy })
   SPEC.scopeMsg.textContent = d.url
     ? '已保存并重启，新地址记在下面（旧标签页会 401）'
@@ -380,6 +396,7 @@ export const qq = {
   renderPanel(root, ctx) {
     if (SPEC.built && SPEC.root === root) {
       SPEC.ctx = ctx
+      subscribe(ctx)
       refreshData()
       return
     }

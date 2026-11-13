@@ -68,13 +68,16 @@ function build(root) {
   SPEC.observeEnabled = el('input', { type: 'checkbox' })
   SPEC.observePort = el('input', { type: 'number', step: '1' })
   SPEC.observeMsg = el('span', { class: 'meta' })
+  SPEC.observeSave = el('button', { class: 'small', type: 'button', text: '保存观测参数', onclick: () => saveObserve() })
+  // 读不到配置时保存会把空值写回去，先禁用。
+  SPEC.observeSave.disabled = true
   SPEC.observe.body.append(
     el('div', { class: 'grid2' },
       el('label', { class: 'chk' }, SPEC.observeEnabled, el('span', { text: '观测台开着' })),
       el('label', { class: 'field' }, el('span', { class: 'meta', text: '端口' }), SPEC.observePort),
     ),
     el('div', { class: 'row' },
-      el('button', { class: 'small', type: 'button', text: '保存观测参数', onclick: () => saveObserve() }),
+      SPEC.observeSave,
       SPEC.observeMsg,
     ),
   )
@@ -276,20 +279,28 @@ async function removeAvatar() {
 }
 
 async function loadObserve() {
+  SPEC.observeSave.disabled = true
   const r = await fish('config')
   if (!r.ok) { SPEC.observeMsg.textContent = errorText(r); return }
   // 观测配置整组读写：observe.enabled / observe.port。
   const o = r.data?.config?.observe || {}
   SPEC.observeEnabled.checked = o.enabled !== false
   SPEC.observePort.value = String(o.port ?? 0)
+  SPEC.observeSave.disabled = false
 }
 
 async function saveObserve() {
+  if (SPEC.observeSave.disabled) return
+  SPEC.observeSave.disabled = true
   const r = await postFish('config', {
     observe: { enabled: SPEC.observeEnabled.checked, port: Number(SPEC.observePort.value) },
   })
-  if (!r.ok) { SPEC.observeMsg.textContent = writeError(r); return }
-  if (r.data?.ok === false) { SPEC.observeMsg.textContent = `没存上：${r.data.error || '上游拒绝'}`; return }
+  if (!r.ok) { SPEC.observeMsg.textContent = writeError(r); SPEC.observeSave.disabled = false; return }
+  if (r.data?.ok === false) {
+    SPEC.observeMsg.textContent = `没存上：${r.data.error || '上游拒绝'}`
+    SPEC.observeSave.disabled = false
+    return
+  }
   SPEC.observeMsg.textContent = `已保存 · ${clock()}`
   loadObserve()
 }
