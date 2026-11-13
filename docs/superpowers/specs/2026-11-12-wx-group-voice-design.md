@@ -1,8 +1,8 @@
 # 大肥鱼在微信群里像她自己：说话方式调整设计
 
 日期：2026-11-12
-状态：待审
-范围：`src/dsh-fish/lib/selfdoc.js`、`src/dsh-wx/lib/index.js`、`src/dsh-wx/lib/speech.js`、`workbench/server.mjs`、`workbench/assets/channels.js`
+状态：已实现（2026-11-13，dev `e38a993`；未部署/未做真机微信验收）
+范围：`src/dsh-fish/lib/selfdoc.js`、`src/dsh-wx/lib/index.js`、`src/dsh-wx/lib/proactive.js`、`src/speech/speech.mjs`、`workbench/server.mjs`、`workbench/assets/channels/{wx,speech}.js`
 
 ## 1. 问题与证据
 
