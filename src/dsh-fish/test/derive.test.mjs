@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   stageBounds, stageOf, deriveSelf, consistency, novelty,
-  similarity, pickName, DAY_MS, absenceTimeline,
+  similarity, pickName, DAY_MS, absenceTimeline, derivePresenceRecent,
 } from '../lib/derive.js'
 // 2026-10-26：stability 从 derive.js 搬到 quality.js（它要用到 persona 的渲染，
 // 留在 derive 里会绕出 quality → persona → derive → quality 的环）。
@@ -296,4 +296,24 @@ test('wx contact 不抑制网页的 he_silent', () => {
   const m = deriveSelf(evs)
   assert.equal(m.heardSinceWakeWeb, false)
   assert.equal(findTemplate('he_silent').cond(m), true)
+})
+
+test('presenceRecent：按天+mode 聚合，7 天外丢弃，坏格式忽略', () => {
+  const now = Date.parse('2026-11-13T12:00:00Z')
+  const evs = [
+    META('presence:2026-11-13:work:120:2', '2026-11-13T10:00:00Z'),
+    META('presence:2026-11-13:work:60:0', '2026-11-13T11:00:00Z'),
+    META('presence:2026-11-13:event:40:1', '2026-11-13T11:30:00Z'),
+    META('presence:2026-11-12:ambient:15:0', '2026-11-12T11:00:00Z'),
+    META('presence:2026-10-01:work:999:0', '2026-10-01T10:00:00Z'),
+    META('presence:bad', '2026-11-13T10:00:00Z'),
+  ]
+  const rows = derivePresenceRecent(evs, now)
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].dk, '2026-11-13')
+  assert.equal(rows[0].workMin, 180)
+  assert.equal(rows[0].eventMin, 40)
+  assert.ok(rows[0].lastAt >= Date.parse('2026-11-13T11:30:00Z'))
+  assert.equal(rows[1].dk, '2026-11-12')
+  assert.equal(rows[1].ambientMin, 15)
 })

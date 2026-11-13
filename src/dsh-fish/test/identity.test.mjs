@@ -37,7 +37,7 @@ import {
   resetIdentityCache,
   setWakeSection,
 } from '../lib/identity.js'
-import { legacySelfDocPath, ownerDocPath, selfDocPath, writeSelfDoc } from '../lib/selfdoc.js'
+import { legacySelfDocPath, ownerDocPath, presenceDocPath, selfDocPath, writeSelfDoc } from '../lib/selfdoc.js'
 import { appendEvent } from '../lib/store.js'
 import { DEFAULTS } from '../lib/settings.js'
 import { BELIEF_SHOWN, SELF_DOC_BUDGET } from '../lib/persona.js'
@@ -321,4 +321,31 @@ test('say.js 不再把身份/工具说明塞进 user 消息（否则用户能在
   assert.ok(!say.includes('TOOL_BRIEF'), '工具说明由 system prompt 提供')
   assert.ok(!say.includes('personaLine'), '身份由 system prompt 提供')
   assert.ok(say.includes("const content = ['## 这次', '', ...parts]"))
+})
+
+test('他这几天：写盘并只在 web 面的 fish:owner 出现', async () => {
+  const root = tmp()
+  await appendEvent({
+    type: 'meta',
+    text: 'presence:2026-11-13:work:120:0',
+    ts: '2026-11-13T10:00:00Z',
+  }, { source: 'system' }, root)
+  const r = await writeSelfDoc(root)
+  assert.equal(r.ok, true)
+  assert.equal(r.presenceFile, presenceDocPath(root))
+  assert.equal(r.presenceChanged, true)
+  const body = fs.readFileSync(presenceDocPath(root), 'utf8')
+  assert.match(body, /他这几天/)
+  assert.match(body, /工作 2 小时/)
+  resetIdentityCache()
+
+  const readFor = (surface) => {
+    const sections = []
+    const agent = { ctx: { systemPrompt: { section: (o) => sections.push(o) } } }
+    attachIdentity(agent, root, { surfaceOf: () => surface })
+    return sections.find((s) => s.name === OWNER_SECTION).text()
+  }
+  assert.match(readFor('web'), /他这几天/)
+  assert.equal(readFor('wx'), '', 'wx 只看实时 provider，不看历史汇总')
+  assert.equal(readFor('bili'), '')
 })

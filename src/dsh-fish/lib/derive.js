@@ -170,6 +170,32 @@ export function orderEvents(events = []) {
 }
 
 /**
+ * presence 历史汇总（presence spec §7.5 / person-memory §16.6）。
+ *
+ * `meta presence:<dk>:<mode>:<minutes>:<count>` 是屏幕陪伴一局结束写的汇总；
+ * 这里聚合成最近 7 天的按天数据，给 `home/他这几天.md` 与 fish:owner(web) 用。
+ * 只读派生，不进 beliefs/facts/成长门。
+ */
+export function derivePresenceRecent(evs = [], now = Date.now()) {
+  const cutoff = now - 7 * DAY_MS
+  const byDay = new Map()
+  for (const e of Array.isArray(evs) ? evs : []) {
+    if (e?.type !== 'meta') continue
+    const m = /^presence:(\d{4}-\d{2}-\d{2}):(event|ambient|work):(\d+):(\d+)$/.exec(String(e.text ?? ''))
+    if (!m) continue
+    const dk = m[1]
+    const at = Date.parse(`${dk}T00:00:00`)
+    if (Number.isFinite(at) && at < cutoff) continue
+    const row = byDay.get(dk) ?? { dk, workMin: 0, eventMin: 0, ambientMin: 0, lastAt: 0 }
+    row[`${m[2]}Min`] += Math.max(0, Number(m[3]) || 0)
+    const ts = Date.parse(e.ts) || 0
+    if (ts > row.lastAt) row.lastAt = ts
+    byDay.set(dk, row)
+  }
+  return [...byDay.values()].sort((a, b) => b.dk.localeCompare(a.dk)).slice(0, 7)
+}
+
+/**
  * 冷落时间线（growth 自触发 §6.3）。
  *
  * 旧模型优先用 absence 事件里冻结的 days=2，导致：
@@ -267,6 +293,7 @@ export function deriveSelf(events = [], opts = {}) {
   const now = Number(opts.now ?? Date.now())
   const growthDays = clampInt(opts.growthDays ?? 30, 7, 180, 30)
   const evs = orderEvents(events)
+  const presenceRecent = derivePresenceRecent(evs, now)
   const seedEv = evs.find((e) => e.type === 'seed')
   const seed = seedEv?.text ?? ''
 
@@ -993,6 +1020,9 @@ export function deriveSelf(events = [], opts = {}) {
     // 后台刷站看见过的东西：全部条数 + 最近 7 天的三条（身份文档用）。
     saw,
     recentSaw: freshSaw.slice(-3),
+    // presence 历史汇总（presence spec §7.5）：最近 7 天按天聚合；只给
+    // home/他这几天.md 与 fish:owner(web)，不进口袋/成长门。
+    presenceRecent,
     // ---- 人物笔记（person-memory Phase 1 Task 2）----
     // 只读派生，不进 beliefs/facts/成长门/日报。ownerFacts 最新在前；两个 Map
     // 给观测台与 fish:people 用，可见性按 person.channel + person.chatId（D24）。

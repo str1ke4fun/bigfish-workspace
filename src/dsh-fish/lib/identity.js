@@ -25,7 +25,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs'
-import { ownerDocPath, selfDocPath } from './selfdoc.js'
+import { ownerDocPath, selfDocPath, presenceDocPath } from './selfdoc.js'
 import { ownerSectionText } from './people-view.js'
 import { REMIND_PROMPT } from './remind.js'
 import { isHerAgent } from './restrict.js'
@@ -193,12 +193,37 @@ export function resetOwnerCache() {
   ownerCache.text = ''
 }
 
+/** 「他这几天.md」的 mtime 缓存；只在 web 面的 fish:owner 用。 */
+const presenceCache = { file: '', mtimeMs: -1, text: '' }
+
+export function presenceText(root) {
+  try {
+    const file = presenceDocPath(root)
+    const st = statSync(file)
+    if (presenceCache.file !== file || presenceCache.mtimeMs !== st.mtimeMs) {
+      presenceCache.text = readFileSync(file, 'utf8')
+      presenceCache.file = file
+      presenceCache.mtimeMs = st.mtimeMs
+    }
+    return presenceCache.text
+  } catch {
+    return presenceCache.file === presenceDocPath(root) ? presenceCache.text : ''
+  }
+}
+
+export function resetPresenceCache() {
+  presenceCache.file = ''
+  presenceCache.mtimeMs = -1
+  presenceCache.text = ''
+}
+
 /** 测试用：清掉缓存，强制下次重新读盘。 */
 export function resetIdentityCache() {
   cache.file = ''
   cache.mtimeMs = -1
   cache.text = ''
   resetOwnerCache()
+  resetPresenceCache()
 }
 
 /**
@@ -261,9 +286,17 @@ export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf, c
           return ''
         }
         if (surface !== 'web' && surface !== 'wx' && surface !== 'screen') return ''
-        let extras = ''
-        try { extras = String(contextOf?.({ agent, surface }) ?? '') } catch { extras = '' }
-        return ownerSectionText({ doc: ownerText(root), extras })
+        const parts = []
+        // 历史汇总只在 web 面出现；wx/screen 只看实时 provider。
+        if (surface === 'web') {
+          const past = presenceText(root)
+          if (past) parts.push(past)
+        }
+        try {
+          const live = String(contextOf?.({ agent, surface }) ?? '')
+          if (live) parts.push(live)
+        } catch { /* provider 抛错只跳过 */ }
+        return ownerSectionText({ doc: ownerText(root), extras: parts.join('\n\n') })
       },
     })
     return { ok: true }

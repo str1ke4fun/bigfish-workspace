@@ -31,6 +31,7 @@ import { personaLine, TOOL_BRIEF, RECALL_BRIEF, LETTER_BRIEF, DIARY_BRIEF, SLEEP
 import { activeCarry } from './home.js'
 import { activeGrants } from './unlock.js'
 import { ownerDocText } from './people-view.js'
+import { presenceDocText } from './presence-view.js'
 
 /**
  * 她是谁、怎么叫他（2026-11-04 第三版）。
@@ -153,6 +154,11 @@ export function ownerDocPath(root = rootDir()) {
   return join(paths(root).herDir, '关于他.md')
 }
 
+/** 「他这几天」的落盘副本（presence spec §7.5）；只在 web 面渲染。 */
+export function presenceDocPath(root = rootDir()) {
+  return join(paths(root).herDir, '他这几天.md')
+}
+
 /** 旧路径（2026-10-25 之前的 `AGENTS.md`）。迁移时读它、然后删掉。 */
 export function legacySelfDocPath(root = rootDir()) {
   return join(paths(root).root, 'home', 'AGENTS.md')
@@ -257,6 +263,7 @@ export async function writeSelfDoc(root = rootDir(), { log } = {}) {
     // owner 事实**不走** crossChannel（合并裁决 D33）：person_note 是她自己写下的认知，
     // 不是外来原文；引号里的别名正是要保留的内容。渲染前的外来文本清洗在 people-view。
     const ownerBody = ownerDocText(model.ownerFacts)
+    const presenceBody = presenceDocText(model.presenceRecent)
     const text = renderSelfDoc(model, {
       budget: config?.memory?.docBudget,
       carry: await activeCarry(root),
@@ -300,7 +307,22 @@ export async function writeSelfDoc(root = rootDir(), { log } = {}) {
       log?.('owner doc failed', ownerWhy)
     }
 
-    return { ok: true, changed, file, ownerFile, ownerChanged, ownerWhy }
+    // 「他这几天」也只写一小份，失败不连累前两份。
+    const presenceFile = presenceDocPath(root)
+    let presenceChanged = false
+    let presenceWhy = ''
+    try {
+      let presencePrev = null
+      try { presencePrev = await fs.readFile(presenceFile, 'utf8') } catch { /* 首次 */ }
+      presenceChanged = presencePrev !== presenceBody
+      if (presenceChanged) await writeAtomic(presenceFile, presenceBody)
+    } catch (err) {
+      presenceChanged = false
+      presenceWhy = String(err?.message ?? err).slice(0, 160)
+      log?.('presence doc failed', presenceWhy)
+    }
+
+    return { ok: true, changed, file, ownerFile, ownerChanged, ownerWhy, presenceFile, presenceChanged, presenceWhy }
   } catch (err) {
     log?.('selfdoc failed', err?.message ?? err)
     return {
@@ -310,6 +332,9 @@ export async function writeSelfDoc(root = rootDir(), { log } = {}) {
       ownerFile: '',
       ownerChanged: false,
       ownerWhy: '',
+      presenceFile: '',
+      presenceChanged: false,
+      presenceWhy: '',
       why: String(err?.message ?? err).slice(0, 160),
     }
   }
