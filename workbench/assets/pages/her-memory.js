@@ -2,7 +2,7 @@
 // 事件只做类型和数量筛选，不提供全文检索；记忆预算等配置在系统 · 设置。
 import { el, clear, card, fish, fmtTime, clock, errorText, hint, asText, segment, emptyState } from '../lib.js'
 
-const TYPES = ['', 'meta', 'utterance', 'revise', 'refusal', 'reunion', 'narration', 'saw']
+const TYPES = ['', 'meta', 'utterance', 'revise', 'refusal', 'reunion', 'narration', 'saw', 'bili_reply', 'person_note']
 
 const SECTIONS = [
   { id: 'events', label: '事件' },
@@ -10,6 +10,7 @@ const SECTIONS = [
   { id: 'reports', label: '日报' },
   { id: 'beliefs', label: '判断' },
   { id: 'templates', label: '模板' },
+  { id: 'people', label: '人物' },
 ]
 
 const SPEC = {}
@@ -63,12 +64,20 @@ function build(root) {
   SPEC.templatesBody = el('div')
   SPEC.templates.body.append(SPEC.templatesBody)
 
+  // ---- 人物（只读）----
+  // 只显示“哪些名字是你”和计数；群/私聊笔记的正文不在这里展开，避免把别人的原话
+  // 摊到管理页。写操作（标记身份事实）第一版走本地 CLI，不做页面按钮。
+  SPEC.people = card('人物', { note: '只读。这里只显示身份事实与计数，不展开群/私聊笔记正文。' })
+  SPEC.peopleBody = el('div')
+  SPEC.people.body.append(SPEC.peopleBody)
+
   SPEC.sections = {
     events: SPEC.events.root,
     diary: SPEC.diary.root,
     reports: SPEC.reports.root,
     beliefs: SPEC.beliefs.root,
     templates: SPEC.templates.root,
+    people: SPEC.people.root,
   }
 
   root.append(SPEC.switch.root, ...Object.values(SPEC.sections))
@@ -207,6 +216,32 @@ async function loadTemplates() {
   ))
 }
 
+// ---------- 人物 ----------
+
+async function loadPeople() {
+  const box = SPEC.peopleBody
+  clear(box)
+  box.append(hint('读取中…', 'meta'))
+  const r = await fish('memory')
+  clear(box)
+  if (!r.ok) { box.append(hint(errorText(r), 'bad')); return }
+  const p = r.data?.people || {}
+  const facts = Array.isArray(p.ownerFacts) ? p.ownerFacts : []
+  const counts = p.counts || {}
+  box.append(el('div', { class: 'row' },
+    el('span', { class: 'meta', text: `身份事实 ${counts.ownerFacts ?? facts.length} 条` }),
+    el('span', { class: 'meta', text: `人物笔记 ${counts.activePersonNotes ?? counts.personNotes ?? 0} 条` }),
+  ))
+  if (!facts.length) {
+    box.append(emptyState('还没有记下你的名字。'))
+    return
+  }
+  box.append(el('ul', { class: 'plain' }, ...facts.map((f) => el('li', {},
+    el('span', { class: 'kind', text: f.channel === 'wx' ? '微信' : f.channel === 'web' ? '这里' : '共同' }),
+    el('span', { class: 'x', text: String(f.label || '') }),
+  ))))
+}
+
 // ---------- 页面契约 ----------
 
 export const herMemory = {
@@ -223,6 +258,7 @@ export const herMemory = {
     loadReports()
     loadBeliefs()
     loadTemplates()
+    loadPeople()
   },
 
   leave() {},
