@@ -31,6 +31,19 @@ export function parseQuota(v) {
   return Math.min(MAX_PER_DAY, Math.max(0, Math.round(n)))
 }
 
+/** 把 policy.json 的两个主动额度键归一；显式 0 保留，空群名丢掉。 */
+export function normalizeProactive(raw = {}) {
+  const map = raw?.proactiveChats
+  const chats = {}
+  if (map && typeof map === 'object') {
+    for (const [k, v] of Object.entries(map)) {
+      const name = String(k).trim()
+      if (name) chats[name] = parseQuota(v)
+    }
+  }
+  return { proactivePerDay: parseQuota(raw?.proactivePerDay), proactiveChats: chats }
+}
+
 /** 这个群今天最多能主动说几条。群覆盖优先于默认值，0 也是有效覆盖。 */
 export function quotaFor(policy, chat) {
   const key = String(chat ?? '')
@@ -39,9 +52,12 @@ export function quotaFor(policy, chat) {
   return parseQuota(has ? map[key] : policy?.proactivePerDay)
 }
 
-const empty = (day) => ({ day, used: {} })
+const empty = (day, ok = true) => ({ ok, day, used: {} })
 
-/** 读状态；坏文件、跨天、负数条目都归一。永不抛。 */
+/**
+ * 读状态。ENOENT 是第一天，按空账本；坏 JSON/权限/形状不对返回 `ok:false`，
+ * 由发送闸拒绝主动发言——宁可少说，也不因为文件坏了把额度重置成满额。
+ */
 export function loadState(file = STATE_FILE, now = Date.now()) {
   const today = dateKey(now)
   try {
@@ -53,10 +69,13 @@ export function loadState(file = STATE_FILE, now = Date.now()) {
         const n = Number(v)
         if (k && Number.isFinite(n) && n > 0) used[k] = Math.floor(n)
       }
+    } else if (raw.used !== undefined) {
+      return empty(today, false)
     }
-    return { day: today, used }
-  } catch {
-    return empty(today)
+    return { ok: true, day: today, used }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return empty(today)
+    return empty(today, false)
   }
 }
 
@@ -80,24 +99,26 @@ function usedToday(state, chat, today) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
 }
 
-/** 今天这个群还剩几条。 */
+/** 今天这个群还剩几条。状态不可信时按 0 算，主动路径因此被关死。 */
 export function remaining(policy, state, chat, today = dateKey()) {
+  if (state?.ok === false) return 0
   return Math.max(0, quotaFor(policy, chat) - usedToday(state, chat, today))
 }
 
-/** 扣一条，返回新的 state 与剩余；额度为 0 时原样返回。纯函数，不写盘。 */
+/** 扣一条，返回新的 state 与剩余；额度为 0 / 状态不可信时原样返回。纯函数，不写盘。 */
 export function consume(policy, state, chat, today = dateKey()) {
   const left = remaining(policy, state, chat, today)
   if (left <= 0) return { state, left: 0 }
   const key = String(chat ?? '')
   const used = state?.day === today ? { ...state.used } : {}
   used[key] = usedToday(state, key, today) + 1
-  return { state: { day: today, used }, left: left - 1 }
+  return { state: { ok: true, day: today, used }, left: left - 1 }
 }
 
 /**
  * 发送闸的纯判定：
  *   requireMention === false / exempt / @ 窗口内 → 放行且不主动；
+ *   状态不可信 → 拒绝主动（@ 窗口/免 @ 仍放行）；
  *   否则有额度 → 放行且主动；没额度 → 拒绝（带上 @ 闸原来的原因）。
  */
 export function decideProactive({ policy, state, chat, mention, exempt, now = Date.now() }) {
@@ -105,6 +126,9 @@ export function decideProactive({ policy, state, chat, mention, exempt, now = Da
   const left = remaining(policy, state, chat, today)
   if (policy?.requireMention === false || exempt || mention?.ok) {
     return { ok: true, proactive: false, left }
+  }
+  if (state?.ok === false) {
+    return { ok: false, proactive: false, left: 0, why: '主动额度状态读不出来' }
   }
   if (left <= 0) {
     return { ok: false, proactive: false, left: 0, why: mention?.reason || '最近没人 @ 你' }

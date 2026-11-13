@@ -175,8 +175,10 @@ function proactiveChatsFromDom() {
   const out = {}
   for (const input of document.querySelectorAll('#wx-proactive-chats input[data-chat]')) {
     const name = input.dataset.chat
+    // 空框 = 用默认；填 0 = 这个群静音。两者不能混成同一个值。
+    if (!name || input.value.trim() === '') continue
     const n = Number(input.value)
-    if (name && Number.isFinite(n) && n > 0) out[name] = Math.min(50, Math.round(n))
+    if (Number.isFinite(n)) out[name] = Math.min(50, Math.max(0, Math.round(n)))
   }
   return out
 }

@@ -192,7 +192,7 @@ export function normalizeSpeechPolicy(raw = {}) {
   }
 }
 
-/** 主动额度的读写共用：body 缺省时保留 before，0 的群不落盘。 */
+/** 主动额度的读写共用：body 缺省时保留 before；显式 0 是“这个群静音”，必须保留。 */
 export function normalizeWxProactive(body = {}, before = {}) {
   const perDay = body.proactivePerDay === undefined ? before.proactivePerDay : body.proactivePerDay
   const src = body.proactiveChats === undefined ? (before.proactiveChats || {}) : body.proactiveChats
@@ -200,8 +200,7 @@ export function normalizeWxProactive(body = {}, before = {}) {
   if (src && typeof src === 'object') {
     for (const [k, v] of Object.entries(src)) {
       const name = String(k).trim()
-      const n = clampNum(v, 0, 0, PROACTIVE_MAX)
-      if (name && n > 0) chats[name] = n
+      if (name) chats[name] = clampNum(v, 0, 0, PROACTIVE_MAX)
     }
   }
   return { proactivePerDay: clampNum(perDay, 0, 0, PROACTIVE_MAX), proactiveChats: chats }

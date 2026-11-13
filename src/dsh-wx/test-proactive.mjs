@@ -11,6 +11,7 @@ import {
   dateKey,
   decideProactive,
   loadState,
+  normalizeProactive,
   parseQuota,
   quotaFor,
   remaining,
@@ -39,6 +40,14 @@ test('quotaFor：群覆盖优先，否则用默认；0 也是有效覆盖', () =
   assert.equal(quotaFor({ proactivePerDay: 2 }, '群B'), 2)
   assert.equal(quotaFor({ proactivePerDay: 2, proactiveChats: { 群A: 5 } }, '群A'), 5)
   assert.equal(quotaFor({ proactivePerDay: 2, proactiveChats: { 群A: 0 } }, '群A'), 0)
+})
+
+test('normalizeProactive：显式 0 必须保留，否则默认额度会漏进静音的群', () => {
+  assert.deepEqual(
+    normalizeProactive({ proactivePerDay: 5, proactiveChats: { 工作群: 0, 群A: 3 } }),
+    { proactivePerDay: 5, proactiveChats: { 工作群: 0, 群A: 3 } },
+  )
+  assert.deepEqual(normalizeProactive({ proactiveChats: { '': 3, ' 群B ': 7 } }), { proactivePerDay: 0, proactiveChats: { 群B: 7 } })
 })
 
 test('remaining 与 consume 是纯函数，跨天重置', () => {
@@ -72,18 +81,29 @@ test('decideProactive：没 @ 但有额度才主动；额度 0 必须拒绝', ()
   assert.match(denied.why, /最近没人 @ 你/)
 })
 
-test('状态文件：坏 JSON / 跨天 / 负数都按今天 0 条读', () => {
+test('状态文件：坏 JSON 视为不可信，跨天/负数仍按今天重置', () => {
   const file = join(dir, 'state.json')
   writeFileSync(file, '{not json')
-  assert.deepEqual(loadState(file, NOW), { day: TODAY, used: {} })
+  assert.equal(loadState(file, NOW).ok, false)
   writeFileSync(file, JSON.stringify({ day: '2000-01-01', used: { 群A: 9 } }))
-  assert.deepEqual(loadState(file, NOW), { day: TODAY, used: {} })
+  assert.deepEqual(loadState(file, NOW), { ok: true, day: TODAY, used: {} })
   writeFileSync(file, JSON.stringify({ day: TODAY, used: { 群A: -3, 群B: 2 } }))
-  assert.deepEqual(loadState(file, NOW), { day: TODAY, used: { 群B: 2 } })
+  assert.deepEqual(loadState(file, NOW), { ok: true, day: TODAY, used: { 群B: 2 } })
 })
 
-test('saveState 写回后可读，目录不存在也能建', () => {
+test('状态不可信时拒绝主动发言，但不影响 @ 窗口/免 @ 路径', () => {
+  const state = { ok: false, day: TODAY, used: {} }
+  const policy = { requireMention: true, proactiveChats: { 群A: 5 } }
+  const denied = decideProactive({ policy, state, chat: '群A', mention: { ok: false, reason: '最近没人 @ 你' }, exempt: false, now: NOW })
+  assert.equal(denied.ok, false)
+  assert.match(denied.why, /状态读不出来/)
+  assert.equal(decideProactive({ policy, state, chat: '群A', mention: { ok: true }, exempt: false, now: NOW }).ok, true)
+  assert.equal(decideProactive({ policy, state, chat: '群A', mention: { ok: false }, exempt: true, now: NOW }).ok, true)
+})
+
+test('saveState 写回后可读，目录不存在也能建；不可写时返回 false', () => {
   const file = join(dir, 'nested', 'state.json')
   assert.equal(saveState({ day: TODAY, used: { 群A: 3 } }, file), true)
-  assert.deepEqual(loadState(file, NOW), { day: TODAY, used: { 群A: 3 } })
+  assert.deepEqual(loadState(file, NOW), { ok: true, day: TODAY, used: { 群A: 3 } })
+  assert.equal(saveState({ day: TODAY, used: {} }, dir), false)
 })
