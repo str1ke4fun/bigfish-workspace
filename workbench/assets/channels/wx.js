@@ -95,6 +95,10 @@ function build(root, ctx) {
   root.append(SPEC.seg.root, ...Object.values(SPEC.sections))
   show(SPEC.section)
 
+  subscribe(ctx)
+}
+
+function subscribe(ctx) {
   SPEC.unsub?.()
   SPEC.unsub = ctx?.onStatus?.((status) => applyStatus(status))
 }
@@ -135,7 +139,8 @@ function applyStatus(status) {
   } else if (SPEC.section === 'live') {
     startFrames()
   }
-  if (SPEC.scopeData) renderScopeNow(SPEC.scopeData)
+  // 不在这里重画“允许说话”：轮询会盖掉还没保存的勾选与输入。
+  // 表单只在进入分段、点刷新、保存成功后更新。
 }
 
 function startFrames() {
@@ -380,6 +385,8 @@ export const wx = {
   renderPanel(root, ctx) {
     if (SPEC.built && SPEC.root === root) {
       SPEC.ctx = ctx
+      // 离开页面时退订了；重进要接回 3 秒一次的状态。
+      subscribe(ctx)
       if (SPEC.section === 'live') startFrames()
       return
     }

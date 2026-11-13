@@ -145,7 +145,8 @@ async function loadComments() {
   SPEC.comments.setMeta(c.total ?? rows.length, rows.length ? 'ok' : '')
   SPEC.commentsMsg.textContent = rows.length ? `最近 30 天 ${rows.length} 条` : ''
   if (!rows.length) { SPEC.commentsBody.append(emptyState('她还没在 B 站发过评论')); return }
-  SPEC.commentsBody.append(el('ul', { class: 'plain' }, ...rows.slice().reverse().map(commentRow)))
+  // /footprint 的评论已经是新到旧，不要再倒一次。
+  SPEC.commentsBody.append(el('ul', { class: 'plain' }, ...rows.map(commentRow)))
 }
 
 async function updateBadge(ctx) {

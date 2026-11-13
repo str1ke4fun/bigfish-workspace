@@ -173,10 +173,11 @@ function videoRow(v) {
 function renderSeen(r) {
   clear(SPEC.seenBody)
   if (!r.ok) { SPEC.seenBody.append(el('div', { class: 'bad', text: errorText(r) })); return }
+  // /history：日期新到旧，每天内部是时间正序。倒转每天，再取整体最新 8 条。
   const groups = r.data?.groups || []
-  const items = groups.flatMap((g) => (g.items || []).map((v) => ({ ...v, at: v.at || g.date })))
+  const items = groups.flatMap((g) => [...(g.items || [])].reverse().map((v) => ({ ...v, at: v.at || g.date })))
   if (!items.length) { SPEC.seenBody.append(emptyState('她还没看过什么')); return }
-  SPEC.seenBody.append(el('ul', { class: 'videos' }, ...items.slice(-8).reverse().map(videoRow)))
+  SPEC.seenBody.append(el('ul', { class: 'videos' }, ...items.slice(0, 8).map(videoRow)))
 }
 
 async function loadSheet(bvid, frame, msg) {
@@ -209,6 +210,17 @@ function renderSwitches(status, owner, config) {
   const s = status.ok ? (status.data || {}) : {}
   SPEC.browseToggle.checked = s.browseEnabled === true
   SPEC.commentToggle.checked = s.commentEnabled === true
+  if (!status.ok) {
+    // 读不到状态时不能把两个开关画成“关着”，那看起来像用户关的。
+    SPEC.browseToggle.disabled = true
+    SPEC.commentToggle.disabled = true
+    SPEC.switchMsg.textContent = errorText(status)
+  } else {
+    SPEC.browseToggle.disabled = false
+    SPEC.commentToggle.disabled = false
+    // 恢复后清掉上一次“读不到”的提示；动作结果会在这之后覆盖它。
+    if (SPEC.switchMsg.textContent && SPEC.switchMsg.textContent !== '保存中…') SPEC.switchMsg.textContent = ''
+  }
   const cfg = config.ok ? (config.data?.config || {}) : {}
 
   clear(SPEC.loginBody)

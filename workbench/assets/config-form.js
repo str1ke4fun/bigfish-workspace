@@ -54,6 +54,7 @@ export function configGroup({ title, keys, labels = {}, note = '', onSaved } = {
   const status = el('div', { class: 'meta' })
   const fields = el('div', { class: 'group-body' })
   let readers = []
+  let loaded = false
 
   const save = el('button', {
     class: 'primary small',
@@ -73,10 +74,13 @@ export function configGroup({ title, keys, labels = {}, note = '', onSaved } = {
       } catch (err) {
         setStatus(`没成：${err?.message || err}`, 'bad')
       } finally {
-        save.disabled = false
+        // 读不到配置时保持禁用：空表单保存会把这一组写成空值。
+        save.disabled = !loaded
       }
     },
   })
+  // 首次读到 /config 之前不给保存，避免把空值写回去。
+  save.disabled = true
 
   const root = el('details', { class: 'rule-layer group' },
     el('summary', {}, el('b', { text: title })),
@@ -92,17 +96,19 @@ export function configGroup({ title, keys, labels = {}, note = '', onSaved } = {
   }
 
   function setConfig(config) {
+    if (!config || typeof config !== 'object') return
     clear(fields)
     readers = []
     for (const key of keys) {
       if (HIDDEN.has(key)) continue
-      const value = getPath(config || {}, key)
+      const value = getPath(config, key)
       const c = control(key, value, labels[key])
       readers.push({ key, read: c.read })
       fields.append(c.node)
     }
+    loaded = true
+    save.disabled = false
   }
 
-  setConfig({})
   return { root, setConfig, setStatus }
 }

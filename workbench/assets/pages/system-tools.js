@@ -14,6 +14,8 @@ function build(root) {
   SPEC.allow = el('textarea', { class: 'doc', rows: '4', placeholder: '每行一个工具名；空 = 不放行额外工具' })
   SPEC.saveMsg = el('span', { class: 'meta' })
   SPEC.saveBtn = el('button', { class: 'primary', type: 'button', text: '保存白名单', onclick: () => saveTools() })
+  // 读不到配置时保存会把 allow 写成空名单，先禁用。
+  SPEC.saveBtn.disabled = true
   SPEC.tools.body.append(
     SPEC.toolMsg,
     SPEC.toolList,
@@ -40,6 +42,7 @@ async function refresh() {
   const [tools, rules, config] = await Promise.all([fish('tools'), fish('rules'), fish('config')])
   // 白名单整组读写：配置里的 tools.restrict / tools.allow。
   const toolsCfg = config.ok ? config.data?.config?.tools : null
+  SPEC.saveBtn.disabled = !config.ok
 
   clear(SPEC.toolList)
   if (tools.ok) {

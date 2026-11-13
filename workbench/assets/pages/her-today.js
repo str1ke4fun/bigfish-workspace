@@ -216,8 +216,9 @@ function renderTimeline(r) {
 function renderWords(r) {
   clear(SPEC.wordsBody)
   if (!r.ok) { SPEC.wordsBody.append(el('div', { class: 'bad', text: errorText(r) })); return }
+  // /events 是新到旧；取第一条才是她最近留下的话。
   const rows = (r.data?.rows || []).filter((e) => e.type === 'utterance' || e.type === 'narration')
-  const last = rows[rows.length - 1]
+  const last = rows[0]
   if (!last) { SPEC.wordsBody.append(emptyState('还没有她留下的话。')); return }
   SPEC.wordsBody.append(
     el('div', { class: 'quote', text: String(last.text || '') }),
@@ -231,7 +232,8 @@ function renderBeliefs(r) {
   const active = r.data?.active || []
   if (!active.length) { SPEC.beliefsBody.append(emptyState('还没有长出来的判断')); return }
   const list = el('ul', { class: 'plain' })
-  for (const b of active.slice(-6).reverse()) {
+  // /beliefs 按显著性排（固化、常被提起的在前），取最强的前 6 条。
+  for (const b of active.slice(0, 6)) {
     list.append(el('li', {}, el('span', { class: 'x', text: b.text }), el('span', { class: 't', text: fmtTime(b.since) })))
   }
   SPEC.beliefsBody.append(list)
@@ -317,7 +319,8 @@ function renderInbox(r) {
   SPEC.unread = unread
   SPEC.inboxBody.append(el('div', { class: 'meta', text: `共 ${r.data?.total ?? rows.length} 封，未读 ${unread} 封。` }))
   if (!rows.length) { SPEC.inboxBody.append(emptyState('还没有。这是起点，不是故障。')); return }
-  for (const m of rows.slice(-6).reverse()) {
+  // /inbox 已经是新到旧；取最近的 6 封，保持新在上。
+  for (const m of rows.slice(0, 6)) {
     SPEC.inboxBody.append(el('div', { class: 'letter' + (m.unread ? ' unread' : '') },
       el('div', { class: 'meta', text: `${fmtTime(m.ts)}${m.unread ? ' · 未读' : ''}` }),
       el('div', { class: 'quote', text: String(m.text || '') }),
