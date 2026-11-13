@@ -36,8 +36,8 @@ ls -la /opt/fish
 
 - `dsh-fish` → `/home/str1k3/src/bigfish-workspace/src/dsh-fish`（main）
 - `dsh-bili` → `/home/str1k3/src/bigfish-workspace-dev/src/dsh-bili`（dev）
-- `dsh-wx` → `/home/str1k3/dsh-plugins/dsh-wx` → main 的 `src/dsh-wx`
-- workbench → `/opt/fish/workbench`
+- `dsh-wx` → `/home/str1k3/dsh-plugins/dsh-wx` → `/home/str1k3/src/bigfish-workspace/src/dsh-wx`（main）
+- workbench → `/opt/fish/workbench` → `/opt/fish/workbench-current` → `/home/str1k3/src/bigfish-workspace-dev/workbench`（dev）
 
 部署要改三处指向 + 重启：
 
@@ -47,9 +47,9 @@ ls -la /opt/fish
 2. `/home/str1k3/dsh-plugins/dsh-wx` 符号链接改指
    `/home/str1k3/src/bigfish-workspace-newround/src/dsh-wx`（先 `readlink` 确认，
    不要直接覆盖未知目录）。
-3. workbench：若 `/opt/fish/workbench` 是符号链接，改指
-   `/home/str1k3/src/bigfish-workspace-newround/workbench`；若是拷贝，先备份再同步
-   `assets/`、`fish/`、`server.mjs` 等改动文件（不要 `--delete`）。
+3. workbench：`/opt/fish/workbench` 是稳定的间接链接，实际改
+   `/opt/fish/workbench-current` → `/home/str1k3/src/bigfish-workspace-newround/workbench`
+   （保留 `/opt/fish/workbench` 不动）。
 4. `sudo systemctl restart dsh-web fish-workbench`。
 
 健康检查：
