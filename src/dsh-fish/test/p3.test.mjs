@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { appendEvent, readEvents, readDaily, paths } from '../lib/store.js'
+import { resetContactCache } from '../lib/contact.js'
 import { buildInbox, readInbox, markRead, writeInboxFile, newHerEventsSince } from '../lib/inbox.js'
 import { sayToHer } from '../lib/say.js'
 import { leaveLetter } from '../lib/letter.js'
@@ -77,6 +78,7 @@ function fakeCtx({ house = true } = {}) {
 
 test('信箱只挑她的话，不把记账与系统事件算进去', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     await appendEvent({ type: 'seed', text: '你不是助手。' }, { day: 1, stage: 1, source: 'system' }, root)
     await her(root, 'utterance', '我不太确定。')
@@ -99,6 +101,7 @@ test('信箱只挑她的话，不把记账与系统事件算进去', async () =>
 
 test('未读按位置算：第一次全未读，标记后归零', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     await her(root, 'utterance', '第一句。')
     // 未读是"读到哪个位置"的算术，与"信箱放不放平常的话"无关，所以关掉 lettersOnly。
@@ -122,6 +125,7 @@ test('未读不靠时间戳：把 ts 改成乱序也不会错判', async () => {
   // 这条守的是"有人在旧事件里写了个坏 ts"的场景。
   // 位置判据只看 id 在事件流里的下标，天然免疫。
   const root = await tmpRoot()
+  resetContactCache()
   try {
     const a = await her(root, 'utterance', '早的。')
     const b = await her(root, 'utterance', '晚的。')
@@ -137,6 +141,7 @@ test('未读不靠时间戳：把 ts 改成乱序也不会错判', async () => {
 
 test('inbox.md 落盘：有内容时是纯文本引用块，没内容时给一句起点说明', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     const empty = await writeInboxFile(root)
     const t1 = await readFile(empty, 'utf8')
@@ -157,6 +162,7 @@ test('inbox.md 落盘：有内容时是纯文本引用块，没内容时给一�
 
 test('newHerEventsSince 只认她写的那几类', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     await appendEvent({ type: 'seed', text: '起点。' }, { day: 1, stage: 1, source: 'system' }, root)
     const { events } = await readEvents(root)
@@ -190,6 +196,7 @@ function fakeCtxLegacy() {
 
 test('说一句话：落 seen 标记（唤醒窗外才算他来过），并带回她的原话', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     await appendEvent({ type: 'seed', text: '起点。' }, { day: 1, stage: 1, source: 'system' }, root)
 
@@ -228,6 +235,7 @@ test('她正在醒着时你说话，仍然算你来了（say 不看唤醒窗）'
   //   而 sayToHer 只可能由人的动作触发 —— 他真的说了话，这件事不该被
   //   "她恰好也在醒着"抹掉，否则冷落检测会把"你来了"记成"她自言自语"。
   const root = await tmpRoot()
+  resetContactCache()
   try {
     await appendEvent({ type: 'seed', text: '起点。' }, { day: 1, stage: 1, source: 'system' }, root)
     const ctx = fakeCtx()
@@ -246,6 +254,7 @@ test('她正在醒着时你说话，仍然算你来了（say 不看唤醒窗）'
 
 test('她一言不发也不算失败：ok 但带一句说明', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     await appendEvent({ type: 'seed', text: '起点。' }, { day: 1, stage: 1, source: 'system' }, root)
     const ctx = fakeCtx()
@@ -264,6 +273,7 @@ test('她一言不发也不算失败：ok 但带一句说明', async () => {
 
 test('空话与超长话都被挡在门外，不会投进会话', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     const ctx = fakeCtx()
     const a = await sayToHer(ctx, '   ', { root })
@@ -276,6 +286,7 @@ test('空话与超长话都被挡在门外，不会投进会话', async () => {
 
 test('没有 sessionController 时明确说"说不了"，不是静默失败', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     const r = await sayToHer({}, '在吗', { root })
     assert.equal(r.ok, false)
@@ -288,6 +299,7 @@ test('拿不到屋子时不建游离会话——宁可这句递不出去，也�
   // （开发期用测试 home 跑出来的）。它们的共同点是 `sc.create({cwd})` 建的、
   // 没有工作区归属。这条测试锁死：那条退路不存在了。
   const root = await tmpRoot()
+  resetContactCache()
   try {
     await appendEvent({ type: 'seed', text: '起点。' }, { day: 1, stage: 1, source: 'system' }, root)
     const ctx = fakeCtx({ house: false }) // 宿主没有 workspaceRegistry
@@ -306,6 +318,7 @@ test('拿不到屋子时不建游离会话——宁可这句递不出去，也�
 
 test('对话不改写日记、不生成报告文件（说话就是说话）', async () => {
   const root = await tmpRoot()
+  resetContactCache()
   try {
     await appendEvent({ type: 'seed', text: '起点。' }, { day: 1, stage: 1, source: 'system' }, root)
     const ctx = fakeCtx()

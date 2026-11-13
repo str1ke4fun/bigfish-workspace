@@ -16,6 +16,8 @@ import { HER_TYPES, Reject } from './schema.js'
 // 让 test 能在没有 DSH 的情况下验证参数校验与写盘路径。
 import { defineTool } from './tool.js'
 import { appendEvent, readEvents, rootDir, writeDaily, channelOfAgent } from './store.js'
+import { markSeen } from './contact.js'
+import { wakeSectionFor } from './identity.js'
 import { deriveSelf } from './derive.js'
 import { loadConfig, dateKey } from './settings.js'
 import { toJsonSchema } from './toolschema.js'
@@ -217,18 +219,12 @@ export function registerCapture(ctx, deps = {}) {
           )
 
           // ---- 他在场的证据 ----
-          // 定时器叫醒她时她也会写东西，那不是"他来过"。所以用 wakewin 的时间窗区分：
-          // 窗口外写入 = 有人跟她说话了。这条 seen 是冷落检测的唯一依据（absence.js）。
-          //
-          // 坑（p1.test.mjs 抓到的）：这里的 source 必须是 'system'。
-          // 写成 'tool' 时 schema 会以 NOT_HER_TYPE 拒掉 meta，而外面套着 .catch(()=>{})，
-          // 于是 seen 永远写不进去 → 冷落检测永远返回 no-contact-yet → 整条链路静默失效。
-          if (!inWake()) {
-            await appendEvent(
-              { type: 'meta', text: `seen:${new Date().toISOString()}` },
-              { day: model.day, stage: model.stage, source: 'system' },
-              root,
-            ).catch(() => {})
+          // 定时器叫醒她时她也会写东西，那不是"他来过"。两道判断：
+          //   1. inWake()：sc.prompt 入队那几秒；
+          //   2. wakeSectionFor(agent)：整个唤醒/收盘/出门回合（fish:wake 段挂着）。
+          // 只要挂着处境段，就不是真人来找她。写入统一走 markSeen（seen + contact:<source>）。
+          if (!inWake() && !wakeSectionFor(exec?.agent)) {
+            await markSeen(root, { source: channelOfAgent(exec?.agent) }).catch(() => {})
           }
 
           // ---- 身份文件跟着更新 ----

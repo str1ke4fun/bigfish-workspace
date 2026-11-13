@@ -12,6 +12,7 @@
  */
 
 import { channelOfAgent, appendEvent, readEvents, paths } from './store.js'
+import { markSeen as markSeenAt } from './contact.js'
 import { validateEvent, HER_TYPES, SURFACES } from './schema.js'
 import { deriveSelf } from './derive.js'
 import { similarity, ECHO_MIN_SIM } from './similarity.js'
@@ -321,6 +322,12 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
     }
   }
 
+  // contact 的唯一写入口（D4）：dsh-wx / dsh-bili 通过 fishCore.memory.markSeen
+  // 写 seen: + contact:<source>:，不各自 append meta。
+  async function markSeen(opts = {}) {
+    return markSeenAt(baseRoot, opts)
+  }
+
   return {
     append,
     commit,
@@ -333,5 +340,6 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
     similarity,
     findEcho,
     eventById,
+    markSeen,
   }
 }

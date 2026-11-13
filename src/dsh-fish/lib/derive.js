@@ -252,6 +252,25 @@ export function deriveSelf(events = [], opts = {}) {
   let lastWakeAt = 0
   let spokenSinceSeen = false
   let heardSinceWake = false
+  // v4 contact（2026-11-13）：全局 seen: 驱动 absence；per-source contact: 给跨通道卡用。
+  // 只按事件顺序处理状态；下面的 prepass 只用来识别「这条 seen: 有没有配对的 contact:」，
+  // 不用来提前置位（否则最后一次唤醒之后的 web contact 会被 wake 清掉，D15）。
+  const CONTACT_CHANNELS = ['web', 'wx', 'qq', 'bili', 'screen']
+  const zeroBy = () => Object.fromEntries(CONTACT_CHANNELS.map((c) => [c, 0]))
+  const boolBy = (v) => Object.fromEntries(CONTACT_CHANNELS.map((c) => [c, v]))
+  const lastSeenAtByChannel = zeroBy()
+  const spokenSinceSeenByChannel = boolBy(false)
+  const heardSinceWakeByChannel = boolBy(false)
+  const contactIsos = new Set()
+  for (const e of evs) {
+    if (e?.type !== 'meta') continue
+    const m = /^contact:([a-z]+):(.+)$/.exec(String(e.text ?? ''))
+    if (m && CONTACT_CHANNELS.includes(m[1])) contactIsos.add(m[2])
+  }
+  const eventChannel = (ev) => {
+    const c = String(ev?.channel ?? 'core')
+    return CONTACT_CHANNELS.includes(c) ? c : ''
+  }
   let narrations = 0
   // 后台刷站留下的记忆（2026-11-03）。只进「最近看见过什么」，不进 beliefs：
   // 看过一条视频不等于她认同它；她要说出口，那句 utterance 才算她的判断。
@@ -291,6 +310,10 @@ export function deriveSelf(events = [], opts = {}) {
           })
         }
         spokenSinceSeen = true
+        {
+          const ch = eventChannel(ev)
+          if (ch) spokenSinceSeenByChannel[ch] = true
+        }
         // 2026-10-26：改成「后来的盖掉先前的」。原来只认第一次，她先说「开灯的」、
         // 后来接受他给的名字「时梦尘」，状态栏就永远停在那个被他自己否掉的旧称呼上。
         {
@@ -336,6 +359,11 @@ export function deriveSelf(events = [], opts = {}) {
             originChannel: ev.channel ?? 'core',
           })
         }
+        spokenSinceSeen = true
+        {
+          const ch = eventChannel(ev)
+          if (ch) spokenSinceSeenByChannel[ch] = true
+        }
         // 同 utterance：后来的说法盖掉先前的（她改口叫他什么，以最近的为准）
         {
           const n = pickName(ev.text)
@@ -378,14 +406,33 @@ export function deriveSelf(events = [], opts = {}) {
       case 'meta': {
         const t = String(ev.text ?? '')
         if (t.startsWith('seen:')) {
-          const at = Date.parse(t.slice(5)) || Date.parse(ev.ts) || 0
+          const iso = t.slice(5)
+          const at = Date.parse(iso) || Date.parse(ev.ts) || 0
           if (at > lastSeenAt) lastSeenAt = at
           spokenSinceSeen = false
           heardSinceWake = true
+          // 旧 seen: 没有 contact: 配套 → 当 web（历史 home/say 的主要来源）。
+          // 新 markSeen 写的是 seen: + contact:<source>: 两条；有配套时由 contact 分支
+          // 更新对应 source，不再把这条 seen 误算成 web（D15）。
+          if (!contactIsos.has(iso)) {
+            if (at > lastSeenAtByChannel.web) lastSeenAtByChannel.web = at
+            spokenSinceSeenByChannel.web = false
+            heardSinceWakeByChannel.web = true
+          }
+        } else if (t.startsWith('contact:')) {
+          const m = /^contact:([a-z]+):(.+)$/.exec(t)
+          if (m && CONTACT_CHANNELS.includes(m[1])) {
+            const at = Date.parse(m[2]) || Date.parse(ev.ts) || 0
+            if (at > lastSeenAtByChannel[m[1]]) lastSeenAtByChannel[m[1]] = at
+            spokenSinceSeenByChannel[m[1]] = false
+            heardSinceWakeByChannel[m[1]] = true
+          }
         } else if (t.startsWith('wake:')) {
           const at = Date.parse(ev.ts) || 0
           if (at > lastWakeAt) lastWakeAt = at
           heardSinceWake = false
+          // 按事件顺序处理：这之后到来的 web contact 会重新置 true。
+          heardSinceWakeByChannel.web = false
         } else if (t.startsWith(IMPORT_NAME_PREFIX)) {
           // 导入他人人设时带来的称呼（2026-10-27，用户 m03201「称呼带过来」）。
           // 走事件而不是配置：称呼是她认知的一部分，得跟着事件流走；
@@ -969,6 +1016,14 @@ export function deriveSelf(events = [], opts = {}) {
     lastWakeAt,
     spokenSinceSeen,
     heardSinceWake,
+    // v4 contact：per-source 状态；全局值保留给 absence/away/persona。
+    // 跨通道卡（heard_share / he_silent）只读 web 这一组，避免 wx/bili contact 串扰。
+    lastSeenAtByChannel,
+    spokenSinceSeenByChannel,
+    heardSinceWakeByChannel,
+    lastSeenAtWeb: lastSeenAtByChannel.web,
+    spokenSinceSeenWeb: spokenSinceSeenByChannel.web,
+    heardSinceWakeWeb: heardSinceWakeByChannel.web,
     lastReunion: lastReunion ? { at: lastReunion.ts, text: lastReunion.text } : null,
   }
 

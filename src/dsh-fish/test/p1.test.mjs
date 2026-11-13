@@ -15,6 +15,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { registerCapture } from '../lib/capture.js'
+import { setWakeSection, clearWakeSection } from '../lib/identity.js'
+import { resetContactCache } from '../lib/contact.js'
 import { readEvents, paths, writeConfig, rebuild, readState } from '../lib/store.js'
 import { normalizeConfig, dateKey } from '../lib/settings.js'
 import { deriveSelf } from '../lib/derive.js'
@@ -149,8 +151,9 @@ test('空的日记被拒，不落空文件', async () => {
 
 // ---------------------------------------------------------------- seen
 
-test('窗口外写东西 → 记一条 seen；窗口内不记', async () => {
+test('窗口外写东西 → seen + contact:web；窗口内不记', async () => {
   await withRoot(async (root) => {
+    resetContactCache()
     await writeConfig(normalizeConfig({}), root)
     const ctx = fakeCtx()
     registerCapture(ctx, { root })
@@ -162,12 +165,34 @@ test('窗口外写东西 → 记一条 seen；窗口内不记', async () => {
     })
     let { events } = await readEvents(root)
     assert.equal(events.filter((e) => e.type === 'meta' && String(e.text).startsWith('seen:')).length, 0)
+    assert.equal(events.filter((e) => e.type === 'meta' && String(e.text).startsWith('contact:')).length, 0)
     assert.equal(inWake(), false, 'withWake 退出后窗口必须关掉')
 
     // 窗口外（他跟她说话）
     await tool.execute({ type: 'utterance', text: '他问我了。' })
     ;({ events } = await readEvents(root))
     assert.equal(events.filter((e) => e.type === 'meta' && String(e.text).startsWith('seen:')).length, 1)
+    assert.equal(events.filter((e) => e.type === 'meta' && String(e.text).startsWith('contact:web:')).length, 1)
+  })
+})
+
+test('挂着 fish:wake 段时，即使 inWake 已退出也不写 contact', async () => {
+  await withRoot(async (root) => {
+    resetContactCache()
+    await writeConfig(normalizeConfig({}), root)
+    const ctx = fakeCtx()
+    registerCapture(ctx, { root })
+    const tool = ctx.regs.get('growth_commit')
+    const agent = { session: { header: { id: 's1' } } }
+    setWakeSection('（醒一醒）', 's1')
+    try {
+      await tool.execute({ type: 'utterance', text: '这是唤醒回合里写的。' }, { agent })
+    } finally {
+      clearWakeSection('s1')
+    }
+    const { events } = await readEvents(root)
+    assert.equal(events.filter((e) => e.type === 'meta' && String(e.text).startsWith('seen:')).length, 0)
+    assert.equal(events.filter((e) => e.type === 'meta' && String(e.text).startsWith('contact:')).length, 0)
   })
 })
 

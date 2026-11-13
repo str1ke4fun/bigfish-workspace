@@ -179,6 +179,9 @@ export async function scanReplies(o = {}) {
   const replied = repliedReplies(events)       // 已回：不再进待回列表
   const memory = o.memory ?? null
   const mine = await loginMid(root)
+  // owner 本人 = 领养人 mid + 登录账号 mid；两条都算“他来找她”。
+  const ow = await readOwner().catch(() => null)
+  const ownerMids = new Set([ow?.mid, ow?.account?.mid].filter(Boolean).map(String))
   const out = []
 
   for (const c of herCommentsRecent(events, REPLY_LOOKBACK_DAYS).slice(0, MAX_SCAN_ROOTS)) {
@@ -190,7 +193,11 @@ export async function scanReplies(o = {}) {
     for (const s of r.data ?? []) {
       if (!s.rpid || !s.text) continue
       if (seen.has(s.rpid) || replied.has(String(s.rpid))) continue
-      if (mine && s.mid === mine) continue          // 她自己又补了一句，不算"别人回她"
+      const mid = String(s.mid ?? '')
+      const isOwner = ownerMids.has(mid)
+      // 她自己又补了一句，不算“别人回她”；但 owner 的另一个账号（account.mid）
+      // 也可能是她自己的登录号——那种情况仍算 owner 回复（D17）。
+      if (!isOwner && mine && s.mid === mine) continue
       const dirty = sanitizeForeign(s.text)
       if (!dirty.text.trim()) continue               // 整条都是指令味，丢掉
       // 昵称也是外来文本：它会被原样拼进素材（`- ${who}：…`），
@@ -213,7 +220,13 @@ export async function scanReplies(o = {}) {
           },
         }).catch(() => {})
       }
-      out.push({ bvid: c.bvid, aid, rootRpid: c.rpid, rpid: s.rpid, user, text: dirty.text, ctime: s.ctime })
+      // owner 的回复算一次 contact；时间戳用回复发生时间，不用扫描时刻。
+      // 只在“新观察到”时写，避免同一 rpid 在后续扫描里重复写 seen。
+      if (isOwner && memory?.markSeen && !observed.has(String(s.rpid))) {
+        const at = Number(s.ctime) > 0 ? Number(s.ctime) * 1000 : Date.now()
+        await memory.markSeen({ source: 'bili', at }).catch(() => {})
+      }
+      out.push({ bvid: c.bvid, aid, rootRpid: c.rpid, rpid: s.rpid, user, text: dirty.text, ctime: s.ctime, mid, isOwner })
     }
   }
   return out.sort((a, b) => a.ctime - b.ctime)

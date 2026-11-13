@@ -22,7 +22,8 @@ import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc, refreshSelfDoc } from './selfdoc.js'
-import { registerToolRestrict, revealTools, getAgentToolState } from './restrict.js'
+import { registerToolRestrict, revealTools, getAgentToolState, isHerAgent } from './restrict.js'
+import { isContactMessage, markSeen } from './contact.js'
 import { provideFishCore } from './core-service.js'
 import { registerQqAdapter, qqExposure } from './qq-adapter.js'
 import {
@@ -274,6 +275,25 @@ export function apply(ctx, baseConfig = {}) {
     } catch (err) {
       logger.warn('[dsh-fish] 身份文本预写失败', err?.message ?? err)
     }
+    // ---- 多通道 contact：DSH 网页真实用户消息 ----
+    // 只认 web 面的真实 user/message；系统 prompt（wake/closing/bili/say/presence/fish-）
+    // 与 runtime-context 不算“他来找我”。微信/B 站各自在自己的适配器里调 markSeen。
+    // 必须在 bootstrapHome 创建屋子会话之前挂上，否则她第一条消息可能漏记。
+    try {
+      const onSessionEvent = (session, event) => {
+        try {
+          if (!isHerAgent({ session }, herDir)) return
+          const surface = String(fishCore?.surface?.current?.({ session }) ?? '')
+          if (!isContactMessage({ event, surface })) return
+          void markSeen(root, { source: surface }).catch(() => {})
+        } catch { /* 一条消息不能拖垮总线 */ }
+      }
+      const off = ctx.on?.('session/event', onSessionEvent)
+      if (typeof off === 'function') disposers.push(off)
+    } catch (err) {
+      logger.warn('[dsh-fish] contact 监听没挂上', err?.message ?? err)
+    }
+
     try {
       const off = registerIdentity(ctx, {
         root,

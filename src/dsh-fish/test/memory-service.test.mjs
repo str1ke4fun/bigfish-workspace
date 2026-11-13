@@ -19,6 +19,7 @@ import { provideFishCore } from '../lib/core-service.js'
 import { readEvents, paths } from '../lib/store.js'
 import { HER_TYPES, EVENT_SCHEMA_VERSION } from '../lib/schema.js'
 import { similarity } from '../lib/similarity.js'
+import { resetContactCache } from '../lib/contact.js'
 
 async function withRoot(fn) {
   const root = await mkdtemp(join(tmpdir(), 'fish-mem-'))
@@ -505,6 +506,23 @@ test('person_note：commit 写入并刷新一次，appendSystem 拒绝', async (
     assert.equal(events.find((e) => e.type === 'person_note').v, EVENT_SCHEMA_VERSION)
     const bad = await m.appendSystem('person_note', 'x', {})
     assert.deepEqual(bad, { ok: false, why: 'NOT_SYSTEM_TYPE' })
+  })
+})
+
+test('markSeen 门面：写 seen + contact，按 source 去重', async () => {
+  await withRoot(async (root) => {
+    resetContactCache()
+    const m = mem(root)
+    const at = Date.parse('2026-11-13T10:00:00Z')
+    const a = await m.markSeen({ source: 'wx', at })
+    assert.equal(a.ok, true)
+    const events = await diskEvents(root)
+    assert.deepEqual(events.map((e) => e.text), [
+      'seen:2026-11-13T10:00:00.000Z',
+      'contact:wx:2026-11-13T10:00:00.000Z',
+    ])
+    const b = await m.markSeen({ source: 'wx', at: at + 10_000 })
+    assert.equal(b.skipped, true)
   })
 })
 

@@ -41,8 +41,10 @@ export function fakeCore({
       mentionPrefix: async () => '@测试 ',
     },
     guard: {
-      sanitizeForeign: (x) => x,
-      screenOutgoing: (x) => x,
+      // 真实 fishCore.guard 的返回形状是 { text, dropped } / { ok, text, why }；
+      // 测试替身直接返回字符串会让 comment/browse 的 `.text` 变成 undefined。
+      sanitizeForeign: (x) => ({ text: String(x ?? ''), dropped: 0 }),
+      screenOutgoing: (x) => ({ ok: true, text: String(x ?? ''), why: '' }),
       looksLikeSecret: () => false,
       looksLikeRewriting: () => false,
     },

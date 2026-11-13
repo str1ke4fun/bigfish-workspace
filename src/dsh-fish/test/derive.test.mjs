@@ -7,6 +7,8 @@ import {
 // 2026-10-26：stability 从 derive.js 搬到 quality.js（它要用到 persona 的渲染，
 // 留在 derive 里会绕出 quality → persona → derive → quality 的环）。
 import { stability, stabilityBand } from '../lib/quality.js'
+import { findTemplate } from '../lib/events.js'
+import { newId } from '../lib/schema.js'
 
 const T0 = Date.parse('2026-10-01T00:00:00Z')
 
@@ -188,4 +190,76 @@ test('events 乱序传入也能算对（按 id 时间排序）', () => {
   const m1 = deriveSelf([a, b], { now: T0 + 2 * DAY_MS })
   const m2 = deriveSelf([b, a], { now: T0 + 2 * DAY_MS })
   assert.deepEqual(m1.beliefs, m2.beliefs)
+})
+
+// ---------------------------------------------------------------- per-channel contact（v4）
+
+const META = (text, ts = '2026-11-12T00:00:00Z', day = 1) => ({
+  // 真 ULID：orderEvents 先按 idTime(id) 排；非 ULID 的假 id 会按随机后缀排，
+  // 顺序测试会假红。ts 决定 id 里的时间。
+  id: newId(Date.parse(ts)), ts, day, stage: 1, type: 'meta', source: 'system',
+  text, refs: [], verdict: null, confidence: 0.5, flags: [],
+})
+const seed = () => ev('ev_seed', 'seed', 1, '种', { source: 'system' })
+
+test('contact:wx 配对的 seen 不算 web contact', () => {
+  const iso = '2026-11-12T10:00:00.000Z'
+  const evs = [seed(), META(`seen:${iso}`, iso), META(`contact:wx:${iso}`, iso)]
+  const m = deriveSelf(evs, { now: T0 + 2 * DAY_MS })
+  assert.ok(m.lastSeenAt > 0)
+  assert.ok(m.lastSeenAtByChannel.wx > 0)
+  assert.equal(m.lastSeenAtByChannel.web, 0)
+  assert.equal(m.spokenSinceSeenWeb, false)
+  assert.equal(m.heardSinceWakeWeb, false)
+})
+
+test('只有旧 seen 时按 web 兼容', () => {
+  const iso = '2026-11-12T10:00:00.000Z'
+  const evs = [seed(), META(`seen:${iso}`, iso)]
+  const m = deriveSelf(evs, { now: T0 + 2 * DAY_MS })
+  assert.ok(m.lastSeenAtWeb > 0)
+  assert.equal(m.spokenSinceSeenWeb, false)
+})
+
+test('最后一次 wake 之后来的 web contact 仍抑制 he_silent', () => {
+  const wakeIso = '2026-11-12T10:00:00.000Z'
+  const contactIso = '2026-11-12T10:05:00.000Z'
+  const evs = [
+    seed(),
+    META(`wake:2026-11-12 why_here`, wakeIso),
+    META(`seen:${contactIso}`, contactIso),
+    META(`contact:web:${contactIso}`, contactIso),
+  ]
+  const m = deriveSelf(evs, { now: T0 + 2 * DAY_MS })
+  assert.equal(m.heardSinceWakeWeb, true)
+  assert.equal(findTemplate('he_silent').cond(m), false)
+})
+
+test('她回应后 heard_share 不再触发', () => {
+  // contact 写在 2 秒前；她的回应用真 ULID + 更晚的 ts，保证事件顺序正确。
+  const iso = new Date(Date.now() - 2000).toISOString()
+  const sayAt = Date.now()
+  const evs = [
+    seed(),
+    META(`seen:${iso}`, iso),
+    META(`contact:web:${iso}`, iso),
+    ev(newId(sayAt), 'utterance', 1, '我听见了。', { channel: 'web', ts: new Date(sayAt).toISOString() }),
+  ]
+  const m = deriveSelf(evs)
+  assert.equal(m.spokenSinceSeenWeb, true)
+  assert.equal(findTemplate('heard_share').cond(m), false)
+})
+
+test('wx contact 不抑制网页的 he_silent', () => {
+  const wakeIso = new Date(Date.now() - 30 * 3600_000).toISOString()
+  const wxIso = new Date().toISOString()
+  const evs = [
+    seed(),
+    META(`wake:2026-11-12 why_here`, wakeIso),
+    META(`seen:${wxIso}`, wxIso),
+    META(`contact:wx:${wxIso}`, wxIso),
+  ]
+  const m = deriveSelf(evs)
+  assert.equal(m.heardSinceWakeWeb, false)
+  assert.equal(findTemplate('he_silent').cond(m), true)
 })

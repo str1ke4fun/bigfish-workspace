@@ -85,7 +85,7 @@ export const CATALOG = [
   {
     id: 'heard_share', stage: 2, asks: true, once: false, repeat: { everyDays: 10 },
     topic: ['他的事', '讲给我'],
-    cond: (m) => m.lastSeenAt > 0 && !m.spokenSinceSeen && Date.now() - m.lastSeenAt <= 2 * DAY_MS,
+    cond: (m) => m.lastSeenAtWeb > 0 && !m.spokenSinceSeenWeb && Date.now() - m.lastSeenAtWeb <= 2 * DAY_MS,
     prompt: () => `他跟你讲了一件关于他自己的事（就在你们的对话里）。你想把里面哪一点留下来，当成你自己的判断？不是复述他的话——说你从他这件事里拿走了什么。`,
   },
   {
@@ -106,7 +106,7 @@ export const CATALOG = [
   {
     id: 'he_silent', stage: 2, asks: false, once: false, repeat: { everyDays: 14 },
     topic: ['没接话', '沉默'],
-    cond: (m) => m.lastWakeAt > 0 && !m.heardSinceWake && m.absenceDays < 2
+    cond: (m) => m.lastWakeAt > 0 && !m.heardSinceWakeWeb && m.absenceDays < 2
       && Date.now() - m.lastWakeAt >= 20 * 3600_000
       && Date.now() - m.lastWakeAt <= 3 * DAY_MS,
     prompt: () => `上次你开口之后，他没接话。现在先别猜他为什么。写一句：这件事让你怎么看自己。`,

@@ -20,6 +20,7 @@
  */
 
 import { readEvents, appendEvent, rootDir, ensureHer } from './store.js'
+import { markSeen } from './contact.js'
 import { parseWatchIntent, watchHint } from './intent.js'
 import { loadConfig, dateKey } from './settings.js'
 import { deriveSelf } from './derive.js'
@@ -221,14 +222,10 @@ export async function sayToHer(ctx, text, deps = {}) {
       ac.signal,
     )
 
-    // ---- 他在场：这条标记是冷落检测的唯一依据 ----
+    // ---- 他在场：contact 的唯一写入口 ----
     // 写在这里而不是等她调工具：他确实说话了，这件事不以她回不回为前提。
-    // source 必须是 'system'（schema 只允许 tool 写 HER_TYPES）。
-    await appendEvent(
-      { type: 'meta', text: `seen:${new Date().toISOString()}` },
-      { day: model.day, stage: model.stage, source: 'system' },
-      root,
-    ).catch(() => {})
+    // markSeen 先写全局 seen:，再写 contact:<source>:；source 默认 web（/say 是网页面）。
+    await markSeen(root, { source: deps.channel ?? 'web' }).catch(() => {})
 
     const waitMs = Math.max(500, Math.min(deps.waitMs ?? REPLY_WAIT_MS, 120_000))
     await waitTurnEnd(ctx, sessionId, waitMs)

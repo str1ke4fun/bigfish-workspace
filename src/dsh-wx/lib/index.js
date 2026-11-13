@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
+import { isContactWhy } from './contact.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 import { consume as consumeProactive, dateKey, decideProactive, loadState, normalizeProactive, quotaFor, remaining, saveState } from './proactive.js'
 import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
@@ -1631,11 +1632,20 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /** 投递成功后记一次 contact：惰性取 fishCore，拿不到就当没这回事，不影响投递。 */
+  const markContact = () => {
+    try {
+      const core = ctx.get?.('fishCore')
+      const p = core?.memory?.markSeen?.({ source: 'wx' })
+      if (p?.catch) p.catch(() => {})
+    } catch { /* 记忆写失败不影响投递 */ }
+  }
+
   /** 投递到指定的群会话；会话没了就清映射、重试主会话。 */
-  const deliverToChat = async (chatName, chatId, text) => {
+  const deliverToChat = async (chatName, chatId, text, opts = {}) => {
     const sid = await sessionForChat(chatName, chatId)
     try {
-      await deliver(sid, text)
+      await deliver(sid, text, opts)
       return sid
     } catch (err) {
       if (!/not-found|unknown session|no such session/i.test(String(err?.message ?? err))) throw err
@@ -1645,7 +1655,7 @@ export function apply(ctx, config = {}) {
         saveWxSession('')
       }
       const main = await ensureWxSession()
-      await deliver(main, text)
+      await deliver(main, text, opts)
       return main
     }
   }
@@ -1655,11 +1665,15 @@ export function apply(ctx, config = {}) {
   early.unref?.()
 
   /** 第二个参数是 AbortSignal：宿主这个 Remote 方法开头就 signal.throwIfAborted()，不传会抛。 */
-  const deliver = (sessionId, text) => controller().prompt({
-    sessionId,
-    requestId: randomUUID(),
-    content: [{ type: 'text', text }],
-  }, new AbortController().signal)
+  const deliver = (sessionId, text, { contact = false } = {}) => {
+    const p = controller().prompt({
+      sessionId,
+      requestId: randomUUID(),
+      content: [{ type: 'text', text }],
+    }, new AbortController().signal)
+    if (contact) p.then(markContact, () => {})
+    return p
+  }
 
   /** chatId → 目录里的全名；目录还没记住就空。 */
   const chatNameOfId = (chatId) => {
@@ -2260,7 +2274,7 @@ export function apply(ctx, config = {}) {
         const chatId = ids.get(h.key)
         const note = formatEarNote([{ ...h, chat }], p.allowChats, tasks, { requester: reqs, recent: recents })
         try {
-          const sid = await deliverToChat(chat, chatId, note)
+          const sid = await deliverToChat(chat, chatId, note, { contact: isContactWhy(h.why) })
           sentChats.push(chat)
           // 投成功才记账：失败下一轮还投，不会丢这条 @
           seen.set(h.key, { at: Date.now(), chat })

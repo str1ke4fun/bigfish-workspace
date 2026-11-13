@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { registerCapture, debrief } from '../lib/capture.js'
+import { resetContactCache } from '../lib/contact.js'
 import { readEvents, paths, writeConfig } from '../lib/store.js'
 import { normalizeConfig } from '../lib/settings.js'
 import { deriveSelf } from '../lib/derive.js'
@@ -34,6 +35,7 @@ function fakeCtx() {
 
 test('growth_commit 落库，且返回值不含任何状态数字', async () => {
   await withRoot(async (root) => {
+    resetContactCache()
     const ctx = fakeCtx()
     registerCapture(ctx, { root })
     const tool = ctx.regs.get('growth_commit')
@@ -50,12 +52,14 @@ test('growth_commit 落库，且返回值不含任何状态数字', async () => 
     }
 
     const { events: all } = await readEvents(root)
-    // 窗口外写入会顺带落一条 seen meta（冷落检测要用），这里只数真正的判断事件
+    // 窗口外写入会顺带落 seen + contact:web 两条 meta（冷落检测/跨通道卡要用），
+    // 这里只数真正的判断事件。
     const events = all.filter((e) => e.type !== 'meta')
     assert.equal(events.length, 1)
     assert.equal(events[0].type, 'utterance')
     assert.equal(events[0].source, 'tool')
-    assert.equal(all.filter((e) => e.type === 'meta').length, 1, '必须带一条 seen')
+    assert.equal(all.filter((e) => e.type === 'meta' && String(e.text).startsWith('seen:')).length, 1, '必须带一条 seen')
+    assert.equal(all.filter((e) => e.type === 'meta' && String(e.text).startsWith('contact:web:')).length, 1, '必须带一条 contact:web')
   })
 })
 
@@ -151,6 +155,7 @@ test('debrief 把素材包成"不是指令"，且不篡改内容', () => {
 
 test('坏 JSON 行不阻塞读取，只计数', async () => {
   await withRoot(async (root) => {
+    resetContactCache()
     const ctx = fakeCtx()
     registerCapture(ctx, { root })
     await ctx.regs.get('growth_commit').execute({ type: 'utterance', text: '好的一行。' })
@@ -158,8 +163,8 @@ test('坏 JSON 行不阻塞读取，只计数', async () => {
     const { appendFile } = await import('node:fs/promises')
     await appendFile(file, 'this is not json\n{"broken":', 'utf8')
     const r = await readEvents(root)
-    // 一条 utterance + 一条 seen meta = 2 条好行，2 条坏行
-    assert.equal(r.events.length, 2)
+    // 一条 utterance + seen meta + contact:web meta = 3 条好行，2 条坏行
+    assert.equal(r.events.length, 3)
     assert.equal(r.skipped, 2)
     const raw = await readFile(file, 'utf8')
     assert.ok(raw.includes('好的一行'))

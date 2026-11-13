@@ -18,6 +18,7 @@ function model(over = {}) {
     needs: { autonomy: 0.5, competence: 0.5, relatedness: 0.5 },
     absenceDays: 0, solid: [], tensions: [], voices: [], freshVoice: null, scars: [],
     lastSeenAt: 0, lastWakeAt: 0, spokenSinceSeen: false, heardSinceWake: false,
+    lastSeenAtWeb: 0, spokenSinceSeenWeb: false, heardSinceWakeWeb: false,
     ...over,
   }
 }
@@ -100,19 +101,19 @@ test('heard_share：他说过话、她还没开口 → 出；她已开口 → �
   const t = findTemplate('heard_share')
   assert.ok(t, '新卡要在')
   assert.equal(t.asks, true)
-  assert.equal(t.cond(model({ lastSeenAt: Date.now() - 3600_000, spokenSinceSeen: false })), true)
-  assert.equal(t.cond(model({ lastSeenAt: Date.now() - 3600_000, spokenSinceSeen: true })), false)
-  assert.equal(t.cond(model({ lastSeenAt: Date.now() - 3 * DAY, spokenSinceSeen: false })), false, '三天前的旧话不再追')
+  assert.equal(t.cond(model({ lastSeenAtWeb: Date.now() - 3600_000, spokenSinceSeenWeb: false })), true)
+  assert.equal(t.cond(model({ lastSeenAtWeb: Date.now() - 3600_000, spokenSinceSeenWeb: true })), false)
+  assert.equal(t.cond(model({ lastSeenAtWeb: Date.now() - 3 * DAY, spokenSinceSeenWeb: false })), false, '三天前的旧话不再追')
 })
 
 test('he_silent：她开口 20 小时后没回应 → 出；他不在场 → 不出', () => {
   const t = findTemplate('he_silent')
   assert.ok(t, '新卡要在')
   assert.equal(t.asks, false)
-  assert.equal(t.cond(model({ lastWakeAt: Date.now() - 21 * 3600_000, heardSinceWake: false })), true)
-  assert.equal(t.cond(model({ lastWakeAt: Date.now() - 2 * 3600_000, heardSinceWake: false })), false, '刚说完不算冷场')
-  assert.equal(t.cond(model({ lastWakeAt: Date.now() - 21 * 3600_000, heardSinceWake: true })), false, '他接了话就不算')
-  assert.equal(t.cond(model({ lastWakeAt: Date.now() - 21 * 3600_000, heardSinceWake: false, absenceDays: 3 })), false, '他真消失交给 absence_probe')
+  assert.equal(t.cond(model({ lastWakeAt: Date.now() - 21 * 3600_000, heardSinceWakeWeb: false })), true)
+  assert.equal(t.cond(model({ lastWakeAt: Date.now() - 2 * 3600_000, heardSinceWakeWeb: false })), false, '刚说完不算冷场')
+  assert.equal(t.cond(model({ lastWakeAt: Date.now() - 21 * 3600_000, heardSinceWakeWeb: true })), false, '他接了话就不算')
+  assert.equal(t.cond(model({ lastWakeAt: Date.now() - 21 * 3600_000, heardSinceWakeWeb: false, absenceDays: 3 })), false, '他真消失交给 absence_probe')
 })
 
 test('两张新卡的 prompt 只给处境，不给台词', () => {
