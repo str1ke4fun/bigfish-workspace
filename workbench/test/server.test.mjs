@@ -203,6 +203,15 @@ test('/api/status.log 只读最近动作，不触发检查', async () => {
   assert.ok(body.rows.length <= 20)
 })
 
+test('/api/status 保留旧键并新增 channels 映射', async () => {
+  const r = await fetch(`http://127.0.0.1:${port}/api/status`)
+  const d = await r.json()
+  for (const k of ['at', 'qq', 'wx', 'her', 'log', 'channels']) assert.ok(k in d, k)
+  assert.deepEqual(d.qq.login, d.channels.qq.login)
+  assert.equal(d.qq.running, d.channels.qq.running)
+  assert.equal(d.wx.label, d.channels.wx.label)
+})
+
 test('运行数据落在 WORKBENCH_DATA，启动时创建 frames/', async () => {
   assert.equal(statSync(join(data, 'frames')).isDirectory(), true)
   const r = await fetch(`http://127.0.0.1:${port}/api/watch`, {
