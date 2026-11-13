@@ -52,3 +52,17 @@ test('她·成长只读，没有调人格滑杆', () => {
   assert.doesNotMatch(s, /postFish|local\(|innerHTML|type:\s*'range'/)
   assert.match(s, /这里没有数值滑杆/)
 })
+
+test('B站·今天不自动扫评论，只做两个快捷开关', () => {
+  const s = src('bili-today.js')
+  assert.equal(biliToday.id, 'bili-today')
+  assert.equal(biliToday.slug, 'today')
+  for (const call of ["fish('bili/status')", "fish('comment')", "fish('comment-body?",
+    "fish('history?days=", "fish('outings')", "fish('risk')", "fish('owner')", "fish('config')",
+    "postFish('wake?focus=browse'", "postFish('risk'"]) assert.ok(s.includes(call), call)
+  assert.match(s, /comment\s*=\s*true/)
+  assert.match(s, /comment:\s*false/)
+  assert.match(s, /browse:\s*\{\s*enabled/)
+  assert.match(s, /comment:\s*\{\s*enabled/)
+  assert.doesNotMatch(s, /browse\.perDay|comment\.perDay|persona|innerHTML/)
+})

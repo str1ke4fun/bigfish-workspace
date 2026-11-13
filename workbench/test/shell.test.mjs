@@ -34,7 +34,10 @@ test('P0 共享挂载点让旧页面模块只建一次 DOM', () => {
   // 她组三页都已迁成独立页面（P1），不再借旧 overview 的共享根。
   assert.equal(host('today'), undefined)
   assert.equal(host('growth'), undefined)
-  for (const p of NAV.find((n) => n.id === 'bili').pages) assert.equal(p.host, 'bili-legacy')
+  // 今天页已迁走；足迹 / 管理还没迁，继续共用旧 bili 根。
+  const bili = NAV.find((n) => n.id === 'bili').pages
+  assert.equal(bili.find((p) => p.slug === 'today').host, undefined)
+  for (const p of bili.filter((p) => p.slug !== 'today')) assert.equal(p.host, 'bili-legacy')
   for (const p of NAV.find((n) => n.id === 'channels').pages) assert.equal(p.host, 'channels-legacy')
   const sys = NAV.find((n) => n.id === 'system').pages
   assert.equal(sys.find((p) => p.slug === 'logs').host, 'system-data-legacy')
