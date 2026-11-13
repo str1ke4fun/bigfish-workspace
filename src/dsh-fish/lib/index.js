@@ -35,6 +35,10 @@ import {
 } from './tool-policy.js'
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
+import { registerPresenceSpeak } from './presence-speak.js'
+import { createScreenService } from './screen.js'
+import { startFrameStream, detectHostCapture } from './host-capture.js'
+import { startForegroundWatcher } from './foreground.js'
 import { createToolLedger } from './tool-ledger.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
@@ -303,6 +307,9 @@ export function apply(ctx, baseConfig = {}) {
         surfaceOf: (agent) => {
           try { return fishCore?.surface?.current?.(agent) ?? '' } catch { return '' }
         },
+        contextOf: ({ agent, surface }) => {
+          try { return fishCore?.context?.render?.({ agent, surface, section: 'owner' }) ?? '' } catch { return '' }
+        },
         log: (...a) => logger.info(...a),
       })
       if (typeof off === 'function') disposers.push(off)
@@ -315,6 +322,23 @@ export function apply(ctx, baseConfig = {}) {
     // **必须先于 bootstrapHome**：屋子会话是在那里创建的，`agent/created` 同步发出；
     // 工具若晚一步，restrict 会因「names unknown global tools …」自愈，把 her_tools
     // 这类唯一能按需开工具的入口一起丢掉，这条会话终生降级。
+    // ---- 屏幕陪伴：采集/前台/状态机（默认关，用户在工作台点击才开）----
+    const screen = createScreenService({
+      root,
+      core: fishCore ?? {},
+      config,
+      capture: {
+        startFrameStream(o) {
+          const det = detectHostCapture({ ffmpegExe: config?.presence?.ffmpegExe ?? '' })
+          if (!det.ok) throw new Error(det.why)
+          return startFrameStream({ ...o, ffmpegExe: det.ffmpegExe })
+        },
+      },
+      foreground: { startForegroundWatcher: (o) => startForegroundWatcher(o) },
+      log: (...a) => logger.info(...a),
+    })
+    if (screen?.dispose) disposers.push(() => screen.dispose())
+
     if (bootAbort.signal.aborted) return
     if (ctx.tools?.register) {
       // A2：bili_look / bili_watch / bili_speak 由 dsh-bili 注册，core 不再挂。
@@ -327,6 +351,8 @@ export function apply(ctx, baseConfig = {}) {
         () => registerRemind(ctx, { root, core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
         // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
         () => registerInbox(ctx, { core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
+        // 陪伴面唯一的输出工具：只在 screen 面可见。
+        () => registerPresenceSpeak(ctx, { root, core: fishCore ?? {}, screen, log: (...a) => logger.warn(...a) }),
         // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
         () => registerHerTools(ctx, { core: fishCore, policy, caps }),
       ]) {
@@ -393,7 +419,7 @@ export function apply(ctx, baseConfig = {}) {
       ledger,
       qq: qqExposure(),
     }
-    const obs = registerObserve(ctx, { root, version: VERSION, exposure })
+    const obs = registerObserve(ctx, { root, version: VERSION, exposure, screen })
     if (obs?.dispose) disposers.push(() => obs.dispose())
 
     // ---- 调度钩子（A1.5 / A2）----

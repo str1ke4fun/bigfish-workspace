@@ -33,6 +33,7 @@ import { createPromptService } from './prompt-service.js'
 import { createSessionService } from './session-service.js'
 import { createConfigService } from './config-service.js'
 import { createOwnerService } from './owner-service.js'
+import { createContextService } from './context-service.js'
 import { createToolLedgerService } from './tool-ledger-service.js'
 
 function asWarn(log) {
@@ -108,6 +109,8 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc, identi
 
   const core = {
     surface: registry,
+    // 易失上下文（presence provider）：纯内存、TTL、按 section/surface 渲染。
+    context: createContextService(),
     guard: { sanitizeForeign, looksLikeSecret, looksLikeRewriting, screenOutgoing },
     // 配置只读 + 白名单写入（A1.7）。persona 永不在白名单里。
     config: createConfigService({ root: baseRoot, log: warn }),

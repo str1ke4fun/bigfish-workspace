@@ -212,7 +212,7 @@ export function resetIdentityCache() {
  *   surfaceOf：这次会话在哪个面（web/wx/screen/bili/qq）；`fish:owner` 只在前三个面渲染。
  * @returns {{ ok: boolean, why?: string }}
  */
-export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf } = {}) {
+export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf, contextOf } = {}) {
   const sp = agent?.ctx?.systemPrompt
   if (!sp || typeof sp.section !== 'function') {
     return { ok: false, why: '宿主的 agent.ctx 上没有 systemPrompt.section（版本不支持）' }
@@ -261,7 +261,9 @@ export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf } 
           return ''
         }
         if (surface !== 'web' && surface !== 'wx' && surface !== 'screen') return ''
-        return ownerSectionText({ doc: ownerText(root) })
+        let extras = ''
+        try { extras = String(contextOf?.({ agent, surface }) ?? '') } catch { extras = '' }
+        return ownerSectionText({ doc: ownerText(root), extras })
       },
     })
     return { ok: true }
@@ -276,7 +278,7 @@ export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf } 
  *
  * @returns {() => void} 卸载函数；挂不上时返回一个空函数，不抛
  */
-export function registerIdentity(ctx, { root, herDir, log, surfaceOf } = {}) {
+export function registerIdentity(ctx, { root, herDir, log, surfaceOf, contextOf } = {}) {
   const state = { ok: false, applied: 0, why: '' }
   /** 这条会话是不是 dsh-wx 的微信会话。拿不到服务就先当不是，下一轮再求值。 */
   const canRemind = (agent) => {
@@ -302,7 +304,7 @@ export function registerIdentity(ctx, { root, herDir, log, surfaceOf } = {}) {
     try {
       if (!herDir) return
       if (!isHerAgent(agent, herDir)) return
-      const r = attachIdentity(agent, root, { canRemind, inboxText, surfaceOf })
+      const r = attachIdentity(agent, root, { canRemind, inboxText, surfaceOf, contextOf })
       if (r.ok) {
         state.ok = true
         state.applied += 1

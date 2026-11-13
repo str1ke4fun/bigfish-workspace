@@ -836,6 +836,27 @@ export function registerObserve(ctx, deps = {}) {
       })
     }],
 
+    // ---- 屏幕陪伴（presence v1）----
+    // 8788 工作台经 BFF 调这两条：状态只读，开关是写操作。screen 服务缺席时
+    // 明确返回 ok:false，不假装成功。
+    ['/presence/status', async (req, res) => {
+      const screen = deps.screen
+      if (!screen?.status) return send(res, 200, { ok: false, note: '屏幕陪伴没在跑。' })
+      return send(res, 200, screen.status())
+    }],
+    ['/presence/mode', async (req, res) => {
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      const screen = deps.screen
+      if (!screen?.setMode) return send(res, 200, { ok: false, note: '屏幕陪伴没在跑。' })
+      let body = {}
+      try {
+        const raw = await readBody(req, 64_000)
+        body = JSON.parse(raw || '{}')
+      } catch { return send(res, 400, { error: 'body 不是 JSON' }) }
+      const r = await screen.setMode({ mode: String(body.mode ?? ''), on: body.on === true })
+      return send(res, 200, r ?? { ok: false, note: '没切成。' })
+    }],
+
     // ---- P3-3：桌面提醒 ----
     // GET 返回开关状态与「今天弹过没有」；POST { enabled } 改开关。
     // 弹窗本身在 scheduler 的唤醒流程里（lib/notify.js），这里只读/只改配置，

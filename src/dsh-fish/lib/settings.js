@@ -169,6 +169,24 @@ export const DEFAULTS = {
     cooldownDays: 3,        // 被驳回后至少隔几天才能再提
   },
 
+  // 屏幕陪伴（2026-11-13）：默认全关；开关只能由用户在工作台点击。
+  presence: {
+    enabled: true,
+    mode: 'event',
+    ffmpegExe: '',
+    event: { fps: 1, sceneThreshold: 0.12, freezeSeconds: 4, cooldownSec: 30, maxCandidatesPerHour: 20, maxCommentsPerHour: 6 },
+    ambient: { fps: 0.2, cooldownSec: 20, maxCandidatesPerHour: 40, maxCommentsPerHour: 40 },
+    work: {
+      fps: 0.2,
+      cooldownSec: 900,
+      maxCommentsPerHour: 6,
+      allow: ['Code.exe', 'WindowsTerminal.exe', 'powershell.exe', 'pwsh.exe'],
+      deny: ['Feishu.exe', 'Lark.exe', 'Weixin.exe', 'WeChat.exe', 'KeePass.exe', '1Password.exe', 'Bitwarden.exe'],
+    },
+    retentionHours: 24,
+    rotateAfter: 30,
+  },
+
   // 观测台
   observe: {
     enabled: true,
@@ -190,7 +208,7 @@ export const DEFAULTS = {
 export const CONFIG_PATCH_KEYS = [
   'growthDays', 'wakesPerDay', 'window', 'daily', 'diary', 'absenceAfterDays',
   'avoid', 'browse', 'video', 'comment', 'notify', 'chat', 'memory',
-  'tools', 'observe', 'ui',
+  'tools', 'observe', 'ui', 'presence',
 ]
 
 const LIMITS = {
@@ -219,6 +237,19 @@ const LIMITS = {
   'memory.beliefsShown': [1, 8],
   'rules.holdDays': [1, 30],
   'rules.cooldownDays': [1, 30],
+  // presence 的 fps / sceneThreshold 是小数，不能进这个 Math.round 的循环；
+  // 这里只放整数项，小数项由 normalizeConfig 原样保留。
+  'presence.event.cooldownSec': [5, 7200],
+  'presence.event.maxCandidatesPerHour': [0, 200],
+  'presence.event.maxCommentsPerHour': [0, 200],
+  'presence.event.freezeSeconds': [1, 60],
+  'presence.ambient.cooldownSec': [5, 7200],
+  'presence.ambient.maxCandidatesPerHour': [0, 200],
+  'presence.ambient.maxCommentsPerHour': [0, 200],
+  'presence.work.cooldownSec': [5, 7200],
+  'presence.work.maxCommentsPerHour': [0, 200],
+  'presence.retentionHours': [1, 168],
+  'presence.rotateAfter': [0, 200],
 }
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -328,6 +359,16 @@ export function normalizeConfig(raw = {}) {
   cfg.memory.closing.time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(cfg.memory.closing.time ?? ''))
     ? String(cfg.memory.closing.time)
     : DEFAULTS.memory.closing.time
+
+  // 屏幕陪伴：嵌套组逐层补全 + 布尔严格化 + allow/deny 去重。
+  cfg.presence = { ...DEFAULTS.presence, ...(cfg.presence && typeof cfg.presence === 'object' ? cfg.presence : {}) }
+  cfg.presence.enabled = Boolean(cfg.presence.enabled)
+  cfg.presence.ffmpegExe = String(cfg.presence.ffmpegExe ?? '').trim()
+  for (const mode of ['event', 'ambient', 'work']) {
+    cfg.presence[mode] = { ...DEFAULTS.presence[mode], ...(cfg.presence[mode] && typeof cfg.presence[mode] === 'object' ? cfg.presence[mode] : {}) }
+  }
+  cfg.presence.work.allow = dedupe(cfg.presence.work.allow)
+  cfg.presence.work.deny = dedupe(cfg.presence.work.deny)
 
   // 她的工具面：preset 名 trim（空 = 用宿主默认组合），allow 去重去空
   // 不改 allow 的语义——它只是"额外放行"，真正的收窄由 preset 完成。
