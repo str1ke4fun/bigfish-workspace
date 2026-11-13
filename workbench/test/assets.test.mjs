@@ -48,3 +48,16 @@ test('人工代操作：按钮标注「人工」，且 QQ/微信发送前都要�
   const confirms = [...channels.matchAll(/confirm\(`人工代操作/g)]
   assert.equal(confirms.length, 3, 'QQ 发送、微信打字、微信按键各要一次确认')
 })
+
+test('主动额度与微信限流字段都在通道模块里', () => {
+  const legacy = read('legacy-channels.js')
+  for (const id of ['wx-proactive-perday', 'wx-proactive-chats', 'speech-wx-gap', 'speech-wx-permin', 'speech-wx-perhour']) {
+    assert.match(legacy, new RegExp(`id="${id}"`), id)
+  }
+  const js = read('channels.js')
+  assert.match(js, /proactivePerDay/)
+  assert.match(js, /proactiveChats/)
+  assert.match(js, /speech-wx-gap/)
+  assert.match(js, /speech-wx-permin/)
+  assert.match(js, /speech-wx-perhour/)
+})
