@@ -41,9 +41,10 @@ test('P0 共享挂载点让旧页面模块只建一次 DOM', () => {
   assert.equal(bili.find((p) => p.slug === 'manage').host, undefined)
   // 通道三页都由注册表生成，各自建自己的根。
   for (const p of NAV.find((n) => n.id === 'channels').pages) assert.equal(p.host, undefined)
+  // 系统组也全部迁成独立页面（P1），日志与数据不再借旧 data 的共享根。
   const sys = NAV.find((n) => n.id === 'system').pages
-  assert.equal(sys.find((p) => p.slug === 'logs').host, 'system-data-legacy')
-  assert.equal(sys.find((p) => p.slug === 'data').host, 'system-data-legacy')
+  assert.equal(sys.find((p) => p.slug === 'logs').host, undefined)
+  assert.equal(sys.find((p) => p.slug === 'data').host, undefined)
 })
 
 test('路由解析旧地址与未知地址', () => {

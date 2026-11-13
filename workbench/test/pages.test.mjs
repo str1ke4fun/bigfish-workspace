@@ -124,3 +124,25 @@ test('工具白名单只在系统·工具与规则', () => {
   assert.match(s, /重启 DSH 后生效/)
   assert.doesNotMatch(s, /persona|innerHTML/)
 })
+
+test('系统·日志四分段与导出', () => {
+  const s = src('system-logs.js')
+  assert.equal(systemLogs.id, 'system-logs')
+  assert.equal(systemLogs.slug, 'logs')
+  for (const call of ["fish('events?", "local('/api/status.log')", "fish('ledger?",
+    "fish('log?lines=", "/api/fish/log/export", "postFish('log/clear'"]) assert.ok(s.includes(call), call)
+  assert.match(s, /她的时间线[\s\S]*人工动作[\s\S]*工具台账[\s\S]*运行日志/)
+  assert.match(s, /confirm\(/)
+  assert.doesNotMatch(s, /persona|innerHTML/)
+})
+test('系统·数据危险操作在底部，观测只在数据页', () => {
+  const s = src('system-data.js')
+  assert.equal(systemData.id, 'system-data')
+  assert.equal(systemData.slug, 'data')
+  for (const call of ["/api/fish/backup", "postFish('backup/restore'", "postFish('import'",
+    "postFish('reset'", "fish('paths')", "fish('update?", "fish('avatar/info'", "postFish('avatar'",
+    "observe.enabled", "observe.port", "local('/api/frames')", "local('/api/gc'"]) assert.ok(s.includes(call), call)
+  assert.match(s, /输入\s*restore|confirm:\s*'restore'/)
+  assert.match(s, /输入\s*reset|confirm:\s*'reset'/)
+  assert.doesNotMatch(s, /browse\.|comment\.|growthDays|persona|innerHTML/)
+})
