@@ -1,7 +1,8 @@
 // 一级 / 二级页面注册表。外壳只认这里的 page 契约。
 // P0 的二级页全部是旧页面包装器；P1–P4 逐页替换，注册表形状不变。
 import { normalizeRoute, splitRoute } from './router.js'
-import { legacyChannels } from './legacy-channels.js'
+import { CHANNELS } from './channels/registry.js'
+import { channelsOverview } from './channels/overview.js'
 import { herToday } from './pages/her-today.js'
 import { herMemory } from './pages/her-memory.js'
 import { herGrowth } from './pages/her-growth.js'
@@ -14,21 +15,21 @@ import { systemLogs } from './pages/system-logs.js'
 import { systemData } from './pages/system-data.js'
 import { systemPrinciples } from './pages/system-principles.js'
 
-const legacyChannelPage = (slug, label, order) => ({
-  id: `channels-${slug}`,
+const channelPages = CHANNELS.map((ch) => ({
+  id: `channels-${ch.id}`,
   nav: 'channels',
-  slug,
-  label,
-  order,
-  host: 'channels-legacy',
-  enter(root) { legacyChannels.enter(root) },
-  leave() { legacyChannels.leave() },
-})
+  slug: ch.id,
+  label: ch.label,
+  order: ch.order,
+  badge: (ctx) => ch.badge?.(ctx.status?.channels?.[ch.id]),
+  enter: async (root, ctx) => { await ch.renderPanel(root, ctx); await ch.refresh?.(ctx) },
+  leave: () => ch.leave?.(),
+}))
 
 export const NAV = [
   { id: 'her', label: '她', pages: [herToday, herMemory, herGrowth] },
   { id: 'bili', label: 'B 站', pages: [biliToday, biliFootprint, biliManage] },
-  { id: 'channels', label: '通道', pages: [legacyChannelPage('overview', '总览', 10), legacyChannelPage('qq', 'QQ', 20), legacyChannelPage('wx', '微信', 30)] },
+  { id: 'channels', label: '通道', pages: [channelsOverview, ...channelPages] },
   { id: 'system', label: '系统', pages: [systemSettings, systemTools, systemLogs, systemData, systemPrinciples] },
 ]
 

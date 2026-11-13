@@ -4,9 +4,7 @@ import { el } from '../lib.js'
 
 /** 人工代操作前的二次确认。detail 只截 120 字，避免把长文塞进对话框。 */
 export function confirmHuman(action, detail) {
-  return confirm(
-    `人工代操作：${action}${detail ? `\n\n${String(detail).slice(0, 120)}` : ''}`,
-  )
+  return confirm(`人工代操作：${action}${detail ? `\n\n${String(detail).slice(0, 120)}` : ''}`)
 }
 
 /** 说话范围里的 chip：复选框 + 标签 + id，勾选后回调。 */

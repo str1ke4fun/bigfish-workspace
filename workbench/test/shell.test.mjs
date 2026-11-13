@@ -39,7 +39,8 @@ test('P0 共享挂载点让旧页面模块只建一次 DOM', () => {
   assert.equal(bili.find((p) => p.slug === 'today').host, undefined)
   assert.equal(bili.find((p) => p.slug === 'footprint').host, undefined)
   assert.equal(bili.find((p) => p.slug === 'manage').host, undefined)
-  for (const p of NAV.find((n) => n.id === 'channels').pages) assert.equal(p.host, 'channels-legacy')
+  // 通道三页都由注册表生成，各自建自己的根。
+  for (const p of NAV.find((n) => n.id === 'channels').pages) assert.equal(p.host, undefined)
   const sys = NAV.find((n) => n.id === 'system').pages
   assert.equal(sys.find((p) => p.slug === 'logs').host, 'system-data-legacy')
   assert.equal(sys.find((p) => p.slug === 'data').host, 'system-data-legacy')

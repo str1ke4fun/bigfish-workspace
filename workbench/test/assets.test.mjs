@@ -29,22 +29,22 @@ test('theme-boot 在样式表之前同步执行', () => {
   assert.ok(boot < page.indexOf('app.css'), 'theme-boot 先于 app.css')
 })
 
-test('通道 DOM 搬进临时模块，补扫入口留在通道', () => {
-  const legacy = read('legacy-channels.js')
-  for (const id of ['qq-dot', 'wx-shot', 'speech-save', 'chat-input']) {
-    assert.match(legacy, new RegExp(`id="${id}"`), id)
-  }
-  assert.match(read('channels.js'), /wx\/scan/)
+test('通道拆成注册表模块，旧外壳不再被引用', () => {
+  const registry = read('channels/registry.js')
+  assert.match(registry, /export const CHANNELS/)
+  assert.match(read('channels/overview.js'), /CHANNELS/)
+  assert.match(read('channels/wx.js'), /wx\/scan/)
   assert.doesNotMatch(read('pages/data.js'), /wx\/scan/)
+  const nav = read('nav.js')
+  assert.doesNotMatch(nav, /legacy-channels/)
+  assert.doesNotMatch(html(), /legacy-channels/)
 })
 
 test('人工代操作：按钮标注「人工」，且 QQ/微信发送前都要确认', () => {
-  const legacy = read('legacy-channels.js')
-  assert.match(legacy, /人工发送/)
-  assert.match(legacy, /人工打字/)
-  assert.match(legacy, /人工回车/)
-  const channels = read('channels.js')
-  assert.match(channels, /人工代操作/)
-  const confirms = [...channels.matchAll(/confirm\(`人工代操作/g)]
-  assert.equal(confirms.length, 3, 'QQ 发送、微信打字、微信按键各要一次确认')
+  assert.match(read('channels/shared.js'), /confirm\(`人工代操作/)
+  const calls = (read('channels/qq.js') + read('channels/wx.js')).match(/confirmHuman\(/g) || []
+  assert.equal(calls.length, 3, 'QQ 发送、微信打字、微信按键各要一次确认')
+  for (const name of ['channels/qq.js', 'channels/wx.js']) {
+    assert.match(read(name), /humanChip\(\)/, name)
+  }
 })
