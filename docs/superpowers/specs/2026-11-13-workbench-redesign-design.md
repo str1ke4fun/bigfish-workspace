@@ -1,5 +1,8 @@
 # 大肥鱼工作台改版设计（信息架构 · 视觉系统 · 交互窗口扩展）
 
+> **2026-11-13 落地回写**：本文件与合并稿冲突的段落，以 `docs/superpowers/specs/2026-11-13-new-round-merged-requirements.md` §2 为准。
+> 关键差异：D1 UI 落 8788（不改 8710 client.js）；D2 schema v4 同时加 screen；D5 recall 边界（owner facts 仅 web/wx/screen、非 owner Phase 1 不召回、screen 排除 web 事件）；D6 fish:owner 预算 facts 300 / extras 400 / 总 700；D10 absenceDays 回来即 0；D12 browsejob 测试在 dsh-bili；D17 B 站用 s.ctime 且先判 isOwner；D26 收盘报告失败不落完成标记；D27 presence 0 也写、启动补写；D30 v4 事件后不降级；D32 /memory people/contacts/closing 合并响应。
+
 - 日期：2026-11-13
 - 状态：设计定稿，待实现
 - 范围：8788 工作台的前端信息架构、视觉系统、通道交互窗口与扩展契约
