@@ -50,7 +50,7 @@ import { logBoot, makeLogger } from './log.js'
 export const name = 'dsh-fish'
 
 /** 版本号：只用于日志导出（排查时第一件事是确认跑的是哪一版）。 */
-export const VERSION = '0.8.0'
+export const VERSION = '0.9.0'
 
 // ⚠️ 一个数组写全，不要拆成对象
 // sessionController 只有有人打开工作区界面时才出现；写进 inject 会让整条插件在开机后一直挂着不挂载，
