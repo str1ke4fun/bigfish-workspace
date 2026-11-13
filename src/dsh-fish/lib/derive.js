@@ -256,6 +256,9 @@ export function deriveSelf(events = [], opts = {}) {
   // 后台刷站留下的记忆（2026-11-03）。只进「最近看见过什么」，不进 beliefs：
   // 看过一条视频不等于她认同它；她要说出口，那句 utterance 才算她的判断。
   const saw = []
+  // 人物笔记（person_note，schema v4）。只收集，**不进入** beliefs / facts / needs /
+  // tensions / solid / scars / 成长门 / 日报：这是她对某个人的认知，不是她的判断。
+  const personNotes = []
   const tested = new Set()
   /** 每条判断被检验过几次：test / answer / revise 里指向它的次数（P0-2 显著性用） */
   const verifyCount = new Map()
@@ -431,12 +434,71 @@ export function deriveSelf(events = [], opts = {}) {
         break
       }
 
+      case 'person_note': {
+        // 先原样收集；supersedes / revokes 的生效在循环之后统一算（可能指向后面的事件）。
+        // 这里绝不能 push beliefs，否则人物笔记会混进成长门和日报。
+        personNotes.push(ev)
+        break
+      }
+
       default:
         break
     }
   }
 
   const active = beliefs.filter((b) => b.status === 'active')
+
+  /**
+   * 人物笔记的生效与归组（person-memory Phase 1 Task 2）
+   *
+   * 可见性判据（合并裁决 D24）：一律看 `person.channel` + `person.chatId`。
+   * 事件顶层的 `channel` 只表示「她当时在哪写下这条」，不参与人物笔记的归组/渲染；
+   * 否则在 web 会话里记下的微信群笔记会漏进 wx，或反过来跨群泄露。
+   *
+   * supersedes / revokes 可能指向后面的事件，所以先收集全部 person_note，再统一过滤。
+   */
+  const superseded = new Set()
+  const revoked = new Set()
+  for (const n of personNotes) {
+    for (const id of n.supersedes ?? []) superseded.add(id)
+    for (const id of n.revokes ?? []) revoked.add(id)
+  }
+  const activePersonNotes = personNotes.filter((n) => !superseded.has(n.id) && !revoked.has(n.id))
+
+  // owner 身份事实（合并裁决 D21）：person.id==='owner' && kind==='identity' && label 非空。
+  // **flags 不参与筛选**——没有 identity flag 的 owner note 仍算数（flag 只是审计标记）。
+  // 同一 (person.channel, label) 只渲染最新一条；新的改名会 supersede 旧的，或按时间盖掉同 label。
+  const noteTs = (n) => Date.parse(String(n.ts ?? '')) || 0
+  const ownerFacts = []
+  const ownerSeen = new Set()
+  for (const n of [...activePersonNotes].sort((a, b) => noteTs(b) - noteTs(a))) {
+    const p = n.person ?? {}
+    if (p.id !== 'owner' || p.kind !== 'identity' || !p.label) continue
+    const channel = p.channel || 'core'
+    const key = `${channel}|${p.label}`
+    if (ownerSeen.has(key)) continue
+    ownerSeen.add(key)
+    ownerFacts.push({
+      id: n.id, text: n.text, label: p.label, name: p.name ?? '', channel, at: n.ts,
+    })
+  }
+
+  // 按会话归组：只收 person.channel==='wx' 且 person.chatId 非空（D24）。
+  // web/core 的笔记、以及没有 chatId 的 owner 事实都不会漏进微信群。
+  const personNotesByChat = new Map()
+  // 按 person.id 归组，给观测台用；id 为空（名册未命中）的 note 暂不建 key。
+  const personNotesByPerson = new Map()
+  for (const n of activePersonNotes) {
+    const p = n.person ?? {}
+    if (p.channel === 'wx' && p.chatId) {
+      if (!personNotesByChat.has(p.chatId)) personNotesByChat.set(p.chatId, [])
+      personNotesByChat.get(p.chatId).push(n)
+    }
+    if (p.id) {
+      if (!personNotesByPerson.has(p.id)) personNotesByPerson.set(p.id, [])
+      personNotesByPerson.get(p.id).push(n)
+    }
+  }
 
   /**
    * 他听懂之后怎么说（P1 第二块，2026-10-24）
@@ -836,6 +898,14 @@ export function deriveSelf(events = [], opts = {}) {
     // 后台刷站看见过的东西：全部条数 + 最近 7 天的三条（身份文档用）。
     saw,
     recentSaw: freshSaw.slice(-3),
+    // ---- 人物笔记（person-memory Phase 1 Task 2）----
+    // 只读派生，不进 beliefs/facts/成长门/日报。ownerFacts 最新在前；两个 Map
+    // 给观测台与 fish:people 用，可见性按 person.channel + person.chatId（D24）。
+    ownerFacts,
+    personNotes: activePersonNotes,
+    personNotesByChat,
+    personNotesByPerson,
+    personNoteCount: activePersonNotes.length,
     beliefCount: active.length,
     // A1.3 修复 F1：与 beliefs 一样按 viewSurface 去引用化；缺省时是同一份数组。
     refuted: displayRefuted,
