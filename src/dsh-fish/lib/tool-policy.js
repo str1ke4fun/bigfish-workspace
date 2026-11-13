@@ -18,7 +18,8 @@
  * ## 内置表 + 贡献表（2026-11-10 A1.4）
  *
  * 内置表 `BUILTIN` 是插件启动时就确定的部分：web/wx/qq/bili 四个面的 core
- * 记忆工具，加上 wx/qq 自己注册的常驻与低频工具。它不可变。
+ * 记忆工具，加上 wx/qq 自己注册的常驻与低频工具，以及 screen 面（陪伴面）
+ * 自己的三条工具。它不可变。
  *
  * 别的插件（从 A2 起是 dsh-bili）通过 `contribute()` 往表里加自己的工具。
  * 所有读入口（`resolveAllow` / `catalog` / `loadTargets` / `groupsFor` /
@@ -45,10 +46,10 @@
 export const KINDS = Object.freeze(['read', 'write', 'send', 'navigate', 'maintain', 'discover'])
 
 /** 策略表认的面。贡献只能落在这些面里。 */
-export const SURFACES = Object.freeze(['web', 'wx', 'qq', 'bili'])
+export const SURFACES = Object.freeze(['web', 'wx', 'qq', 'bili', 'screen'])
 
 /**
- * 本插件自己注册（内置表里归 dsh-fish 所有）的 7 个工具名。
+ * 本插件自己注册（内置表里归 dsh-fish 所有）的 8 个工具名。
  * wx/qq 的工具由别的插件注册，不算在内；B 站 3 个从 A1.4 起改为贡献条目。
  */
 export const OWN_TOOL_NAMES = Object.freeze([
@@ -59,6 +60,7 @@ export const OWN_TOOL_NAMES = Object.freeze([
   'her_reminders',
   'her_remind_cancel',
   'her_inbox',
+  'presence_speak',
 ])
 
 const ALWAYS = 'always'
@@ -90,6 +92,21 @@ function coreEntries(surface) {
     tool('her_leave', surface, ALWAYS, '', '留一句话给那个人', 'write'),
     tool('her_tools', surface, ALWAYS, '', '查看并打开当前面更多工具', 'discover'),
     tool('read_image', surface, ALWAYS, '', '看一张图', 'read', ['hasImageRoute']),
+  ]
+}
+
+/**
+ * screen 面（陪你看屏幕）的独立策略：只看图、说一句、翻旧事。
+ *
+ * 刻意**不用** `coreEntries('screen')`：那会把 growth_commit / her_leave /
+ * her_tools 一起带进陪伴会话，而陪伴会话只该「看图 + 说一句 + 翻旧事」。
+ */
+function screenEntries() {
+  const s = 'screen'
+  return [
+    tool('read_image', s, ALWAYS, '', '看一张图', 'read', ['hasImageRoute']),
+    tool('presence_speak', s, ALWAYS, '', '看屏幕时说一句', 'write'),
+    tool('her_recall', s, ALWAYS, '', '翻自己的旧事和记忆', 'read'),
   ]
 }
 
@@ -158,6 +175,9 @@ function qqDeferred() {
  */
 const BUILTIN = Object.freeze([
   ...coreEntries('web'),
+
+  // screen 面只给 read_image + presence_speak + her_recall。
+  ...screenEntries(),
 
   ...coreEntries('wx'),
   ...wxAlways(),

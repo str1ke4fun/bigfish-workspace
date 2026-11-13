@@ -79,3 +79,10 @@ test('groupsFor 返回策略表里的组，不含空组', () => {
   assert.deepEqual(groupsFor('wx').sort(), ['wx.history', 'wx.stickers', 'wx.ui'])
   assert.deepEqual(groupsFor('bili'), [])
 })
+
+test('screen 面只给 read_image / presence_speak / her_recall', () => {
+  const names = resolveAllow({ surface: 'screen', caps })
+  assert.deepEqual(new Set(names), new Set(['read_image', 'presence_speak', 'her_recall']))
+  const web = resolveAllow({ surface: 'web', caps })
+  assert.equal(web.includes('presence_speak'), false, 'presence_speak 不该出现在 web 面')
+})

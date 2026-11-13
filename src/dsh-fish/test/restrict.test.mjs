@@ -82,7 +82,7 @@ function fakeAgent(cwd, { withRestrict = true, withGuard = true } = {}) {
 test('清单里她该有的工具都在，且不含危险口子', () => {
   // 七个核心是她自己的，外加 read_image（看图片/看视频画面都靠它）。
   // B 站 3 个工具从 A1.4 起由贡献表提供，不再写死在 FISH_TOOLS 里。
-  for (const name of ['growth_commit', 'her_recall', 'her_leave', 'her_remind', 'her_reminders', 'her_remind_cancel', 'her_inbox', 'read_image']) {
+  for (const name of ['growth_commit', 'her_recall', 'her_leave', 'her_remind', 'her_reminders', 'her_remind_cancel', 'her_inbox', 'presence_speak', 'read_image']) {
     assert.ok(HER_TOOLS.includes(name), `清单里少了 ${name}`)
   }
   // 这几个一旦放进去，收窄就白做了
@@ -129,7 +129,9 @@ test('只有她的 agent 被收窄，别人的会话一个都不碰', () => {
 
   ctx.emit('agent/created', { agent: hers.agent })
   assert.equal(hers.calls.length, 1, '她这条应该被限制一次')
-  assert.deepEqual(hers.calls[0].allow, [...HER_TOOLS], '只写 allow，不在清单里的一律挡掉')
+  // D37：presence_speak 在 HER_TOOLS 里（要过宿主 restrictableNames），
+  // 但无策略的 web 兜底路径显式排除它——它只在 screen 面可见。
+  assert.deepEqual(hers.calls[0].allow, HER_TOOLS.filter((n) => n !== 'presence_speak'), '只写 allow，不在清单里的一律挡掉')
   assert.equal(hers.calls[0].deny, undefined, '不用 deny：宿主将来新增工具时 allow 会自动挡住它')
 })
 

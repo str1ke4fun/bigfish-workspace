@@ -47,10 +47,10 @@ import { resolve } from 'node:path'
 import { OWN_TOOL_NAMES } from './tool-policy.js'
 
 /**
- * 本插件**内置**的 7 个自有工具。顺序无意义，但**必须全部真实存在**（名字错会
+ * 本插件**内置**的 8 个自有工具。顺序无意义，但**必须全部真实存在**（名字错会
  * 抛错）。B 站 3 个工具从 A1.4 起不再写死在这里：它们由贡献方通过
  * `tool-policy.contribute()` 进策略表，运行时的完整自有名单是
- * `tool-policy.ownTools()`（内置 7 个 + 当前全部贡献名）。
+ * `tool-policy.ownTools()`（内置 8 个 + 当前全部贡献名）。
  */
 export const FISH_TOOLS = Object.freeze([...OWN_TOOL_NAMES])
 
@@ -58,6 +58,9 @@ export const FISH_TOOLS = Object.freeze([...OWN_TOOL_NAMES])
  * 她允许看见的工具。
  * 最后一个是宿主给的 `read_image`——它由宿主某个插件提供，别人的机器上不一定装；
  * 缺了不影响她说话写字，只是看不了图，所以自检里只当提示、不当失败。
+ *
+ * 注意：`presence_speak` 在清单里（它要过宿主的 restrictableNames 校验），
+ * 但它只在 screen 面可见；没有 tool-policy 的兜底路径会在 web 面显式排除它（D37）。
  */
 export const HER_TOOLS = Object.freeze([...FISH_TOOLS, 'read_image'])
 
@@ -179,8 +182,11 @@ export function registerToolRestrict(ctx, {
 
   // 没有策略时退回旧的静态名单（老宿主 / 单测路径）：her 的 cwd 当作 web 面信号。
   // provideFishCore 失败时 index.js 仍会传 policy，所以这里主要是兼容旧调用。
+  //
+  // D37：presence_speak 进了 HER_TOOLS，但兜底路径没有 screen 面的概念；
+  // 不能在 web 面放它出去，否则陪看屏幕的工具会出现在普通网页会话里。
   const effectivePolicy = policy ?? {
-    resolveAllow: ({ surface: s }) => (s === 'web' ? [...HER_TOOLS] : []),
+    resolveAllow: ({ surface: s }) => (s === 'web' ? HER_TOOLS.filter((n) => n !== 'presence_speak') : []),
     loadTargets: ({ names = [] }) => ({ ok: true, names: [...new Set(names)] }),
   }
   const extraNames = [...new Set(

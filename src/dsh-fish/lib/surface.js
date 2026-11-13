@@ -1,4 +1,7 @@
-// Surface registry: decides which channel (web | wx | qq | bili) an agent belongs to.
+// Surface registry: decides which face (web | wx | qq | bili | screen) an agent belongs to.
+//
+// 注意：这里的 SURFACES 是**会话面**，与 schema.js 的“事件来源面”
+// （core/web/wx/qq/bili/screen）以及 tool-policy.js 的“工具面”同名不同层。
 //
 // A surface is "reserved" for a session id before the session exists (e.g. dsh-wx
 // reserves the id it is about to create), which wins over matcher probing. Unknown
@@ -6,7 +9,7 @@
 //
 // This is a pure module: no imports and no I/O.
 
-export const SURFACES = ['web', 'wx', 'qq', 'bili']
+export const SURFACES = ['web', 'wx', 'qq', 'bili', 'screen']
 
 const SURFACE_SET = new Set(SURFACES)
 
@@ -18,7 +21,8 @@ function agentCwd(agent) {
   return agent?.session?.header?.cwd ?? agent?.header?.cwd ?? agent?.session?.cwd
 }
 
-export function createSurfaceRegistry({ log, priority = ['bili', 'wx', 'qq', 'web'] } = {}) {
+// screen 必须进 priority，否则 core-service 注册的 cwd matcher 永远不会被探测。
+export function createSurfaceRegistry({ log, priority = ['bili', 'wx', 'qq', 'screen', 'web'] } = {}) {
   const handlers = new Map() // surfaceId -> { match, sections }
   const reserved = new Map() // sessionId -> surfaceId
 

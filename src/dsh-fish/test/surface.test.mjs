@@ -47,6 +47,20 @@ test('重复注册同一个 surface 抛错；release 后回到 matcher', () => {
   assert.equal(r.current(agent('s1')), null)
 })
 
+test('screen 面可以 reserve，current 返回 screen', () => {
+  const r = createSurfaceRegistry()
+  r.reserve('screen-1', 'screen')
+  assert.equal(r.current(agent('screen-1')), 'screen')
+})
+
+test('cwd=home/screen 的 matcher 判成 screen（不依赖 reserve，D36）', () => {
+  const r = createSurfaceRegistry()
+  r.register({ id: 'web', match: ({ cwd }) => cwd === '/root/home' })
+  r.register({ id: 'screen', match: ({ cwd }) => cwd === '/root/home/screen' })
+  assert.equal(r.current(agent('screen-2', '/root/home/screen')), 'screen')
+  assert.equal(r.current(agent('home', '/root/home')), 'web')
+})
+
 test('agentSessionId 兼容 session.header.id / session.id / agent.id', () => {
   assert.equal(agentSessionId({ session: { header: { id: 'a' } } }), 'a')
   assert.equal(agentSessionId({ session: { id: 'b' } }), 'b')

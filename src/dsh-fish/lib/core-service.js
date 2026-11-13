@@ -2,7 +2,7 @@
  * core-service.js —— 插件内核服务 `fishCore`
  *
  * 一个对象把跨插件通道收口：
- *   - surface：这个会话属于哪个面（web / wx / qq / bili）；
+ *   - surface：这个会话属于哪个面（web / wx / qq / bili / screen）；
  *   - guard  ：防注入、防泄露的最后一道闸；
  *   - config ：配置读取与白名单写入（A1.7，见 config-service.js）；
  *   - owner  ：主人身份与进程内凭据（A1.7，见 owner-service.js）；
@@ -86,6 +86,15 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc, identi
     registry.register({
       id: 'qq',
       match: ({ id }) => typeof id === 'string' && id.startsWith('onebot-'),
+    }),
+
+    // screen：陪你看屏幕的专属 cwd（D36 fail-closed）。正常路径会先
+    // `surface.reserve(sessionId, 'screen')`；但宿主恢复会话时可能忽略预分配 id，
+    // agent/created 早于 reserve，这时靠 cwd 仍然判成 screen，不会落到 restrict
+    // 的 isHerAgent web 兜底、把 growth_commit 之类的工具带进陪伴会话。
+    registry.register({
+      id: 'screen',
+      match: ({ cwd }) => cwd === join(baseRoot, 'home', 'screen'),
     }),
 
     // web：cwd 就是她的房间。屋子会话 id 由 bootstrapHome 建完后调用
