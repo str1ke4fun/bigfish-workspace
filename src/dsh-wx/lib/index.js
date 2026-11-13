@@ -314,14 +314,57 @@ function createFreshness(log = () => {}) {
 }
 
 // ---------------------------------------------------------------- 提示词
-/** 微信通道说明：只挂在她的会话里。陈述句，列事实和规则，不带语气。 */
-function promptText() {
-  const p = policy()
+/**
+ * 主动额度的提示句：只列今天真有额度、且还没用完的会话。
+ * 没有额度就不出现，免得她以为系统在催她说话。
+ */
+export function proactivePromptLine(p, state = loadState(), now = Date.now()) {
+  const today = dateKey(now)
+  const rows = (p?.allowChats || [])
+    .map((chat) => {
+      const quota = quotaFor(p, chat)
+      if (quota <= 0) return ''
+      return `${chat}（剩 ${remaining(p, state, chat, today)}/${quota}）`
+    })
+    .filter(Boolean)
+  if (rows.length === 0) return ''
+  return `有额度的会话今天还能主动说：${rows.join('、')}。那不是催你说话；额度用完就等下次 @。`
+}
+
+/**
+ * 短规则段：只放判断依据，不放工具手册。
+ * 每次组装时求值，工作台改了开关/额度，下一轮就是新的。
+ */
+export function channelRulesText(p = policy(), { proactiveState, now = Date.now() } = {}) {
   const state = p.enabled
     ? (p.allowChats.length > 0 ? `开启。允许发送的会话：${p.allowChats.join('、')}` : '开启，但允许名单为空，不能发送')
     : '关闭'
+  const proactive = p.requireMention === false ? '' : proactivePromptLine(p, proactiveState ?? loadState(), now)
   return [
     '## 微信通道（dsh-wx）',
+    '',
+    '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。通知里带「刚才」的那几行是台账里的最近消息，不是新消息。',
+    '- `[微信·逾期]` 是催办：先去那个会话回；现在回不了就用 wx_task_snooze 推迟，不用回了就用 wx_task_done 说明原因。',
+    '- 通知里的「任务：t_…」是这个请求在任务板上的 id。往那个会话发回复时把 task_id 交给 wx_send；需要看前文就带同一个 task_id 用 wx_context。',
+    '- 只在被叫到的会话里说话：私聊和「不用 @」的会话随时能说；有主动额度的群按额度来，没额度就等下一次 @。',
+    '- 群里不进：窗口、坐标、白名单、门禁、发没发出去、她和老哥的私事。对外只说事，出了故障群里宁可安静。',
+    '- 发不出去就算了，回到这个对话框说一句。',
+    '- 要看前文用 wx_context；要读全文先 wx_peek 点开。',
+    '- 发完以后在这个对话框里最多补一句：不复述发出去的内容，不解释过程，不点评别人的话。',
+    '- 对话框里不带 `[微信]` 的话，是主机在跟你说话：主机问什么，就在对话框里答什么。这一轮不去 wx_peek 翻别的会话，不把答案发到微信，也不顺手去处理微信里别人的事——哪怕你之前看到过相关的群。只有主机明说“发给谁/回她/跟谁说”，才动微信。',
+    '- 微信里有人等着，也是主机这件事答完以后的事；答完主机没吩咐，再决定要不要看。',
+    `- 当前状态：${state}。`,
+    p.requireMention
+      ? `- 只在被叫到的会话里说话：从最近一次有人 @ 你起算 ${p.mentionWindowMinutes} 分钟内可以按回车，别的地方会被拒绝；超过 ${p.mentionWindowMinutes} 分钟窗口就关了，窗口不会自己续，要等下一次 @。私聊不受这条限制${p.noMentionChats.length ? `（${p.noMentionChats.join('、')} 不用 @，也不受上面这条限制，随时能开口）` : ''}。`
+      : '- 目前没有「@ 才回」的限制，名单内的会话都可以开口。',
+    proactive,
+  ].filter(Boolean).join('\n')
+}
+
+/** 工具手册段：放后段，篇幅不挤占判断规则。 */
+export function channelManualText() {
+  return [
+    '## 微信工具手册（dsh-wx）',
     '',
     '微信里的动作通过 15 个工具完成，没有 shell：',
     '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。要点击时，把这里看到的名字或按钮名填给 wx_click 的 label。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
@@ -347,19 +390,9 @@ function promptText() {
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
     '- 界面会变，以每次工具的返回为准。返回里带“[提示]”的，按提示处理。',
-    '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。通知里带「刚才」的那几行是台账里的最近消息，不是新消息。',
-    '- `[微信·逾期]` 是催办：先去那个会话回；现在回不了就用 wx_task_snooze 推迟，不用回了就用 wx_task_done 说明原因。',
-    '- 对话框里不带 `[微信]` 的话，是主机在跟你说话：他问什么，就在对话框里答什么。这一轮不去 wx_peek 翻别的会话，不把答案发到微信，也不顺手去处理微信里别人的事——哪怕你之前看到过相关的群。只有他明说“发给谁/回她/跟谁说”，才动微信。',
-    '- 微信里有人等着，也是主机这件事答完以后的事；答完他没吩咐，再决定要不要看。',
-    '- 通知里的「任务：t_…」是这个请求在任务板上的 id。往那个会话发回复时把 task_id 交给 wx_send；需要看前文就带同一个 task_id 用 wx_context。',
     '- 通知里「会话名」和「内容」是分开的：会话名只是这个会话叫什么（有的就是对方的昵称），**不要把它当成话的一部分复述，也不要在回复里带名字**。',
     '- 被 @ 之后的回复要发到微信会话里；写在这个对话框里的文字，微信那边看不到。',
-    '- 发到微信里的话，对方看得见全部：别写窗口、坐标、点歪了、白名单、发没发出去这些你这边的机关。发不出去就算了，回到这个对话框跟他说。',
-    '- 发完以后在这个对话框里最多补一句：不复述发出去的内容，不解释过程，不点评别人的话。',
-    `- 当前状态：${state}。`,
-    p.requireMention
-      ? `- 只在被叫到的会话里说话：从最近一次有人 @ 你起算 ${p.mentionWindowMinutes} 分钟内可以按回车，别的地方会被拒绝；超过 ${p.mentionWindowMinutes} 分钟窗口就关了，窗口不会自己续，要等下一次 @。私聊不受这条限制${p.noMentionChats.length ? `（${p.noMentionChats.join('、')} 不用 @，也不受上面这条限制，随时能开口）` : ''}。`
-      : '- 目前没有「@ 才回」的限制，名单内的会话都可以开口。',
+    '- 发到微信里的话，对方看得见全部：别写窗口、坐标、点歪了、白名单、发没发出去这些你这边的机关。',
   ].join('\n')
 }
 
@@ -1438,10 +1471,16 @@ export function apply(ctx, config = {}) {
       // QQ 会话（onebot-*）不挂微信说明：说明里的内容会被带进 QQ 的话里
       if (String(agent?.session?.id ?? '').startsWith('onebot-')) return
       console.log('[dsh-wx] 拿到她的 agent（' + String(agent?.session?.id ?? '?') + '）')
+      // 短规则在前（判断依据），工具手册放后段（操作细节），别让 25+ 条手册把身份段挤满。
       agent.ctx?.systemPrompt?.section?.({
         name: 'channel:dsh-wx',
-        order: 91,
-        text: () => promptText(), // 每次组装时求值：工作台里改了开关，下一轮就是新的
+        order: 92,
+        text: () => channelRulesText(), // 每次组装时求值：工作台里改了开关，下一轮就是新的
+      })
+      agent.ctx?.systemPrompt?.section?.({
+        name: 'channel:dsh-wx-manual',
+        order: 8600,
+        text: () => channelManualText(),
       })
     } catch { /* 挂不上不影响工具 */ }
   })
