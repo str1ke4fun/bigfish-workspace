@@ -5,7 +5,7 @@
  *   1. 同一 fixture 走旧路径（直接 appendEvent）与新路径（fishCore.memory），
  *      事件类型序列与 surface/channel 必须一致——升级不能悄悄改变事件形状；
  *   2. 微信原话（channel=wx）不进 bili/core 视图，公开的 B 站内容任何面都看得到；
- *   3. 版本号已经升到 0.8.0（迁移说明与 CHANGELOG 同批交付）。
+ *   3. 版本号已经升到 0.9.0（迁移说明与 CHANGELOG 同批交付）。
  */
 
 import { test } from 'node:test'
@@ -93,6 +93,6 @@ test('微信原话不进 bili/core 视图；公开的 B 站内容任何面都看
   })
 })
 
-test('版本号已升到 0.8.0', () => {
-  assert.equal(VERSION, '0.8.0')
+test('版本号已升到 0.9.0', () => {
+  assert.equal(VERSION, '0.9.0')
 })
