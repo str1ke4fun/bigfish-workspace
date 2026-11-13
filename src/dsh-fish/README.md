@@ -230,7 +230,7 @@ lib/
   toolschema.js 简写参数 DSL → 标准 JSON Schema
   observe.js    宿主侧 JSON API（/dsh-fish/state、/events、/beliefs、/diary、/config、/wake、/browse、/reports、/update）
   client.js     浏览器半边（已不挂载；保留用于回滚）
-test/           1059 个测试，node --test 全绿
+test/           1067 个测试，node --test 全绿
 ```
 
 ## 跑测试
@@ -284,7 +284,7 @@ node --test                     # 在插件目录里跑（不带参数，Node �
 P1（骨架）：事件流、派生、阶段门、生物钟、工具、冷落检测、日记、观测台。
 P2（她真的会刷 B 站并写报告）：`lib/bili.js` 只读客户端 + `lib/browse.js` 选题筛读 + `lib/look.js` 的 `bili_look` 工具 + `lib/report.js` 写稿，已接进生物钟。
 
-**已有 1059 个测试全绿**（2026-11-13 实测）。
+**已有 1067 个测试全绿**（2026-11-13 实测）。
 
 `browse.enabled` 默认 **true**（装好就能用）；不想让她上网就在 8788 工作台「环境」页关掉，关掉后定时器一次都不会调 B 站接口。
 

@@ -175,6 +175,57 @@ test('没有 exposure 时三项仍然出现，不抛也不报红', async () => {
   })
 })
 
+test('屏幕陪伴关着时，「屏幕陪伴」自检是绿的', async () => {
+  await withRoot(async (root) => {
+    const r = await runChecks({
+      root,
+      net: false,
+      host: {},
+      peers: [],
+      config: { presence: { enabled: false } },
+    })
+    const it = ITEM(r, 'presence')
+    assert.ok(it, '要有一项屏幕陪伴')
+    assert.equal(it.ok, true, `应为绿，实际：${it.detail}`)
+    assert.match(it.detail, /总开关关着/)
+  })
+})
+
+test('屏幕陪伴开着且配置的 ffmpeg 路径存在：绿，且不把绝对路径写进详情', async () => {
+  await withRoot(async (root) => {
+    const exe = process.execPath
+    const r = await runChecks({
+      root,
+      net: false,
+      host: {},
+      peers: [],
+      config: { presence: { enabled: true, ffmpegExe: exe } },
+    })
+    const it = ITEM(r, 'presence')
+    assert.ok(it, '要有一项屏幕陪伴')
+    assert.equal(it.ok, true, `应为绿，实际：${it.detail}`)
+    assert.match(it.detail, /已配置 Windows ffmpeg/)
+    assert.equal(it.detail.includes(exe), false, '详情不该带出完整绝对路径')
+  })
+})
+
+test('屏幕陪伴开着但没配置 ffmpeg：红，并说清去哪里填', async () => {
+  await withRoot(async (root) => {
+    const r = await runChecks({
+      root,
+      net: false,
+      host: {},
+      peers: [],
+      config: { presence: { enabled: true, ffmpegExe: '' } },
+    })
+    const it = ITEM(r, 'presence')
+    assert.ok(it, '要有一项屏幕陪伴')
+    assert.equal(it.ok, false)
+    assert.match(it.detail, /没配置 Windows ffmpeg 路径/)
+    assert.match(it.fix, /presence\.ffmpegExe/)
+  })
+})
+
 test('源码守门：/owner POST 只认登录账号，不许覆盖领养人', async () => {
   const ob = await readFile(join(ROOT, 'lib', 'observe.js'), 'utf8')
   assert.ok(ob.includes('await saveAccount(me, root)'), '「测试登录」成功时要记下登录账号')

@@ -11,7 +11,7 @@
  * 只读：除了状态目录里一个临时文件，不改任何东西。
  */
 
-import { promises as fs, readdirSync } from 'node:fs'
+import { promises as fs, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { readConfig, readEvents, readOwner } from './store.js'
@@ -108,6 +108,27 @@ export async function runChecks(o = {}) {
     }
   } catch (err) {
     push('config', '配置文件', { ok: false, detail: String(err?.message ?? err), fix: '删掉 config.json 会回到默认值（不会动她的经历）。' })
+  }
+
+  // 3b. 屏幕陪伴（2026-11-13）
+  // 她看宿主桌面要靠 Windows 那侧的 ffmpeg.exe（经 /mnt/c/… 访问），
+  // 本机 PATH 里的 Linux ffmpeg 干不了这件事。总开关关着就无需配置；
+  // 开着却没填可用的 exe 路径，屏幕陪伴其实动不了——如实报红。
+  // 详情里不写完整路径：自检会显示在界面上，别把用户名/目录带出去。
+  {
+    const p = cfg?.presence
+    if (p?.enabled === false) {
+      push('presence', '屏幕陪伴', { ok: true, detail: '总开关关着' })
+    } else {
+      const exe = String(p?.ffmpegExe ?? '').trim()
+      push('presence', '屏幕陪伴', exe && existsSync(exe)
+        ? { ok: true, detail: '已配置 Windows ffmpeg' }
+        : {
+          ok: false,
+          detail: '屏幕陪伴开着，但没配置 Windows ffmpeg 路径',
+          fix: '在 8788「她 · 陪伴」或 config 的 presence.ffmpegExe 填入 ffmpeg.exe 的 WSL 路径（/mnt/c/...）。',
+        })
+    }
   }
 
   // 4. 事件流
