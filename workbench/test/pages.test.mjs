@@ -103,3 +103,24 @@ test('配置表单对缺失 / 错误类型是 Null-safe 的', () => {
   assert.match(s, /parseList/)
   assert.doesNotMatch(s, /innerHTML/)
 })
+
+test('系统·设置只留成长 / 通知 / 对话 / 记忆', () => {
+  const s = src('system-settings.js')
+  assert.equal(systemSettings.id, 'system-settings')
+  assert.equal(systemSettings.slug, 'settings')
+  for (const k of ['growthDays', 'wakesPerDay', 'daily', 'diary', 'absenceAfterDays',
+    'notify.enabled', 'chat.rotateAfter', 'chat.replyChars',
+    'memory.docBudget', 'memory.beliefsShown', 'memory.sleepEveryDays']) assert.ok(s.includes(k), k)
+  assert.doesNotMatch(s, /browse\.|video\.|comment\.|avoid\.|owner\.|tools\.restrict|observe\.|persona/)
+  assert.match(s, /配置搬家/)
+})
+test('工具白名单只在系统·工具与规则', () => {
+  const s = src('system-tools.js')
+  assert.equal(systemTools.id, 'system-tools')
+  assert.equal(systemTools.slug, 'tools')
+  for (const k of ['tools.restrict', 'tools.allow', "fish('tools')", "fish('rules')", "fish('selfcheck?net=1')"]) {
+    assert.ok(s.includes(k), k)
+  }
+  assert.match(s, /重启 DSH 后生效/)
+  assert.doesNotMatch(s, /persona|innerHTML/)
+})
