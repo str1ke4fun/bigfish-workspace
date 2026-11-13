@@ -194,6 +194,12 @@ test('搬运段在身份文档末尾，且不挤掉黑名单', () => {
   for (const ban of HARD_BANS) assert.ok(doc.includes(ban))
 })
 
+test('群段允许把需要说清楚的事讲完，但不放开私事与黏人', () => {
+  const doc = renderSelfDoc(model(), { carry: '' })
+  assert.match(doc, /群里平时短；认真问技术、认真讲心事，或这件事本来就需要说清楚时再展开/)
+  assert.match(doc, /可以软，不黏，不叫哥，不讲你和他的事/)
+})
+
 // ---------------------------------------------------------------- 回忆工具
 
 test('中文查询会切二字片段（否则整句匹配全落空）', () => {
@@ -259,6 +265,27 @@ test('her_recall 的模型投影以 [翻到] / [没翻到] 开头，不另给 ha
   assert.match(text, /^\[翻到\]/)
   assert.ok(text.includes('那天雨很大'), '投影要把翻到的那句带上')
   assert.doesNotMatch(text, /编号/, '结果里没有 id 列表，不该造 handle')
+}))
+
+test('B 站面上 her_recall 只翻共同层：网页屋子的原话不能召回', async () => withRoot(async (root) => {
+  const defs = new Map()
+  const ctx = { tools: { register: (d) => { defs.set(d.name, d); return () => {} } } }
+  // B 站会话是裸 uuid，channelOfAgent 会把它判成 web；面登记才是准的。
+  const core = { surface: { current: () => 'bili' } }
+  registerRecall(ctx, { root, core })
+
+  const { appendEvent } = await import('../lib/store.js')
+  await appendEvent({ type: 'utterance', text: '屋子里说过的悄悄话', channel: 'web' }, { source: 'tool' }, root)
+  await appendEvent({ type: 'utterance', text: '微信里说过的话', channel: 'wx' }, { source: 'tool' }, root)
+  await appendEvent({ type: 'saw', text: 'B 站上公开的东西', channel: 'core' }, { source: 'system' }, root)
+
+  const def = defs.get('her_recall')
+  const quiet = await def.execute({ query: '悄悄话' })
+  assert.equal(quiet.found, false, '网页屋子的原话不能出现在 B 站面')
+  const wx = await def.execute({ query: '微信里说过' })
+  assert.equal(wx.found, false, '微信原话不能出现在 B 站面')
+  const open = await def.execute({ query: '公开的东西' })
+  assert.equal(open.found, true, '共同层的公开事实照常能翻到')
 }))
 
 // ---------------------------------------------------------------- 配置

@@ -29,6 +29,7 @@ import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
+import { consume as consumeProactive, dateKey, decideProactive, loadState, normalizeProactive, quotaFor, remaining, saveState } from './proactive.js'
 import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { openChatHit } from './ear-open.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
@@ -76,7 +77,6 @@ const INBOX = '/home/str1k3/.dsh-wx/inbound.jsonl'
 const HER_DIR = '/home/str1k3/.dsh-fish/home'
 // 说话频率的判定放在两个通道共用的一个文件里（QQ 那边是 vendor 补丁，用的是同一份）
 const SPEECH = '/home/str1k3/dsh-plugins/speech/speech.mjs'
-const MEM_LIVE = '/home/str1k3/dsh-plugins/dsh-mem/lib/livewx.js'
 const KEEP = 20
 
 /**
@@ -117,6 +117,8 @@ function policy() {
       // @ 才回：开着的时候，只有最近被 @ 过的会话她才敢开口
       requireMention: raw.requireMention !== false,
       mentionWindowMinutes: parseWindowMinutes(raw.mentionWindowMinutes),
+      // 主动额度：没被 @ 时，每个群每天还能自己接几句；显式 0 = 这个群不主动
+      ...normalizeProactive(raw),
       // 私聊/自己的文件传输这类：本来就等于在叫她，不受 @ 约束
       noMentionChats: Array.isArray(raw.noMentionChats) ? raw.noMentionChats.map((s) => String(s).trim()).filter(Boolean) : [],
       trigger: Array.isArray(raw.trigger) && raw.trigger.length > 0
@@ -133,7 +135,7 @@ function policy() {
   } catch {
     return {
       enabled: false, allowChats: [], watch: false, trigger: [], requireMention: true,
-      mentionWindowMinutes: 3, noMentionChats: [],
+      mentionWindowMinutes: 3, proactivePerDay: 0, proactiveChats: {}, noMentionChats: [],
       ignoreChats: DEFAULT_IGNORE_CHATS,
       capture: captureSettings({}),
       stickerSearch: false,
@@ -307,14 +309,57 @@ function createFreshness(log = () => {}) {
 }
 
 // ---------------------------------------------------------------- 提示词
-/** 微信通道说明：只挂在她的会话里。陈述句，列事实和规则，不带语气。 */
-function promptText() {
-  const p = policy()
+/**
+ * 主动额度的提示句：只列今天真有额度、且还没用完的会话。
+ * 没有额度就不出现，免得她以为系统在催她说话。
+ */
+export function proactivePromptLine(p, state = loadState(), now = Date.now()) {
+  const today = dateKey(now)
+  const rows = (p?.allowChats || [])
+    .map((chat) => {
+      const quota = quotaFor(p, chat)
+      if (quota <= 0) return ''
+      return `${chat}（剩 ${remaining(p, state, chat, today)}/${quota}）`
+    })
+    .filter(Boolean)
+  if (rows.length === 0) return ''
+  return `有额度的会话今天还能主动说：${rows.join('、')}。那不是催你说话；额度用完就等下次 @。`
+}
+
+/**
+ * 短规则段：只放判断依据，不放工具手册。
+ * 每次组装时求值，工作台改了开关/额度，下一轮就是新的。
+ */
+export function channelRulesText(p = policy(), { proactiveState, now = Date.now() } = {}) {
   const state = p.enabled
     ? (p.allowChats.length > 0 ? `开启。允许发送的会话：${p.allowChats.join('、')}` : '开启，但允许名单为空，不能发送')
     : '关闭'
+  const proactive = p.requireMention === false ? '' : proactivePromptLine(p, proactiveState ?? loadState(), now)
   return [
     '## 微信通道（dsh-wx）',
+    '',
+    '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。通知里带「刚才」的那几行是台账里的最近消息，不是新消息。',
+    '- `[微信·逾期]` 是催办：先去那个会话回；现在回不了就用 wx_task_snooze 推迟，不用回了就用 wx_task_done 说明原因。',
+    '- 通知里的「任务：t_…」是这个请求在任务板上的 id。往那个会话发回复时把 task_id 交给 wx_send；需要看前文就带同一个 task_id 用 wx_context。',
+    '- 只在被叫到的会话里说话：私聊和「不用 @」的会话随时能说；有主动额度的群按额度来，没额度就等下一次 @。',
+    '- 群里不进：窗口、坐标、白名单、门禁、发没发出去、她和老哥的私事。对外只说事，出了故障群里宁可安静。',
+    '- 发不出去就算了，回到这个对话框说一句。',
+    '- 要看前文用 wx_context；要读全文先 wx_peek 点开。',
+    '- 发完以后在这个对话框里最多补一句：不复述发出去的内容，不解释过程，不点评别人的话。',
+    '- 对话框里不带 `[微信]` 的话，是主机在跟你说话：主机问什么，就在对话框里答什么。这一轮不去 wx_peek 翻别的会话，不把答案发到微信，也不顺手去处理微信里别人的事——哪怕你之前看到过相关的群。只有主机明说“发给谁/回她/跟谁说”，才动微信。',
+    '- 微信里有人等着，也是主机这件事答完以后的事；答完主机没吩咐，再决定要不要看。',
+    `- 当前状态：${state}。`,
+    p.requireMention
+      ? `- 只在被叫到的会话里说话：从最近一次有人 @ 你起算 ${p.mentionWindowMinutes} 分钟内可以按回车，别的地方会被拒绝；超过 ${p.mentionWindowMinutes} 分钟窗口就关了，窗口不会自己续，要等下一次 @。私聊不受这条限制${p.noMentionChats.length ? `（${p.noMentionChats.join('、')} 不用 @，也不受上面这条限制，随时能开口）` : ''}。`
+      : '- 目前没有「@ 才回」的限制，名单内的会话都可以开口。',
+    proactive,
+  ].filter(Boolean).join('\n')
+}
+
+/** 工具手册段：放后段，篇幅不挤占判断规则。 */
+export function channelManualText() {
+  return [
+    '## 微信工具手册（dsh-wx）',
     '',
     '微信里的动作通过 15 个工具完成，没有 shell：',
     '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。要点击时，把这里看到的名字或按钮名填给 wx_click 的 label。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
@@ -340,19 +385,9 @@ function promptText() {
     '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
     '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
     '- 界面会变，以每次工具的返回为准。返回里带“[提示]”的，按提示处理。',
-    '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。通知里带「刚才」的那几行是台账里的最近消息，不是新消息。',
-    '- `[微信·逾期]` 是催办：先去那个会话回；现在回不了就用 wx_task_snooze 推迟，不用回了就用 wx_task_done 说明原因。',
-    '- 对话框里不带 `[微信]` 的话，是主机在跟你说话：他问什么，就在对话框里答什么。这一轮不去 wx_peek 翻别的会话，不把答案发到微信，也不顺手去处理微信里别人的事——哪怕你之前看到过相关的群。只有他明说“发给谁/回她/跟谁说”，才动微信。',
-    '- 微信里有人等着，也是主机这件事答完以后的事；答完他没吩咐，再决定要不要看。',
-    '- 通知里的「任务：t_…」是这个请求在任务板上的 id。往那个会话发回复时把 task_id 交给 wx_send；需要看前文就带同一个 task_id 用 wx_context。',
     '- 通知里「会话名」和「内容」是分开的：会话名只是这个会话叫什么（有的就是对方的昵称），**不要把它当成话的一部分复述，也不要在回复里带名字**。',
     '- 被 @ 之后的回复要发到微信会话里；写在这个对话框里的文字，微信那边看不到。',
-    '- 发到微信里的话，对方看得见全部：别写窗口、坐标、点歪了、白名单、发没发出去这些你这边的机关。发不出去就算了，回到这个对话框跟他说。',
-    '- 发完以后在这个对话框里最多补一句：不复述发出去的内容，不解释过程，不点评别人的话。',
-    `- 当前状态：${state}。`,
-    p.requireMention
-      ? `- 只在被叫到的会话里说话：最近 ${p.mentionWindowMinutes} 分钟内有人 @ 你的会话才能按回车，别的地方会被拒绝；${p.mentionWindowMinutes} 分钟没再叫你，就停下。私聊不受这条限制${p.noMentionChats.length ? `（${p.noMentionChats.join('、')} 不用 @，也不受上面这条限制，随时能开口）` : ''}。`
-      : '- 目前没有「@ 才回」的限制，名单内的会话都可以开口。',
+    '- 发到微信里的话，对方看得见全部：别写窗口、坐标、点歪了、白名单、发没发出去这些你这边的机关。',
   ].join('\n')
 }
 
@@ -517,7 +552,7 @@ export function apply(ctx, config = {}) {
   })
 
   // ---- 会话目录 / 多会话 ----
-  // 目录是派生索引：侧栏每见到一次就合并一次；全量滚动扫描每 10 分钟一次。
+  // 目录是派生索引：侧栏每见到一次就合并一次；全量滚动扫描只在启动/登录后和工作台按钮点的时候做。
   // chatId 一旦分配就不换，台账、任务、向量缓存都靠它对齐。
   const directory = createDirectory({
     log: (m) => console.log('[dsh-wx] 会话目录：' + String(m ?? '').slice(0, 160)),
@@ -719,6 +754,9 @@ export function apply(ctx, config = {}) {
   let lastCurrentCapture = null   // captureCurrent 存下的 { chat, chatId, messages }
   let roundPreview = null         // 本轮 recordPreviews 的返回值，供 captureTick 入队
   const pendingCaptureHits = []   // 采集补扫到的 @，等下一轮投递
+  // 本进程里已经整屏采过的会话：第一次整屏时旧消息全是「新记录」，
+  // 不能拿台账当新消息的证据；之后才按台账驱动通知。
+  const openChatSeen = new Set()
   const capturedSinceStart = new Set()
   let captureHealth = { paused: false, pauseReason: '', queued: 0, lastAt: '', lastChat: '', lastResult: '', lastError: '' }
   let lastPauseLog = { reason: '', at: 0 }
@@ -732,14 +770,6 @@ export function apply(ctx, config = {}) {
     }
     return captureQueue
   }
-
-  // 流水账 + 读气氛：由 dsh-mem 提供。拿不到就当没有，微信照常工作。
-  // 依赖方向是 dsh-wx → dsh-mem（和上面的说话频率同一个办法：动态 import 一个固定路径）。
-  let feed = null
-  import(MEM_LIVE).then((m) => {
-    feed = m.createWxFeed({ log: (s) => console.log('[dsh-wx] 流水账：' + s) })
-    console.log('[dsh-wx] 流水账已接上（dsh-mem/livewx）')
-  }).catch((e) => console.log('[dsh-wx] 没接上流水账（dsh-mem 不可用）：' + String(e?.message ?? e).slice(0, 120)))
 
   const treeStats = { calls: 0, lastMs: 0, since: Date.now() }
   const fresh = createFreshness((m) => console.log('[dsh-wx] 树：' + m))
@@ -781,8 +811,6 @@ export function apply(ctx, config = {}) {
     treeStats.calls++
     treeStats.lastMs = Date.now() - t0
     const parsed = parseTree(raw)
-    // 流水账：屏幕上出现的新消息当场记下（耳朵每 5 秒也走这里，所以她没点开的会话里的新话也记得到）
-    try { feed?.observe(parsed) } catch { /* 记不下不影响用 */ }
     const region = pixels ? sidebarRegion(parsed) : null
     let hash = ''
     if (region) {
@@ -999,7 +1027,7 @@ export function apply(ctx, config = {}) {
   // ---- 发送前的闸 ----
   // 以前是 `tree.includes(名单里的名字)`：会话列表里永远有那个群，所以不管当前开着谁都放行。
   // 现在只认「当前会话」这一个字段，并且要求树没落后（落后时当前会话可能是旧的）。
-  async function gateSend() {
+  async function gateSend({ consume = false, expected = '' } = {}) {
     const p = policy()
     if (!p.enabled) throw new Error(OFF)
     if (hostBlocksSend()) {
@@ -1016,12 +1044,29 @@ export function apply(ctx, config = {}) {
       if (p.allowChats.length === 0) throw new Error('允许名单为空，不能发送。')
       throw new Error(`当前会话是「${s.parsed.current}」，不在允许名单内（${p.allowChats.join('、')}），不发送。`)
     }
-    // @ 才回：只有最近被 @ 过的会话才开口（QQ 那边是同一条规矩，按条判；微信只能按会话判）
-    if (p.requireMention && !exempt) {
-      const verdict = canSpeak(readMentions(), hit, Date.now(), p.mentionWindowMinutes)
-      if (!verdict.ok) throw new Error(`「${hit}」${verdict.reason}，先不发。`)
+    // 调用方知道目标会话时必须在这里复核：频率闸等待期间窗口可能被切走，
+    // 不能在切换后的会话上扣掉另一群/另一个人的主动额度。
+    if (expected && !sameName(hit, expected)) {
+      throw new Error(`当前会话变成了「${hit}」，不是「${expected}」，不发送。`)
     }
-    return { chat: hit, snap: s }
+    // @ 才回：只有最近被 @ 过的会话才开口（QQ 那边是同一条规矩，按条判；微信只能按会话判）。
+    // 没被 @ 时还可以用当天主动额度，由 proactive.js 统一判定。
+    const verdict = p.requireMention && !exempt
+      ? canSpeak(readMentions(), hit, Date.now(), p.mentionWindowMinutes)
+      : { ok: true }
+    const state = loadState()
+    const dec = decideProactive({ policy: p, state, chat: hit, mention: verdict, exempt, now: Date.now() })
+    if (!dec.ok) throw new Error(`「${hit}」${dec.why}；这个群今天没有可用的主动额度，先不发。`)
+    let left = dec.left
+    if (dec.proactive && consume) {
+      // 一次发送只在这里扣一次：前面的 gateSend 都只是检查，避免一道闸扣三次额度。
+      // 记不下来就不发：否则每轮都读到“今天用了 0 条”，额度等于无限。
+      const next = consumeProactive(p, state, hit)
+      if (!saveState(next.state)) throw new Error('主动额度记不下来，先不发。')
+      left = next.left
+      logInbound({ type: 'proactive-send', chat: hit, remaining: left })
+    }
+    return { chat: hit, snap: s, proactive: dec.proactive, proactiveLeft: left }
   }
 
   // ---- @ 才回：谁最近被 @ 过 ----
@@ -1147,6 +1192,8 @@ export function apply(ctx, config = {}) {
     // 频率闸只在这里记一次：前面两次核对都不占额度。
     await speechGate(allowed.chat)
     // 频率闸可能要等，等完再看一眼当前会话，别在等待期间被切走。
+    let proactive = false
+    let proactiveLeft = 0
     if (token) {
       const still = permitStore.check({ id: token, chat: allowed.chat, text: body })
       if (!still.ok) throw new Error('提醒许可：' + still.why)
@@ -1155,11 +1202,13 @@ export function apply(ctx, config = {}) {
         throw new Error(`等待发送期间当前会话变成了「${last.parsed.current || '读不到'}」，不发送。`)
       }
     } else {
-      const last = await gateSend()
+      // 最后一道闸：真正回车前才扣主动额度，一次发送只扣一次。
+      const last = await gateSend({ consume: true, expected: allowed.chat })
+      proactive = last.proactive
+      proactiveLeft = last.proactiveLeft
       if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
     }
 
-    try { feed?.willSend(allowed.chat, body) } catch { /* ignore */ }
     await run(['key', 'Return'])
     await sleep(900)
 
@@ -1179,15 +1228,6 @@ export function apply(ctx, config = {}) {
       : inPreview
         ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
         : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
-    try {
-      feed?.noteOut({
-        chat: allowed.chat,
-        text: body,
-        receipt: receipt.replace(/^回执：/, ''),
-        sent: inMsgs || inPreview ? true : 'unconfirmed',
-      })
-    } catch { /* ignore */ }
-
     // 回执确认了才落台账：没看到就不假装发过。
     let outMsgId = ''
     if (inMsgs || inPreview) {
@@ -1208,7 +1248,7 @@ export function apply(ctx, config = {}) {
     }
     // 发送本身也算一次活动：给后台采集留出静默期，别紧接着点开会话。
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed', outMsgId }
+    return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed', outMsgId, proactive, proactiveLeft }
   }
 
   /**
@@ -1263,7 +1303,8 @@ export function apply(ctx, config = {}) {
 
     // 频率闸只记一次；等完再看一眼会话，别在等待期间被切走。
     await speechGate(allowed.chat)
-    const last = await gateSend()
+    // 最后一道闸：表情点下去就发送，主动额度也在这里扣。
+    const last = await gateSend({ consume: true, expected: allowed.chat })
     if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
 
     const r = await sendSticker({
@@ -1294,7 +1335,7 @@ export function apply(ctx, config = {}) {
       } catch { /* 台账记不下不影响已经发出的表情 */ }
     }
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, ...r, outMsgId }
+    return { ok: true, chat: allowed.chat, ...r, outMsgId, proactive: last.proactive, proactiveLeft: last.proactiveLeft }
   }
 
   /**
@@ -1376,7 +1417,8 @@ export function apply(ctx, config = {}) {
 
     // 频率闸只记一次；等完再确认会话。
     await speechGate(allowed.chat)
-    const last = await gateSend()
+    // 最后一道闸：搜索结果点下去就发送，主动额度也在这里扣。
+    const last = await gateSend({ consume: true, expected: allowed.chat })
     if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不搜索。`)
 
     await run(['clean'], 30_000).catch(() => '')
@@ -1419,7 +1461,7 @@ export function apply(ctx, config = {}) {
       } catch { /* 台账记不下不影响已经发出的表情 */ }
     }
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, ...r, outMsgId }
+    return { ok: true, chat: allowed.chat, ...r, outMsgId, proactive: last.proactive, proactiveLeft: last.proactiveLeft }
   }
 
   // 说明只挂她一个 agent：会话 cwd 就是她的屋子
@@ -1430,10 +1472,16 @@ export function apply(ctx, config = {}) {
       // QQ 会话（onebot-*）不挂微信说明：说明里的内容会被带进 QQ 的话里
       if (String(agent?.session?.id ?? '').startsWith('onebot-')) return
       console.log('[dsh-wx] 拿到她的 agent（' + String(agent?.session?.id ?? '?') + '）')
+      // 短规则在前（判断依据），工具手册放后段（操作细节），别让 25+ 条手册把身份段挤满。
       agent.ctx?.systemPrompt?.section?.({
         name: 'channel:dsh-wx',
-        order: 91,
-        text: () => promptText(), // 每次组装时求值：工作台里改了开关，下一轮就是新的
+        order: 92,
+        text: () => channelRulesText(), // 每次组装时求值：工作台里改了开关，下一轮就是新的
+      })
+      agent.ctx?.systemPrompt?.section?.({
+        name: 'channel:dsh-wx-manual',
+        order: 8600,
+        text: () => channelManualText(),
       })
     } catch { /* 挂不上不影响工具 */ }
   })
@@ -1459,8 +1507,20 @@ export function apply(ctx, config = {}) {
   let lastHeldLog = 0
   let lastFailLog = 0
   let lastRelogin = 0
-  let lastScanAt = 0
   let scanning = false
+  // 全量目录扫描只在两个时候做：启动后/登录后的第一轮，和工作台按钮。
+  // 每轮快照本来就会合并侧栏可见行，全量扫描只补当前页看不到的会话和截断名；
+  // 它不产生台账，也不产生通知，没必要每 10 分钟滚一次侧栏。
+  let directoryScanArmed = true
+  let loginWasSeen = false
+  // 工作台按钮排进来的扫描请求：等耳朵这一轮空下来再做，返回结果给按钮。
+  let scanRequests = []
+  /** 排队请求一次全量目录扫描。耳朵不跑（没启动/被关掉）时按超时给一句人话。 */
+  const requestDirectoryScan = (timeoutMs = 30_000) => new Promise((resolve) => {
+    scanRequests.push(resolve)
+    const t = setTimeout(() => resolve({ ok: false, why: '耳朵没响应，过一会儿再试' }), timeoutMs)
+    t.unref?.()
+  })
 
   /**
    * 微信必须有自己的会话（不能借 QQ 的）：通道隔离全靠 session 分开。
@@ -1731,6 +1791,11 @@ export function apply(ctx, config = {}) {
   const wxService = {
     policy,
     canSend,
+    // 工作台按钮（dsh-fish 的 /wx/scan 路由）：补扫一次侧栏目录。
+    // 目录只是派生索引，扫它不改台账、不发通知。
+    scanDirectory: () => (policy().enabled
+      ? requestDirectoryScan()
+      : Promise.resolve({ ok: false, why: '微信通道已关闭' })),
     recentChats,
     inboxSummary: (opts) => contextStore.summary(opts),
     inbox: () => contextStore.inbox(),
@@ -2005,6 +2070,12 @@ export function apply(ctx, config = {}) {
       // 2026-10-29 夜里实测：替她点 Log In 会让手机端一直弹登录确认，人被烦死。
       // 所以只记账、不动手——登不登由人决定；treeAction 也明确不重启登录页。
       if (tree.status === 'login') {
+        loginWasSeen = true
+        // 登录页读不到侧栏，排队的扫描做不了；先把工作台那颗按钮的等待结掉。
+        if (scanRequests.length) {
+          const waiters = scanRequests.splice(0)
+          for (const done of waiters) done({ ok: false, why: '微信在登录页，登录后再扫' })
+        }
         if (Date.now() - lastRelogin > 10 * 60_000) {
           lastRelogin = Date.now()
           console.log(`[dsh-wx] 微信在登录页（窗口 ${tree.window?.w}x${tree.window?.h}），等人工登录`)
@@ -2014,6 +2085,19 @@ export function apply(ctx, config = {}) {
 
       // 树没连上、OCR 也没读到会话行：这一轮没有可看的东西，等树恢复/下一轮。
       if (!tree.ok && !ocrRecovered) return
+      // 刚从登录页回来：补一次全量目录扫描（登录后第一轮，目录可能落后了很久）。
+      if (loginWasSeen) {
+        loginWasSeen = false
+        directoryScanArmed = true
+      }
+      // 工作台按钮请求的扫描：在耳朵这一轮里做，和快照/滚动的单写者串行。
+      // 扫完就结束这一轮——侧栏被滚动过，旧快照不再适合做投递判断，下一轮重新对账。
+      if (scanRequests.length) {
+        const waiters = scanRequests.splice(0)
+        const res = await scanDirectoryNow().catch((err) => ({ ok: false, why: String(err?.message ?? err).slice(0, 160) }))
+        for (const done of waiters) done(res)
+        return
+      }
       roundParsed = parsed
       // 只有树健康时才写预览台账：partial/down/login 没有可信数据。
       // OCR 回退只用于识别 @，不拿它写预览。
@@ -2021,9 +2105,9 @@ export function apply(ctx, config = {}) {
       if (tree.ok && !ocrRecovered) roundPreview = recordPreviews(parsed)
       // 当前会话的发言人补全：失败只记日志，不阻塞本轮。
       await maybeOcrCurrent(p)
-      // 每 10 分钟把侧栏从头滚到尾一次，补齐当前页看不到的会话和全名。
-      if (!ocrRecovered && Date.now() - lastScanAt > 10 * 60_000) {
-        lastScanAt = Date.now()
+      // 启动 / 登录后的首轮补一次全量扫描；之后只在工作台按钮点的时候扫。
+      if (!ocrRecovered && directoryScanArmed) {
+        directoryScanArmed = false
         await scanDirectoryNow().catch((err) => {
           console.log('[dsh-wx] 目录扫描失败：' + String(err?.message ?? err).slice(0, 120))
         })
@@ -2047,13 +2131,21 @@ export function apply(ctx, config = {}) {
         : mentionHits(parsed, trigger, p.noMentionChats, p.allowChats))
         .filter((m) => !isIgnoredChat(m.chat, p.ignoreChats))
       // 当前打开的会话没有未读角标时，侧栏判据看不到它新收到的消息。
-      // captureCurrent 这一轮新记下的入站正文如果和侧栏 preview 对得上，就补一条命中；
+      // 第一次看见这个会话，靠「这一轮新记的入站正文和侧栏 preview 对得上」认；
+      // 之后台账只追加新记录，新记下的入站就是证据（preview 没刷新也认）。
       // 先进 pendingCaptureHits，hostBusy / 15 秒节流 / 投递失败时下一轮还能重试。
       if (tree.ok && !ocrRecovered) {
         const openRow = (parsed.chats ?? []).find((c) => sameName(c.name, parsed.current)) ?? null
+        const openEntry = directory.entry(parsed.current)
         const openHit = openChatHit({
           chat: parsed.current, row: openRow, captured: s.capturedCurrent, policy: p,
+          // 第一次看见这个会话时整屏都是「新记录」，只能靠侧栏预览认出新消息；
+          // 之后台账只追加这一轮新记下的入站记录，台账本身就是新消息的证据。
+          requirePreviewMatch: !openChatSeen.has(String(parsed.current ?? '')),
+          isDM: openEntry?.kind === 'dm' ? true : (openEntry?.kind === 'group' ? false : null),
+          outbox: outboxFor(parsed.current),
         })
+        if (s.capturedCurrent?.ok) openChatSeen.add(String(parsed.current ?? ''))
         if (openHit && !pendingCaptureHits.some((h) => h.key === openHit.key)) {
           pendingCaptureHits.push(openHit)
           if (pendingCaptureHits.length > 20) pendingCaptureHits.shift()
@@ -2252,11 +2344,8 @@ export function apply(ctx, config = {}) {
       if (!policy().enabled) throw new Error(OFF)
       const s = await look()
       if (s.source === 'ocr') return JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: 'OCR cannot verify the active conversation or authorize sending.' }, null, 2)
-      // 当前会话的气氛粗判 + 她自己记下的关于这个人的话（没有就是空串）
-      let mood = ''
-      try { mood = feed?.hint(s.parsed.current) ?? '' } catch { /* ignore */ }
-      // 尾巴（[提示] / 气氛）比正文更重要：先给它们留位置，再截正文。
-      return clipPeekBody(s.raw, fresh.notice() + mood)
+      // 尾巴（[提示]）比正文更重要：先给它留位置，再截正文。
+      return clipPeekBody(s.raw, fresh.notice())
     },
   })
 
@@ -2290,11 +2379,14 @@ export function apply(ctx, config = {}) {
         target = resolveLabel(before.parsed, label)
         if (!target) {
           if (/^(send|发送)$/i.test(label)) {
-            // 树里没有"发送"按钮（截图上有）；发送等价于回车，走同一道闸
+            // 树里没有"发送"按钮（截图上有）；发送等价于回车，走同一道闸，扣一次主动额度。
+            // 先过频率闸，再扣额度：频率拒绝时不能白扣一条。
             const g = await gateSend()
             await speechGate(g.chat)
+            const admitted = await gateSend({ consume: true, expected: g.chat })
             await run(['key', 'Return'])
-            return '树里没有“发送”按钮，已按回车发送。' + fresh.notice()
+            const pro = admitted.proactive ? `这条用了主动额度，今天「${admitted.chat}」还剩 ${admitted.proactiveLeft} 条。` : ''
+            return '树里没有“发送”按钮，已按回车发送。' + (pro ? ' ' + pro : '') + fresh.notice()
           }
           const names = before.parsed.chats.map((c) => c.name).slice(0, 12).join('、')
           throw new Error(`没找到「${label}」。会话列表：${names || '（空）'}。按钮名见 wx_peek 的“能点的”。` + fresh.notice())
@@ -2353,10 +2445,11 @@ export function apply(ctx, config = {}) {
 
       // 回车之前再核对一次：打字期间界面可能切走
       await sleep(300)
+      // enter=true 是真正发送。先过频率闸，再扣主动额度：
+      // 频率拒绝 / 等完切走时，这条话没发出去，不能白扣。
       const second = await gateSend()
       await speechGate(second.chat)
-      // 回车之前先登记「这句是她的」：回车后第一次读屏就能把它认成她说的，而不是对方说的
-      try { feed?.willSend(second.chat, text) } catch { /* ignore */ }
+      const admitted = await gateSend({ consume: true, expected: second.chat })
       await run(['key', 'Return'])
       await sleep(900)
       const after = await look({ confirm: false })
@@ -2372,7 +2465,6 @@ export function apply(ctx, config = {}) {
         : inPreview
           ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
           : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
-      try { feed?.noteOut({ chat: second.chat, text, receipt: receipt.replace(/^回执：/, ''), sent: inMsgs || inPreview ? true : 'unconfirmed' }) } catch { /* ignore */ }
       if (inMsgs || inPreview) {
         noteOutbox(second.chat, text)
         try {
@@ -2387,7 +2479,8 @@ export function apply(ctx, config = {}) {
           })
         } catch { /* 台账记不下不影响已经发出的消息 */ }
       }
-      return `已输入 ${[...text].length} 字并回车。当前会话：“${second.chat}”。${receipt}` + fresh.notice()
+      const pro = admitted.proactive ? `这条用了主动额度，今天「${admitted.chat}」还剩 ${admitted.proactiveLeft} 条。` : ''
+      return `已输入 ${[...text].length} 字并回车。当前会话：“${second.chat}”。${receipt}${pro ? ' ' + pro : ''}` + fresh.notice()
     },
   })
 
@@ -2434,7 +2527,8 @@ export function apply(ctx, config = {}) {
           taskLine = rep.ok ? `任务「${taskId}」已记为回了一半。` : `任务「${taskId}」没记上：${rep.why}`
         }
       }
-      return `已发到「${r.chat}」。${r.receipt}${taskLine ? ' ' + taskLine : ''}` + fresh.notice()
+      const pro = r.proactive ? `这条用了主动额度，今天「${r.chat}」还剩 ${r.proactiveLeft} 条。` : ''
+      return `已发到「${r.chat}」。${r.receipt}${taskLine ? ' ' + taskLine : ''}${pro ? ' ' + pro : ''}` + fresh.notice()
     },
   })
 
@@ -2582,9 +2676,12 @@ export function apply(ctx, config = {}) {
       if (!policy().enabled) throw new Error(OFF)
       let where = ''
       if (/(^|\+)(return|kp_enter|enter)$/i.test(keys)) {
+        // 回车视同发送：先过频率闸，再扣一次主动额度，频率拒绝时不白扣。
         const g = await gateSend()
         await speechGate(g.chat)
-        where = `当前会话：“${g.chat}”。`
+        const admitted = await gateSend({ consume: true, expected: g.chat })
+        const pro = admitted.proactive ? `这条用了主动额度，今天「${admitted.chat}」还剩 ${admitted.proactiveLeft} 条。` : ''
+        where = `当前会话：“${admitted.chat}”。${pro ? pro : ''}`
       }
       await run(['key', keys])
       return `已按 ${keys}。${where}` + fresh.notice()

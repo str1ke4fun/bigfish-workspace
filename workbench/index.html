@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>大肥鱼 · 她的工作台</title>
+<script src="/assets/theme-boot.js"></script>
+<link rel="stylesheet" href="/assets/theme.css" />
+<link rel="stylesheet" href="/assets/app.css" />
+</head>
+<body>
+<div class="shell">
+  <aside class="spine">
+    <a class="brand" href="#her/today"><b>大肥鱼</b><span>她的工作台</span></a>
+    <nav id="nav" class="spine-nav" aria-label="工作台导航"></nav>
+    <div class="spine-foot">
+      <button id="theme-toggle" aria-pressed="false">夜</button>
+      <button id="open-her">打开她的界面</button>
+      <span class="meta" id="shell-msg" role="status" aria-live="polite"></span>
+      <span class="meta" id="version">v0.1.0</span>
+    </div>
+  </aside>
+  <main class="work">
+    <header class="page-head">
+      <div><h1 id="page-title"></h1><span class="meta" id="page-sub"></span></div>
+      <div class="page-actions" id="page-actions"></div>
+    </header>
+    <nav id="subtabs" class="subtabs" role="tablist" aria-label="二级页签"></nav>
+    <section id="view" class="view"></section>
+  </main>
+</div>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>

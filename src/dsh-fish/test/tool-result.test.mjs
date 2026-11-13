@@ -7,8 +7,6 @@ import {
   registerTool,
   renderProjection,
   ToolError,
-  PROJECTION,
-  CALL_META,
   projectError,
   universalOutputSchema,
 } from '../lib/tool-result.js'
@@ -18,23 +16,57 @@ function fakeCtx() {
   return { regs, tools: { register(def) { regs.push(def); return () => {} } } }
 }
 
-test('project 只算一次，render 只读预计算结果', () => {
-  let calls = 0
+/**
+ * 按宿主（dsh-tools 0.2.1-rc.5）的 lossless JSON 规则检查一个工具返回值：
+ * 只认 null/布尔/有限数字/字符串/纯数组/纯对象，所有 own key 必须可枚举字符串。
+ * 复刻这条是为了让回归在单测里就红，而不是等宿主报 INVALID_TOOL_OUTPUT。
+ */
+function losslessJson(value) {
+  const ancestors = new Set()
+  const walk = (v) => {
+    if (v === null || typeof v === 'boolean' || typeof v === 'string') return true
+    if (typeof v === 'number') return Number.isFinite(v) && !Object.is(v, -0)
+    if (typeof v !== 'object') return false
+    if (ancestors.has(v)) return false
+    const proto = Object.getPrototypeOf(v)
+    if (Array.isArray(v)) {
+      if (proto !== Array.prototype) return false
+      if (Reflect.ownKeys(v).length !== v.length + 1) return false
+      ancestors.add(v)
+      const ok = v.every(walk)
+      ancestors.delete(v)
+      return ok
+    }
+    if (proto !== Object.prototype && proto !== null) return false
+    const keys = Reflect.ownKeys(v)
+    if (keys.some((k) => typeof k !== 'string' || !Object.prototype.propertyIsEnumerable.call(v, k))) return false
+    ancestors.add(v)
+    const ok = keys.every((k) => walk(v[k]))
+    ancestors.delete(v)
+    return ok
+  }
+  return walk(value)
+}
+
+test('execute 原样返回纯 JSON，render 用宿主给的快照现算投影', () => {
   const def = {
     name: 't', description: 'd', parameters: { type: 'object', properties: {} },
     output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }, render: () => { throw new Error('should not use legacy render') } },
     execute: async () => ({ ok: true, id: 'ev_1' }),
-    project: (result, args, view) => { calls += 1; return { text: `[好] ${view.surface}` } },
+    project: (result) => ({ text: `[好] ${result.id}` }),
   }
   const wrapped = wrapTool(def, { core: { surface: { current: () => 'wx' } } })
   return wrapped.execute({}, { agent: { id: 's1' } }).then((result) => {
-    assert.equal(calls, 1)
-    assert.equal(result[PROJECTION].text, '[好] wx')
-    const blocks = wrapped.output.render({}, result)
-    assert.equal(calls, 1)
-    assert.equal(blocks[0].text, '[好] wx')
+    assert.deepEqual(result, { ok: true, id: 'ev_1' })
+    assert.equal(losslessJson(result), true, '返回值必须能无损过 JSON：符号键/不可枚举键会让宿主整条打回')
+    // 宿主 render 前会快照、冻结，传进来的是副本：投影必须能从副本算出来。
+    const snapshot = JSON.parse(JSON.stringify(result))
+    const blocks = wrapped.output.render({}, snapshot)
+    assert.equal(blocks[0].text, '[好] ev_1')
   })
 })
+
+
 
 test('handles 渲染成末尾一行编号，正文不重复', () => {
   const def = {
@@ -171,7 +203,7 @@ test('返回 null / 冻结对象时 execute 不抛，render 现算投影', async
   })
   assert.equal(await frozenWrapped.execute({}, {}), frozen)
   assert.equal(frozen == null, false)
-  assert.equal(frozen[PROJECTION], undefined)
+  assert.equal(Object.getOwnPropertySymbols(frozen).length, 0, '冻结对象也不能被挂上符号')
   assert.equal(frozenWrapped.output.render({}, frozen)[0].text, '冻结投影')
 
   const primitiveWrapped = wrapTool({
@@ -212,19 +244,14 @@ test('project 缺失时退回 String(result)', async () => {
   assert.equal(wrapped.output.render({}, r)[0].text, '[object Object]')
 })
 
-test('CALL_META 记录开始时间且不可枚举', async () => {
-  const def = {
+test('execute 不往返回值上加任何自己的键（符号、不可枚举都不行）', async () => {
+  const wrapped = wrapTool({
     name: 't', description: 'd', parameters: { type: 'object', properties: {} },
     execute: async () => ({ ok: true }),
     project: () => ({ text: 'x' }),
-  }
-  const wrapped = wrapTool(def)
-  const before = Date.now()
+  })
   const r = await wrapped.execute({}, {})
-  assert.ok(r[CALL_META].startedAt >= before)
-  assert.ok(r[CALL_META].startedAt <= Date.now())
-  assert.equal(Object.keys(r).includes(String(CALL_META)), false)
-  assert.equal(Object.keys(r).includes('fish.projection'), false)
+  assert.deepEqual(Reflect.ownKeys(r), ['ok'])
 })
 
 test('projectError 只映射已知码，未知码不外泄 err.message', () => {

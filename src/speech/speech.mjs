@@ -22,7 +22,13 @@ export const DIR = '/home/str1k3/dsh-plugins/speech'
 export const POLICY_PATH = process.env.SPEECH_POLICY || DIR + '/speech.json'
 export const STATE_PATH = process.env.SPEECH_STATE || DIR + '/speech-state.json'
 
-export const DEFAULTS = { enabled: true, minGapSeconds: 25, maxPerMinute: 2, maxPerHour: 15 }
+/** 微信覆盖层的默认值：比 base 松，但仍然是限流，不是不限。 */
+export const WX_DEFAULTS = { minGapSeconds: 8, maxPerMinute: 4, maxPerHour: 40 }
+
+export const DEFAULTS = {
+  enabled: true, minGapSeconds: 25, maxPerMinute: 2, maxPerHour: 15,
+  wx: WX_DEFAULTS,
+}
 
 const HOUR = 3600_000
 const MINUTE = 60_000
@@ -34,11 +40,43 @@ export function normalize(raw) {
     if (!Number.isFinite(n)) return def
     return Math.min(hi, Math.max(lo, Math.round(n)))
   }
+  const wx = raw?.wx && typeof raw.wx === 'object' ? raw.wx : {}
   return {
     enabled: raw?.enabled !== false,
     minGapSeconds: num(raw?.minGapSeconds, DEFAULTS.minGapSeconds, 0, 3600),
     maxPerMinute: num(raw?.maxPerMinute, DEFAULTS.maxPerMinute, 1, 1000),
     maxPerHour: num(raw?.maxPerHour, DEFAULTS.maxPerHour, 1, 10000),
+    wx: {
+      minGapSeconds: num(wx.minGapSeconds, WX_DEFAULTS.minGapSeconds, 0, 3600),
+      maxPerMinute: num(wx.maxPerMinute, WX_DEFAULTS.maxPerMinute, 1, 1000),
+      maxPerHour: num(wx.maxPerHour, WX_DEFAULTS.maxPerHour, 1, 10000),
+    },
+  }
+}
+
+/** key 前缀 → 通道。`wx:` 是微信，其余按 QQ 处理。 */
+export function channelOf(chatKey) {
+  return String(chatKey ?? '').startsWith('wx:') ? 'wx' : 'qq'
+}
+
+/**
+ * 取某个通道真正生效的四项。
+ * 微信只替换间隔/分钟/小时三个额度，总开关仍跟顶层走；QQ 原样返回 base。
+ */
+export function resolve(policy, channel = 'qq') {
+  const base = {
+    enabled: policy?.enabled !== false,
+    minGapSeconds: policy?.minGapSeconds,
+    maxPerMinute: policy?.maxPerMinute,
+    maxPerHour: policy?.maxPerHour,
+  }
+  if (channel !== 'wx') return base
+  const wx = policy?.wx && typeof policy.wx === 'object' ? policy.wx : WX_DEFAULTS
+  return {
+    enabled: base.enabled,
+    minGapSeconds: wx.minGapSeconds,
+    maxPerMinute: wx.maxPerMinute,
+    maxPerHour: wx.maxPerHour,
   }
 }
 
@@ -91,8 +129,8 @@ function writeState(state) {
  * 判定 + 记账：能说就记一条时间戳并返回 { ok:true, policy }，不能说就只返回原因。
  * 记账是在「决定发」的时候做的，不是发成功之后——发失败多算一条也比漏算安全。
  */
-export function admit(chatKey, now = Date.now()) {
-  const policy = readPolicy()
+export function admit(chatKey, now = Date.now(), channel = channelOf(chatKey)) {
+  const policy = resolve(readPolicy(), channel)
   if (!policy.enabled) return { ok: true, policy }
   const state = readState()
   const times = state.chats[chatKey] ?? []
@@ -109,12 +147,12 @@ export function admit(chatKey, now = Date.now()) {
 }
 
 /** 等一会儿再说：最多等 maxWaitMs，还是不行就返回原因。两个通道都用它，行为一致。 */
-export async function waitAndAdmit(chatKey, maxWaitMs = 60_000, now = Date.now) {
-  let verdict = admit(chatKey, now())
+export async function waitAndAdmit(chatKey, maxWaitMs = 60_000, now = Date.now, channel = channelOf(chatKey)) {
+  let verdict = admit(chatKey, now(), channel)
   if (verdict.ok) return verdict
   if (verdict.waitMs > 0 && verdict.waitMs <= maxWaitMs) {
     await new Promise((r) => setTimeout(r, verdict.waitMs + 200))
-    verdict = admit(chatKey, now())
+    verdict = admit(chatKey, now(), channel)
     if (verdict.ok) return verdict
   }
   return verdict

@@ -52,3 +52,27 @@ test('bili 按专属 cwd 判定', () => {
   assert.equal(core.surface.current(agent('bili-1', '/tmp/fish-root/home/bili')), 'bili')
   dispose()
 })
+
+test('schedule 钩子表挂在 core 上：六个成员齐全，dispose 后 status().disposed 为 true', () => {
+  const ctx = fakeCtx()
+  const { core, dispose } = provideFishCore(ctx, { root: '/tmp/fish-root', herDir: '/tmp/fish-root/home' })
+  for (const key of ['onTick', 'onWake', 'runTick', 'runWake', 'status', 'dispose']) {
+    assert.equal(typeof core.schedule[key], 'function', `core.schedule.${key} 必须是函数`)
+  }
+  assert.equal(core.schedule.status().disposed, false)
+  core.schedule.dispose()
+  assert.equal(core.schedule.status().disposed, true)
+  dispose()
+})
+
+test('prompt / sessions 挂在同一个 core 上，成员齐全', () => {
+  const ctx = fakeCtx()
+  const { core, dispose } = provideFishCore(ctx, { root: '/tmp/fish-root', herDir: '/tmp/fish-root/home' })
+  for (const key of ['setWake', 'clearWake', 'getWake', 'wakeSectionFor', 'withWake', 'watchTurnEnd', 'section']) {
+    assert.equal(typeof core.prompt?.[key], 'function', `core.prompt.${key} 必须是函数`)
+  }
+  for (const key of ['create', 'find', 'prompt', 'rename', 'list']) {
+    assert.equal(typeof core.sessions?.[key], 'function', `core.sessions.${key} 必须是函数`)
+  }
+  dispose()
+})

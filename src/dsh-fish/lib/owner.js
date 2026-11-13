@@ -9,9 +9,7 @@
  */
 
 import { readOwner, writeOwner, rootDir } from './store.js'
-import { normalizeCookie } from './bili.js'
-
-const COOKIE_NAMES = ['SESSDATA', 'bili_jct', 'buvid3', 'DedeUserID', 'DedeUserID__ckMd5', 'sid']
+import { normalizeCookie, COOKIE_NAMES } from './cookie.js'
 
 /** 给外面看的样子：永远不含 cookie 原文 */
 export function publicOwner(ow) {

@@ -1,0 +1,14 @@
+{
+  "name": "fish-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "大肥鱼工作台：8788 唯一管理入口，经 BFF 读写 8710 上的插件路由。零依赖。",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

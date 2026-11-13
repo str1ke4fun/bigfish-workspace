@@ -1,3 +1,5 @@
+// 已软删除（2026-11-12）：B 站实现以 src/dsh-bili/lib/ 为准，dsh-fish 运行时不再
+// 引用本文件；保留仅为回滚与对照。新增代码不要 import 这里。
 /**
  * browsejob.js —— 后台刷站：不叫醒她，只把看见的东西写进记忆
  *
@@ -169,7 +171,7 @@ export async function backgroundBrowse({
       : { ...config, browse: { ...config.browse, topN: bp.topN, deepRead: bp.deepRead } }
 
     const client = deps.client ?? createClient({ log: (...a) => log?.('bili', ...a) })
-    const r = await gather(client, model, cfg2, { root, dk, events })
+    const r = await gather(client, model, cfg2, { root, dk, events, memory: deps.memory })
     if (!r.ok || !r.text) {
       if (/COOLDOWN|-352|-412|-509|风控/.test(String(r.code ?? r.note ?? ''))) {
         noteRisk(root, r.code ?? 'COOLDOWN', at)

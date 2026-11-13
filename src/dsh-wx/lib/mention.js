@@ -11,7 +11,7 @@
  * 因为一次 @ 之后是整段对话，她得能回话、能追问。窗口默认 3 分钟，工作台可调。
  *
  * 侧栏的 `[You were mentioned]` 要她点开才消失，所以挂着的未读 @ 会一直续窗口；
- * 读完再等 3 分钟就自动闭嘴，想让她继续说得再 @ 一次。
+ * 读完再过 3 分钟就自动闭嘴，想让她继续说得再 @ 一次——窗口不会自己续。
  */
 export const DEFAULT_WINDOW_MINUTES = 3
 const KEEP_MS = 24 * 3600_000
@@ -33,8 +33,14 @@ export function grant(state, chat, now) {
 export function canSpeak(state, chat, now, windowMinutes) {
   const at = Number((state ?? {})[String(chat)])
   if (!Number.isFinite(at)) return { ok: false, reason: '最近没人 @ 你' }
-  const leftMs = at + parseWindowMinutes(windowMinutes) * 60_000 - now
-  if (leftMs <= 0) return { ok: false, reason: `上一次 @ 你已经是 ${parseWindowMinutes(windowMinutes)} 分钟前的事了` }
+  const win = parseWindowMinutes(windowMinutes)
+  const leftMs = at + win * 60_000 - now
+  if (leftMs <= 0) {
+    // 说的是**实际**过去了多久，不是窗口长度：以前两个数共用一个变量，
+    // 无论过了 3 分钟还是 3 小时都写成「已经是 3 分钟前」，读起来像刚被叫过。
+    const mins = Math.max(1, Math.floor((now - at) / 60_000))
+    return { ok: false, reason: `上一次 @ 你是 ${mins} 分钟前的事，窗口只有 ${win} 分钟，要再 @ 你一次才能开口` }
+  }
   return { ok: true, leftMs }
 }
 

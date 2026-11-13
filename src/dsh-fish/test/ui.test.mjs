@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLIENT = join(HERE, '..', 'lib', 'client.js')
 const OBSERVE = join(HERE, '..', 'lib', 'observe.js')
+const BILI_SERVICE = join(HERE, '..', '..', 'dsh-bili', 'lib', 'service.js')
 
 test('数字框：打字超范围后离开输入框会收敛回上下限', async () => {
   const src = await readFile(CLIENT, 'utf8')
@@ -23,7 +24,8 @@ test('数字框：打字超范围后离开输入框会收敛回上下限', async
 })
 
 test('封面：lazyCover 从 view() 的 data 里取 pic', async () => {
-  const src = await readFile(OBSERVE, 'utf8')
+  // A2：封面实现搬到 dsh-bili 的服务层（core 只剩代理）。
+  const src = await readFile(BILI_SERVICE, 'utf8')
   // view() 返回 { ok, code, data:{ pic } }；直接读 v.pic 永远是 undefined，
   // 于是 /dsh-fish/cover/<BV> 一路 404，被 <img onError> 静默藏掉。
   assert.ok(src.includes('v?.data?.pic || v?.pic'), '要从 data 里取 pic')
@@ -97,6 +99,14 @@ test('插件页顺序：「关于」在「为什么默认只放这几个」之�
   }
   // 「关于」是这一页的收尾，不该插在工具说明中间
   assert.ok(!/toolsCard,\s*\n\s*aboutCard/.test(body[1]), '「关于」不能紧跟工具卡')
+})
+
+test('旧入口：设置 section 标出 8788 工作台，且不再自动轮询', async () => {
+  const src = await readFile(CLIENT, 'utf8')
+  assert.ok(src.includes('旧入口：管理入口已迁到 8788 工作台'))
+  assert.ok(src.includes("href: 'http://127.0.0.1:8788/'"), '要能点进工作台')
+  assert.ok(!src.includes('setInterval(peek, 30_000)'), '状态不再每 30 秒自动刷新')
+  assert.ok(!src.includes('setInterval(poll, 60_000)'), '提醒不再每 60 秒自动拉取')
 })
 
 test('页签选中态不许拿正文墨色当底色（2026-10-25 深色主题下白块，浅色主题下黑块）', async () => {

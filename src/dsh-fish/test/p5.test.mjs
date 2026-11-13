@@ -18,7 +18,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
 import { normalizeConfig, inWindow, DEFAULTS } from '../lib/settings.js'
-import { lookBeforeWake } from '../lib/scheduler.js'
+import { lookBeforeWake } from '../../dsh-bili/lib/material.js'
 import { registerObserve } from '../lib/observe.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -61,7 +61,8 @@ test('不在上网时段时，一次 B 站接口都不发', async () => {
       get: (_t, k) => (...a) => { calls.push(String(k)); return { ok: false } },
     })
     const cfg = normalizeConfig({ browse: { window: ['09:00', '10:00'] } })
-    const out = await lookBeforeWake(root, { name: '测试' }, cfg, '2026-10-23', {
+    const out = await lookBeforeWake({ name: '测试' }, cfg, '2026-10-23', {
+      root,
       client,
       now: new Date(2026, 9, 23, 15, 0, 0), // 15:00，在时段外
       events: [],
@@ -81,7 +82,8 @@ test('在上网时段内会真的去取素材（证明闸门不是永远关着�
       get: (_t, k) => (...a) => { calls.push(String(k)); return { ok: false, note: 'stub' } },
     })
     const cfg = normalizeConfig({ browse: { window: ['09:00', '18:00'] } })
-    await lookBeforeWake(root, { name: '测试' }, cfg, '2026-10-23', {
+    await lookBeforeWake({ name: '测试' }, cfg, '2026-10-23', {
+      root,
       client,
       now: new Date(2026, 9, 23, 10, 0, 0),
       events: [],

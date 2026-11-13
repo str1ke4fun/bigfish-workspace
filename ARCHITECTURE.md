@@ -561,6 +561,7 @@ core 判空要接受 `undefined`，不要只判 `null`。
 - A2：core 的 B 路由改成代理；插件缺席返回 404 + `BILI_PLUGIN_ABSENT`。
 - A3：B 站 section 上线；core「上网」页签隐藏；代理保留一个版本。
 - A3 后：删除 core B 路由与 UI；`/config` 仍接受 B 站键。
+- 2026-11-12 现状：8788 工作台的 P0–P4 源码已落地（八个页面、写操作、旧入口标记与停轮询、注销 `settings.section`）；`client.js` 与导出保留，恢复注册即可回滚。线上部署与双入口实测尚未执行。
 
 ---
 

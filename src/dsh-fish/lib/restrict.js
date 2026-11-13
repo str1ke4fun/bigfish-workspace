@@ -44,19 +44,15 @@
 
 import { resolve } from 'node:path'
 
-/** 插件自己注册的工具。顺序无意义，但**必须全部真实存在**（名字错会抛错）。 */
-export const FISH_TOOLS = Object.freeze([
-  'growth_commit', // 记下自己的想法（唯一的写入口）
-  'her_recall', // 翻自己的旧事
-  'her_leave', // 留一句话给那个人
-  'bili_look', // 看 B 站的列表
-  'bili_watch', // 看一条视频的画面
-  'bili_speak', // 在评论区说话
-  'her_remind', // 定一条微信定时提醒
-  'her_reminders', // 看还没到点的提醒
-  'her_remind_cancel', // 取消一条提醒
-  'her_inbox', // 看微信里还没回完的任务
-])
+import { OWN_TOOL_NAMES } from './tool-policy.js'
+
+/**
+ * 本插件**内置**的 7 个自有工具。顺序无意义，但**必须全部真实存在**（名字错会
+ * 抛错）。B 站 3 个工具从 A1.4 起不再写死在这里：它们由贡献方通过
+ * `tool-policy.contribute()` 进策略表，运行时的完整自有名单是
+ * `tool-policy.ownTools()`（内置 7 个 + 当前全部贡献名）。
+ */
+export const FISH_TOOLS = Object.freeze([...OWN_TOOL_NAMES])
 
 /**
  * 她允许看见的工具。
@@ -154,7 +150,8 @@ function readHostNames(agent) {
  * @param {object} [opts.policy]  `tool-policy` 的 `resolveAllow` / `loadTargets`
  * @param {object} [opts.caps]    面能力（hasGui / hasOcr / hasImageRoute）
  * @param {string[]} [opts.extra] 用户在设置页额外放行的工具名（只对 web 面）
- * @param {string[]} [opts.ownTools] 本插件自己注册的工具名（默认 FISH_TOOLS）
+ * @param {string[]|(() => string[])} [opts.ownTools] 本插件自己注册的工具名（默认
+ *   FISH_TOOLS）。传函数时在每次 `agent/created` 现读——贡献可能在注册之后才发生。
  * @param {boolean} [opts.enabled=true]
  * @param {(msg: string, err?: unknown) => void} [opts.log]
  * @param {(info: object) => void} [opts.onResult] 记录"这次真的挂上没有"（给自检用）
@@ -189,9 +186,21 @@ export function registerToolRestrict(ctx, {
   const extraNames = [...new Set(
     (Array.isArray(extra) ? extra : []).map((s) => String(s).trim()).filter(Boolean),
   )]
-  const ownNames = [...new Set(
-    (Array.isArray(ownTools) ? ownTools : []).map((s) => String(s).trim()).filter(Boolean),
-  )]
+  /**
+   * 自有工具名单要**现读**：贡献表可能在 registerToolRestrict 之后才更新
+   * （index.js 先注册工具、再贡献 B 站工具、最后才建第一个 agent）。注册时
+   * 算一次会把新贡献的名字永远漏在宿主名单之外。函数抛错按空名单处理。
+   */
+  const currentOwnNames = () => {
+    try {
+      const raw = typeof ownTools === 'function' ? ownTools() : ownTools
+      return [...new Set(
+        (Array.isArray(raw) ? raw : []).map((s) => String(s).trim()).filter(Boolean),
+      )]
+    } catch {
+      return []
+    }
+  }
   const owner = { herDir, surface, policy: effectivePolicy, caps: caps ?? {}, extra: extraNames, say }
   active = owner
 
@@ -204,7 +213,8 @@ export function registerToolRestrict(ctx, {
     // restrictableNames 里；仍并 ownNames 是为了老宿主 / 名单晚到时不把自己的工具
     // 滤掉。ownNames 只含本插件注册的名字，不会放宽到别人的工具；宿主名单之外的
     // 其它名字仍然要被滤掉。hostNames 为 null 表示拿不到名单，按旧行为不做宿主过滤。
-    const namesForPolicy = hostNames ? new Set([...hostNames, ...ownNames]) : null
+    // 名单在**这一瞬间**现读：贡献表可能在注册之后、这个 agent 之前才更新。
+    const namesForPolicy = hostNames ? new Set([...hostNames, ...currentOwnNames()]) : null
 
     let surfaceId = null
     try { surfaceId = surface?.current?.(agent) ?? null } catch { surfaceId = null }

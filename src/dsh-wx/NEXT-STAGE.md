@@ -29,7 +29,7 @@
 - A 档检索 `lib/retrieval.js`：中文二元组 + BM25 + 时间/同线加成，卡片格式与预算；摘要文档单独标来源。
 - B 档侧车 `lib/vector.js` + `sidecar/`：只读 `~/.dsh-wx/context.json`、只连本机地址、可配 0.5–30 秒超时与 10 分钟熔断，失败静默退回 A 档。Windows 侧 `embed_server.py` 提供 `/health`、`/embed`；WSL 侧 `forward.mjs` 把 `127.0.0.1:8731` 转到 Windows 网关。模型与启动方式见 `sidecar/README.md`。
 - 窄接口 `lib/context.js`：`task_id` 绑定会话，`wx_context` 无 `chat_id`；查询日志只记 hash/命中 id，不写 `events.jsonl`；`recentContext()` 自动带当前会话最近几条。
-- 完整会话目录 `lib/directory.js`：侧栏滚动枚举、跨页合并去重、截断名全名解析、稳定 chatId（截断名先发 `c_tmp_…`，解析后沿用）；耳朵每 10 分钟主动扫一次目录。
+- 完整会话目录 `lib/directory.js`：侧栏滚动枚举、跨页合并去重、截断名全名解析、稳定 chatId（截断名先发 `c_tmp_…`，解析后沿用）；侧栏可见行每轮自动合并，全量滚动扫描只在启动/登录后和工作台按钮点的时候做。
 - 发言人归因 `lib/speaker.js`：结构化发送人 > 私聊对方 = 会话名 > 侧栏预览最后一条（medium）> 出站回执 > 未知；只按证据归因，不从正文猜。
 - 分层存储 `lib/archive.js` + `lib/summaries.js`：L0 原始台账；L1 超过保留期的月份归档（复制 → 校验行数与 sha → 移走，不删除）；L2 每日确定性摘要（参与者、关键词、提问），摘要进检索；每小时维护任务串起来。
 - 多会话并行 `lib/sessions.js` + `lib/index.js`：一个群绑定一个 session，主会话 + 有上限的 worker，满了回落主会话；GUI 用 `AsyncLocalStorage` 可重入锁保证单写者；发送失败会清理映射并重建主会话。
@@ -306,7 +306,7 @@ new ──claim──→ reading ──first send──→ replying ──finish
 
 ### 5.1 完整会话目录
 
-入口：`scanDirectory()`，只在 GUI Actor 空闲时跑，默认每 10 分钟一次，或侧栏摘要变化时触发。
+入口：`scanDirectory()`（工作台按钮经 wx 服务排进耳朵这一轮），启动/登录后的第一轮自动跑一次。侧栏可见行本来每轮快照都会合并；全量滚动只补当前页看不到的会话，不产生台账和通知。
 
 步骤：
 

@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { lookBeforeWake } from '../lib/scheduler.js'
+import { lookBeforeWake } from '../../dsh-bili/lib/material.js'
 import { normalizeConfig } from '../lib/settings.js'
 import { devMode } from '../lib/devmode.js'
 
@@ -33,7 +33,8 @@ test('forceBrowse：不在上网时段、今天额度也用完了，照样会去
     // 15:00 在时段外；events 里给它一条今天已经刷过的记录，把 perDay 也耗掉。
     const today = '2026-10-23'
     const events = [{ type: 'browse', dateKey: today, at: Date.parse('2026-10-23T10:05:00') }]
-    await lookBeforeWake(root, { name: '测试' }, cfg, today, {
+    await lookBeforeWake({ name: '测试' }, cfg, today, {
+      root,
       client,
       now: new Date(2026, 9, 23, 15, 0, 0),
       events,
@@ -51,7 +52,8 @@ test('同一份配置，没有 forceBrowse 时仍然一次都不发（证明闸�
       get: (_t, k) => (...a) => { calls.push(String(k)); return { ok: false, note: 'stub' } },
     })
     const cfg = normalizeConfig({ browse: { enabled: true, perDay: 1, window: ['09:00', '10:00'] } })
-    const out = await lookBeforeWake(root, { name: '测试' }, cfg, '2026-10-23', {
+    const out = await lookBeforeWake({ name: '测试' }, cfg, '2026-10-23', {
+      root,
       client,
       now: new Date(2026, 9, 23, 15, 0, 0),
       events: [],

@@ -14,28 +14,29 @@ import { rootDir, readEvents, appendEvent, readJson, paths, writeAtomic, ensureH
 import { loadConfig } from './settings.js'
 import { deriveSelf } from './derive.js'
 import { registerCapture } from './capture.js'
-import { registerLook } from './look.js'
-import { registerSpeak } from './speak.js'
 import { registerRecall } from './recall.js'
-import { registerWatch } from './watch.js'
 import { registerLetter } from './letter.js'
 import { registerRemind } from './remind.js'
 import { registerInbox } from './taskinbox.js'
 import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
-import { ensureBiliSession } from './outing.js'
-import { writeSelfDoc } from './selfdoc.js'
-import { registerToolRestrict, revealTools, getAgentToolState, FISH_TOOLS } from './restrict.js'
+import { writeSelfDoc, refreshSelfDoc } from './selfdoc.js'
+import { registerToolRestrict, revealTools, getAgentToolState } from './restrict.js'
 import { provideFishCore } from './core-service.js'
 import { registerQqAdapter, qqExposure } from './qq-adapter.js'
-import { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry } from './tool-policy.js'
+import {
+  resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry,
+  ownTools as policyOwnTools,
+  setAgentProbe,
+  setHostNamesProvider,
+} from './tool-policy.js'
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
 import { createToolLedger } from './tool-ledger.js'
 // `clearWakeSection` 在 dispose 里用：它挂在 system prompt 段上，是个模块级变量，
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
-import { clearWakeSection, registerIdentity } from './identity.js'
+import { clearWakeSection, registerIdentity, identityText } from './identity.js'
 import { looksLikeRewriting, looksLikeSecret, sanitizeForeign, screenOutgoing } from './guard.js'
 
 import { logBoot, makeLogger } from './log.js'
@@ -43,7 +44,7 @@ import { logBoot, makeLogger } from './log.js'
 export const name = 'dsh-fish'
 
 /** 版本号：只用于日志导出（排查时第一件事是确认跑的是哪一版）。 */
-export const VERSION = '0.7.0'
+export const VERSION = '0.8.0'
 
 // ⚠️ 一个数组写全，不要拆成对象
 // sessionController 只有有人打开工作区界面时才出现；写进 inject 会让整条插件在开机后一直挂着不挂载，
@@ -95,13 +96,47 @@ export function apply(ctx, baseConfig = {}) {
     // 必须在 registerToolRestrict 之前挂上：限制监听器（Task 6 起）要靠 surface
     // 判断这个 agent 属于哪个面。这里先只提供判定，本任务不改 restrict 的签名。
     let fishCore = null
+    // 台账实例在 fishCore 之后才建；用 getter 注入，fishCore.toolLedger 在
+    // 调用时取到当时的值（没挂上就是 NO_LEDGER），不必为了顺序把台账往前挪。
+    let ledger = null
     try {
-      const handle = provideFishCore(ctx, { root, herDir, log: (...a) => logger.warn(...a) })
+      const handle = provideFishCore(ctx, {
+        root,
+        herDir,
+        log: (...a) => logger.warn(...a),
+        // 身份文档刷新由这里注入：core-service / memory-service 都不直接 import selfdoc。
+        refreshSelfDoc: (r = root) => refreshSelfDoc(r, { log: (...a) => logger.warn(...a) }),
+        // 身份文本同理：fishCore.self.identity 读的就是她当前那份文档。
+        identityText: (r = root) => identityText(r),
+        toolLedger: () => ledger,
+      })
       fishCore = handle.core
       if (typeof handle.dispose === 'function') disposers.push(handle.dispose)
     } catch (err) {
       logger.warn('[dsh-fish] fishCore 没挂上', err?.message ?? err)
     }
+
+    // ---- 工具策略贡献的宿主上下文（A1.4）----
+    // 必须早于任何 agent 创建：贡献（下面 B 站 3 个）要发生在首个 bili agent 之前。
+    // 宿主全局认得的工具名由这里提供给 tool-policy，用来和贡献方自报的名字求交集，
+    // 防止自报一个其实没注册成功的名字。
+    setHostNamesProvider(() => {
+      try {
+        const s = ctx.tools?.view?.()?.restrictableNames
+        return s ? new Set(s) : null
+      } catch { return null }
+    })
+    // 记录每个面第一次出现 agent 的时刻：晚贡献探测靠它。
+    const createdSurfaces = new Set()
+    try {
+      ctx.on?.('agent/created', ({ agent } = {}) => {
+        try {
+          const s = fishCore?.surface?.current?.(agent)
+          if (s) createdSurfaces.add(s)
+        } catch { /* ignore */ }
+      })
+    } catch { /* ignore */ }
+    setAgentProbe((s) => createdSurfaces.has(s))
 
     // ---- 工具返回契约：核心对象上挂包装器 ----
     // `core` 必须是 fishCore 同一个对象引用（dsh-wx / dsh-bili 通过宿主服务拿到它）；
@@ -115,8 +150,8 @@ export function apply(ctx, baseConfig = {}) {
     // 必须放在 fishCore 之后：surfaceOf 靠它判定这次调用来自哪个面。
     // 放在工具注册之前：插件启动期间已经发生的调用也要被看见。
     // 监听器内部自己吞错，台账写失败绝不能把成功的工具调用变成 isError。
-    // 实例在 try 外留一个引用：/selfcheck 要读 ledger.status()，外部闭包拿不到 try 里的 const。
-    let ledger = null
+    // 实例在 try 外留一个引用（boot 开头已声明）：/selfcheck 要读 ledger.status()，
+    // 外部闭包拿不到 try 里的 const；fishCore.toolLedger 也通过 getter 读它。
     try {
       ledger = createToolLedger({
         root,
@@ -196,7 +231,9 @@ export function apply(ctx, baseConfig = {}) {
         extra: config?.tools?.allow ?? [],
         // `her_tools` 必须并进 ownTools：它是本插件注册的，但老宿主/名单晚到的
         // 情况下 agent/created 可能还看不到它；不并进去会被宿主名单滤掉。
-        ownTools: [...FISH_TOOLS, 'her_tools'],
+        // 传函数而不是数组：贡献表可能在注册之后才更新，名单要在每个
+        // agent/created 现读（B 站 3 个工具就是贡献进来的）。
+        ownTools: () => [...policyOwnTools(), 'her_tools'],
         enabled: config?.tools?.restrict !== false,
         log: (...a) => logger.info(...a),
         onResult: (r) => { restrictState = r },
@@ -244,19 +281,17 @@ export function apply(ctx, baseConfig = {}) {
       logger.warn('[dsh-fish] 身份段没挂上', err?.message ?? err)
     }
 
-    // ---- 工具：一个写（growth_commit）、一个看（bili_look）----
-    // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会看，或只会记不会看）。
+    // ---- 工具：core 自己的那几个 ----
+    // 两者都必须成功注册；缺了任何一个她都会变残（只会说不会记，或只会记不会说）。
     // **必须先于 bootstrapHome**：屋子会话是在那里创建的，`agent/created` 同步发出；
     // 工具若晚一步，restrict 会因「names unknown global tools …」自愈，把 her_tools
     // 这类唯一能按需开工具的入口一起丢掉，这条会话终生降级。
     if (bootAbort.signal.aborted) return
     if (ctx.tools?.register) {
+      // A2：bili_look / bili_watch / bili_speak 由 dsh-bili 注册，core 不再挂。
       for (const reg of [
         () => registerCapture(ctx, { root, core: fishCore ?? undefined }),
-        () => registerLook(ctx, { root, client: baseConfig.client }),
-        () => registerSpeak(ctx, { root, client: baseConfig.client }),
         () => registerRecall(ctx, { root, core: fishCore ?? undefined }),
-        () => registerWatch(ctx, { root }),
         // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
         () => registerLetter(ctx, { root, core: fishCore ?? undefined }),
         // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
@@ -275,6 +310,9 @@ export function apply(ctx, baseConfig = {}) {
         }
       }
     }
+
+    // A2：B 站 3 个工具的策略表贡献由 dsh-bili 完成（它注册工具、自己担保名字），
+    // core 不再替另一个插件贡献。
 
     let home = { ok: false, why: 'not attempted', wsId: '', sessionId: '' }
     try {
@@ -310,33 +348,7 @@ export function apply(ctx, baseConfig = {}) {
       }
     }
 
-    // ---- 出门会话（2026-11-10）----
-    // 「大肥鱼出门 / 去 B 站」，工作区在 home/bili。B 站工具只在 bili 面可见，
-    // 没有这条会话，她就只被推送着看、没法自己打开视频或在评论区回话。
-    // 建失败不挡住启动：调度器每轮会再试（maybeOuting 内部会调 ensureBiliSession）。
-    let ensureBili = null
-    if (home.ok) {
-      try {
-        const out = await ensureBiliSession(ctx, {
-          root,
-          preset: config?.tools?.preset ?? '',
-          log: (...a) => logger.info(...a),
-        })
-        if (out.ok) {
-          logger.info(`[dsh-fish] 出门会话 ${out.sessionId}${out.reused ? '（复用）' : '（新建）'}`)
-          ensureBili = () => ensureBiliSession(ctx, {
-            root,
-            preset: config?.tools?.preset ?? '',
-            log: (...a) => logger.warn(...a),
-            wakeOnCreate: false,
-          })
-        } else {
-          logger.warn(`[dsh-fish] 出门会话没建起来：${out.why}`)
-        }
-      } catch (err) {
-        logger.warn('[dsh-fish] 出门会话出错', err?.message ?? err)
-      }
-    }
+    // A2：出门会话（「大肥鱼出门 / 去 B 站」）由 dsh-bili 建；core 不再碰 B 站。
 
     // ---- 身份文本再落一次盘：屋子建好之后 activeCarry 等才齐，内容可能变 ----
     // 这条改动之后它**不再被宿主注入**（那是旧的 AGENTS.md 通道），只是落盘副本；
@@ -355,14 +367,23 @@ export function apply(ctx, baseConfig = {}) {
     const obs = registerObserve(ctx, { root, version: VERSION, exposure })
     if (obs?.dispose) disposers.push(() => obs.dispose())
 
+    // ---- 调度钩子（A1.5 / A2）----
+    // core 只把**同一张** fishCore.schedule 表交给 scheduler；dsh-bili 往表上
+    // 注册自己的刷站、出门与素材。core 不再注册 B 站钩子。
+    const hooks = fishCore?.schedule ?? null
+
     // 生物钟：把屋子信息一起传下去。她每晚醒来说话要落进**同一个**会话，
     // 不是每晚新开一个藏起来的会话（用户定案：打开侧栏就该看见她）。
+    // hooks 必须显式传给 scheduler：tick 只认这一次启动拿到的钩子表。
     scheduler = startScheduler(ctx, {
       root,
       herDir,
       wsId: home.wsId,
       sessionId: home.sessionId,
-      ensureBiliSession: ensureBili ?? undefined,
+      hooks: hooks ?? null,
+      // A1.8：刷站/素材/出门的写入与处境都从 fishCore 走；deps 原样传进钩子。
+      core: fishCore ?? undefined,
+      memory: fishCore?.memory,
       log: (...a) => logger.info(...a),
     })
 

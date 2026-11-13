@@ -180,6 +180,20 @@ export const CATALOG = [
   },
 ]
 
+/**
+ * 系统侧事件类型登记（AGENTS.md 第 5 条：新增事件类型要在 events.js 登记）。
+ *
+ * 注意：CATALOG 是「会唤醒她的处境」目录，不是事件类型表；这里单独列系统写的事实，
+ * 供工作台/自检把「系统事实」与「她的话（HER_TYPES）」分开。schema.js 的 ALL_TYPES
+ * 是唯一真相，两边靠 test/schema-v3.test.mjs 的集合相等断言守住，新增类型时别只改一处。
+ *
+ * v3（2026-11-10）：`bili_reply` —— 别人在 B 站回复了她的评论，扫描时由系统写；
+ * 结构化去重键是 `event.reply.rpid`，不进 beliefs。
+ */
+export const SYSTEM_EVENT_TYPES = Object.freeze([
+  'seed', 'answer', 'test', 'absence', 'meta', 'diary', 'voice', 'grant_offer', 'grant', 'saw', 'bili_reply',
+])
+
 /** 按 stage 过滤（stage<=m.stage） */
 export function availableFor(m) {
   return CATALOG.filter((t) => t.stage <= m.stage)

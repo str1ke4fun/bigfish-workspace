@@ -1,0 +1,23 @@
+[Unit]
+Description=大肥鱼工作台（QQ / 微信 / 鱼）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=str1k3
+Group=str1k3
+WorkingDirectory=/opt/fish/workbench-current
+Environment=WORKBENCH_HOME=/home/str1k3
+Environment=WORKBENCH_PORT=8788
+Environment=WORKBENCH_DATA=/home/str1k3/.fish-workbench
+Environment=HOME=/home/str1k3
+Environment=DISPLAY=:99
+ExecStart=/usr/local/bin/node /opt/fish/workbench-current/server.mjs
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/str1k3/workbench.log
+StandardError=append:/home/str1k3/workbench.log
+
+[Install]
+WantedBy=multi-user.target

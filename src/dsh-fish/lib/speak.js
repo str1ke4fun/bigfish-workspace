@@ -1,3 +1,5 @@
+// 已软删除（2026-11-12）：B 站实现以 src/dsh-bili/lib/ 为准，dsh-fish 运行时不再
+// 引用本文件；保留仅为回滚与对照。新增代码不要 import 这里。
 /**
  * speak.js —— 她在 B 站开口：bili_speak 工具
  *
@@ -16,7 +18,7 @@
  */
 
 import { toJsonSchema } from './toolschema.js'
-import { rootDir, readEvents, readOwner } from './store.js'
+import { rootDir, readEvents, readOwner, appendEvent } from './store.js'
 import { loadConfig } from './settings.js'
 import { postComment, postReply } from './comment.js'
 import { screenOutgoing } from './guard.js'
@@ -57,10 +59,38 @@ export async function speakOnce(o = {}) {
         : await postComment({ root, bvid: o.bvid, text: out, client: o.client, dateKey: o.dateKey })
 
     if (!r.ok) return { ok: false, said: '', note: softReason(r.why) }
+
+    // 真的说出去了才落 utterance（设计 §6.1）：公开言论，surface=bili、channel=core，
+    // 其他面也看得到。`my:<rpid>` 是去重键——平台回执可能超时重试，同一 rpid 只写一次。
+    // 事件写失败不回滚平台侧已经发生的事实：返回 ok，但少了一条记忆（warning 语义）。
+    try {
+      await recordUtterance({ root, memory: o.memory, agent: o.agent, rpid: r.rpid, text: out, bvid: o.bvid })
+    } catch { /* 记忆写失败不影响"已经说出去了" */ }
     return { ok: true, said: out, note: '说出去了。' }
   } catch (err) {
     return { ok: false, said: '', note: '没说出来。' }
   }
+}
+
+/**
+ * 写一条 `utterance` + `my:<rpid>`（设计 §6.1）。
+ * 已有同 rpid 的 `my:` 就跳过：平台超时重试时不能把同一句话记两遍。
+ */
+async function recordUtterance({ root, memory, agent, rpid, text, bvid }) {
+  if (!rpid) return
+  const { events } = await readEvents(root).catch(() => ({ events: [] }))
+  const key = `my:${rpid}`
+  if ((events ?? []).some((e) => e?.type === 'meta' && String(e.text ?? '') === key)) return
+
+  const refs = bvid ? [String(bvid)] : []
+  if (memory) {
+    const w = await memory.commit(text, { refs, surface: 'bili', channel: 'core', agent })
+    // 写失败就不写 my:，下次扫描/补偿才有机会补上。
+    if (!w?.ok) return
+  } else {
+    await appendEvent({ type: 'utterance', text, refs, surface: 'bili', channel: 'core' }, { source: 'tool' }, root)
+  }
+  await appendEvent({ type: 'meta', text: key }, { day: 0, stage: 1, source: 'system' }, root).catch(() => {})
 }
 
 /**
@@ -114,7 +144,7 @@ export function registerSpeak(ctx, deps = {}) {
         render: (_args, out) =>
           [{ type: 'text', text: out.ok ? `说出去了：「${out.said}」` : `没说：${out.note}` }],
       },
-      async execute(args) {
+      async execute(args, exec) {
         const { config } = await loadConfig(root)
         if (config?.comment?.enabled !== true) return { ok: false, said: '', note: '现在不方便说。' }
         return speakOnce({
@@ -124,6 +154,8 @@ export function registerSpeak(ctx, deps = {}) {
           parentRpid: args?.parentRpid,
           root,
           client: deps.client,
+          memory: deps.memory,
+          agent: exec?.agent,
         })
       },
     }),

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { extractBvid, parseWatchIntent, watchHint } from '../lib/intent.js'
-import { renderSelfDoc } from '../lib/selfdoc.js'
+import { renderBiliSection } from '../../dsh-bili/lib/prompts.js'
 import { deriveSelf } from '../lib/derive.js'
 
 const BV = 'BV1ED4y1Y7dc'
@@ -65,11 +65,11 @@ test('递给她的那行：要求看 vs 可以自己定，措辞不同', () => {
   assert.doesNotMatch(maybe, /先看，再回他/)
 })
 
-test('身份档里写着这两档的区别', () => {
-  const model = deriveSelf([], { growthDays: 30 })
-  const withBrowse = renderSelfDoc(model, { browse: true })
+test('B 站面的提示段写着这两档的区别', () => {
+  // A2：这段文字从 core 的身份档搬到 dsh-bili 的 `fish:bili` 段。
+  const withBrowse = renderBiliSection({ browse: true })
   assert.match(withBrowse, /他有时会丢一条视频给我/)
   assert.match(withBrowse, /那只是问我/)
-  const noBrowse = renderSelfDoc(model, { browse: false })
+  const noBrowse = renderBiliSection({ browse: false })
   assert.doesNotMatch(noBrowse, /他有时会丢一条视频给我/)
 })

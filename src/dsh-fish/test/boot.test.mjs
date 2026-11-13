@@ -12,7 +12,7 @@ import { startScheduler, wakeNow } from '../lib/scheduler.js'
 import { rememberKnownTools } from '../lib/restrict.js'
 import { dateKey } from '../lib/settings.js'
 import { writeSelfDoc } from '../lib/selfdoc.js'
-import { clearWakeSection, getWakeSection } from '../lib/identity.js'
+import { clearWakeSection, getWakeSection, setWakeSection } from '../lib/identity.js'
 import { WAKE_TRIGGER } from '../lib/wakeconst.js'
 
 async function withRoot(fn) {
@@ -215,6 +215,38 @@ test('观测台 /state 不泄露 needs 数值', async () => {
   })
 })
 
+test('/wx/scan：微信没接上给人话，接上后只回扫描摘要', async () => {
+  await withRoot(async (root) => {
+    const { ctx, routes } = fakeCtx()
+    const h = apply(ctx, { root })
+    await new Promise((r) => setTimeout(r, 120))
+
+    const route = await waitFor(() => routes.find((r) => r.path === '/dsh-fish/wx/scan'))
+    assert.ok(route, '缺少 /wx/scan 路由')
+
+    const call = async (method) => {
+      const res = fakeRes()
+      await route.handler({ url: '/dsh-fish/wx/scan', method }, res)
+      return res
+    }
+
+    assert.equal((await call('GET')).code, 405)
+
+    const absent = await call('POST')
+    assert.equal(absent.code, 409)
+    assert.match(absent.json.error, /微信通道/)
+
+    ctx.wx = {
+      scanDirectory: async () => ({ ok: true, pages: 3, chats: [{}, {}, {}], complete: true, reason: 'bottom' }),
+    }
+    const ok = await call('POST')
+    assert.equal(ok.code, 200)
+    assert.deepEqual(ok.json, { ok: true, pages: 3, count: 3, complete: true, reason: 'bottom' })
+
+    h.dispose?.()
+  })
+})
+
 test('/state 与 /memory 把「对不上」和「记得很牢」报出来（2026-10-24 P0）', async () => {
   await withRoot(async (root) => {
     const { ctx, routes } = fakeCtx()
@@ -412,6 +444,25 @@ test('dispose 之后不再有后台活动（定时器真的停了）', async () 
   })
 })
 
+// A2：B 站的刷站/出门与唤醒素材钩子搬到 dsh-bili，core 不再注册。
+// 生产路径「dsh-bili 把钩子挂上」由 src/dsh-bili/test 守着；这里钉住 core
+// 不越界替另一个插件注册（否则拆包后会出现两份钩子）。
+test('core 不再往 core.schedule 注册 bili-browse / bili-material', async () => {
+  await withRoot(async (root) => {
+    const { ctx, provided } = fakeCtx()
+    const h = apply(ctx, { root })
+    try {
+      const core = await waitFor(() => provided.get('fishCore'))
+      assert.ok(core, 'fishCore 必须挂上')
+      const st = core.schedule.status()
+      assert.ok(!st.tick.some((x) => x.id === 'bili-browse'), 'core 不该再挂后台刷站钩子')
+      assert.ok(!st.wake.some((x) => x.id === 'bili-material'), 'core 不该再挂唤醒素材钩子')
+    } finally {
+      h.dispose?.()
+    }
+  })
+})
+
 test('scheduler.tick 在时间窗外不唤醒', async () => {
   await withRoot(async (root) => {
     // 窗口设成一个必然不含"现在"的区间（当前分钟往后推 3 小时开，1 分钟后关）
@@ -453,8 +504,9 @@ test('唤醒消息只剩一句触发语，处境走 system prompt 段不进对�
     assert.ok(!text.includes('autonomy'), '不能泄露字段名')
     assert.ok(!text.includes('第 1 天'), '处境正文不该再进对话')
 
-    // 处境必须还在——只是换了通道（system prompt 段，见 attachIdentity）
-    const wake = getWakeSection()
+    // 处境必须还在——只是换了通道（system prompt 段，见 attachIdentity）。
+    // 而且挂在**这次唤醒的会话**上，不是全局槽：全局槽会把出门会话的处境一起清掉。
+    const wake = getWakeSection(r.sessionId)
     assert.ok(wake.length > 0, '这次唤醒的处境不能为空')
     assert.ok(wake.includes('第 1 天') || wake.includes('醒'), '处境正文要在 wake 段里')
     assert.ok(wake.length < 1200, `处境段过长：${wake.length} 字`)
@@ -466,6 +518,18 @@ test('唤醒消息只剩一句触发语，处境走 system prompt 段不进对�
     assert.ok(doc.includes('撒娇'), 'N1 禁令要在身份文档里')
     assert.ok(doc.includes('好感度'), 'N2 禁令要在身份文档里')
     assert.ok(doc.includes('growth_commit'), '工具说明要在身份文档里')
+  })
+})
+
+test('唤醒失败只清自己的处境，不把出门会话的处境一起清掉', async () => {
+  await withRoot(async (root) => {
+    await writeConfig(normalizeConfig({ browse: { enabled: false } }), root)
+    const { ctx } = fakeCtx({ promptImpl: async () => { throw new Error('boom') } })
+    setWakeSection('出门的处境', 'ses-bili')
+    const r = await wakeNow(ctx, { root })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(getWakeSection('ses-bili'), '出门的处境', '出门会话的处境不能被子屋的失败清掉')
+    assert.equal(getWakeSection(r.sessionId), '', '这次唤醒自己的处境要清掉')
   })
 })
 

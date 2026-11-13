@@ -1,3 +1,5 @@
+// 已软删除（2026-11-12）：B 站实现以 src/dsh-bili/lib/ 为准，dsh-fish 运行时不再
+// 引用本文件；保留仅为回滚与对照。新增代码不要 import 这里。
 /**
  * bili.js —— B 站只读客户端（她"刷站"的唯一入口）
  *
@@ -22,6 +24,9 @@
 
 import { createHash } from 'node:crypto'
 import { inflateRawSync, inflateSync, gunzipSync } from 'node:zlib'
+import { normalizeCookie } from './cookie.js'
+
+export { normalizeCookie }
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -168,24 +173,6 @@ export function sampleDanmaku(list, n = 8, durationSec = 0) {
     }
   }
   return picked.sort((a, b) => a.t - b.t)
-}
-
-/**
- * 把 cookie 串整理干净（允许从 Netscape cookies.txt 或 "a=1; b=2" 传入）
- */
-export function normalizeCookie(raw) {
-  const s = String(raw ?? '').trim()
-  if (!s) return ''
-  if (s.includes('\t')) {
-    const pairs = []
-    for (const line of s.split(/\r?\n/)) {
-      if (!line || line.startsWith('#')) continue
-      const p = line.split('\t')
-      if (p.length >= 7 && p[5]) pairs.push(`${p[5]}=${p[6]}`)
-    }
-    return pairs.join('; ')
-  }
-  return s
 }
 
 /**

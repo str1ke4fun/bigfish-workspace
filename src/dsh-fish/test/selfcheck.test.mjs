@@ -95,12 +95,15 @@ test('真的没内容时，仍然报「有响应但没有内容」', async () =>
   })
 })
 
-test('源码守门：三处 readOwner 都必须 await（漏了就是上面那两条假红）', async () => {
+test('源码守门：取 cookie 建 client 的地方都要 await；observe 不再自己建 client', async () => {
   const sc = await readFile(join(ROOT, 'lib', 'selfcheck.js'), 'utf8')
   assert.ok(sc.includes('const ow = await readOwner(root)'), '自检里读 owner 要 await')
 
+  // A2 之后 B 站客户端归 dsh-bili；observe 里再写 createClient( 就是未定义的引用
+  // （2026-11-12 测 cookie 时真炸过：连不上：createClient is not defined）。
   const ob = await readFile(join(ROOT, 'lib', 'observe.js'), 'utf8')
-  assert.ok(ob.includes('(await readOwner(root))?.cookie'), '/selfcheck 建 client 时要用真 cookie')
+  assert.equal(ob.includes('createClient('), false, 'observe 不许直接建 B 站客户端，要走 bili 服务')
+  assert.ok(ob.includes('await readOwner(root)'), 'observe 读 owner 也要 await')
   assert.ok(!/cookie: readOwner\(root\)\?\.cookie/.test(ob), '不许留下没 await 的旧写法')
 
   const vd = await readFile(join(ROOT, 'lib', 'video.js'), 'utf8')

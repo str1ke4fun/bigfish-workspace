@@ -24,7 +24,7 @@ import {
   getAgentToolState,
   resetAgentToolState,
 } from '../lib/restrict.js'
-import { resolveAllow } from '../lib/tool-policy.js'
+import { contribute, ownTools, resolveAllow } from '../lib/tool-policy.js'
 
 /** 一个够用的假插件 ctx：能 on('agent/created')，也能被我们主动触发。 */
 function fakeCtx() {
@@ -80,8 +80,9 @@ function fakeAgent(cwd, { withRestrict = true, withGuard = true } = {}) {
 }
 
 test('清单里她该有的工具都在，且不含危险口子', () => {
-  // 十个是她自己的，外加 read_image（看图片/看视频画面都靠它）
-  for (const name of ['growth_commit', 'her_recall', 'her_leave', 'bili_look', 'bili_watch', 'bili_speak', 'her_remind', 'her_reminders', 'her_remind_cancel', 'her_inbox', 'read_image']) {
+  // 七个核心是她自己的，外加 read_image（看图片/看视频画面都靠它）。
+  // B 站 3 个工具从 A1.4 起由贡献表提供，不再写死在 FISH_TOOLS 里。
+  for (const name of ['growth_commit', 'her_recall', 'her_leave', 'her_remind', 'her_reminders', 'her_remind_cancel', 'her_inbox', 'read_image']) {
     assert.ok(HER_TOOLS.includes(name), `清单里少了 ${name}`)
   }
   // 这几个一旦放进去，收窄就白做了
@@ -501,6 +502,63 @@ test('启动期宿主名单还没有自有工具时，自有工具仍要并进 a
   const known = new Set([...hostNames, ...FISH_TOOLS])
   for (const n of allow) {
     assert.ok(known.has(n), `${n} 既不在宿主名单也不在自有工具里，不该出现`)
+  }
+})
+
+test('ownTools 可以是函数：贡献在注册之后发生，下一次 agent/created 仍能读到', () => {
+  const ctx = fakeCtx()
+  const surface = { current: () => 'bili' }
+  // 宿主名单里只有内置工具（B 站 3 个是注册之后才贡献的，宿主名单里还没有）。
+  const hostNames = new Set([
+    'growth_commit', 'her_recall', 'her_leave', 'her_tools',
+    'her_remind', 'her_reminders', 'her_remind_cancel', 'her_inbox', 'read_image',
+  ])
+
+  // 先注册：ownTools 传函数，注册时**不**求值。
+  const off = registerToolRestrict(ctx, {
+    herDir: '/her',
+    surface,
+    policy: { resolveAllow },
+    caps: { hasImageRoute: true },
+    ownTools: () => [...ownTools(), 'her_tools'],
+    enabled: true,
+    log: () => {},
+  })
+
+  // 注册之后才贡献 B 站工具。
+  const contribution = contribute(
+    {
+      id: 'restrict-dynamic-bili',
+      tools: [
+        { name: 'bili_look', summary: '看 B 站列表', tier: 'always', kind: 'read' },
+        { name: 'bili_watch', summary: '看一条视频的画面', tier: 'always', kind: 'read' },
+        { name: 'bili_speak', summary: '在评论区说话', tier: 'always', kind: 'send', safety: 'send' },
+      ],
+    },
+    { hostNames: new Set(['bili_look', 'bili_watch', 'bili_speak']) },
+  )
+  assert.equal(contribution.ok, true, contribution.why)
+
+  try {
+    const before = fakeAgent('/her')
+    before.agent.ctx.tools.view = (scope) => ({
+      restrictableNames: scope ? new Set(hostNames) : new Set(),
+    })
+    ctx.emit('agent/created', { agent: before.agent })
+    const allow = before.calls.at(-1).allow
+    assert.ok(allow.includes('bili_look'), '注册之后贡献的 bili_look 要在下一次 agent/created 进 allow')
+
+    // 撤销贡献：之后新建的 agent 不该再看见它。
+    contribution.off()
+    const after = fakeAgent('/her')
+    after.agent.ctx.tools.view = (scope) => ({
+      restrictableNames: scope ? new Set(hostNames) : new Set(),
+    })
+    ctx.emit('agent/created', { agent: after.agent })
+    assert.equal(after.calls.at(-1).allow.includes('bili_look'), false)
+  } finally {
+    contribution.off()
+    off()
   }
 })
 

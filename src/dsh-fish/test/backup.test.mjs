@@ -176,9 +176,9 @@ test('事件格式版本：读到比本程序新的事件要拒绝，不能装�
 })
 
 test('事件格式版本：新事件带 v，老事件按 v1 读并计数', async () => {
-  assert.equal(EVENT_SCHEMA_VERSION, 2)
+  assert.equal(EVENT_SCHEMA_VERSION, 3)
   const ev = validateEvent({ type: 'utterance', text: '我看见了。' }, { day: 1, stage: 1 })
-  assert.equal(ev.v, 2)
+  assert.equal(ev.v, 3)
 
   const root = await mkdtemp(join(tmpdir(), 'fish-ver-'))
   try {
@@ -197,7 +197,7 @@ test('事件格式版本：新事件带 v，老事件按 v1 读并计数', async
     await appendEvent({ type: 'utterance', text: '新的一句。' }, { day: 1, stage: 1 }, root)
     const r2 = await readEvents(root)
     assert.equal(r2.legacy, 1, '只有那条老的算 legacy')
-    assert.equal(r2.events[1].v, 2)
+    assert.equal(r2.events[1].v, 3)
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }

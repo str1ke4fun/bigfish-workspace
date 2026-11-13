@@ -1,0 +1,48 @@
+/* 日间 · 暖纸手账 */
+:root {
+  color-scheme: light;
+  --bg: #f4efe6;
+  --bg-deep: #efe7da;
+  --surface: #fffdf8;
+  --surface-2: #f9f3e7;
+  --line: #e3d7c5;
+  --line-soft: #f0e8db;
+  --ink: #332e27;
+  --ink-2: #5f5549;
+  --dim: #756957;
+  --accent: #b85c38;
+  --accent-ink: #8a3f24;
+  --on-accent: #fffdf8;
+  --teal: #4d776f;
+  --gold: #b8862f;
+  --danger: #a33a2a;
+  --shadow: 0 1px 2px rgba(51, 46, 39, .04), 0 8px 24px rgba(51, 46, 39, .05);
+
+  /* 旧页面仍在用的兼容别名 */
+  --card: var(--surface);
+  --fg: var(--ink);
+  --ok: var(--teal);
+  --warn: var(--gold);
+  --bad: var(--danger);
+}
+
+/* 夜间 · 墨色夜读 */
+html[data-theme="night"] {
+  color-scheme: dark;
+  --bg: #141413;
+  --bg-deep: #0f0f0e;
+  --surface: #1f1f1d;
+  --surface-2: #242422;
+  --line: #303030;
+  --line-soft: #282826;
+  --ink: #e8e4dc;
+  --ink-2: #c9c2b7;
+  --dim: #98938a;
+  --accent: #d98966;
+  --accent-ink: #e8a184;
+  --on-accent: #1a1a18;
+  --teal: #8fb2a8;
+  --gold: #c9a45e;
+  --danger: #e0775f;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 10px 28px rgba(0, 0, 0, .25);
+}

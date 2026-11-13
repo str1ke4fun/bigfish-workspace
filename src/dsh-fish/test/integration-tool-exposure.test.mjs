@@ -24,24 +24,44 @@ import { join } from 'node:path'
 import { provideFishCore } from '../lib/core-service.js'
 import { looksLikeSecret } from '../lib/guard.js'
 import {
-  FISH_TOOLS,
   getAgentToolState,
   registerToolRestrict,
   revealTools,
 } from '../lib/restrict.js'
 import {
   catalog,
+  contribute,
   describeEntry,
   entriesFor,
   groupsFor,
   loadTargets,
+  ownTools,
   resolveAllow,
 } from '../lib/tool-policy.js'
 import { registerHerTools } from '../lib/tools.js'
 import { createToolLedger } from '../lib/tool-ledger.js'
 
-/** 生产里 index.js 传给 registerToolRestrict 的 ownTools。 */
-const OWN_TOOLS = [...FISH_TOOLS, 'her_tools']
+/**
+ * 生产里 index.js 传给 registerToolRestrict 的 ownTools。
+ *
+ * B 站 3 个工具从 A1.4 起是贡献条目，不在 FISH_TOOLS 里。必须先贡献、再取
+ * `ownTools()`，这样下面「wxAllow 不含 bili_look」「webAllow 不含 bili_*」
+ * 才是真的在测面过滤（宿主确实登记了这些名字，策略表里也确实有它们）。
+ */
+const biliContribution = contribute(
+  {
+    id: 'integration-bili',
+    tools: [
+      { name: 'bili_look', summary: '看 B 站列表', tier: 'always', kind: 'read' },
+      { name: 'bili_watch', summary: '看一条视频的画面', tier: 'always', kind: 'read' },
+      { name: 'bili_speak', summary: '在评论区说话', tier: 'always', kind: 'send', safety: 'send' },
+    ],
+  },
+  { hostNames: new Set(['bili_look', 'bili_watch', 'bili_speak']) },
+)
+assert.equal(biliContribution.ok, true, biliContribution.why)
+
+const OWN_TOOLS = [...ownTools(), 'her_tools']
 
 /** wx 面宿主真实注册过的工具名。 */
 const WX_HOST_TOOLS = [
@@ -355,6 +375,7 @@ test('面 → allow → restrict → her_tools → load → 新 allow/guard/台�
   } finally {
     try { offLedger?.() } catch { /* ignore */ }
     try { offRestrict() } catch { /* ignore */ }
+    try { biliContribution.off() } catch { /* ignore */ }
     try { handle.dispose() } catch { /* ignore */ }
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   }

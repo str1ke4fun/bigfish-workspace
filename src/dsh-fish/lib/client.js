@@ -265,6 +265,9 @@ window.__ModuleLoader__.load({
       // 备份与恢复（2026-10-25）：只在数据页用，不进轮询。
       const [backupBusy, setBackupBusy] = useState(false)
       const [backupMsg, setBackupMsg] = useState('')
+      // 微信会话目录补扫（2026-11-10）：只在数据页按需触发，不进轮询。
+      const [wxScanBusy, setWxScanBusy] = useState(false)
+      const [wxScanMsg, setWxScanMsg] = useState('')
       let topEl = null
       const [sayText, setSayText] = useState('')
       const [said, setSaid] = useState([])
@@ -301,9 +304,8 @@ window.__ModuleLoader__.load({
       const [browseDanmaku, setBrowseDanmaku] = useState(6)
       // 桌面提醒（P3-3 重写）：默认关，由他自己打开
       const [notifyOn, setNotifyOn] = useState(false)
-      // 浏览器通知权限 + 弹不出来时的页面内气泡
+      // 浏览器通知权限（提醒本身已迁到 8788 工作台）
       const [notifyPerm, setNotifyPerm] = useState('default')
-      const [bubble, setBubble] = useState('')
       // 在 B 站说话（P4）：默认关。这是唯一会动她账号的功能。
       const [commentOn, setCommentOn] = useState(false)
       const [commentPerDay, setCommentPerDay] = useState(1)
@@ -537,8 +539,8 @@ window.__ModuleLoader__.load({
 
       useEffect(() => { load() }, [load])
 
-      // 在线状态每 30 秒刷一次；页面在后台就不轮询（省电，也不制造无谓请求）。
-      // 2026-10-23 加：他要能看见「醒了但没做什么」这种状态，而不是只有结果。
+      // P3：旧面板只读一次状态，不再每 30 秒自动轮询——工作台接管刷新节奏。
+      // 想看新的，重新打开设置页或点「刷新」。
       useEffect(() => {
         let stop = false
         const peek = async () => {
@@ -547,41 +549,15 @@ window.__ModuleLoader__.load({
           catch { if (!stop) setSt({ phase: 'offline', label: '离线', detail: '服务没开，或者插件没加载' }) }
         }
         peek()
-        const t = setInterval(peek, 30_000)
-        return () => { stop = true; clearInterval(t) }
+        return () => { stop = true }
       }, [])
 
-      // ---- 说话提醒（P3-3 重写，2026-10-23）----
-      // 服务端只回答"该不该提醒、提醒什么"（GET /notify 的 due/text），
-      // **弹是这里的事**。原实现调隐藏 PowerShell 弹 WinRT Toast，被火绒当
-      // 木马行为拦下；更糟的是静默拦截时没有任何错误返回，lastShown 照样
-      // 被写掉 → 当天再也不会弹。现在只用浏览器自己的能力，不产生任何子进程。
-      //
-      // 页面关着就不会有提醒——这是他本人接受的取舍（m05389）：第二天打开
-      // 观测台照样能看到她说过什么。
+      // ---- 说话提醒（P3：迁到 8788 工作台）----
+      // 旧面板不再每 60 秒拉 /notify，也不再替工作台写 `shown`——两处同时轮询会
+      // 互相抢提醒。工作台外壳负责弹通知；这里只保留权限状态给上面的说明文案用。
       useEffect(() => {
         const has = typeof window !== 'undefined' && 'Notification' in window
         setNotifyPerm(has ? window.Notification.permission : 'unsupported')
-        let stop = false
-        const poll = async () => {
-          try {
-            const r = await jget('/notify')
-            if (stop || !r?.due || !r?.text) return
-            let shown = false
-            if (has && window.Notification.permission === 'granted') {
-              try {
-                new window.Notification('大肥鱼跟你说话', { body: r.text, tag: 'dsh-fish' })
-                shown = true
-              } catch { /* 系统禁了就退到气泡 */ }
-            }
-            // 弹不出来也要让他看见——不然这条提醒就白记了
-            if (!shown) setBubble(r.text)
-            await jpost('/notify', { shown: true })
-          } catch { /* 轮询失败不打扰他 */ }
-        }
-        poll()
-        const t = setInterval(poll, 60_000)
-        return () => { stop = true; clearInterval(t) }
       }, [])
 
       const allowNotify = async () => {
@@ -2303,6 +2279,27 @@ window.__ModuleLoader__.load({
                 onClick: () => copyPath(dataPaths?.root || ''),
               }, dataPaths?.root ? '复制数据文件夹路径' : '路径还没读到')))),
 
+        group('微信会话目录',
+          '会话名目录是派生索引：侧栏每出现一次就合并一次，登录后会自动全量扫一遍。想现在补一次就点下面。',
+          h('p', { className: 'hint' }, '全量扫描只滚侧栏、不点开会话；有会话带着草稿时会跳过，不碰草稿。'),
+          h('div', { className: 'row' },
+            h('button', {
+              disabled: wxScanBusy,
+              onClick: async () => {
+                setWxScanBusy(true)
+                setWxScanMsg('')
+                try {
+                  const r = await jpost('/wx/scan', {})
+                  setWxScanMsg(`扫了 ${r.pages} 页，记下 ${r.count} 个会话${r.complete ? '（已经到底）' : '（没滚到底，过一会儿再试）'}。`)
+                } catch (e) {
+                  setWxScanMsg(e.message || '没扫成')
+                } finally {
+                  setWxScanBusy(false)
+                }
+              },
+            }, wxScanBusy ? '正在扫……' : '扫一遍会话列表')),
+          wxScanMsg ? h('p', { className: 'hint' }, wxScanMsg) : null),
+
         group('备份与恢复',
           '备份是一份 json：事件流、配置、日记、她的房间、头像都在里面。换台机器，或者想重开一局之前，先存一份。',
           h('div', null,
@@ -2383,17 +2380,15 @@ window.__ModuleLoader__.load({
 
       return h('div', { className: 'dfish', ref: (el) => { topEl = el } },
         h('h2', null, '大肥鱼'),
+        // P3：管理入口迁到 8788 工作台。这块面板保留到 P4 之后再移除；
+        // 它不再自动轮询，读的还是同一组 /dsh-fish/* 路由。
+        h('p', { className: 'hint', style: { margin: '0 0 10px' } },
+          '旧入口：管理入口已迁到 8788 工作台。',
+          h('a', { href: 'http://127.0.0.1:8788/', target: '_blank', rel: 'noreferrer' }, '打开工作台')),
         h('p', { className: 'sub' },
           s ? `第 ${s.day} / ${s.growthDays} 天 · ${s.stageName} · 事件 ${s.counts.total} 条` : '读取中…'),
         err ? h('pre', { className: 'err' }, err) : null,
         note ? h('pre', { className: 'ok' }, note) : null,
-        // 说了话、但系统通知弹不出来时，退到这里。点一下才收起来。
-        bubble ? h('div', { className: 'card', style: { borderLeft: '3px solid currentColor' } },
-          h('div', { className: 'dim' }, '大肥鱼跟你说话'),
-          h('div', { style: { marginTop: '4px' } }, bubble),
-          h('div', { className: 'row', style: { marginTop: '6px' } },
-            h('button', { onClick: () => setBubble('') }, '知道了'))) : null,
-
         tabBar,
         AUTO_SAVE_TABS.has(tab) ? h('p', { className: 'hint', style: { margin: '0 0 8px' } }, '这里的改动改完就生效，不需要点保存。') : null,
         AUTO_SAVE_TABS.has(tab) && autoNote ? h('p', { className: 'hint' }, autoNote) : null,
@@ -2415,18 +2410,18 @@ window.__ModuleLoader__.load({
     const inject = ['slots']
     const NAMES = { nav: '大肥鱼' }
 
+    // P4：设置 section 不再挂载，管理入口只剩 8788 工作台。
+    // `client.js`、`exports["./client"]`、`dsh.client` 与 FishSection 都保留；
+    // 回滚只需把下面注释里的注册恢复。`ctx` 参数保留是为了不动宿主契约。
     function apply(ctx) {
-      ctx.effect(
-        () =>
-          ctx.slots.inject('settings.section', () =>
-            ctx.slots.register(
-              { name: 'settings.section', id: NS, order: 7, label: () => NAMES.nav },
-              FishSection,
-            ),
-            'dsh-fish: settings section',
-          ),
-        'dsh-fish: settings section',
-      )
+      void ctx
+      // 回滚时恢复：
+      // ctx.effect(
+      //   () => ctx.slots.inject('settings.section', () => ctx.slots.register(
+      //     { name: 'settings.section', id: NS, order: 7, label: () => NAMES.nav }, FishSection,
+      //   ), 'dsh-fish: settings section'),
+      //   'dsh-fish: settings section',
+      // )
     }
 
     exports.apply = apply

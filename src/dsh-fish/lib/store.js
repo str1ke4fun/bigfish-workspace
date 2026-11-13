@@ -18,7 +18,7 @@ import { promises as fs } from 'node:fs'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { validateEvent, EVENT_SCHEMA_VERSION } from './schema.js'
+import { validateEvent, EVENT_SCHEMA_VERSION, SURFACES, inferSurface } from './schema.js'
 
 export function rootDir() {
   return process.env.DSH_FISH_HOME || join(homedir(), '.dsh-fish')
@@ -123,6 +123,10 @@ export async function readEvents(root = rootDir()) {
           newer++
           continue
         }
+        // v3（2026-11-10）：没有 surface 的 v1/v2 事件按 §5.4 推断后只补在内存里。
+        // 回写 = 篡改历史行；这里改的只是这次读出来的对象，events.jsonl 一个字节不动。
+        // 新事件自带 surface；文件里若出现未知值（被手改过），同样退回推断，不把脏值往下传。
+        if (!SURFACES.includes(ev.surface)) ev.surface = inferSurface(ev)
         events.push(ev)
       } else skipped++
     } catch {

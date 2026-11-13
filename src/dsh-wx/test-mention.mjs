@@ -24,6 +24,14 @@ t('过了 2 分 59 秒还能说，过了 3 分 1 秒就不行', () => {
   assert.equal(late.ok, false)
   assert.match(late.reason, /3 分钟前/)
 })
+t('拒绝理由说的是实际过去了多久，不是窗口长度', () => {
+  const s = grant({}, '测试群A', T)
+  const late = canSpeak(s, '测试群A', T + 8 * 60_000, 3)
+  assert.equal(late.ok, false)
+  assert.match(late.reason, /8 分钟前/)
+  assert.match(late.reason, /窗口只有 3 分钟/)
+  assert.match(late.reason, /再 @ 你一次/)
+})
 t('窗口调成 10 分钟，5 分钟时还能说', () => {
   const s = grant({}, '测试群A', T)
   assert.equal(canSpeak(s, '测试群A', T + 5 * 60_000, 10).ok, true)

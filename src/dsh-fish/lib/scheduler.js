@@ -22,18 +22,11 @@ import { offerPrompt, SLEEP_TODAY } from './persona.js'
 import { offerDueDay, pendingOffer, grantableRules } from './unlock.js'
 import { withWake } from './wakewin.js'
 import { detectAbsence } from './absence.js'
-import { createClient } from './bili.js'
-import { gather, browseCountToday, recordBrowse, itemsFromEvents } from './browse.js'
-import { backgroundBrowse } from './browsejob.js'
-import { renderWatchList } from './history.js'
-import { fetchCover, coverLines } from './cover.js'
-import { riskState, browsePlan, noteRisk } from './risk.js'
 import { flushReport } from './report.js'
 import { talkSessionId } from './home.js'
 import { WAKE_TRIGGER, WAKE_HINT } from './wakeconst.js'
 import { refreshSelfDoc } from './selfdoc.js'
 import { setWakeSection, clearWakeSection } from './identity.js'
-import { maybeOuting } from './outing.js'
 import { watchTurnEnd } from './turnend.js'
 
 const TICK_MS = 60_000
@@ -43,9 +36,18 @@ const WAKE_TIMEOUT_MS = 5 * 60_000
 // 90 秒足够；再久就说明卡住了，先把报告写出去，别让用户干等。
 const REPORT_WAIT_MS = 90_000
 
+// 最近一次 startScheduler 拿到的钩子表。wakeNow()（设置页「让她去刷 B 站」按钮、
+// observe.js 调用）没有 deps.hooks，但必须继续跑 wake 钩子（素材、风险提示），
+// 所以 wake() 在拿不到 deps.hooks 时退回这里。tick 不走这条兜底：
+// 没有显式传入的钩子就不该有后台活动。
+let activeHooks = null
+
 export function startScheduler(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
   const log = deps.log ?? ((...a) => console.log('[dsh-fish]', ...a))
+  activeHooks = deps.hooks ?? null
+  // 记一份本实例的归属：dispose 只清自己留下的兜底，不误伤后来启动的 scheduler。
+  const ownHooks = activeHooks
 
   // 每次 tick 的记忆（内存态，重启即清空；配额以 events.jsonl 为准）
   let lastTick = 0
@@ -75,40 +77,31 @@ export function startScheduler(ctx, deps = {}) {
       const { config } = await loadConfig(root)
       const dk = dateKey()
 
-      // ---- 后台刷站 + B 站出门 ----
-      // 刷站放在唤醒日程之前：她不醒的时候也要有"今天看见过什么"。
-      // 配额与唤醒共用，browsejob 会为还没发生的唤醒留一次。
-      // 用 running 串行化，避免网络慢时两轮叠在一起。
+      // ---- 调度钩子：后台刷站 + B 站出门（A1.5）----
+      // 钩子跑在这一次串行 tick 里，不另起定时器。刷站放在唤醒日程之前：
+      // 她不醒的时候也要有"今天看见过什么"。配额与唤醒共用，browsejob
+      // 会为还没发生的唤醒留一次。
       //
       // 出门（2026-11-10）：刷到的素材、以及评论区新回复，投进「去 B 站」那条会话
       // ——不是 home。以前回复渲染在 home 唤醒里，于是她在屋子里替 B 站回话，
       // 而 bili_speak 属于 bili 面，她根本看不见那个工具。
       // 带素材的出门在这里；只带回复的出门也由它自己判配额/间隔。
+      //
+      // 没有 hooks（fishCore 没挂上 / 单测路径）：什么都不做，不抛错。
       running = true
-      let bg = null
+      let tickRes = { changed: false }
       try {
-        bg = await backgroundBrowse({ root, config, events, dk, log, deps })
-        if (bg?.ok) {
-          // 新事件（saw / browse）已经落盘，后面的唤醒配额与身份文档都要读到。
-          events = (await readEvents(root)).events
-          await refreshSelfDoc(root, { log })
+        const h = deps.hooks ?? null
+        if (h?.runTick) {
+          tickRes = (await h.runTick({ now: new Date(), root, events, config, dk, deps })) ?? tickRes
         }
-        const out = await maybeOuting(ctx, {
-          root,
-          config,
-          events,
-          dk,
-          now: new Date(),
-          material: bg?.ok ? bg.text : '',
-          picks: bg?.ok ? bg.picks : [],
-          log,
-          ensureSession: deps.ensureBiliSession,
-          client: deps.client,
-          appendEvent: deps.appendEvent,
-        })
-        if (out?.ok) events = (await readEvents(root)).events
       } finally {
         running = false
+      }
+      if (tickRes?.changed) {
+        // 钩子写了新事件（saw / browse）：后面的唤醒配额与身份文档都要读到。
+        events = (await readEvents(root)).events
+        await refreshSelfDoc(root, { log })
       }
 
       // 日程：每天在时间窗内抽一个点。抽到的点已存在（今天已经安排过）就不再改。
@@ -125,7 +118,14 @@ export function startScheduler(ctx, deps = {}) {
       const decision = plan(model, config, counts, events, { squeeze: gapSqueeze(gapSinceLastWake(events)) })
 
       if (decision.action === 'quiet') {
-        await appendEvent({ type: 'meta', text: `quiet:${dk} 无候选模板，今天不打扰` }, { day: model.day, stage: model.stage, source: 'timer' }, root)
+        // quiet 只表示「这一分钟没有候选」，不是今天到此为止——候选可能过一会儿
+        // 才满足条件（14:33 那次唤醒就是等出来的），下一分钟还会重新算。
+        // 所以事件流里一天只留第一条，不要每分钟追加；wake / wakefail 照常记录。
+        const marker = `quiet:${dk} `
+        const noted = events.some((e) => e?.type === 'meta' && String(e.text ?? '').startsWith(marker))
+        if (!noted) {
+          await appendEvent({ type: 'meta', text: `${marker}还不想醒` }, { day: model.day, stage: model.stage, source: 'timer' }, root)
+        }
         return
       }
       if (decision.action === 'skip') {
@@ -154,6 +154,7 @@ export function startScheduler(ctx, deps = {}) {
     tick,
     dispose() {
       disposed = true
+      if (activeHooks === ownHooks) activeHooks = null
       if (timer) clearInterval(timer)
       if (wakeTimer) clearTimeout(wakeTimer)
       timer = null
@@ -195,83 +196,6 @@ function hashSeed(s) {
   return ((h >>> 0) % 100000) / 100000
 }
 
-/**
- * 醒之前让她"看见点东西"。
- *
- * 三个刻意的取舍：
- *   1. **刷站失败不算唤醒失败**。今天看不到就等于今天没看到，照样让她说话。
- *      （一个只能在社会条件齐全时才存在的人格，是脆的。）
- *   2. **配额单独算**（browse.perDay），与每日事件数无关。看几次和说几句话是两件事。
- *   3. **只给素材，不给结论**。全部网络文本在 browse.renderMaterial 里统一包成"素材"。
- *
- * @returns {Promise<{text:string, intro:string, picks:object[]}>}
- */
-export async function lookBeforeWake(root, model, config, dk, deps, log) {
-  const empty = { text: '', intro: '', picks: [] }
-  if (!config?.browse?.enabled) return empty
-  const perDay = Number(config?.browse?.perDay ?? 0)
-  // forceBrowse（2026-10-26）：设置页那个「让她去刷 B 站」按钮专用。
-  // 它只在**本机测试版**出现，用途就是验证「她到底能不能刷」——所以绕过
-  // 当日上限与上网时段，别的什么都不改（素材仍然现场取、风控仍然生效）。
-  const forced = deps.forceBrowse === true
-  if (!forced && !(perDay > 0)) return empty
-
-  // 上网时段（2026-10-23 加）：醒来和上网是两件事。
-  // 醒了但不在上网时段 → 今天这轮不上网，她只说话、写日记。
-  // 没配就退回全局时段，保持旧行为。
-  const bw = Array.isArray(config?.browse?.window) ? config.browse.window
-    : Array.isArray(config?.window) ? config.window
-      : ['00:00', '23:59'] // 两处都没配 → 全天可上网，保持旧行为
-  // deps.now 只为测试注入：线上永远走 new Date()。
-  if (!forced && !inWindow({ window: bw }, deps.now ?? new Date())) return empty
-
-  // 风控闸（2026-10-23）：被锁着就不碰 B 站，但人照样醒。
-  // 以前的做法是"接口失败 → 静默返回空"，于是页面看起来像"她今天什么都没说"，
-  // 而真相是被限流了。现在至少给她一句当时的处境，也给我们一个明确的日志。
-  const st = riskState(root, deps.now ?? new Date())
-  if (st.cooling) {
-    log?.('risk cooldown', `还有 ${st.remainMin} 分钟`)
-    return { ...empty, riskNote: '今天网络不太顺，什么都没翻到。过一阵再看。' }
-  }
-
-  try {
-    const events = deps.events ?? (await readEvents(root)).events
-    // 今天的次数用完就不刷了。注意：**素材是每次唤醒现场取的，不缓存**——
-    // 缓存会让她连着几天看同一批东西，那是投喂，不是刷站。
-    if (!forced && browseCountToday(events, dk) >= perDay) return empty
-
-    // 刚被风控过 → 减半试探。不是"恢复原样当没发生过"，
-    // 因为下一次撞墙的罚则会比这次更久。
-    const bp = browsePlan(config, st)
-    const cfg2 = (bp.topN === Number(config?.browse?.topN) && bp.deepRead === Number(config?.browse?.deepRead))
-      ? config
-      : { ...config, browse: { ...config.browse, topN: bp.topN, deepRead: bp.deepRead } }
-
-    const client = deps.client ?? createClient({ log: (...a) => log?.('bili', ...a) })
-    const r = await gather(client, model, cfg2, { root, dk, events })
-    if (!r.ok || !r.text) {
-      if (/COOLDOWN|-352|-412|-509|风控/.test(String(r.code ?? r.note ?? ''))) noteRisk(root, r.code ?? 'COOLDOWN', deps.now ?? new Date())
-      if (r.note) log?.('browse empty', r.note)
-      return empty
-    }
-    await recordBrowse(root, dk, r.picks, model)
-    // gather 已经把看过的每一条写成 `saw`（browse.recordSaw）。身份文件要跟着更新，
-    // 否则「我最近刷到的」要等到她下一次写判断才出现。
-    await refreshSelfDoc(root, { log })
-    return {
-      text: r.text,
-      intro: '## 你刚醒，屏幕上有人在说话\n这是平台此刻推到你面前的东西。你可以看，也可以不看。',
-      picks: r.picks,
-    }
-  } catch (err) {
-    if (/COOLDOWN|-352|-412|-509|风控/.test(String(err?.code ?? err?.message ?? ''))) {
-      noteRisk(root, err?.code ?? 'COOLDOWN', deps.now ?? new Date())
-    }
-    log?.('browse failed', err?.message ?? err)
-    return empty
-  }
-}
-
 async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
   const sc = (() => { try { return ctx.get?.('sessionController') } catch { return undefined } })()
   if (!sc) { log('no sessionController'); return }
@@ -293,27 +217,20 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
   // 顺序是刻意的：先看，再想。如果先出事件提示再塞素材，
   // 她就会先按模板说话、再拿素材硬套——那是模板，不是她。
   // 反过来（先看见世界的动静，再问她怎么想）才像一个人醒来的样子。
-  const look = await lookBeforeWake(root, model, config, dk, deps, log)
-  if (look.text) {
-    parts.push('', look.intro, '', look.text)
-    // 带链接的清单（2026-10-23 用户提）：她能说出"有一条是一个人跑不起来了"，
-    // 但你不知道是哪条，就接不上话。把链接摆在她眼前，她想指的时候才有东西可指。
-    // 只给标题 + 链接，不给"重点在第几分钟"——标好重点她就只会复述。
-    const wl = renderWatchList(look.picks)
-    if (wl) parts.push('', wl)
-    // 封面图（2026-10-23 用户提）：她没看过画面，但封面是这条视频对外的样子。
-    // 用本地绝对路径的 markdown 图片——图已经落在本机，不依赖外网、不受防盗链影响。
-    // 最多两张：多了就成了相册，不是她想说什么。
-    if (look.picks?.length) {
-      try {
-        for (const p of look.picks.slice(0, 2)) {
-          await fetchCover({ root, bvid: p.bvid, pic: p.pic, log })
-        }
-        const covers = coverLines(look.picks, root, 2)
-        if (covers.length) parts.push('', ...covers)
-      } catch { /* 一张图不能拖垮一次唤醒 */ }
+  // A2：素材由 dsh-bili 注册的 wake 钩子提供（原名 lookBeforeWake）。链接清单与
+  // 封面图已经在钩子侧渲染进 text，core 不再 import 任何 B 站模块。
+  // wakeNow() 走的是 activeHooks 兜底（同一张 fishCore.schedule 表）。
+  const emptyLook = { text: '', intro: '', picks: [], riskNote: '' }
+  let look = emptyLook
+  try {
+    const h = deps.hooks ?? activeHooks
+    if (h?.runWake) {
+      look = (await h.runWake({ now: new Date(), root, model, config, dk, events: deps.events ?? [], deps })) ?? emptyLook
     }
+  } catch (err) {
+    log('wake hooks failed', err?.message ?? err)
   }
+  if (look.text) parts.push('', look.intro, '', look.text)
   if (look.riskNote) parts.push('', look.riskNote)
 
   // 工具说明与上网说明不在这里重复：那两段在身份文档里（selfdoc.js 的
@@ -440,25 +357,31 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
   // 为什么需要第二次：prompt() 只等消息**入队**，不等模型想完——
   // 真机实测报告比她的原话早落盘 8 秒，于是永远显示"今天她什么都没说"。
   const writeReport = async () => {
-    // 每次都重读事件流：报告要包含"她刚说的话"，而那几条是她想完之后才落盘的。
-    const fresh = await readEvents(root).then((r) => r.events).catch(() => [])
     // 这里**不再弹通知**。原实现 spawn 隐藏 PowerShell（-WindowStyle Hidden
     // -EncodedCommand），被火绒当木马行为拦下；更糟的是静默拦截时没有任何
     // 错误返回，`lastShown` 照样被写掉 → 当天再也不会弹，而日志干干净净。
     // 现在由观测台页面轮询 `GET /notify` 自行决定弹不弹（lib/notify.js）。
 
+    // 报告里的「今天看了什么」属于 B 站面，A2 起由服务提供；服务不在时留空，
+    // 报告其余部分照写（她说了什么不依赖这个）。
+    let items = []
+    try {
+      const bili = (() => { try { return ctx.get?.('bili') } catch { return null } })()
+      if (bili?.browse) items = (await bili.browse())?.items ?? []
+    } catch { items = [] }
     return flushReport(root, {
       dateKey: dk,
-      items: itemsFromEvents(fresh, dk),
+      items,
       notes: [],
       diaryVisible: config.diary?.visible === true,
     }).catch(() => null)
   }
 
-  const watcher = watchTurnEnd(ctx, sessionId, () => { void writeReport(); clearWakeSection() })
+  // 处境按会话隔离：全局槽会在 turn/end、失败或 90 秒兜底时把出门会话的处境一起清掉。
+  const watcher = watchTurnEnd(ctx, sessionId, () => { void writeReport(); clearWakeSection(sessionId) })
 
   // 处境走 system prompt 段；对话里只留这一句（她看到的是「有人来了」，不是剧本）。
-  setWakeSection(wakeText)
+  setWakeSection(wakeText, sessionId)
   try {
     await withWake(async () => {
       await sc.prompt(
@@ -506,11 +429,11 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
     // 免得残留到下一轮（他之后主动聊天时会看到她上一次的处境）。
     setTimeout(() => {
       try { watcher.off?.() } catch { /* ignore */ }
-      clearWakeSection()
+      clearWakeSection(sessionId)
     }, REPORT_WAIT_MS).unref?.()
   } catch (err) {
-    // 这一次没起来，处境要立刻清掉。
-    clearWakeSection()
+    // 这一次没起来，处境要立刻清掉——只清这一条会话。
+    clearWakeSection(sessionId)
     await appendEvent(
       { type: 'meta', text: `wakefail:${dk} ${String(err?.message ?? err).slice(0, 120)}` },
       { day: model.day, stage: model.stage, source: 'timer' },
@@ -565,7 +488,9 @@ export async function wakeNow(ctx, deps = {}) {
       log(`屋子没接上，这次手动唤醒用独立会话（会落进「未分组」）：${sessionId}`)
     }
   }
-  await wake(ctx, root, model, config, decision, dk, log, { ...deps, sessionId })
+  // 已经读过的事件流一并交给 wake 钩子：A2 的钩子按 §7.3 约定用 ctx.events，
+  // 不该在手动唤醒时拿到空数组。lookBeforeWake 自己回读，中间没有写入，等价。
+  await wake(ctx, root, model, config, decision, dk, log, { ...deps, sessionId, events })
   return { ok: true, template: decision.template?.id, sessionId }}
 
 /**

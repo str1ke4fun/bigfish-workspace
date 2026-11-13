@@ -1,4 +1,19 @@
-## 未发布 — 2026-11-10
+## 0.8.0 — 2026-11-11
+
+**事件流升到 v3，B 站闭环改走内核接口（A1）**（用户：B 站工作台设计 v2 的 A1 阶段）。
+
+B 站的行为本来就能跑，但数据和宿主能力还焊在 core 里。这一版先把「记忆」和「调度/会话」拆成可注入的接口，行为保持不变，为 A2 搬包铺路。
+
+- 事件 v3（只加可选字段，不重写历史）：`surface`（`bili` / `wx` / `qq` / `web` / `core`）、`channel`（这段原话从哪来）、`bili_reply` 的 `reply` 对象（`bvid` / `rpid` / `root` / `parent` / `user` / `mid`）。v2 事件读时按原规则推断，不改写、不补齐。
+- `fishCore` 拆出可注入接口：`memory`、`toolPolicy.contribute`、`schedule.onTick` / `onWake`、`prompt`、`config`、`owner`、`sessions`、`toolLedger`、`self`。core 仍内联提供实现，A2 再搬给 `dsh-bili`。
+- 记忆分两层：原始事件按 `channel` 落盘；`deriveSelf` 的跨面视图（`viewSurface`）把微信原话去引用化，她自己的纯想法照常跨面。公开的 B 站内容（`saw` / `voice` / `utterance` / `bili_reply`）记为 `surface:'bili'`、`channel:'core'`，任何面都看得到。
+- 评论回复改成三态：已观察（`bili_reply` 事件，按 `reply.rpid` 去重）→ 已呈现（`cseen:<rpid>` meta，投递成功才写）→ 已回复（`creply:` meta）。投递失败保留未呈现状态，下一轮扫描会再投。旧 `cseen:<日期> <rpid>` 按「已回复」读。
+- `bili_speak` 成功后写 `utterance`（实际发出的原话）+ `my:<rpid>` 去重；`bili_watch` 写当天 `saw`；`bili_look` 的 `saw` / `voice` 带 v3 字段。
+- 配置新增 `lib/config-service.js`（`/config` 仍走同一白名单）、`lib/owner-service.js`（凭据返回 `CredentialHandle`，JSON/字符串化一律 `[redacted]`）、`lib/tool-ledger-service.js`（按日期/会话/工具读台账与 artifact）、`core.self`（身份文本与刷新）。
+- 评审修复：B 站面的 `her_recall` 只翻共同层（B 站会话的 cwd 会被判成 `web`，以前可召回网页屋子的原话）；屋子唤醒的处境段按会话隔离（turn/end 与 90 秒兜底不再清掉出门会话的处境）；`sessions.find` 先查 `bili-session.json`，重启后不重复建出门会话；回复人昵称过 `sanitizeForeign` 并压成一行、限 64 字。
+- 验收：`node --test` 全绿（排除 `update.test.mjs` 的真实网络用例）；新增 `test/integration-memory-v3.test.mjs` 对照新旧路径。**未做真实 DSH 运行与消息收发验收。**
+
+### 出门会话（原「未发布 — 2026-11-10」）
 
 **她可以自己出门去 B 站了**（用户：B 站插件要能自己看视频、自己醒、自己出门发评论）。
 
@@ -10,6 +25,12 @@
 - `isHerAgent` 放宽为「在她屋子里」：屋子的子目录（`home/bili`）也算她，否则出门会话拿不到身份段、也不会被收窄。
 - `lib/turnend.js` 抽出 `watchTurnEnd()`，home 唤醒和出门共用同一套 `turn/end` 判定。
 - 记账只追加 `meta biliout:<日期> browse|replies`，不改事件流 schema。
+
+### 迁移与回滚
+
+- 迁移只在读路径：v2 历史行不新增、不改写；`surface` 缺省按原规则（`wx` / `qq` / `web`，其余 `core`）推断。备份文件头版本升到 3。
+- 回退到 0.7.x：旧代码读 v3 事件会跳过并计数，等于看不到新事件；**回退前必须先备份 `~/.dsh-fish`**，并用独立 fish-home 验证。
+- 旧 `cseen:<日期> <rpid>` 按「已回复」读，新 `cseen:<rpid>` 按「已呈现」读；两者可以共存。
 
 ## 未发布 — 2026-11-09
 

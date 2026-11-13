@@ -4,8 +4,16 @@
  * 一个对象把跨插件通道收口：
  *   - surface：这个会话属于哪个面（web / wx / qq / bili）；
  *   - guard  ：防注入、防泄露的最后一道闸；
- *   - config ：配置的只读入口（写入在后续任务里接）；
- *   - tools  ：统一返回契约的包装器（Task 5/6 在 index.js 里接线）。
+ *   - config ：配置读取与白名单写入（A1.7，见 config-service.js）；
+ *   - owner  ：主人身份与进程内凭据（A1.7，见 owner-service.js）；
+ *   - toolLedger：台账只读回看 + artifact 前缀校验（A1.7，见 tool-ledger-service.js）；
+ *   - self   ：身份文本只读 + 刷新（A1.7）；
+ *   - tools  ：统一返回契约的包装器（Task 5/6 在 index.js 里接线）；
+ *   - memory ：事件流的唯一写/读门面（A1.2，见 memory-service.js）；
+ *   - toolPolicy：工具策略贡献入口（A1.4，见 tool-policy.js）；
+ *   - schedule：调度钩子表（A1.5，见 schedule-hooks.js）——挂在 scheduler 的
+ *     既有串行 tick 上，不新建定时器。
+ *   - prompt / sessions：处境与会话入口（A1.6）。
  *
  * 为什么要有这层：`dsh-wx` / `dsh-bili` 这类输入通道不能 import 本插件的内部文件，
  * 但面判定、过滤和工具返回契约必须只有一份实现。宿主服务名就是边界。
@@ -17,8 +25,15 @@ import { join } from 'node:path'
 
 import { createSurfaceRegistry } from './surface.js'
 import { looksLikeRewriting, looksLikeSecret, sanitizeForeign, screenOutgoing } from './guard.js'
-import { DEFAULTS, loadConfig } from './settings.js'
 import { paths } from './store.js'
+import { createMemoryService } from './memory-service.js'
+import { contribute, ownTools, status, setAgentProbe, setHostNamesProvider } from './tool-policy.js'
+import { createScheduleHooks } from './schedule-hooks.js'
+import { createPromptService } from './prompt-service.js'
+import { createSessionService } from './session-service.js'
+import { createConfigService } from './config-service.js'
+import { createOwnerService } from './owner-service.js'
+import { createToolLedgerService } from './tool-ledger-service.js'
 
 function asWarn(log) {
   if (typeof log === 'function') return log
@@ -30,10 +45,17 @@ function asWarn(log) {
  * 创建并登记 `fishCore` 服务。
  *
  * @param {{ get?: (name: string) => any, provide?: (name: string, value: any) => any }} ctx
- * @param {{ root?: string, herDir?: string, log?: Function|{warn?: Function} }} [opts]
+ * @param {{
+ *   root?: string, herDir?: string, log?: Function|{warn?: Function},
+ *   refreshSelfDoc?: Function,
+ *   identityText?: (root: string) => string,
+ *   toolLedger?: object|(() => object),
+ * }} [opts]
+ *   identityText / toolLedger 由 index.js 注入：core-service 不 import 身份文档与台账
+ *   的内部实现，只把同一份实例收进 `fishCore.self` / `fishCore.toolLedger`。
  * @returns {{ core: object, registry: object, dispose: () => void }}
  */
-export function provideFishCore(ctx, { root, herDir, log } = {}) {
+export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc, identityText, toolLedger } = {}) {
   const baseRoot = root || paths().root
   const homeDir = herDir || join(baseRoot, 'home')
 
@@ -75,27 +97,51 @@ export function provideFishCore(ctx, { root, herDir, log } = {}) {
     }),
   ]
 
-  async function getConfig() {
-    try {
-      const { config } = await loadConfig(baseRoot)
-      return config ?? { ...DEFAULTS }
-    } catch {
-      // 根目录不可读 / 配置坏了：给默认值，绝不把启动链路带走。
-      return { ...DEFAULTS }
-    }
-  }
-
   const core = {
     surface: registry,
     guard: { sanitizeForeign, looksLikeSecret, looksLikeRewriting, screenOutgoing },
-    config: {
-      // loadConfig 是异步的（每次现读，配置改了不用重启）。
-      get: getConfig,
-      // 本任务先不实现写入，返回当前配置；后续任务再补 patch。
-      patch: async () => getConfig(),
-    },
+    // 配置只读 + 白名单写入（A1.7）。persona 永不在白名单里。
+    config: createConfigService({ root: baseRoot, log: warn }),
+    owner: createOwnerService({ root: baseRoot, log: warn }),
+    toolLedger: createToolLedgerService({ root: baseRoot, ledger: toolLedger, log: warn }),
     tools: { wrap: null, wrapRender: null, reveal: null },
   }
+
+  // 事件流门面（A1.2）。挂在同一个 core 对象上：dsh-wx / dsh-bili 通过宿主服务
+  // 拿到的就是这一份，后续任务往里加字段两边都看得见。
+  // refreshSelfDoc 由 index.js 注入（core-service 不 import selfdoc），未注入时
+  // memory 照常读写，只是 refresh 返回 NO_REFRESH。
+  core.memory = createMemoryService({ root: baseRoot, core, refreshSelfDoc })
+
+  // 她自己的样子（A1.7）：identity 只读当前文档，refresh 复用 memory 的同一份实现。
+  // identityText 由 index.js 注入（自带 mtime 缓存），core-service 不直接读写身份文档。
+  core.self = {
+    identity() {
+      try {
+        return String(identityText?.(baseRoot) ?? '')
+      } catch {
+        return ''
+      }
+    },
+    refresh() {
+      return core.memory.refreshSelfDoc()
+    },
+  }
+
+  // 工具策略贡献（A1.4）。dsh-bili / dsh-wx 从宿主服务拿到的必须是**同一个**
+  // core 对象上的入口；再 provide 一个服务会让两边看到两份状态。
+  core.toolPolicy = { contribute, ownTools, status, setAgentProbe, setHostNamesProvider }
+  // 设计 §7.2 保留的兼容别名：老代码用 `surface.contribute` 也照样能贡献。
+  registry.contribute = contribute
+
+  // 调度钩子（A1.5）。dsh-bili 将来把自己的刷站/素材挂到同一张表上；
+  // 钩子由 scheduler 的串行 tick 调用，这里不创建任何定时器。
+  core.schedule = createScheduleHooks({ log: warn })
+
+  // 处境与会话（A1.6）。dsh-bili 搬出去后只能走这两个入口；同样挂在同一个 core
+  // 对象上，别 provide 第二份。
+  core.prompt = createPromptService({ ctx, surface: registry, log: warn })
+  core.sessions = createSessionService({ ctx, surface: registry, root: baseRoot, log: warn })
 
   let offProvide = null
   try {
@@ -111,6 +157,8 @@ export function provideFishCore(ctx, { root, herDir, log } = {}) {
     for (const off of surfaceDisposers) {
       try { off() } catch { /* ignore */ }
     }
+    try { core.schedule.dispose() } catch { /* ignore */ }
+    try { core.prompt.dispose() } catch { /* ignore */ }
     try { offProvide?.() } catch { /* ignore */ }
   }
 

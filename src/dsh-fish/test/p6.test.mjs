@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { videoUrl, historyFromEvents, renderWatchList } from '../lib/history.js'
 import { riskState, noteRisk, clearRisk, browsePlan, STRIKES_MIN } from '../lib/risk.js'
 import { runChecks, peersOnMachine } from '../lib/selfcheck.js'
-import { lookBeforeWake } from '../lib/scheduler.js'
+import { lookBeforeWake } from '../../dsh-bili/lib/material.js'
 
 const M = (text) => ({ type: 'meta', text })
 
@@ -117,11 +117,10 @@ test('冷却期里她照常醒，只是没东西可看——而且会被告知�
     const now = new Date('2026-10-23T12:00:00Z')
     noteRisk(root, -352, now)
     const r = await lookBeforeWake(
-      root,
       { name: 'x' },
       { browse: { enabled: true, perDay: 1, topN: 4, deepRead: 6 }, avoid: {} },
       '2026-10-23',
-      { now, events: [], client: { popular: async () => { throw new Error('不该被调用') } } },
+      { root, now, events: [], client: { popular: async () => { throw new Error('不该被调用') } } },
       () => {},
     )
     assert.equal(r.text, '')
