@@ -5,11 +5,11 @@ import { NAV, PAGES, resolveRoute, shellBadge } from '../assets/nav.js'
 test('四页导航与二级页签数量', () => {
   assert.deepEqual(NAV.map((n) => n.id), ['her', 'bili', 'channels', 'system'])
   assert.deepEqual(NAV.map((n) => n.label), ['她', 'B 站', '通道', '系统'])
-  assert.equal(NAV[0].pages.length, 3)
+  assert.equal(NAV[0].pages.length, 4)
   assert.equal(NAV[1].pages.length, 3)
   assert.equal(NAV[2].pages.length, 3)
   assert.equal(NAV[3].pages.length, 5)
-  assert.deepEqual(NAV[0].pages.map((p) => p.slug), ['today', 'memory', 'growth'])
+  assert.deepEqual(NAV[0].pages.map((p) => p.slug), ['today', 'memory', 'growth', 'presence'])
   assert.deepEqual(NAV[1].pages.map((p) => p.slug), ['today', 'footprint', 'manage'])
   assert.deepEqual(NAV[2].pages.map((p) => p.slug), ['overview', 'qq', 'wx'])
   assert.deepEqual(NAV[3].pages.map((p) => p.slug), ['settings', 'tools', 'logs', 'data', 'principles'])

@@ -21,6 +21,9 @@ export const ROUTES = [
   { path: 'events', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'beliefs', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'memory', methods: { GET: 'P1' }, upstream: 'fish' },
+  // 屏幕陪伴：状态只读，开关是写操作；都经 8710 插件的 /presence/*。
+  { path: 'presence/status', methods: { GET: 'P1' }, upstream: 'fish' },
+  { path: 'presence/mode', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'diary', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'reports', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'templates', methods: { GET: 'P1' }, upstream: 'fish' },
