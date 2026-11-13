@@ -20,6 +20,10 @@ const LABELS = {
   'memory.beliefsShown': '一轮摆几条判断',
   'memory.sleepEveryDays': '几天想一次',
   'memory.sleepKeep': '留几条自述',
+  'memory.closing.enabled': '收盘任务',
+  'memory.closing.time': '收盘时间（HH:MM）',
+  'memory.closing.wake': '收盘时叫她记一笔',
+  'memory.closing.diaryOnly': '只在她今天没写日记时叫',
 }
 
 const GROUPS = [
@@ -32,7 +36,8 @@ const GROUPS = [
   { title: '对话', keys: ['chat.rotateAfter', 'chat.replyChars'] },
   {
     title: '记忆',
-    keys: ['memory.docBudget', 'memory.beliefsShown', 'memory.sleepEveryDays', 'memory.sleepKeep'],
+    keys: ['memory.docBudget', 'memory.beliefsShown', 'memory.sleepEveryDays', 'memory.sleepKeep',
+      'memory.closing.enabled', 'memory.closing.time', 'memory.closing.wake', 'memory.closing.diaryOnly'],
   },
 ]
 
