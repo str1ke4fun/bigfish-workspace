@@ -29,6 +29,7 @@ import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
+import { consume as consumeProactive, dateKey, decideProactive, loadState, parseQuota, quotaFor, remaining, saveState } from './proactive.js'
 import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { openChatHit } from './ear-open.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
@@ -116,6 +117,13 @@ function policy() {
       // @ 才回：开着的时候，只有最近被 @ 过的会话她才敢开口
       requireMention: raw.requireMention !== false,
       mentionWindowMinutes: parseWindowMinutes(raw.mentionWindowMinutes),
+      // 主动额度：没被 @ 时，每个群每天还能自己接几句；0 = 不主动
+      proactivePerDay: parseQuota(raw.proactivePerDay),
+      proactiveChats: raw.proactiveChats && typeof raw.proactiveChats === 'object'
+        ? Object.fromEntries(Object.entries(raw.proactiveChats)
+          .map(([k, v]) => [String(k).trim(), parseQuota(v)])
+          .filter(([k, v]) => k && v > 0))
+        : {},
       // 私聊/自己的文件传输这类：本来就等于在叫她，不受 @ 约束
       noMentionChats: Array.isArray(raw.noMentionChats) ? raw.noMentionChats.map((s) => String(s).trim()).filter(Boolean) : [],
       trigger: Array.isArray(raw.trigger) && raw.trigger.length > 0
@@ -132,7 +140,7 @@ function policy() {
   } catch {
     return {
       enabled: false, allowChats: [], watch: false, trigger: [], requireMention: true,
-      mentionWindowMinutes: 3, noMentionChats: [],
+      mentionWindowMinutes: 3, proactivePerDay: 0, proactiveChats: {}, noMentionChats: [],
       ignoreChats: DEFAULT_IGNORE_CHATS,
       capture: captureSettings({}),
       stickerSearch: false,
@@ -991,7 +999,7 @@ export function apply(ctx, config = {}) {
   // ---- 发送前的闸 ----
   // 以前是 `tree.includes(名单里的名字)`：会话列表里永远有那个群，所以不管当前开着谁都放行。
   // 现在只认「当前会话」这一个字段，并且要求树没落后（落后时当前会话可能是旧的）。
-  async function gateSend() {
+  async function gateSend({ consume = false } = {}) {
     const p = policy()
     if (!p.enabled) throw new Error(OFF)
     if (hostBlocksSend()) {
@@ -1008,12 +1016,23 @@ export function apply(ctx, config = {}) {
       if (p.allowChats.length === 0) throw new Error('允许名单为空，不能发送。')
       throw new Error(`当前会话是「${s.parsed.current}」，不在允许名单内（${p.allowChats.join('、')}），不发送。`)
     }
-    // @ 才回：只有最近被 @ 过的会话才开口（QQ 那边是同一条规矩，按条判；微信只能按会话判）
-    if (p.requireMention && !exempt) {
-      const verdict = canSpeak(readMentions(), hit, Date.now(), p.mentionWindowMinutes)
-      if (!verdict.ok) throw new Error(`「${hit}」${verdict.reason}，先不发。`)
+    // @ 才回：只有最近被 @ 过的会话才开口（QQ 那边是同一条规矩，按条判；微信只能按会话判）。
+    // 没被 @ 时还可以用当天主动额度，由 proactive.js 统一判定。
+    const verdict = p.requireMention && !exempt
+      ? canSpeak(readMentions(), hit, Date.now(), p.mentionWindowMinutes)
+      : { ok: true }
+    const state = loadState()
+    const dec = decideProactive({ policy: p, state, chat: hit, mention: verdict, exempt, now: Date.now() })
+    if (!dec.ok) throw new Error(`「${hit}」${dec.why}；这个群今天没有可用的主动额度，先不发。`)
+    let left = dec.left
+    if (dec.proactive && consume) {
+      // 一次发送只在这里扣一次：前面的 gateSend 都只是检查，避免一道闸扣三次额度。
+      const next = consumeProactive(p, state, hit)
+      saveState(next.state)
+      left = next.left
+      logInbound({ type: 'proactive-send', chat: hit, remaining: left })
     }
-    return { chat: hit, snap: s }
+    return { chat: hit, snap: s, proactive: dec.proactive, proactiveLeft: left }
   }
 
   // ---- @ 才回：谁最近被 @ 过 ----
@@ -1139,6 +1158,8 @@ export function apply(ctx, config = {}) {
     // 频率闸只在这里记一次：前面两次核对都不占额度。
     await speechGate(allowed.chat)
     // 频率闸可能要等，等完再看一眼当前会话，别在等待期间被切走。
+    let proactive = false
+    let proactiveLeft = 0
     if (token) {
       const still = permitStore.check({ id: token, chat: allowed.chat, text: body })
       if (!still.ok) throw new Error('提醒许可：' + still.why)
@@ -1147,7 +1168,10 @@ export function apply(ctx, config = {}) {
         throw new Error(`等待发送期间当前会话变成了「${last.parsed.current || '读不到'}」，不发送。`)
       }
     } else {
-      const last = await gateSend()
+      // 最后一道闸：真正回车前才扣主动额度，一次发送只扣一次。
+      const last = await gateSend({ consume: true })
+      proactive = last.proactive
+      proactiveLeft = last.proactiveLeft
       if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
     }
 
@@ -1190,7 +1214,7 @@ export function apply(ctx, config = {}) {
     }
     // 发送本身也算一次活动：给后台采集留出静默期，别紧接着点开会话。
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed', outMsgId }
+    return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed', outMsgId, proactive, proactiveLeft }
   }
 
   /**
@@ -1245,7 +1269,8 @@ export function apply(ctx, config = {}) {
 
     // 频率闸只记一次；等完再看一眼会话，别在等待期间被切走。
     await speechGate(allowed.chat)
-    const last = await gateSend()
+    // 最后一道闸：表情点下去就发送，主动额度也在这里扣。
+    const last = await gateSend({ consume: true })
     if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
 
     const r = await sendSticker({
@@ -1276,7 +1301,7 @@ export function apply(ctx, config = {}) {
       } catch { /* 台账记不下不影响已经发出的表情 */ }
     }
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, ...r, outMsgId }
+    return { ok: true, chat: allowed.chat, ...r, outMsgId, proactive: last.proactive, proactiveLeft: last.proactiveLeft }
   }
 
   /**
@@ -1358,7 +1383,8 @@ export function apply(ctx, config = {}) {
 
     // 频率闸只记一次；等完再确认会话。
     await speechGate(allowed.chat)
-    const last = await gateSend()
+    // 最后一道闸：搜索结果点下去就发送，主动额度也在这里扣。
+    const last = await gateSend({ consume: true })
     if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不搜索。`)
 
     await run(['clean'], 30_000).catch(() => '')
@@ -1401,7 +1427,7 @@ export function apply(ctx, config = {}) {
       } catch { /* 台账记不下不影响已经发出的表情 */ }
     }
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, ...r, outMsgId }
+    return { ok: true, chat: allowed.chat, ...r, outMsgId, proactive: last.proactive, proactiveLeft: last.proactiveLeft }
   }
 
   // 说明只挂她一个 agent：会话 cwd 就是她的屋子
@@ -2313,11 +2339,12 @@ export function apply(ctx, config = {}) {
         target = resolveLabel(before.parsed, label)
         if (!target) {
           if (/^(send|发送)$/i.test(label)) {
-            // 树里没有"发送"按钮（截图上有）；发送等价于回车，走同一道闸
-            const g = await gateSend()
+            // 树里没有"发送"按钮（截图上有）；发送等价于回车，走同一道闸，扣一次主动额度
+            const g = await gateSend({ consume: true })
             await speechGate(g.chat)
             await run(['key', 'Return'])
-            return '树里没有“发送”按钮，已按回车发送。' + fresh.notice()
+            const pro = g.proactive ? `这条用了主动额度，今天「${g.chat}」还剩 ${g.proactiveLeft} 条。` : ''
+            return '树里没有“发送”按钮，已按回车发送。' + (pro ? ' ' + pro : '') + fresh.notice()
           }
           const names = before.parsed.chats.map((c) => c.name).slice(0, 12).join('、')
           throw new Error(`没找到「${label}」。会话列表：${names || '（空）'}。按钮名见 wx_peek 的“能点的”。` + fresh.notice())
@@ -2376,7 +2403,8 @@ export function apply(ctx, config = {}) {
 
       // 回车之前再核对一次：打字期间界面可能切走
       await sleep(300)
-      const second = await gateSend()
+      // enter=true 是真正发送：最后一道闸扣一次主动额度。
+      const second = await gateSend({ consume: true })
       await speechGate(second.chat)
       await run(['key', 'Return'])
       await sleep(900)
@@ -2407,7 +2435,8 @@ export function apply(ctx, config = {}) {
           })
         } catch { /* 台账记不下不影响已经发出的消息 */ }
       }
-      return `已输入 ${[...text].length} 字并回车。当前会话：“${second.chat}”。${receipt}` + fresh.notice()
+      const pro = second.proactive ? `这条用了主动额度，今天「${second.chat}」还剩 ${second.proactiveLeft} 条。` : ''
+      return `已输入 ${[...text].length} 字并回车。当前会话：“${second.chat}”。${receipt}${pro ? ' ' + pro : ''}` + fresh.notice()
     },
   })
 
@@ -2454,7 +2483,8 @@ export function apply(ctx, config = {}) {
           taskLine = rep.ok ? `任务「${taskId}」已记为回了一半。` : `任务「${taskId}」没记上：${rep.why}`
         }
       }
-      return `已发到「${r.chat}」。${r.receipt}${taskLine ? ' ' + taskLine : ''}` + fresh.notice()
+      const pro = r.proactive ? `这条用了主动额度，今天「${r.chat}」还剩 ${r.proactiveLeft} 条。` : ''
+      return `已发到「${r.chat}」。${r.receipt}${taskLine ? ' ' + taskLine : ''}${pro ? ' ' + pro : ''}` + fresh.notice()
     },
   })
 
@@ -2602,9 +2632,11 @@ export function apply(ctx, config = {}) {
       if (!policy().enabled) throw new Error(OFF)
       let where = ''
       if (/(^|\+)(return|kp_enter|enter)$/i.test(keys)) {
-        const g = await gateSend()
+        // 回车视同发送：最后一道闸扣一次主动额度。
+        const g = await gateSend({ consume: true })
         await speechGate(g.chat)
-        where = `当前会话：“${g.chat}”。`
+        const pro = g.proactive ? `这条用了主动额度，今天「${g.chat}」还剩 ${g.proactiveLeft} 条。` : ''
+        where = `当前会话：“${g.chat}”。${pro ? pro : ''}`
       }
       await run(['key', keys])
       return `已按 ${keys}。${where}` + fresh.notice()
