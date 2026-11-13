@@ -161,6 +161,8 @@ async function qqScope() {
 // 所以这里写完就生效，不用重启。状态文件只用来在面板上显示"最近说了几条"。
 const SPEECH_DIR = `${H}/dsh-plugins/speech`
 const SPEECH_DEFAULTS = { enabled: true, minGapSeconds: 25, maxPerMinute: 2, maxPerHour: 15 }
+const WX_SPEECH_DEFAULTS = { minGapSeconds: 8, maxPerMinute: 4, maxPerHour: 40 }
+const PROACTIVE_MAX = 50
 
 const clampNum = (v, def, lo, hi) => {
   const n = Number(v)
@@ -168,16 +170,48 @@ const clampNum = (v, def, lo, hi) => {
   return Math.min(hi, Math.max(lo, Math.round(n)))
 }
 
+/** 本地日期键，和 dsh-wx 的主动额度状态文件同一口径。 */
+export function localDateKey(now = Date.now()) {
+  const d = new Date(now)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** speech.json 的读写共用：顶层是 QQ/base，wx 是微信覆盖层。 */
+export function normalizeSpeechPolicy(raw = {}) {
+  const wx = raw?.wx && typeof raw.wx === 'object' ? raw.wx : {}
+  return {
+    enabled: raw.enabled !== false,
+    minGapSeconds: clampNum(raw.minGapSeconds, SPEECH_DEFAULTS.minGapSeconds, 0, 3600),
+    maxPerMinute: clampNum(raw.maxPerMinute, SPEECH_DEFAULTS.maxPerMinute, 1, 1000),
+    maxPerHour: clampNum(raw.maxPerHour, SPEECH_DEFAULTS.maxPerHour, 1, 10000),
+    wx: {
+      minGapSeconds: clampNum(wx.minGapSeconds, WX_SPEECH_DEFAULTS.minGapSeconds, 0, 3600),
+      maxPerMinute: clampNum(wx.maxPerMinute, WX_SPEECH_DEFAULTS.maxPerMinute, 1, 1000),
+      maxPerHour: clampNum(wx.maxPerHour, WX_SPEECH_DEFAULTS.maxPerHour, 1, 10000),
+    },
+  }
+}
+
+/** 主动额度的读写共用：body 缺省时保留 before，0 的群不落盘。 */
+export function normalizeWxProactive(body = {}, before = {}) {
+  const perDay = body.proactivePerDay === undefined ? before.proactivePerDay : body.proactivePerDay
+  const src = body.proactiveChats === undefined ? (before.proactiveChats || {}) : body.proactiveChats
+  const chats = {}
+  if (src && typeof src === 'object') {
+    for (const [k, v] of Object.entries(src)) {
+      const name = String(k).trim()
+      const n = clampNum(v, 0, 0, PROACTIVE_MAX)
+      if (name && n > 0) chats[name] = n
+    }
+  }
+  return { proactivePerDay: clampNum(perDay, 0, 0, PROACTIVE_MAX), proactiveChats: chats }
+}
+
 async function speechPolicy() {
   const r = await asHer(`cat ${SPEECH_DIR}/speech.json 2>/dev/null || echo '{}'`)
   let j = {}
   try { j = JSON.parse(String(r.out).trim() || '{}') } catch { j = {} }
-  return {
-    enabled: j.enabled !== false,
-    minGapSeconds: clampNum(j.minGapSeconds, SPEECH_DEFAULTS.minGapSeconds, 0, 3600),
-    maxPerMinute: clampNum(j.maxPerMinute, SPEECH_DEFAULTS.maxPerMinute, 1, 1000),
-    maxPerHour: clampNum(j.maxPerHour, SPEECH_DEFAULTS.maxPerHour, 1, 10000),
-  }
+  return normalizeSpeechPolicy(j)
 }
 
 async function speechStats() {
@@ -201,12 +235,7 @@ async function speechStats() {
 }
 
 async function saveSpeech(body) {
-  const next = {
-    enabled: body.enabled !== false,
-    minGapSeconds: clampNum(body.minGapSeconds, SPEECH_DEFAULTS.minGapSeconds, 0, 3600),
-    maxPerMinute: clampNum(body.maxPerMinute, SPEECH_DEFAULTS.maxPerMinute, 1, 1000),
-    maxPerHour: clampNum(body.maxPerHour, SPEECH_DEFAULTS.maxPerHour, 1, 10000),
-  }
+  const next = normalizeSpeechPolicy(body)
   const payload = Buffer.from(JSON.stringify(next, null, 2) + '\n', 'utf8').toString('base64')
   const r = await asHer(`
     mkdir -p ${SPEECH_DIR}
@@ -256,13 +285,14 @@ async function wxPolicy() {
       requireMention: j.requireMention !== false,
       mentionWindowMinutes: clampNum(j.mentionWindowMinutes, 3, 1, 120),
       noMentionChats: Array.isArray(j.noMentionChats) ? j.noMentionChats.map((s) => String(s)) : [],
+      ...normalizeWxProactive(j),
       // 耳朵开关和触发词不显示在面板上，但保存时必须原样带回去：
       // 以前这里重写整个文件，把 watch 丢了（默认变 true），把自定义 trigger 也丢了。
       watch: j.watch !== false,
       trigger: Array.isArray(j.trigger) ? j.trigger.map((s) => String(s)) : [],
     }
   } catch {
-    return { enabled: false, allowChats: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [], watch: true, trigger: [] }
+    return { enabled: false, allowChats: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [], ...normalizeWxProactive(), watch: true, trigger: [] }
   }
 }
 
@@ -289,6 +319,13 @@ async function wxScope() {
   try { mentions = JSON.parse(String(m.out).trim() || '{}') } catch { mentions = {} }
   const last = Number(mentions[current]) || 0
   const leftMin = Math.ceil((last + policy.mentionWindowMinutes * 60_000 - Date.now()) / 60_000)
+  // 今天的主动额度：状态文件是 dsh-wx 写的，跨天或坏文件都按 0 条展示。
+  const ps = await asHer(`cat ${H}/.dsh-wx/proactive.json 2>/dev/null || echo '{}'`)
+  let pstate = {}
+  try { pstate = JSON.parse(String(ps.out).trim() || '{}') } catch { pstate = {} }
+  const proactiveUsed = pstate?.day === localDateKey() && pstate.used && typeof pstate.used === 'object' ? { ...pstate.used } : {}
+  const quota = clampNum(policy.proactiveChats?.[current] ?? policy.proactivePerDay, 0, 0, PROACTIVE_MAX)
+  const leftProactive = Math.max(0, quota - (Number(proactiveUsed[current]) || 0))
   const speaking = !policy.enabled
     ? { ok: false, why: '「允许说话」关着，微信的工具全部拒绝' }
     : !current
@@ -301,13 +338,15 @@ async function wxScope() {
             ? { ok: true, why: '没开 @ 规则，现在能说' }
             : leftMin > 0
               ? { ok: true, why: `被 @ 的窗口还开着，能说（还剩 ${leftMin} 分钟）` }
-              : { ok: false, why: last ? `最近没人 @ 她（上一次是 ${Math.round((Date.now() - last) / 60_000)} 分钟前）` : '最近没人 @ 她' }
+              : leftProactive > 0
+                ? { ok: true, why: `最近没人 @，但今天这个群的主动额度还剩 ${leftProactive} 条，能说` }
+                : { ok: false, why: last ? `最近没人 @ 她（上一次是 ${Math.round((Date.now() - last) / 60_000)} 分钟前）` : '最近没人 @ 她' }
   const h = await asHer(`cat ${H}/.dsh-wx/health.json 2>/dev/null || echo '{}'`)
   let health = {}
   try { health = JSON.parse(String(h.out).trim() || '{}') } catch { health = {} }
   // 名单里已经坏掉的名字：前端会挑出来提醒，并且不当成会话候选摆出来
-  const garbled = [...new Set([...policy.allowChats, ...policy.noMentionChats].filter(looksGarbled))]
-  return { ok: r.ok && readOk, policy, labels: [...new Set(chats)].slice(0, 80), current, health, speaking, garbled, err: r.err }
+  const garbled = [...new Set([...policy.allowChats, ...policy.noMentionChats, ...Object.keys(policy.proactiveChats || {})].filter(looksGarbled))]
+  return { ok: r.ok && readOk, policy, labels: [...new Set(chats)].slice(0, 80), current, health, speaking, garbled, proactiveUsed, err: r.err }
 }
 
 /** 名字坏了：编码丢字时每个汉字会变成一个 "?"（或 U+FFFD）。真会话名里几乎不会出现连着的问号。 */
@@ -315,19 +354,21 @@ const looksGarbled = (s) => /\?\?|\uFFFD/.test(String(s))
 
 async function saveWxScope(body) {
   const clean = (a) => (Array.isArray(a) ? [...new Set(a.map((x) => String(x).trim()).filter(Boolean))] : [])
-  // 2026-10-30：名单文件被某次写入弄成了一排 "?"（汉字全丢），她从此对不上任何群名。
-  // 这里宁可拒存，也不把坏名字再写进真源。
-  const bad = [...clean(body.allowChats), ...clean(body.noMentionChats)].filter(looksGarbled)
-  if (bad.length) {
-    return { ok: false, error: `这几个会话名是乱码（汉字变成了问号），没有保存：${bad.join('、')}。去掉它们，或在候选里重新勾选真名后再存。`, policy: await wxPolicy() }
-  }
   const before = await wxPolicy()
+  const pro = normalizeWxProactive(body, before)
+  // 2026-10-30：名单文件被某次写入弄成了一排 "?"（汉字全丢），她从此对不上任何群名。
+  // 这里宁可拒存，也不把坏名字再写进真源；主动额度的群名同样要过这道检查。
+  const bad = [...clean(body.allowChats), ...clean(body.noMentionChats), ...Object.keys(body.proactiveChats || {})].filter(looksGarbled)
+  if (bad.length) {
+    return { ok: false, error: `这几个会话名是乱码（汉字变成了问号），没有保存：${bad.join('、')}。去掉它们，或在候选里重新勾选真名后再存。`, policy: before }
+  }
   const next = {
     enabled: body.enabled === true,
     allowChats: clean(body.allowChats),
     requireMention: body.requireMention !== false,
     mentionWindowMinutes: clampNum(body.mentionWindowMinutes, 3, 1, 120),
     noMentionChats: clean(body.noMentionChats),
+    ...pro,
     watch: typeof body.watch === 'boolean' ? body.watch : before.watch,
     trigger: clean(body.trigger).length ? clean(body.trigger) : before.trigger,
   }
