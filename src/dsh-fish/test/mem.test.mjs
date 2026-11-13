@@ -20,6 +20,7 @@ import { addExchange, recentExchanges, renderCarry, TALK_KEEP } from '../lib/tal
 import { bumpTurns, rotateTalkSession, activeCarry, homeStatus, CARRY_TURNS } from '../lib/home.js'
 import { searchEvents, tokensOf, renderRecall, registerRecall, RECALL_LIMIT } from '../lib/recall.js'
 import { normalizeConfig, DEFAULTS } from '../lib/settings.js'
+import { appendEvent } from '../lib/store.js'
 
 const DAY = 86_400_000
 
@@ -347,4 +348,72 @@ test('预算紧到离谱时核心段仍完整，可选段被逐个报进 dropped
     if (name.startsWith('你自己说过的话')) assert.ok(!line.includes('## 你自己说过的话'))
   }
   assert.equal(b.usedRatio, 1)
+})
+
+// ---------------------------------------------------------------- owner facts 召回（v4）
+
+function recallCtx() {
+  const defs = new Map()
+  return {
+    defs,
+    ctx: { tools: { register: (d) => { defs.set(d.name, d); return () => {} } } },
+  }
+}
+
+const OWNER_NOTE = {
+  type: 'person_note',
+  text: '微信私聊名「cat不到flag的cat」是他。',
+  person: { id: 'owner', name: '老哥', label: 'cat不到flag的cat', channel: 'wx', chatId: '', kind: 'identity' },
+  refs: [], flags: ['identity'],
+}
+
+test('owner facts：web/wx/screen 翻得到，bili/qq 翻不到', async () => {
+  await withRoot(async (root) => {
+    await appendEvent(OWNER_NOTE, { source: 'system' }, root)
+    const { defs, ctx } = recallCtx()
+    registerRecall(ctx, { root })
+    const tool = defs.get('her_recall')
+    const web = { agent: { session: { header: { id: 's-web' } } } }
+    assert.equal((await tool.execute({ query: 'cat不到flag' }, web)).found, true)
+
+    for (const surface of ['wx']) {
+      registerRecall(ctx, { root, core: { surface: { current: () => surface } } })
+      assert.equal((await defs.get('her_recall').execute({ query: 'cat不到flag' }, web)).found, true, surface)
+    }
+    for (const surface of ['bili', 'qq']) {
+      registerRecall(ctx, { root, core: { surface: { current: () => surface } } })
+      assert.equal((await defs.get('her_recall').execute({ query: 'cat不到flag' }, web)).found, false, surface)
+    }
+    registerRecall(ctx, { root, core: { surface: { current: () => 'screen' } } })
+    assert.equal((await defs.get('her_recall').execute({ query: 'cat不到flag' }, web)).found, true, 'screen')
+  })
+})
+
+test('非 owner 的 person_note 在 Phase 1 不可召回', async () => {
+  await withRoot(async (root) => {
+    await appendEvent({
+      type: 'person_note',
+      text: 'qiuzh 在群里问过两次崩铁的 bug。',
+      person: { id: 'qiuzh', name: 'qiuzh', channel: 'wx', chatId: 'c_1', kind: 'impression' },
+      refs: [],
+    }, { source: 'tool' }, root)
+    const { defs, ctx } = recallCtx()
+    registerRecall(ctx, { root })
+    const out = await defs.get('her_recall').execute({ query: 'qiuzh' }, { agent: { session: { header: { id: 's-wx' } } } })
+    assert.equal(out.found, false)
+  })
+})
+
+test('screen 面不会把 home 的 web 对话翻出来', async () => {
+  await withRoot(async (root) => {
+    await appendEvent({ type: 'utterance', text: '屋子里说的一句私房话', channel: 'web' }, { source: 'tool' }, root)
+    await appendEvent({ type: 'utterance', text: '共同层的一句', channel: 'core' }, { source: 'tool' }, root)
+    const { defs, ctx } = recallCtx()
+    registerRecall(ctx, { root, core: { surface: { current: () => 'screen' } } })
+    const web = { agent: { session: { header: { id: 's-screen' } } } }
+    const home = await defs.get('her_recall').execute({ query: '私房话' }, web)
+    assert.equal(home.found, false)
+    const common = await defs.get('her_recall').execute({ query: '共同层' }, web)
+    assert.equal(common.found, true)
+  })
 })

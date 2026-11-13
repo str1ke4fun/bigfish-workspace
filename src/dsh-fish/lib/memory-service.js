@@ -23,6 +23,8 @@ const MAX_LIMIT = 2000
 /** 写入后需要刷新身份文档的类型（设计 §5.5 + A1.2 主控裁定）。meta 不在其中。 */
 const REFRESH_TYPES = new Set([
   'seed', 'saw', 'voice', 'bili_reply', 'utterance', 'revise', 'narration',
+  // v4：她写下人物笔记后，fish:owner / 关于他.md 也要跟着刷新。
+  'person_note',
 ])
 
 /** 错误 → 人可读的 why；带 code 的错误保留 code，方便日志/测试直接匹配。 */
@@ -191,10 +193,16 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
 
   function commit(text, {
     type = 'utterance', refs = [], verdict, confidence, agent, surface, channel,
+    person, supersedes, revokes, flags,
   } = {}) {
     const raw = { type, text, refs }
     if (verdict !== undefined) raw.verdict = verdict
     if (confidence !== undefined) raw.confidence = confidence
+    // v4：person_note 的认知字段；其它类型由 schema 丢掉，不会长野字段。
+    if (person !== undefined) raw.person = person
+    if (supersedes !== undefined) raw.supersedes = supersedes
+    if (revokes !== undefined) raw.revokes = revokes
+    if (flags !== undefined) raw.flags = flags
     // surface/channel 显式传入优先（B 站公开言论：surface='bili'、channel='core'）；
     // 不传时仍按 agent 推断，老调用点不受影响。
     return append(raw, { source: 'tool', agent, surface, channel })

@@ -30,6 +30,7 @@ import { readHomeRecord, retireHomeSessions } from './retire.js'
 import { collectBackup, backupFileName, restoreBackup } from './backup.js'
 import { bootstrapHome, homeStatus, wakeIfBlank } from './home.js'
 import { selfDocStatus } from './selfdoc.js'
+import { peopleSummary } from './people-view.js'
 import { personaBudget, BELIEF_SHOWN, shownCount } from './persona.js'
 // 立场清单（2026-10-25，用户设计「纵向·立场」）：四道门走完之后长出来的那张清单。
 import { buildStances, gatesDone, stanceSummary } from './stance.js'
@@ -821,6 +822,9 @@ export function registerObserve(ctx, deps = {}) {
           // 四道门走完才可能非零；没走完就是 0，不是"没长出来"，是"还没走到"。
           ...stanceSummary(buildStances(model)),
         },
+        // 人物笔记摘要（D32）：owner facts + 按 chat 分组 + 计数。
+        // Phase 1 只读；工作台的 #her/memory 消费它。
+        people: peopleSummary(model),
         events: events.length,
         diaries: diary.length,
         session: { turns: h.turns, rotateAfter: Number(config?.chat?.rotateAfter ?? 0), rotatedAt: h.rotatedAt },

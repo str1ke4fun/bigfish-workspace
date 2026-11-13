@@ -180,6 +180,74 @@ test('growth_commit 的模型投影是方括号状态 + 内联 id，不是她的
   })
 })
 
+test('growth_commit 写 person_note：person/label/flags 落盘，source=tool', async () => {
+  await withRoot(async (root) => {
+    const ctx = fakeCtx()
+    registerCapture(ctx, { root, core: { surface: { current: () => 'web' } } })
+    const tool = ctx.regs.get('growth_commit')
+    const out = await tool.execute({
+      type: 'person_note',
+      text: '微信私聊名「cat不到flag的cat」是他。',
+      person: { id: 'owner', name: '老哥', label: 'cat不到flag的cat', channel: 'wx', chatId: '', kind: 'identity', confidence: 'high' },
+      flags: ['identity'],
+    }, { agent: { session: { header: { id: 's1' } } } })
+    assert.equal(out.ok, true)
+    const { events } = await readEvents(root)
+    const note = events.find((e) => e.type === 'person_note')
+    assert.ok(note)
+    assert.equal(note.person.label, 'cat不到flag的cat')
+    assert.equal(note.person.channel, 'wx')
+    assert.deepEqual(note.flags, ['identity'])
+    assert.equal(note.source, 'tool')
+    assert.equal(note.v, 4)
+  })
+})
+
+test('growth_commit 拒绝缺 person 的 person_note，且不写事件', async () => {
+  await withRoot(async (root) => {
+    const ctx = fakeCtx()
+    registerCapture(ctx, { root })
+    const out = await ctx.regs.get('growth_commit').execute({
+      type: 'person_note',
+      text: '一条没有 person 的笔记',
+    }, {})
+    assert.equal(out.ok, false)
+    assert.match(out.note, /person/i)
+    const { events } = await readEvents(root)
+    assert.equal(events.filter((e) => e.type === 'person_note').length, 0)
+  })
+})
+
+test('person_note 在 bili/qq 面被拒，web/wx 面可写', async () => {
+  for (const surface of ['bili', 'qq']) {
+    await withRoot(async (root) => {
+      const ctx = fakeCtx()
+      registerCapture(ctx, { root, core: { surface: { current: () => surface } } })
+      const out = await ctx.regs.get('growth_commit').execute({
+        type: 'person_note',
+        text: '不该在这里记人。',
+        person: { id: 'owner', name: '老哥', label: 'x', channel: 'wx', chatId: '', kind: 'identity' },
+      }, { agent: { session: { header: { id: 's1' } } } })
+      assert.equal(out.ok, false)
+      assert.match(out.note, /不是记人的地方/)
+      const { events } = await readEvents(root)
+      assert.equal(events.filter((e) => e.type === 'person_note').length, 0)
+    })
+  }
+  for (const surface of ['web', 'wx']) {
+    await withRoot(async (root) => {
+      const ctx = fakeCtx()
+      registerCapture(ctx, { root, core: { surface: { current: () => surface } } })
+      const out = await ctx.regs.get('growth_commit').execute({
+        type: 'person_note',
+        text: '可以在这里记人。',
+        person: { id: 'owner', name: '老哥', label: 'y', channel: 'wx', chatId: '', kind: 'identity' },
+      }, { agent: { session: { header: { id: 's1' } } } })
+      assert.equal(out.ok, true)
+    })
+  }
+})
+
 test('改口规则写在 growth_commit 的说明里（2026-10-24 用户选方案①）', async () => {
   // 背景：她原来只把"修正旧话"写成普通 utterance（`改口` 一直是 0），
   // 因为 refs 规则只藏在参数的 description 里、调用前看不见。

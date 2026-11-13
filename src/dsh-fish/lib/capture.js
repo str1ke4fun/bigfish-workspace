@@ -66,6 +66,11 @@ export function registerCapture(ctx, deps = {}) {
         // 「我变成了什么样」可以凭空写——这正是叙事漂移的入口。
         '写 narration（你对自己整体的说法）时，也要用 refs 指向 her_recall 翻到的那几条 id；' +
         '真的没想清楚，就直接写「我没想清楚」，那句也算数。' +
+        // 2026-11-13：人物笔记走同一个写入入口，不另开工具。
+        '想记下某个人是谁、你对他有什么印象、或一次有意义的互动，用 type=person_note：' +
+        'person.kind=identity 写“他是谁/有哪些名字”，impression 写你对他的印象，interaction 写一次互动。' +
+        'owner 的身份事实用 person.id=owner、kind=identity，并带 person.label。' +
+        '不要抄整段聊天原文，写你自己的话；原始消息用 refs 指回去。群里的笔记要带 chatId。' +
         '这个工具不会告诉你你的任何状态，也不会返回你的设定。如果这次没什么想说的，就不要调用。',
       // 必须 toJsonSchema：简写 DSL 直接发出去会被 provider 拒
       // （"schema must be a JSON Schema of 'type: object', got 'type: null'"）
@@ -97,6 +102,38 @@ export function registerCapture(ctx, deps = {}) {
           type: 'number',
           required: false,
           description: '你有多确定，0–1。不确定就写低一点。',
+        },
+        person: {
+          type: 'object',
+          required: false,
+          description: 'type=person_note 时必填：{ id, name, label, channel, chatId, kind, confidence }。owner 身份事实用 id=owner、kind=identity，并带 label。',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            label: { type: 'string' },
+            channel: { type: 'string' },
+            chatId: { type: 'string' },
+            kind: { type: 'string' },
+            confidence: { type: 'string' },
+          },
+        },
+        supersedes: {
+          type: 'array',
+          required: false,
+          items: { type: 'string' },
+          description: '替换旧 person_note 的 id（改名/修正）。',
+        },
+        revokes: {
+          type: 'array',
+          required: false,
+          items: { type: 'string' },
+          description: '撤销旧 person_note 的 id（这条不算了）。',
+        },
+        flags: {
+          type: 'array',
+          required: false,
+          items: { type: 'string' },
+          description: '可选；owner 身份事实用 ["identity"]。其它 flag 会被忽略。',
         },
       }),
       output: {
@@ -150,6 +187,17 @@ export function registerCapture(ctx, deps = {}) {
             return { ok: true, id: dk, note: '写下了。' }
           }
 
+          // ---- 人物笔记的面门禁（D14）----
+          // person_note 是“她对某个人的认知”，只在她的屋子/微信/屏幕面写。
+          // B 站/QQ 是公开面，不能借 growth_commit 往微信会话里塞人物笔记。
+          if (args?.type === 'person_note') {
+            let surface = ''
+            try { surface = String(deps.core?.surface?.current?.(exec?.agent) ?? '') } catch { surface = '' }
+            if (surface === 'bili' || surface === 'qq') {
+              return { ok: false, id: '', note: '这里不是记人的地方。' }
+            }
+          }
+
           const ev = await appendEvent(
             {
               type: args?.type,
@@ -158,6 +206,11 @@ export function registerCapture(ctx, deps = {}) {
               refs: args?.refs,
               verdict: args?.verdict,
               confidence: args?.confidence,
+              // v4：只有 person_note 会保留这些字段；其它类型由 schema 丢掉。
+              person: args?.person,
+              supersedes: args?.supersedes,
+              revokes: args?.revokes,
+              flags: args?.flags,
             },
             { day: model.day, stage: model.stage, source: 'tool' },
             root,

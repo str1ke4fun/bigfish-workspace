@@ -488,3 +488,36 @@ test('provideFishCore：在同一个 core 对象上挂 memory，并转发 refres
     }
   })
 })
+
+test('person_note：commit 写入并刷新一次，appendSystem 拒绝', async () => {
+  await withRoot(async (root) => {
+    let refreshed = 0
+    const m = mem(root, { refreshSelfDoc: async () => { refreshed += 1; return { ok: true } } })
+    const r = await m.commit('微信私聊名「cat不到flag的cat」是他。', {
+      type: 'person_note',
+      person: { id: 'owner', name: '老哥', label: 'cat不到flag的cat', channel: 'wx', chatId: '', kind: 'identity' },
+      flags: ['identity'],
+    })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(refreshed, 1)
+    const events = await diskEvents(root)
+    assert.equal(events.filter((e) => e.type === 'person_note').length, 1)
+    assert.equal(events.find((e) => e.type === 'person_note').v, EVENT_SCHEMA_VERSION)
+    const bad = await m.appendSystem('person_note', 'x', {})
+    assert.deepEqual(bad, { ok: false, why: 'NOT_SYSTEM_TYPE' })
+  })
+})
+
+test('person_note：validate 对不存在的 revokes 返回 REF_NOT_FOUND', async () => {
+  await withRoot(async (root) => {
+    const m = mem(root)
+    const out = await m.validate({
+      type: 'person_note',
+      text: '撤销一条不存在的笔记。',
+      person: { id: 'owner', name: '老哥', label: 'x', channel: 'wx', chatId: '', kind: 'identity' },
+      revokes: ['ev_missing'],
+    }, { source: 'tool' })
+    assert.equal(out.ok, false)
+    assert.match(out.why, /REF_NOT_FOUND/)
+  })
+})

@@ -148,11 +148,27 @@ export function registerRecall(ctx, deps = {}) {
           // B 站面例外：B 站会话的 cwd 是 home/bili，channelOfAgent 会把它判成 web，
           // 按它翻会把网页屋子里说过的话召回进 B 站——公开面只给共同层。
           let channel = channelOfAgent(exec?.agent)
+          let surface = ''
           try {
-            if (deps.core?.surface?.current?.(exec?.agent) === 'bili') channel = ''
+            surface = String(deps.core?.surface?.current?.(exec?.agent) ?? '')
+            if (surface === 'bili') channel = ''
           } catch { /* 面判定不可用就按通道走 */ }
+          // owner 身份事实是唯一允许跨通道召回的人物笔记（D5）。
+          // 公开面（bili/qq）即使 channel 推断成 web 也不能放行。
+          const allowOwnerFacts = surface !== 'bili' && surface !== 'qq'
+            && (channel === 'web' || channel === 'wx' || surface === 'screen')
           const mine = events.filter((e) => {
+            if (e.type === 'person_note') {
+              // owner facts：web/wx/screen 放行；bili/qq 不放行。
+              if (e.person?.id === 'owner') return allowOwnerFacts
+              // Phase 1：非 owner 的群/私聊笔记一律不召回（D5）。
+              // Phase 2 才按 person.channel + person.chatId 精确隔离。
+              return false
+            }
             const c = e.channel ?? 'core'
+            // screen 是 surface 不是 channel；home/screen 的 channel 推断为 web，
+            // 但 screen 会话只看共同层 + owner facts，不能把 home 对话翻出来（D5）。
+            if (surface === 'screen' && c === 'web') return false
             return c === 'core' || (channel !== '' && c === channel)
           })
           const { rows } = searchEvents(mine, args?.query, { days: args?.days })
