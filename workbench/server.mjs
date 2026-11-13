@@ -644,7 +644,13 @@ async function watchLoop(first = false) {
 }
 async function status() {
   const [qq, wx, her] = await Promise.all([qqStatus(), wxStatus(), herStatus()])
-  return { at: new Date().toISOString(), qq: { ...qq, login: qqLogin }, wx, her, log: log.slice(0, 20) }
+  const qqWithLogin = { ...qq, login: qqLogin }
+  return {
+    at: new Date().toISOString(),
+    qq: qqWithLogin, wx, her, log: log.slice(0, 20),
+    // 通用通道映射：新页面按 id 取，旧页面继续读顶层 qq / wx。
+    channels: { qq: qqWithLogin, wx },
+  }
 }
 
 // ---------- 动作 ----------

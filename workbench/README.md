@@ -3,9 +3,49 @@
 浏览器唯一直接访问的管理入口。工作台只做页面、导航、交互和 BFF；状态、配置、事件流、
 调度和校验仍然在 `src/dsh-fish`（A2 后 B 站部分在 `src/dsh-bili`）。
 
-- 设计：`docs/superpowers/specs/2026-11-12-workbench-single-entry-design-v2.md`
-- 当前阶段：P4 源码完成（八项导航、只读与写操作、旧入口停轮询并注销 `settings.section`）；线上部署与双入口实测待执行
+- 单入口设计：`docs/superpowers/specs/2026-11-12-workbench-single-entry-design-v2.md`
+- 改版设计：`docs/superpowers/specs/2026-11-13-workbench-redesign-design.md`
+- 当前阶段：P0–P4 源码完成（四组导航、二级页签、日 / 夜主题、通道适配器、只读与写操作）；
+  P5 线上逐项验收待执行。commit 不代表已部署或已验收。
 - 零依赖，Node.js 20+
+
+## 页面结构
+
+左侧书脊是四个大类，每个大类下是二级页签：
+
+| 大类 | 页签 |
+| --- | --- |
+| 她 | 今天 · 记忆 · 成长 |
+| B 站 | 今天 · 足迹 · 管理 |
+| 通道 | 总览 · QQ · 微信 |
+| 系统 | 设置 · 工具与规则 · 日志 · 数据 · 原理 |
+
+- 地址是 hash 路由 `#<大类>/<页签>`，默认落到 `#her/today`；页面切换用
+  `history.replaceState`，不往浏览器历史里堆。
+- 旧地址（`#overview`、`#memory`、`#bili`、`#env`、`#tools`、`#data`、
+  `#principles`、`#channels/qq` 等）映射到新地址，保留一个发布版本。
+- 主题是 `<html data-theme="day|night">`，切换结果存在 `localStorage['fish.theme']`；
+  `assets/theme-boot.js` 在样式表之前同步读，首屏不闪。未设置时跟随系统。
+- 窄屏（≤900px）书脊折成顶部横条，页面单列；长文本统一 `overflow-wrap:anywhere`，
+  焦点有 `:focus-visible` 外圈，`prefers-reduced-motion` 时关掉过渡。
+
+### 扩展点
+
+- 页面：`assets/pages/<name>.js` 导出 `{ id, nav, slug, label, order, enter(root, ctx), leave() }`，
+  在 `assets/nav.js` 的 `NAV` 里登记。页面自己建 DOM，不用 `innerHTML`；上游文本一律
+  `textContent`。`ctx` 提供 `go(nav, slug)`、`onStatus(fn)`、`setBadge(navId, level)`、
+  `refreshStatus()`。
+- 通道：`assets/channels/<id>.js` 导出
+  `{ id, label, order, badge(status), summary(status, ctx), renderPanel(root, ctx), refresh(ctx), leave(), humanActions }`，
+  在 `assets/channels/registry.js` 的 `CHANNELS` 里登记；总览和二级页签都由注册表生成，
+  新增 QQ / 微信之外的通道只改适配器。
+- 配置表单：`assets/config-form.js` 的 `configGroup()` 按组读写 `/config` 的顶层嵌套键，
+  保存只提交这一组。
+
+旧的 `pages/overview.js`、`pages/bili.js`、`pages/memory.js`、`pages/env.js`、
+`pages/tools.js`、`pages/data.js`、`pages/principles.js`、`channels.js`、
+`legacy-channels.js`、`legacy-pages.js` 已不被外壳和新页面引用，保留一个发布版本，
+下一版删除（删除前单独确认）。
 
 ## 启动
 
@@ -145,6 +185,17 @@ node --test
 ```
 
 测试用假上游（8711/8710 的本地替身），不碰真实服务、不写 `~/.dsh-fish`。
+改版后的断言分布在 `theme.test.mjs`（主题引导）、`router.test.mjs`（hash 与旧地址）、
+`shell.test.mjs`（导航 / 页签 / 挂载点）、`pages.test.mjs`（各页契约与数据源）、
+`channels.test.mjs`（通道适配器）、`assets.test.mjs`（无 `innerHTML`、窄屏、旧文件
+不被引用），以及原有的 `server.test.mjs` / `bff.test.mjs` / `routes.test.mjs` /
+`security.test.mjs`。
+
+P5 手工验收按 spec 13.2 逐项走，结果只记录当次实际看到的：默认落点、日 / 夜刷新保持、
+390px 窄屏、B 站五个写动作、QQ 启停 / 扫码 / 人工发送、微信画面 / 点按 / 打字 / 回车 /
+Esc / 允许说话 / 补扫 / 清理、系统工具白名单 / 自检 / 日志 / 备份 / 路径 / 头像、
+跨站 POST 403 / 错误 Host 403、`assets/../server.mjs` 404。停 8710 验证错误态前先取得
+用户同意，验证完恢复；UI 能打开不等于消息收发已验收。
 
 ## 已退役
 
