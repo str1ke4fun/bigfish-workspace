@@ -825,6 +825,21 @@ export function registerObserve(ctx, deps = {}) {
         // 人物笔记摘要（D32）：owner facts + 按 chat 分组 + 计数。
         // Phase 1 只读；工作台的 #her/memory 消费它。
         people: peopleSummary(model),
+        // 多通道 contact（D32）：全局最后时间 + 每通道最后时间。
+        contacts: {
+          lastAt: model.lastSeenAt,
+          lastByChannel: model.lastSeenAtByChannel,
+        },
+        // 收盘状态（growth §10.2）：只读，不提供手动触发。
+        closing: {
+          enabled: config?.memory?.closing?.enabled === true,
+          time: String(config?.memory?.closing?.time ?? ''),
+          last: (() => {
+            const e = [...events].reverse().find((x) => x?.type === 'meta' && String(x.text ?? '').startsWith('closing:'))
+            return e ? { at: e.ts, text: String(e.text) } : null
+          })(),
+          diaryToday: Boolean(await readDaily('diaryDir', dateKey(), root).catch(() => null)),
+        },
         events: events.length,
         diaries: diary.length,
         session: { turns: h.turns, rotateAfter: Number(config?.chat?.rotateAfter ?? 0), rotatedAt: h.rotatedAt },

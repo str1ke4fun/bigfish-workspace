@@ -69,7 +69,7 @@
 node --test
 ```
 
-当前基线 **947 个**（`node --test` 含 `update.test.mjs`；排除它的真实网络用例后 935 个）：`--test-isolation=none` 下可能有跨文件假红（ULID / cover）；用独立进程跑 `node --test` 应全绿。任何一条红都不许提交——包括看起来"不是我弄的"那条。
+当前基线 **1059 个**（2026-11-13 实测 `node --test` 全绿）：`--test-isolation=none` 下可能有跨文件假红（ULID / cover）；用独立进程跑 `node --test` 应全绿。任何一条红都不许提交——包括看起来"不是我弄的"那条。
 
 按环境挑跑法：
 
@@ -97,6 +97,6 @@ CI 也跑同一套（`.github/workflows/test.yml`，Node 20 / 22 / 24 各跑一�
 - [ ] 三个依赖字段还是 `{}`
 - [ ] 没有新增人格设置入口
 - [ ] 新输入口都过了 `guard.js`
-- [ ] `node --test` 813 全绿
+- [ ] `node --test` 1059 全绿
 - [ ] 界面文案没有「他」「四道门」「三道门」
 - [ ] 改了 `EVENT_SCHEMA_VERSION` 的话，`CHANGELOG.md` 里写了迁移说明

@@ -1,3 +1,22 @@
+## 0.9.0 — 2026-11-13
+
+**人物记忆 / 多通道 contact / 成长自触发 / 屏幕陪伴 v1**（用户：新一轮需求合并与落地）。
+
+这一版把四件事接成一条线：`person_note` 是数据地基，contact 是它的第一个消费者，成长自触发复用同一套派生，屏幕陪伴是最后一个消费面。所有改动只追加事件，不改写历史。
+
+- **schema v4**：`EVENT_SCHEMA_VERSION` 3→4；新增 `person_note`（`person` / `supersedes` / `revokes` / `identity` flag），并把这类型加进 `HER_TYPES`；事件来源面 `SURFACES` 增加 `screen`。旧代码读到 v4 会按 `newer` 跳过，**不允许把插件降回 v3**。
+- **人物记忆 Phase 1**：`derive` 收集 `ownerFacts` / `personNotes` / `personNotesByChat` / `personNotesByPerson`；`growth_commit` 支持 `person_note`（bili/qq 面拒绝）；`fish:owner` 只在 web/wx/screen 渲染，`home/关于他.md` 单独落盘；`her_recall` 放行 owner facts、Phase 1 不召回群/私聊笔记；`/memory` 增加 `people` 摘要。
+- **多通道 contact**：`markSeen` 是唯一写入口，先 `seen:` 再 `contact:<source>:`；DSH web 真实用户消息、微信 DM/免 @、B 站 owner 回复（含 `account.mid`）都算“他来过”；`heard_share` / `he_silent` 只读 web 这一组，避免串扰；`capture` 用 `wakeSectionFor` 排除唤醒/收盘/出门回合。
+- **成长自触发**：`memory.closing` 收盘任务（写日报、没日记时轻唤醒、不占唤醒配额、失败可重试）；`absenceTimeline` 把 `absenceDays` 改成“当前冷落天数、回来即 0”；`sleepDue` 改成到期触发；stage 1 三张兜底卡；`name_offered` 只看她自己给过称呼；B 站刷站 reserve 在唤醒点后 30 分钟释放。
+- **屏幕陪伴 v1**：`screen` 面与 `presence_speak`（只给 `read_image` / `presence_speak` / `her_recall`）；ddagrab 抓帧、前台窗口裁剪、三模式状态机、候选冷却/上限/黑帧/自动停止；一局结束只写一条 `meta presence:<dk>:<mode>:<min>:<count>`；`fishCore.context` provider 让主会话知道“他现在在做什么”；8788 工作台新增「她 · 陪伴」页。
+- **工作台**：`#her/memory` 增加只读「人物」；`#system/settings` 增加收盘配置；`#her/presence` 三个模式开关。
+- **验收边界**：单元/集成 `node --test` 全绿（dsh-fish 1059 / dsh-wx 91 / dsh-bili 32 / workbench 109）；**未做真实屏幕 T0/T4、真实微信/B 站消息收发与线上部署验收**。迁移 CLI 只跑过 dry-run（1244 条事件），未 apply；apply 需要用户批准。
+
+### 迁移与回滚
+
+- v4 事件落盘后只允许功能开关/配置回滚，不允许降回 v3（旧代码会静默跳过 v4 事件）。
+- `person_note` 的旧事件补写用本地 `scripts/append-owner-fact.mjs`（被 `.gitignore` 忽略，默认 dry-run）。
+
 ## 0.8.0 — 2026-11-11
 
 **事件流升到 v3，B 站闭环改走内核接口（A1）**（用户：B 站工作台设计 v2 的 A1 阶段）。
