@@ -30,3 +30,14 @@ test('她·今天契约与数据源', () => {
   assert.doesNotMatch(s, /persona/)
   assert.doesNotMatch(s, /innerHTML/)
 })
+
+test('她·记忆只读且分五段', () => {
+  const s = src('her-memory.js')
+  assert.equal(herMemory.id, 'her-memory')
+  assert.equal(herMemory.slug, 'memory')
+  for (const call of ["fish('events?'", "fish('diary')", "fish('reports')", "fish('beliefs')", "fish('templates')"]) {
+    assert.ok(s.includes(call), call)
+  }
+  assert.match(s, /事件[\s\S]*日记[\s\S]*日报[\s\S]*判断[\s\S]*模板/)
+  assert.doesNotMatch(s, /postFish|local\(|innerHTML/)
+})
