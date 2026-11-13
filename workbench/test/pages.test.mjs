@@ -146,3 +146,11 @@ test('系统·数据危险操作在底部，观测只在数据页', () => {
   assert.match(s, /输入\s*reset|confirm:\s*'reset'/)
   assert.doesNotMatch(s, /browse\.|comment\.|growthDays|persona|innerHTML/)
 })
+test('系统·原理是静态页，不依赖插件', () => {
+  const s = src('system-principles.js')
+  assert.equal(systemPrinciples.id, 'system-principles')
+  assert.equal(systemPrinciples.slug, 'principles')
+  assert.match(s, /principle-loop\.svg/)
+  assert.match(s, /principle-memory\.svg/)
+  assert.doesNotMatch(s, /fish\(|postFish\(|local\(|innerHTML/)
+})
