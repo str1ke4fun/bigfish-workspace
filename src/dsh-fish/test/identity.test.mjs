@@ -24,6 +24,8 @@ import {
   IDENTITY_SECTION,
   INBOX_ORDER,
   INBOX_SECTION,
+  OWNER_ORDER,
+  OWNER_SECTION,
   REMIND_ORDER,
   REMIND_SECTION,
   WAKE_ORDER,
@@ -35,7 +37,8 @@ import {
   resetIdentityCache,
   setWakeSection,
 } from '../lib/identity.js'
-import { legacySelfDocPath, selfDocPath } from '../lib/selfdoc.js'
+import { legacySelfDocPath, ownerDocPath, selfDocPath, writeSelfDoc } from '../lib/selfdoc.js'
+import { appendEvent } from '../lib/store.js'
 import { DEFAULTS } from '../lib/settings.js'
 import { BELIEF_SHOWN, SELF_DOC_BUDGET } from '../lib/persona.js'
 
@@ -73,7 +76,7 @@ test('identityText：读到文件内容，改文件后（mtime 变）能拿到�
   assert.equal(identityText(root), '第二版身份')
 })
 
-test('attachIdentity：挂四段——身份 + 处境 + 提醒说明 + 任务摘要', () => {
+test('attachIdentity：挂五段——身份 + 处境 + 提醒说明 + 任务摘要 + 关于他', () => {
   resetIdentityCache()
   clearWakeSection()
   const root = tmp()
@@ -84,7 +87,7 @@ test('attachIdentity：挂四段——身份 + 处境 + 提醒说明 + 任务摘
   const agent = { ctx: { systemPrompt: { section: (o) => calls.push(o) } } }
   const r = attachIdentity(agent, root, { inboxText: () => 't_1｜测试群A｜未回' })
   assert.equal(r.ok, true)
-  assert.equal(calls.length, 4, '身份 + 处境 + 提醒说明 + 任务摘要')
+  assert.equal(calls.length, 5, '身份 + 处境 + 提醒说明 + 任务摘要 + 关于他')
   const sec = calls[0]
   assert.equal(sec.name, IDENTITY_SECTION)
   assert.equal(sec.order, IDENTITY_ORDER)
@@ -117,8 +120,72 @@ test('attachIdentity：挂四段——身份 + 处境 + 提醒说明 + 任务摘
   assert.equal(typeof inbox.text, 'function')
   assert.match(inbox.text(), /t_1/)
   assert.match(inbox.text(), /还没回完/)
+
+  // 第五段：关于他（owner 身份事实）。没有「关于他.md」时也是空串。
+  const owner = calls[4]
+  assert.equal(owner.name, OWNER_SECTION)
+  assert.equal(owner.order, OWNER_ORDER)
+  assert.equal(typeof owner.text, 'function')
+  assert.equal(owner.text(), '')
+
   assert.equal(attachIdentity(agent, root, { inboxText: () => '' }).ok, true)
-  assert.equal(calls[7].text(), '')
+  assert.equal(calls[8].name, INBOX_SECTION, '第二次 attach 的五段从下标 5 开始')
+  assert.equal(calls[8].text(), '')
+  assert.equal(calls[9].name, OWNER_SECTION)
+})
+
+test('writeSelfDoc 额外写「关于他.md」，身份文档里不出现别名', async () => {
+  const root = tmp()
+  await appendEvent({
+    type: 'person_note',
+    text: '微信私聊名「cat不到flag的cat」是他。',
+    person: { id: 'owner', name: '老哥', label: 'cat不到flag的cat', channel: 'wx', chatId: '', kind: 'identity' },
+    refs: [], flags: ['identity'],
+  }, { day: 1, stage: 1, source: 'system' }, root)
+
+  const first = await writeSelfDoc(root)
+  assert.equal(first.ok, true)
+  assert.equal(first.ownerFile, ownerDocPath(root))
+  assert.equal(first.ownerChanged, true)
+  assert.equal(first.ownerWhy, '')
+
+  const owner = fs.readFileSync(ownerDocPath(root), 'utf8')
+  assert.match(owner, /cat不到flag的cat/)
+  assert.match(owner, /微信私聊/)
+  const identity = fs.readFileSync(selfDocPath(root), 'utf8')
+  assert.doesNotMatch(identity, /cat不到flag的cat/, 'owner 事实只进 fish:owner，不进全局身份文档')
+
+  const second = await writeSelfDoc(root)
+  assert.equal(second.ownerChanged, false, '内容没变就不重写')
+})
+
+test('fish:owner：web/wx 有内容，bili/qq 为空；没有 owner 文档时为空串', async () => {
+  const root = tmp()
+  await appendEvent({
+    type: 'person_note',
+    text: '微信私聊名「cat不到flag的cat」是他。',
+    person: { id: 'owner', name: '老哥', label: 'cat不到flag的cat', channel: 'wx', chatId: '', kind: 'identity' },
+    refs: [], flags: ['identity'],
+  }, { day: 1, stage: 1, source: 'system' }, root)
+  await writeSelfDoc(root)
+  resetIdentityCache()
+
+  const ownerTextFor = (atRoot, surface) => {
+    const sections = []
+    const agent = { ctx: { systemPrompt: { section: (o) => sections.push(o) } } }
+    assert.equal(attachIdentity(agent, atRoot, { surfaceOf: () => surface }).ok, true)
+    return sections.find((s) => s.name === OWNER_SECTION).text()
+  }
+
+  assert.match(ownerTextFor(root, 'web'), /cat不到flag的cat/)
+  assert.match(ownerTextFor(root, 'wx'), /cat不到flag的cat/)
+  assert.equal(ownerTextFor(root, 'bili'), '')
+  assert.equal(ownerTextFor(root, 'qq'), '')
+  assert.equal(ownerTextFor(root, ''), '')
+
+  resetIdentityCache()
+  const emptyRoot = tmp()
+  assert.equal(ownerTextFor(emptyRoot, 'web'), '', '没有「关于他.md」时是空串，不抛')
 })
 
 test('attachIdentity：不是微信那条会话时，提醒说明和任务摘要都返回空串', () => {
@@ -132,8 +199,8 @@ test('attachIdentity：不是微信那条会话时，提醒说明和任务摘要
   assert.equal(calls[2].text(), '')
   assert.equal(calls[3].text(), '')
   assert.equal(attachIdentity(agent, root, { canRemind: () => true, inboxText: () => 't_1' }).ok, true)
-  assert.match(calls[6].text(), /her_remind/)
-  assert.match(calls[7].text(), /t_1/)
+  assert.match(calls[7].text(), /her_remind/)
+  assert.match(calls[8].text(), /t_1/)
 })
 
 test('处境段按会话分开：home 和 B 站出门会话各看各的，互不串', () => {
@@ -196,7 +263,7 @@ test('registerIdentity：只给她那个 agent 挂（按 cwd 判），别人不�
   handler({ agent: { session: { header: { cwd: join(root, 'other') } }, ctx: { systemPrompt: { section: (o) => others.push(o) } } } })
   handler({ agent: { session: { header: { cwd: '' } }, ctx: { systemPrompt: { section: (o) => others.push(o) } } } })
 
-  assert.equal(mine.length, 4, '她那条会话必须挂上（身份 + 处境 + 提醒说明 + 任务摘要四段）')
+  assert.equal(mine.length, 5, '她那条会话必须挂上（身份 + 处境 + 提醒说明 + 任务摘要 + 关于他五段）')
   assert.equal(others.length, 0, '用户自己的会话不许挂')
 })
 

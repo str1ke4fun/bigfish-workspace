@@ -30,6 +30,7 @@ import { deriveSelf } from './derive.js'
 import { personaLine, TOOL_BRIEF, RECALL_BRIEF, LETTER_BRIEF, DIARY_BRIEF, SLEEP_BRIEF } from './persona.js'
 import { activeCarry } from './home.js'
 import { activeGrants } from './unlock.js'
+import { ownerDocText } from './people-view.js'
 
 /**
  * 她是谁、怎么叫他（2026-11-04 第三版）。
@@ -142,6 +143,16 @@ export function selfDocPath(root = rootDir()) {
   return join(paths(root).root, 'home', '她的身份.md')
 }
 
+/**
+ * 「关于他」的落盘副本（person-memory Phase 1 Task 4）。
+ *
+ * 和身份文档分开放：owner 事实只进 `fish:owner`，不进全局身份文档。
+ * 文件本身是给人看的副本，运行时由 identity.js 按 mtime 读进提示段。
+ */
+export function ownerDocPath(root = rootDir()) {
+  return join(paths(root).herDir, '关于他.md')
+}
+
 /** 旧路径（2026-10-25 之前的 `AGENTS.md`）。迁移时读它、然后删掉。 */
 export function legacySelfDocPath(root = rootDir()) {
   return join(paths(root).root, 'home', 'AGENTS.md')
@@ -243,6 +254,9 @@ export async function writeSelfDoc(root = rootDir(), { log } = {}) {
     // 「你说过的话 / 固化 / 冲突 / 立场」，只在这一处换掉，所有段落一起生效，
     // 也不会因为某个渲染入口忘了调 guard 而漏出微信/QQ 原文。
     const model = deriveSelf(events, { growthDays: config.growthDays, viewSurface: 'identity' })
+    // owner 事实**不走** crossChannel（合并裁决 D33）：person_note 是她自己写下的认知，
+    // 不是外来原文；引号里的别名正是要保留的内容。渲染前的外来文本清洗在 people-view。
+    const ownerBody = ownerDocText(model.ownerFacts)
     const text = renderSelfDoc(model, {
       budget: config?.memory?.docBudget,
       carry: await activeCarry(root),
@@ -271,10 +285,33 @@ export async function writeSelfDoc(root = rootDir(), { log } = {}) {
     // 她的整套设定。身份现在走 `systemPrompt.section`（不进对话），所以旧文件必须删。
     try { await fs.unlink(legacySelfDocPath(root)) } catch { /* 不存在就算了 */ }
 
-    return { ok: true, changed, file }
+    // 「关于他」单独写、单独兜错：owner 文档写不出来不能连累身份文档。
+    const ownerFile = ownerDocPath(root)
+    let ownerChanged = false
+    let ownerWhy = ''
+    try {
+      let ownerPrev = null
+      try { ownerPrev = await fs.readFile(ownerFile, 'utf8') } catch { /* 首次 */ }
+      ownerChanged = ownerPrev !== ownerBody
+      if (ownerChanged) await writeAtomic(ownerFile, ownerBody)
+    } catch (err) {
+      ownerChanged = false
+      ownerWhy = String(err?.message ?? err).slice(0, 160)
+      log?.('owner doc failed', ownerWhy)
+    }
+
+    return { ok: true, changed, file, ownerFile, ownerChanged, ownerWhy }
   } catch (err) {
     log?.('selfdoc failed', err?.message ?? err)
-    return { ok: false, changed: false, file, why: String(err?.message ?? err).slice(0, 160) }
+    return {
+      ok: false,
+      changed: false,
+      file,
+      ownerFile: '',
+      ownerChanged: false,
+      ownerWhy: '',
+      why: String(err?.message ?? err).slice(0, 160),
+    }
   }
 }
 

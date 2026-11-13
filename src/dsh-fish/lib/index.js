@@ -275,7 +275,15 @@ export function apply(ctx, baseConfig = {}) {
       logger.warn('[dsh-fish] 身份文本预写失败', err?.message ?? err)
     }
     try {
-      const off = registerIdentity(ctx, { root, herDir, log: (...a) => logger.info(...a) })
+      const off = registerIdentity(ctx, {
+        root,
+        herDir,
+        // fish:owner 只在 web / wx / screen 渲染；面判定拿不到时当空串（不渲染）。
+        surfaceOf: (agent) => {
+          try { return fishCore?.surface?.current?.(agent) ?? '' } catch { return '' }
+        },
+        log: (...a) => logger.info(...a),
+      })
       if (typeof off === 'function') disposers.push(off)
     } catch (err) {
       logger.warn('[dsh-fish] 身份段没挂上', err?.message ?? err)

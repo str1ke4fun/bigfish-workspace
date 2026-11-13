@@ -25,7 +25,8 @@
  */
 
 import { readFileSync, statSync } from 'node:fs'
-import { selfDocPath } from './selfdoc.js'
+import { ownerDocPath, selfDocPath } from './selfdoc.js'
+import { ownerSectionText } from './people-view.js'
 import { REMIND_PROMPT } from './remind.js'
 import { isHerAgent } from './restrict.js'
 
@@ -70,6 +71,16 @@ export const REMIND_ORDER = 8800
  */
 export const INBOX_SECTION = 'fish:inbox'
 export const INBOX_ORDER = 8850
+
+/**
+ * owner 身份事实段（person-memory Phase 1 Task 4）。
+ *
+ * 和身份段分开：身份是“她是谁”，这一段是“哪些名字是他”。
+ * 只对 web / wx / screen 返回内容；bili / qq 上不渲染（合并裁决 D5、D28）。
+ * `ownerText` 走 mtime 缓存，`text()` 是同步求值，不能 await。
+ */
+export const OWNER_SECTION = 'fish:owner'
+export const OWNER_ORDER = 75
 
 /** 这一次唤醒的处境正文；空串表示没有（正常聊天时就是空）。 */
 let wakeText = ''
@@ -152,24 +163,56 @@ export function identityText(root) {
   }
 }
 
+/** 「关于他.md」的 mtime 缓存；语义同 identityText。 */
+const ownerCache = { file: '', mtimeMs: -1, text: '' }
+
+/**
+ * 读「关于他」文本（带 mtime 缓存）。永不抛。
+ * @param {string} root
+ * @returns {string} 文件不存在时返回空串
+ */
+export function ownerText(root) {
+  try {
+    const file = ownerDocPath(root)
+    const st = statSync(file)
+    if (ownerCache.file !== file || ownerCache.mtimeMs !== st.mtimeMs) {
+      ownerCache.text = readFileSync(file, 'utf8')
+      ownerCache.file = file
+      ownerCache.mtimeMs = st.mtimeMs
+    }
+    return ownerCache.text
+  } catch {
+    return ownerCache.file === ownerDocPath(root) ? ownerCache.text : ''
+  }
+}
+
+/** 测试用：清掉 owner 缓存，强制下次重新读盘。 */
+export function resetOwnerCache() {
+  ownerCache.file = ''
+  ownerCache.mtimeMs = -1
+  ownerCache.text = ''
+}
+
 /** 测试用：清掉缓存，强制下次重新读盘。 */
 export function resetIdentityCache() {
   cache.file = ''
   cache.mtimeMs = -1
   cache.text = ''
+  resetOwnerCache()
 }
 
 /**
  * 把身份段挂到某个 agent 的 system prompt 上。
  * @param {object} agent
  * @param {string} root
- * @param {{canRemind?: (agent:object)=>boolean, inboxText?: ()=>string}} [opts]
+ * @param {{canRemind?: (agent:object)=>boolean, inboxText?: ()=>string, surfaceOf?: (agent:object)=>string}} [opts]
  *   canRemind：这条会话是不是微信那条。不是的话，提醒说明返回空串——
  *   QQ / 网页里的她看不到「去微信发提醒」这段，免得把通道说明带错地方。
  *   inboxText：还没回完的微信任务摘要；同样是「不在微信那条会话里就不显示」。
+ *   surfaceOf：这次会话在哪个面（web/wx/screen/bili/qq）；`fish:owner` 只在前三个面渲染。
  * @returns {{ ok: boolean, why?: string }}
  */
-export function attachIdentity(agent, root, { canRemind, inboxText } = {}) {
+export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf } = {}) {
   const sp = agent?.ctx?.systemPrompt
   if (!sp || typeof sp.section !== 'function') {
     return { ok: false, why: '宿主的 agent.ctx 上没有 systemPrompt.section（版本不支持）' }
@@ -205,6 +248,22 @@ export function attachIdentity(agent, root, { canRemind, inboxText } = {}) {
         return body ? '## 微信里还没回完的任务\n\n' + body : ''
       },
     })
+    // 哪些名字是他。只在 web / wx / screen 出现；没有 owner 文档时是空串。
+    // screen 的支持由实现保证，Phase 1 的测试按 D28 不断言，等 presence 的面表落地。
+    sp.section({
+      name: OWNER_SECTION,
+      order: OWNER_ORDER,
+      text: () => {
+        let surface = 'web'
+        try {
+          surface = String(surfaceOf?.(agent) ?? 'web')
+        } catch {
+          return ''
+        }
+        if (surface !== 'web' && surface !== 'wx' && surface !== 'screen') return ''
+        return ownerSectionText({ doc: ownerText(root) })
+      },
+    })
     return { ok: true }
   } catch (err) {
     return { ok: false, why: String(err?.message ?? err).slice(0, 200) }
@@ -217,7 +276,7 @@ export function attachIdentity(agent, root, { canRemind, inboxText } = {}) {
  *
  * @returns {() => void} 卸载函数；挂不上时返回一个空函数，不抛
  */
-export function registerIdentity(ctx, { root, herDir, log } = {}) {
+export function registerIdentity(ctx, { root, herDir, log, surfaceOf } = {}) {
   const state = { ok: false, applied: 0, why: '' }
   /** 这条会话是不是 dsh-wx 的微信会话。拿不到服务就先当不是，下一轮再求值。 */
   const canRemind = (agent) => {
@@ -243,7 +302,7 @@ export function registerIdentity(ctx, { root, herDir, log } = {}) {
     try {
       if (!herDir) return
       if (!isHerAgent(agent, herDir)) return
-      const r = attachIdentity(agent, root, { canRemind, inboxText })
+      const r = attachIdentity(agent, root, { canRemind, inboxText, surfaceOf })
       if (r.ok) {
         state.ok = true
         state.applied += 1
