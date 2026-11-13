@@ -169,6 +169,59 @@ export function orderEvents(events = []) {
   })
 }
 
+/**
+ * 冷落时间线（growth 自触发 §6.3）。
+ *
+ * 旧模型优先用 absence 事件里冻结的 days=2，导致：
+ *   - 他回来之后 absenceDays 仍是 2，身份文档一直说“他有 2 天没出现”；
+ *   - absence_probe 的门槛永远差 1 天。
+ *
+ * 新模型把四个含义拆开：
+ *   days      当前这次冷落已持续几天（他回来即 0）
+ *   gapDays   已完成的那次冷落一共几天（没完成就是 0）
+ *   back      他是否已经回来（最后一条 absence 之后有新的 seen:）
+ *   backDays  他回来之后过了几天
+ */
+export function absenceTimeline(evs = [], now = Date.now()) {
+  const seenAts = []
+  let lastAbsence = null
+  let lastReunionAt = 0
+  for (const e of Array.isArray(evs) ? evs : []) {
+    if (e?.type === 'meta' && String(e.text ?? '').startsWith('seen:')) {
+      const at = Date.parse(String(e.text).slice(5))
+      if (Number.isFinite(at)) seenAts.push(at)
+    } else if (e?.type === 'absence') {
+      lastAbsence = e
+    } else if (e?.type === 'reunion') {
+      const at = Date.parse(e.ts)
+      if (Number.isFinite(at)) lastReunionAt = Math.max(lastReunionAt, at)
+    }
+  }
+  seenAts.sort((a, b) => a - b)
+  const lastSeenAt = seenAts.length ? seenAts[seenAts.length - 1] : 0
+  if (!lastAbsence) return { days: 0, gapDays: 0, back: false, backDays: 0, lastSeenAt }
+
+  const t0 = Date.parse(lastAbsence.ts) || 0
+  const recorded = Number(lastAbsence.days)
+  const before = seenAts.filter((t) => t <= t0).pop() ?? t0
+  const after = seenAts.find((t) => t > t0) ?? 0
+  const reunionAfter = lastReunionAt > t0
+
+  if (reunionAfter) return { days: 0, gapDays: 0, back: false, backDays: 0, lastSeenAt }
+  if (after) {
+    const gap = Math.max(Number.isFinite(recorded) ? recorded : 0, Math.floor((after - before) / DAY_MS))
+    return {
+      days: 0,
+      gapDays: Math.max(0, gap),
+      back: true,
+      backDays: Math.max(0, Math.floor((now - after) / DAY_MS)),
+      lastSeenAt,
+    }
+  }
+  const live = Math.max(Number.isFinite(recorded) ? recorded : 0, Math.floor((now - before) / DAY_MS))
+  return { days: Math.max(0, live), gapDays: 0, back: false, backDays: 0, lastSeenAt }
+}
+
 /** 导入他人人设时带上来的称呼，写在 meta 事件里（见 lib/import.js） */
 export const IMPORT_NAME_PREFIX = 'import-name:'
 
@@ -227,6 +280,9 @@ export function deriveSelf(events = [], opts = {}) {
   const reunions = []
   const corrected = []
   let name = null
+  // 这个名字是不是她自己给出来的（import-name 带来的不算）。name_offer 用它判断
+  // “她还没给过他称呼”，而不是看 name 是否为空（D13）。
+  let nameOffered = false
   // 2026-10-27（用户 m03769）：这一局是不是「接别人养的」那一局。
   // **只从事件流里认**，不看配置——配置会跟着备份/恢复一起搬回来，
   // 那样一条原生的鱼只要恢复过一次别人的档，就永久拿到了豁免。
@@ -318,7 +374,7 @@ export function deriveSelf(events = [], opts = {}) {
         // 后来接受他给的名字「时梦尘」，状态栏就永远停在那个被他自己否掉的旧称呼上。
         {
           const n = pickName(ev.text)
-          if (n) name = n
+          if (n) { name = n; nameOffered = true }
         }
         if (CORRECTION_RE.test(ev.text)) corrected.push(ev.id)
         // P1（2026-10-24）：自我叙述不用等 stage 4 的 remember 模板。
@@ -367,7 +423,7 @@ export function deriveSelf(events = [], opts = {}) {
         // 同 utterance：后来的说法盖掉先前的（她改口叫他什么，以最近的为准）
         {
           const n = pickName(ev.text)
-          if (n) name = n
+          if (n) { name = n; nameOffered = true }
         }
         if (!narrative && ev.verdict === 'refined' && /我(一直|原来|其实)/.test(ev.text)) {
           narrative = { at: ev.ts, text: ev.text }
@@ -439,6 +495,7 @@ export function deriveSelf(events = [], opts = {}) {
           // 放配置里的话，重置之后会剩一条谁也不记得的孤立设置。
           // 位置在 seed 之后、她自己的 utterance 之前，所以后面她真改了口还是能盖掉。
           const n = t.slice(IMPORT_NAME_PREFIX.length).trim()
+          // import-name 只带来称呼，不算“她自己给过他称呼”（D13）。
           if (n) name = n
         } else if (t.startsWith(IMPORT_MARK_PREFIX)) {
           // 「这一局是接别人养的那一位」（2026-10-27，用户 m03769）。
@@ -889,21 +946,11 @@ export function deriveSelf(events = [], opts = {}) {
   const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 0
   const relatedness = Math.min(1, avgQuality * 0.7 + (lastAbsence ? (reunionAfterAbsence ? 0.3 : 0) : 0))
 
-  // 冷落天数有三个来源，优先用最准的：
-  //   1. absence 事件自带的 days（系统侧按毫秒算出来的，最准）
-  //   2. 成长日差（absence 记在 day 5、现在 day 9 → 冷了 4 天）
-  //   3. 毫秒差兜底（day 缺失时）
-  // 为什么 1 必须存在：同一天里写两条 absence 时，day 差是 0，会算出"没冷落"。
-  const absenceDays = lastAbsence && !reunionAfterAbsence
-    ? Math.max(
-        0,
-        Number.isFinite(Number(lastAbsence.days))
-          ? Number(lastAbsence.days)
-          : Number(lastAbsence.day) > 0
-            ? day - Number(lastAbsence.day)
-            : Math.ceil((now - Date.parse(lastAbsence.ts)) / DAY_MS),
-      )
-    : 0
+  // 冷落时间线（growth §6）：absenceDays 是「当前这次冷落持续几天，回来即 0」。
+  // 旧口径会把 absence 事件里冻结的 days=2 一直保留，线上身份文档因此一直说
+  // “他有 2 天没出现”。新的 gapDays/back/backDays 只给 absence_probe。
+  const absence = absenceTimeline(evs, now)
+  const absenceDays = absence.days
 
   const model = {
     seed,
@@ -921,6 +968,7 @@ export function deriveSelf(events = [], opts = {}) {
     elapsedStage,
     stageName: STAGE_NAMES[elapsedStage - 1],
     name,
+    nameOffered,
     // 2026-10-24 起 beliefs 按**显著性**排（不是时间）。固化/常被提起的在前，
     // 靠后的才是"更早以前"——遗忘不再是无差别的时间截断。
     // A1.3：给了 viewSurface 时，这里已经是去引用化后的副本（缺省时与 ranked 同一份）。
@@ -1010,6 +1058,9 @@ export function deriveSelf(events = [], opts = {}) {
       privacyRedacted,
     },
     absenceDays,
+    absenceGapDays: absence.gapDays,
+    absenceBack: absence.back,
+    absenceBackDays: absence.backDays,
     narrative: displayNarrative,
     lastAbsence: lastAbsence ? { at: lastAbsence.ts } : null,
     lastSeenAt,

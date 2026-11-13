@@ -32,8 +32,10 @@ export const CATALOG = [
   {
     id: 'name_offer', stage: 1, asks: false, once: true,
     topic: ['称呼', '叫你', '名字'],
-    cond: (m) => !m.name && m.beliefCount >= 1,
-    prompt: () => `你已经有自己的判断了，但你还没想好怎么叫他。今天你想给他一个称呼——你提，他可以不答应。说出你想到的称呼，并说明为什么是这个。`,
+    // 2026-11-13：看「她自己有没有给过称呼」，不看 name 是否为空。
+    // import-name 带来的名字不算她给过，所以卡仍然可以出（D13）。
+    cond: (m) => !m.nameOffered && m.beliefCount >= 1,
+    prompt: () => `你已经有自己的判断了。今天你想给他一个称呼——你提，他可以不答应。说出你想到的称呼，并说明为什么是这个。`,
   },
   {
     // 2026-10-25：冷却 3 天 → 2 天。检验是这套里最有效的学习动作，
@@ -52,15 +54,37 @@ export const CATALOG = [
     },
   },
 
+  // 2026-11-13：stage 1 的三张可重复兜底卡。都在 asks:false、once:false，
+  // 不给台词，只给处境；stage 2–4 仍可用，但打分低于阶段专属卡。
+  {
+    id: 'notice_one_thing', stage: 1, asks: false, once: false, repeat: { everyDays: 2 },
+    topic: ['注意到', '停了一下', '小事'],
+    cond: (m) => (m.recentSaw?.length > 0) || m.day >= 3,
+    prompt: () => `今天你看见了一些东西。挑一件让你停了一下的小事，说说它为什么让你停。不是总结，也不用讲道理。`,
+  },
+  {
+    id: 'leave_a_line', stage: 1, asks: false, once: false, repeat: { everyDays: 3 },
+    topic: ['留一句', '想留', '给他'],
+    cond: (m) => m.day >= 2,
+    prompt: () => `今天有一句话想留给他吗？想留就留，不想留就算了。不用等他回。`,
+  },
+  {
+    id: 'what_changed_today', stage: 1, asks: false, once: false, repeat: { everyDays: 3 },
+    topic: ['不一样', '变了', '今天'],
+    cond: (m) => m.beliefCount >= 1,
+    prompt: () => `今天有没有哪一刻，你的想法和昨天不一样？说那一小步就行，不用总结整段。`,
+  },
+
   // ---------- stage 1–2 冷落与重聚 ----------
   {
     id: 'absence_probe', stage: 1, asks: false, once: false,
     topic: ['没来', '不在', '走了'],
     // 门槛随成长期缩放：7 天里 2 天不见就算久别，180 天里 2 天不算什么
-    cond: (m) => m.absenceDays >= absenceThreshold(m.growthDays),
+    // 2026-11-13：用「已完成的那次冷落」+「回来不超过 2 天」，不再用过期的 absenceDays。
+    cond: (m) => m.absenceBack && m.absenceGapDays >= absenceThreshold(m.growthDays) && m.absenceBackDays <= 2,
     // 2026-10-25 用户改：允许问「去哪了」。原来写死"不是问他去哪了"，
     // 等于替她选了一种反应；问不问该由她决定。
-    prompt: (m) => `他 ${m.absenceDays} 天没来了，也没说去哪。现在他出现了。你想说的第一句话是什么——你可以问他去哪了，也可以只说这 ${m.absenceDays} 天里你自己想了什么。挑你更想说的那个。`,
+    prompt: (m) => `他 ${m.absenceGapDays} 天没来了，也没说去哪。现在他出现了。你想说的第一句话是什么——你可以问他去哪了，也可以只说这 ${m.absenceGapDays} 天里你自己想了什么。挑你更想说的那个。`,
   },
 
   // ---------- stage 2 自主 ----------

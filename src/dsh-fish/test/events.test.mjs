@@ -12,7 +12,8 @@ function model(over = {}) {
     beliefs: [], beliefCount: 0, refuted: [], refusals: [], selfmodAttempts: [],
     reunions: [], corrected: 0, tested: [],
     needs: { autonomy: 0, competence: 0, relatedness: 0 },
-    absenceDays: 0, narrative: null, ...over,
+    absenceDays: 0, absenceGapDays: 0, absenceBack: false, absenceBackDays: 0,
+    nameOffered: false, narrative: null, ...over,
   }
 }
 const today = (o = {}) => ({ dateKey: '2026-10-23', sent: 0, questions: 0, proactive: 0, ...o })
@@ -69,7 +70,10 @@ test('wakesPerDay 用满 → skip（唤醒次数唯一旋钮）', () => {
 
 test('cold 落中 absence_probe 抢到优先权', () => {
   const cfg = normalizeConfig({ daily: { questions: 3 } })
-  const m = model({ stage: 2, absenceDays: 4, beliefCount: 2, beliefs: [{ id: 'a', text: 'x', since: new Date().toISOString() }] })
+  const m = model({
+    stage: 2, absenceBack: true, absenceGapDays: 4, absenceBackDays: 0,
+    beliefCount: 2, beliefs: [{ id: 'a', text: 'x', since: new Date().toISOString() }],
+  })
   const r = pick(m, cfg, today(), [])
   assert.equal(r.template.id, 'absence_probe')
 })

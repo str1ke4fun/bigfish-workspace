@@ -173,8 +173,11 @@ test('带过来的称呼顶掉第一天的起名事件', async () => {
     const { events } = await readEvents(root)
     const model = deriveSelf(events)
     const offer = CATALOG.find((e) => e.id === 'name_offer')
-    // 条件本身是 !m.name，带过来称呼之后它自己就不该再触发了
-    assert.equal(offer.cond(model), false)
+    // 2026-11-13：条件改成 !m.nameOffered。import-name 只是带来了一个名字，
+    // 不代表“她自己给过他称呼”，所以只要她已有判断，卡仍然可以出；
+    // 她给的新称呼会覆盖导入的。
+    assert.equal(model.nameOffered, false, 'import-name 不算她自己给过称呼')
+    assert.equal(offer.cond({ ...model, beliefCount: 1 }), true)
   })
 })
 

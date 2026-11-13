@@ -148,6 +148,14 @@ export const DEFAULTS = {
     sleepEveryDays: 7,      // 每几天让她"想一想"一次（0 = 不主动想）
     sleepKeep: 12,          // 她总共留多少条自述（超出后最早的折进「更早以前」）
     beliefsShown: 3,        // 她一轮里逐条摆出来的判断数（1–8，默认 3）；其余折成一行
+    // 收盘任务（2026-11-13）：每天固定时刻写日报；没写日记时轻唤醒一次。
+    // 不占 wakesPerDay / daily.events，不写 seen:。
+    closing: {
+      enabled: true,
+      time: '18:00',
+      wake: true,
+      diaryOnly: true,
+    },
                             // 2026-10-25 用户问「想让她记住更多能不能调」——原来写死在
                             // persona.js 的 BELIEF_SHOWN，docBudget 调多大都不会多摆一条。
   },
@@ -309,6 +317,17 @@ export function normalizeConfig(raw = {}) {
     const cw = Array.isArray(cfg.comment.window) ? cfg.comment.window : DEFAULTS.comment.window
     cfg.comment.window = validWindow(cw, DEFAULTS.comment.window)
   }
+
+  // 记忆：closing 是新增的嵌套组，必须逐字段补全 + 布尔严格化 + HH:MM 校验。
+  // fillDefaults 会把坏字符串原样带过，不能只靠 DEFAULTS。
+  cfg.memory = { ...DEFAULTS.memory, ...cfg.memory }
+  cfg.memory.closing = { ...DEFAULTS.memory.closing, ...(cfg.memory.closing && typeof cfg.memory.closing === 'object' ? cfg.memory.closing : {}) }
+  cfg.memory.closing.enabled = Boolean(cfg.memory.closing.enabled)
+  cfg.memory.closing.wake = Boolean(cfg.memory.closing.wake)
+  cfg.memory.closing.diaryOnly = Boolean(cfg.memory.closing.diaryOnly)
+  cfg.memory.closing.time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(cfg.memory.closing.time ?? ''))
+    ? String(cfg.memory.closing.time)
+    : DEFAULTS.memory.closing.time
 
   // 她的工具面：preset 名 trim（空 = 用宿主默认组合），allow 去重去空
   // 不改 allow 的语义——它只是"额外放行"，真正的收窄由 preset 完成。

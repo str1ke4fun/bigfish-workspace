@@ -33,7 +33,7 @@ const QUOTABLE = new Set(['utterance', 'revise', 'reunion', 'narration', 'refusa
 const tsOf = (e) => String(e?.ts ?? e?.at ?? '')
 
 /** 事件时刻 → 本地日期键（与 dateKey() 同口径） */
-function localDay(ts) {
+export function localDay(ts) {
   const ms = Date.parse(ts)
   return Number.isFinite(ms) ? dateKey(new Date(ms)) : ''
 }

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   stageBounds, stageOf, deriveSelf, consistency, novelty,
-  similarity, pickName, DAY_MS,
+  similarity, pickName, DAY_MS, absenceTimeline,
 } from '../lib/derive.js'
 // 2026-10-26：stability 从 derive.js 搬到 quality.js（它要用到 persona 的渲染，
 // 留在 derive 里会绕出 quality → persona → derive → quality 的环）。
@@ -248,6 +248,40 @@ test('她回应后 heard_share 不再触发', () => {
   const m = deriveSelf(evs)
   assert.equal(m.spokenSinceSeenWeb, true)
   assert.equal(findTemplate('heard_share').cond(m), false)
+})
+
+test('absenceTimeline：无 absence / 未回来 / 回来 / reunion', () => {
+  const now = Date.parse('2026-11-13T00:00:00Z')
+  assert.deepEqual(absenceTimeline([], now), { days: 0, gapDays: 0, back: false, backDays: 0, lastSeenAt: 0 })
+
+  const absence = { type: 'absence', ts: '2026-11-05T00:00:00Z', days: 2 }
+  const seenBefore = { type: 'meta', ts: '2026-11-03T00:00:00Z', text: 'seen:2026-11-03T00:00:00Z' }
+  const away = absenceTimeline([seenBefore, absence], now)
+  assert.equal(away.back, false)
+  assert.ok(away.days >= 2)
+  assert.equal(away.gapDays, 0)
+
+  const seenAfter = { type: 'meta', ts: '2026-11-08T00:00:00Z', text: 'seen:2026-11-08T00:00:00Z' }
+  const back = absenceTimeline([seenBefore, absence, seenAfter], now)
+  assert.equal(back.back, true)
+  assert.equal(back.days, 0)
+  assert.ok(back.gapDays >= 5)
+  assert.ok(back.backDays >= 4)
+
+  const reunion = { type: 'reunion', ts: '2026-11-09T00:00:00Z', text: '你回来了。' }
+  const done = absenceTimeline([seenBefore, absence, seenAfter, reunion], now)
+  assert.equal(done.back, false)
+  assert.equal(done.gapDays, 0)
+})
+
+test('nameOffered：她自己给过称呼才算，import-name 不算', () => {
+  const seed = ev('ev_seed', 'seed', 1, '种', { source: 'system' })
+  const imported = deriveSelf([seed, META('import-name:开灯的')], { now: T0 + 2 * DAY_MS })
+  assert.equal(imported.name, '开灯的')
+  assert.equal(imported.nameOffered, false)
+
+  const said = deriveSelf([seed, ev(newId(T0 + DAY_MS), 'utterance', 2, '那我就叫你阿灯吧。')], { now: T0 + 2 * DAY_MS })
+  assert.equal(said.nameOffered, true)
 })
 
 test('wx contact 不抑制网页的 he_silent', () => {

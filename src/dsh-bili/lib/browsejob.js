@@ -103,20 +103,42 @@ export function wakeCountToday(events = [], dk = dateKey()) {
   return n
 }
 
+/** 唤醒点之后多久还没醒，就把预留给它的刷站配额释放掉。 */
+export const RESERVE_GRACE_MS = 30 * 60_000
+
+/** 读今天的 sched:<dk> <ISO>；没有就 0。 */
+export function scheduledAtFrom(events = [], dk = dateKey()) {
+  const marker = `sched:${dk} `
+  for (const e of events) {
+    if (e?.type !== 'meta') continue
+    const t = String(e.text ?? '')
+    if (!t.startsWith(marker)) continue
+    const at = Date.parse(t.slice(marker.length).trim())
+    if (Number.isFinite(at)) return at
+  }
+  return 0
+}
+
 /**
  * 今天还能不能后台刷。
  *
  * reserve：还没发生的唤醒，每次都会在醒来时刷一次；先把这部分配额留出来。
  * 全部醒来过、或者根本没开唤醒，reserve = 0，后台可以把剩余配额用完。
+ *
+ * 2026-11-13：唤醒点过了 30 分钟还没醒，说明今天大概率不会醒了，
+ * 释放 reserve，别让后台永远只用 1/3 配额；已有 wake 的日子继续预留。
  */
-export function browseBudget(config, events = [], dk = dateKey()) {
+export function browseBudget(config, events = [], dk = dateKey(), { now = Date.now() } = {}) {
   const perDay = Math.max(0, Math.round(Number(config?.browse?.perDay ?? 0)))
   const wakes = Math.max(0, Math.round(Number(config?.wakesPerDay ?? 0)))
   const dailyEvents = Math.max(0, Math.round(Number(config?.daily?.events ?? 0)))
   const fired = wakeCountToday(events, dk)
   // 每天事件数是 0 时 plan() 永远不会 wake，别为一个不会发生的唤醒预留。
   const pending = wakes > 0 && dailyEvents > 0 ? Math.max(0, wakes - fired) : 0
-  const reserve = Math.min(pending, perDay)
+  const scheduledAt = scheduledAtFrom(events, dk)
+  const afterPoint = scheduledAt > 0 && now >= scheduledAt + RESERVE_GRACE_MS
+  const release = afterPoint && fired === 0
+  const reserve = release ? 0 : Math.min(pending, perDay)
   const used = browseCountToday(events, dk)
   return { perDay, used, reserve, free: Math.max(0, perDay - reserve) }
 }
@@ -139,13 +161,13 @@ export async function backgroundBrowse({
     if (!root) return { ok: false, why: 'no-root' }
     if (!config?.browse?.enabled) return { ok: false, why: 'disabled' }
 
-    const budget = browseBudget(config, events, dk)
+    const at = now instanceof Date ? now : new Date(now)
+    const budget = browseBudget(config, events, dk, { now: at.getTime() })
     if (!(budget.perDay > 0)) return { ok: false, why: 'perDay=0' }
     if (budget.used >= budget.free) {
       return { ok: false, why: budget.reserve > 0 ? 'reserved-for-wake' : 'quota-full' }
     }
 
-    const at = now instanceof Date ? now : new Date(now)
     if (!inWindow({ window: browseWindow(config) }, at)) return { ok: false, why: 'outside-window' }
 
     const lastAt = lastBrowseAt(events)

@@ -20,6 +20,7 @@ import { registerRemind } from './remind.js'
 import { registerInbox } from './taskinbox.js'
 import { registerObserve } from './observe.js'
 import { startScheduler } from './scheduler.js'
+import { flushMissingReports } from './closing.js'
 import { bootstrapHomeWithRetry, homeStatus, wakeIfBlank } from './home.js'
 import { writeSelfDoc, refreshSelfDoc } from './selfdoc.js'
 import { registerToolRestrict, revealTools, getAgentToolState, isHerAgent } from './restrict.js'
@@ -403,6 +404,9 @@ export function apply(ctx, baseConfig = {}) {
     // 生物钟：把屋子信息一起传下去。她每晚醒来说话要落进**同一个**会话，
     // 不是每晚新开一个藏起来的会话（用户定案：打开侧栏就该看见她）。
     // hooks 必须显式传给 scheduler：tick 只认这一次启动拿到的钩子表。
+    // 启动补写：今天/昨天有事件但没有报告的，补一份；已有报告不覆盖。
+    void flushMissingReports(root, { log: (...a) => logger.info(...a) })
+
     scheduler = startScheduler(ctx, {
       root,
       herDir,
@@ -429,6 +433,8 @@ export function apply(ctx, baseConfig = {}) {
   ctx.on?.('dispose', () => {
     try { bootAbort.abort() } catch { /* ignore */ }
     try { scheduler?.dispose?.() } catch { /* ignore */ }
+    // 停用补写：当天报告 best-effort；不阻塞 dispose。
+    void flushMissingReports(root, { days: 1, log: (...a) => logger.info(...a) })
     try { clearWakeSection() } catch { /* ignore */ }
     for (const d of disposers) { try { d() } catch { /* ignore */ } }
   })

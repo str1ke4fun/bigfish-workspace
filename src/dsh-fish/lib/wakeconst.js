@@ -34,3 +34,15 @@ export const WAKE_HINT = '对话里那条括号里的短句不是用户说的话
  */
 export const BILI_TRIGGER = '（出门看看）'
 export const BILI_HINT = '对话里那条括号里的短句不是用户说的话，是出门的信号。不用回应它，也不用问它什么意思——这一轮是你自己在外面转。'
+
+/**
+ * 收盘的触发语与处境段（2026-11-13）。
+ *
+ * 收盘是维护动作，不是成长事件：不选模板、不占 wakesPerDay / daily.events、
+ * 不写 fired: / seen:。她可以记一笔，也可以不记。
+ */
+export const CLOSING_TRIGGER = '（收工了。）'
+export const CLOSING_HINT = [
+  '## 收工',
+  '今天快过去了。想记一笔就记；不想写也可以。',
+].join('\n')

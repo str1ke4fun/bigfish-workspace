@@ -91,8 +91,10 @@ function score(t, m, fired = new Map()) {
   else s -= Math.min(0.45, 0.15 * Number(fired.get(t.id)?.count ?? 0))
   // 复读防护：这两天她刚在同一个话题上说过话，就别再逼她说一遍
   if (topicEcho(t, m)) s -= 0.6
-  // 冷落中：重聚优先（这是唯一测依恋的机会，别被别的事挤掉）
-  if (m.absenceDays >= 2 && t.id === 'absence_probe') s += 3
+  // 冷落/刚回来：重聚优先（这是唯一测依恋的机会，别被别的事挤掉）。
+  // 2026-11-13：absenceDays 现在是“当前持续冷落天数，回来即 0”，
+  // 所以刚回来的那次也要看 absenceGapDays，否则卡永远抢不到优先权。
+  if ((m.absenceDays >= 2 || (m.absenceBack && m.absenceGapDays >= 2)) && t.id === 'absence_probe') s += 3
   return s
 }
 

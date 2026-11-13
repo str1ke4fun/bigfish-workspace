@@ -28,6 +28,8 @@ import { WAKE_TRIGGER, WAKE_HINT } from './wakeconst.js'
 import { refreshSelfDoc } from './selfdoc.js'
 import { setWakeSection, clearWakeSection } from './identity.js'
 import { watchTurnEnd } from './turnend.js'
+import { runClosing } from './closing.js'
+import { sleepDue } from './sleep.js'
 
 const TICK_MS = 60_000
 const INITIAL_DELAY_MS = 20_000
@@ -52,6 +54,7 @@ export function startScheduler(ctx, deps = {}) {
   // 每次 tick 的记忆（内存态，重启即清空；配额以 events.jsonl 为准）
   let lastTick = 0
   let running = false
+  let closingRunning = false
   let disposed = false
   let timer = null
   let wakeTimer = null
@@ -102,6 +105,21 @@ export function startScheduler(ctx, deps = {}) {
         // 钩子写了新事件（saw / browse）：后面的唤醒配额与身份文档都要读到。
         events = (await readEvents(root)).events
         await refreshSelfDoc(root, { log })
+      }
+
+      // ---- 收盘：必须在所有提前 return 之前 ----
+      // 没日程 / 窗口外 / quiet 的日子恰恰是最需要写日报的日子；放在 tick 末尾
+      // 会被 ensureSchedule/inWindow/scheduled.at/quiet/skip 的 return 跳过。
+      // 每个 tick 最多跑一次；失败只记日志，不影响唤醒。
+      if (!closingRunning) {
+        closingRunning = true
+        try {
+          await runClosing(ctx, { root, config, now: new Date(), dk, log })
+        } catch (err) {
+          log('closing failed', err?.message ?? err)
+        } finally {
+          closingRunning = false
+        }
       }
 
       // 日程：每天在时间窗内抽一个点。抽到的点已存在（今天已经安排过）就不再改。
@@ -259,10 +277,10 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
   // 做法写在身份文档（SLEEP_BRIEF），这里只给一句时机标记。
   const every = Number(config?.memory?.sleepEveryDays ?? 0)
   let askedSleep = false
-  if (every > 0 && model.day > 1 && model.day % every === 0) {
-    const events0 = (await readEvents(root).catch(() => ({ events: [] }))).events
-    const doneToday = events0.some((e) => e?.type === 'meta' && String(e.text ?? '').startsWith(`sleep:${dk}`))
-    if (!doneToday) { parts.push('', SLEEP_TODAY); askedSleep = true }
+  {
+    const events0 = deps.events ?? (await readEvents(root).catch(() => ({ events: [] }))).events
+    // 到期即触发：上次 sleep 日 + N；错过一天下一次唤醒补上（sleepDue）。
+    if (sleepDue(events0, model, every, dk)) { parts.push('', SLEEP_TODAY); askedSleep = true }
   }
 
   // ---- 规则解禁申请（R3，2026-10-24）----

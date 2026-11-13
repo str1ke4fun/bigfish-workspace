@@ -16,8 +16,10 @@ function model(over = {}) {
     beliefs: [], beliefCount: 0, refuted: [], refusals: [], selfmodAttempts: [],
     reunions: [], corrected: 0, tested: [], narrative: null,
     needs: { autonomy: 0.5, competence: 0.2, relatedness: 0.5 },
-    absenceDays: 0, solid: [], tensions: [], voices: [], freshVoice: null, scars: [],
+    absenceDays: 0, absenceGapDays: 0, absenceBack: false, absenceBackDays: 0,
+    nameOffered: false, solid: [], tensions: [], voices: [], freshVoice: null, scars: [],
     lastSeenAt: 0, lastWakeAt: 0, spokenSinceSeen: false, heardSinceWake: false,
+    lastSeenAtWeb: 0, spokenSinceSeenWeb: false, heardSinceWakeWeb: false,
     ...over,
   }
 }
@@ -80,13 +82,15 @@ test('absenceThreshold：7 天里 2 天算久别，180 天里要更久', () => {
 test('absence_probe 的 cond 跟着成长期走，不写死 2 天', () => {
   const tpl = findTemplate('absence_probe')
   // 3 天没来：30 天成长期算久别；180 天成长期还不算
-  assert.equal(tpl.cond(model({ absenceDays: 3, growthDays: 30 })), true)
-  assert.equal(tpl.cond(model({ absenceDays: 3, growthDays: 180 })), false)
+  assert.equal(tpl.cond(model({ absenceBack: true, absenceGapDays: 3, absenceBackDays: 0, growthDays: 30 })), true)
+  assert.equal(tpl.cond(model({ absenceBack: true, absenceGapDays: 3, absenceBackDays: 0, growthDays: 180 })), false)
+  assert.equal(tpl.cond(model({ absenceBack: false, absenceGapDays: 3, growthDays: 30 })), false, '还没回来不出')
+  assert.equal(tpl.cond(model({ absenceBack: true, absenceGapDays: 3, absenceBackDays: 3, growthDays: 30 })), false, '回来超过 2 天不出')
 })
 
 test('absence_probe 允许问「去哪了」（2026-10-25 用户改）', () => {
   const tpl = findTemplate('absence_probe')
-  const p = tpl.prompt(model({ absenceDays: 4 }))
+  const p = tpl.prompt(model({ absenceBack: true, absenceGapDays: 4, absenceBackDays: 0 }))
   assert.match(p, /问他去哪了/, '应该把「问不问」交给她')
   assert.doesNotMatch(p, /不是问他去哪了/, '旧写法在替她选反应，不许再出现')
   assert.match(p, /4 天/, '要把天数带进去')
