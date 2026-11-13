@@ -79,3 +79,27 @@ test('B站·足迹只读，视频与评论分段', () => {
   assert.match(s, /视频足迹[\s\S]*评论足迹/)
   assert.doesNotMatch(s, /postFish|local\(|innerHTML/)
 })
+
+test('B站·管理收拢 B 站配置，不回显 cookie', () => {
+  const s = src('bili-manage.js')
+  assert.equal(biliManage.id, 'bili-manage')
+  assert.equal(biliManage.slug, 'manage')
+  for (const k of ['browse.perDay', 'browse.topN', 'browse.deepRead', 'browse.danmaku',
+    'browse.keywords', 'browse.window', 'browse.voices', 'video.perDay', 'video.frames',
+    'comment.perDay', 'comment.replyPerDay', 'comment.scanEveryMin', 'comment.atOwner',
+    'avoid.keywords', 'avoid.upMids', 'avoid.minDuration', "fish('bili/status')"]) assert.ok(s.includes(k), k)
+  assert.doesNotMatch(s, /growthDays|notify\.enabled|memory\.docBudget|persona|lastShown|lastScanAt/)
+  assert.match(s, /type:\s*'password'/)
+  assert.match(s, /if\s*\(cookie\)/)
+  assert.match(s, /postFish\('owner'/)
+  assert.match(s, /postFish\('risk'/)
+  assert.doesNotMatch(s, /innerHTML/)
+})
+
+test('配置表单对缺失 / 错误类型是 Null-safe 的', () => {
+  const s = readFileSync(new URL('../assets/config-form.js', import.meta.url), 'utf8')
+  assert.match(s, /Array\.isArray/)
+  assert.match(s, /typeof\s+value\s*===\s*'boolean'/)
+  assert.match(s, /parseList/)
+  assert.doesNotMatch(s, /innerHTML/)
+})
