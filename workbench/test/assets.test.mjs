@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 
 const read = (name) => readFileSync(new URL(`../assets/${name}`, import.meta.url), 'utf8')
 const html = () => readFileSync(new URL('../index.html', import.meta.url), 'utf8')
@@ -46,5 +46,32 @@ test('人工代操作：按钮标注「人工」，且 QQ/微信发送前都要�
   assert.equal(calls.length, 3, 'QQ 发送、微信打字、微信按键各要一次确认')
   for (const name of ['channels/qq.js', 'channels/wx.js']) {
     assert.match(read(name), /humanChip\(\)/, name)
+  }
+})
+
+const list = (dir) => readdirSync(new URL(`../${dir}`, import.meta.url)).filter((f) => f.endsWith('.js'))
+
+test('新页面与新通道没有 innerHTML', () => {
+  const files = [...list('assets/pages').map((f) => 'pages/' + f), 'app.js', 'nav.js', 'config-form.js',
+    ...list('assets/channels').map((f) => 'channels/' + f)]
+  for (const f of files) assert.doesNotMatch(read(f), /innerHTML/, f)
+})
+
+test('窄屏与长文本有兜底', () => {
+  const css = read('app.css')
+  assert.match(css, /@media\s*\(max-width:\s*900px\)/)
+  assert.match(css, /overflow-wrap:\s*anywhere/)
+  assert.match(css, /:focus-visible/)
+  assert.match(css, /prefers-reduced-motion:\s*reduce/)
+})
+
+test('旧文件只保留、不被新外壳或新页面引用', () => {
+  const app = read('app.js') + read('nav.js')
+  const pages = list('assets/pages').map((f) => read('pages/' + f)).join('\n')
+  for (const old of ['pages/overview.js', 'pages/bili.js', 'pages/memory.js', 'pages/env.js',
+    'pages/tools.js', 'pages/data.js', 'pages/principles.js', 'channels.js']) {
+    const re = new RegExp(old.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    assert.doesNotMatch(app, re)
+    assert.doesNotMatch(pages, re)
   }
 })
