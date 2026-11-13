@@ -325,11 +325,15 @@
 
 ---
 
-## 4. 冲突与裁决（待四维验证结果回填）
+## 4. 冲突与裁决（四维验证结果已回填）
 
-> 本节在 agent team 的 Cross-check / Verify 完成后补全；当前已由 6 组代码盘点确认的条目先列在 §4.1。
+### 4.0 验证结论
 
-### 4.1 已由代码盘点确认
+- 组织方式：6 组文档/代码盘点 → 4 个维度交叉检查（数据模型、接口契约、计划排期、产品约束）→ 对 blocker/major 做对抗验证。
+- 结果：**33 条成立**（其中 4 条 blocker）、19 条被推翻（多为重复项、术语差异或已被本合并稿 §2 裁定）、7 条 minor/info 未做对抗验证；完整性批判员因 429 限流未完成，补漏改由人工按三份源文档与工作台实现核对（见 §4.2）。
+- 所有成立项都已在上面的 D1–D37 中给出唯一口径；下面 §4.1 是逐条证据，§4.2 是验证阶段新增/修正的口径。
+
+### 4.1 已由代码盘点与对抗验证确认
 
 | # | 冲突 | 证据 | 裁决 |
 |---|---|---|---|
@@ -400,6 +404,17 @@
 | C65 | 群 owner @ 识别若用单个别名字符串匹配，违反昵称任意/备注掩盖群昵称的教训 | research §3.2；memory `wechat-nickname-arbitrary` | O5：v1 不算；未来需稳定 id + 多次证据 |
 | C66 | presence 的 `powershell/pwsh` 默认 allowlist 可能截到终端凭据 | presence spec §6.3/§8.2 | D35：保留默认但首次单独提示，用户可移除；denylist 扩展 |
 | C67 | presence 计划的 `setMode`/`onFrame` 没有自动停止计时器、黑屏计数、崩溃计数、沉默台账 | spec §7.3/§8.1 vs plan Task5/6 | D27 + F11：补实现与假帧测试 |
+
+### 4.2 验证阶段新增/修正的口径
+
+1. **迁移 CLI**：`--label` 不设默认值；无 `--label` 且源文本里没有「…」别名时 abort，不允许写入一条会被 `BAD_PERSON` 拒的 note。`--channel` 在计划 CLI 里不存在，删掉或显式校验；不要静默吞未知 flag。
+2. **absenceDays**：D10 的裁决成立，但它主要是**源文档回写项**，不是实现阻塞；实现以成长 spec §6 为准。
+3. **recall**：Phase 1 的 screen 分支在 `surface.js` 还没有 screen 时是死代码，但本轮 presence 会加 screen，所以按 D5 一次写对；非 owner 的 `person_note` 在 Phase 1 直接 `return false`，不要 fall through。
+4. **UI**：工作台改版 §2.2 的“不新增插件路由”是该计划自身的改动边界，不是全局禁令；本轮 presence 的 `/presence/*`、schema v4、recall 例外按 D1/D2 显式豁免，并在 CHANGELOG/工作台说明里标注。
+5. **owner 写入**：D34 的边界是 AGENTS“新输入口必须过 guard”和“owner 身份是信任锚”，不是 `no-self-modify` 机制本身；工具写 owner 身份事实要带 `refs`、只在 web/wx/screen 面，渲染前 sanitize。
+6. **B 站 owner.account.mid**：skip 在 `comment.js:192-193`（去重之后、写 `bili_reply` 之前），改成 `if (!isOwner && mine && s.mid === mine) continue`。
+7. **预算**：D6 的分层预算（facts 300 / extras 400 / 总 700）是最终口径；`presenceRecent` 计入 extras；按行整条截断，不切半个别名/半句话。
+8. **Critic 未跑**：429 限流导致完整性批判员失败；人工补漏确认三个易漏面已覆盖：presence 自动停止/沉默台账（D27）、8788 消费页（D32）、部署/回滚顺序（D30）。
 
 ---
 
