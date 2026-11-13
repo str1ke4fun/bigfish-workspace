@@ -76,15 +76,14 @@ test('旧文件只保留、不被新外壳或新页面引用', () => {
   }
 })
 
-test('主动额度与微信限流字段都在通道模块里', () => {
-  const legacy = read('legacy-channels.js')
-  for (const id of ['wx-proactive-perday', 'wx-proactive-chats', 'speech-wx-gap', 'speech-wx-permin', 'speech-wx-perhour']) {
-    assert.match(legacy, new RegExp(`id="${id}"`), id)
-  }
-  const js = read('channels.js')
-  assert.match(js, /proactivePerDay/)
-  assert.match(js, /proactiveChats/)
-  assert.match(js, /speech-wx-gap/)
-  assert.match(js, /speech-wx-permin/)
-  assert.match(js, /speech-wx-perhour/)
+test('主动额度与微信限流字段在正式通道模块里', () => {
+  const wx = read('channels/wx.js')
+  assert.match(wx, /proactivePerDay/)
+  assert.match(wx, /proactiveChats/)
+  assert.match(wx, /proactiveUsed/)
+  const speech = read('channels/speech.js')
+  assert.match(speech, /wxGap/)
+  assert.match(speech, /wxPerMin/)
+  assert.match(speech, /wxPerHour/)
+  assert.match(speech, /wx:\s*\{/)
 })

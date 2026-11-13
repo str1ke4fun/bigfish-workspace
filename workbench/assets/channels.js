@@ -152,43 +152,12 @@ async function loadWatch() {
 /* ---------- 微信：允许说话 ---------- */
 let wxScopeState = null
 
-/** 每个能开口的群一行数字框；留空 = 用默认额度。 */
-function renderProactiveChats(chats, values) {
-  const box = $('#wx-proactive-chats')
-  const list = [...new Set((chats || []).map((n) => String(n).trim()).filter(Boolean))]
-  box.replaceChildren(...(list.length
-    ? list.map((name) => {
-      const input = document.createElement('input')
-      input.type = 'number'; input.min = '0'; input.max = '50'; input.step = '1'
-      input.style.width = '4.5em'
-      input.dataset.chat = name
-      input.value = values?.[name] ?? ''
-      const label = document.createElement('label')
-      label.className = 'field'
-      label.append(document.createTextNode(name), input)
-      return label
-    })
-    : [Object.assign(document.createElement('span'), { className: 'hint meta', textContent: '先勾选能开口的会话，这里才会出现按群额度' })]))
-}
-
-function proactiveChatsFromDom() {
-  const out = {}
-  for (const input of document.querySelectorAll('#wx-proactive-chats input[data-chat]')) {
-    const name = input.dataset.chat
-    // 空框 = 用默认；填 0 = 这个群静音。两者不能混成同一个值。
-    if (!name || input.value.trim() === '') continue
-    const n = Number(input.value)
-    if (Number.isFinite(n)) out[name] = Math.min(50, Math.max(0, Math.round(n)))
-  }
-  return out
-}
-
 function renderWxScope(s) {
   wxScopeState = s
   const p = s.policy || {}
   // 坏成问号的名字不当候选摆出来（摆出来就是用户看到的那一排 ????），改成下面一行提醒
   const isBad = (n) => /\?\?|�/.test(String(n))
-  const garbled = [...new Set([...(p.allowChats || []), ...(p.noMentionChats || []), ...Object.keys(p.proactiveChats || {})].filter(isBad))]
+  const garbled = [...new Set([...(p.allowChats || []), ...(p.noMentionChats || [])].filter(isBad))]
   const names = [...(s.labels || [])]
   for (const n of p.allowChats || []) if (!names.includes(n) && !isBad(n)) names.push(n)
   $('#wx-scope-chats').replaceChildren(...(names.length
@@ -200,8 +169,6 @@ function renderWxScope(s) {
     ? names2.map((n) => chip(n, n, exempt.includes(n), () => {}))
     : [Object.assign(document.createElement('span'), { className: 'hint meta', textContent: s.ok ? '还没有不用 @ 的会话（微信读到会话后这里会出现候选）' : '微信检测没读到会话，候选暂时为空' })]))
   $('#wx-enabled').checked = p.enabled === true
-  $('#wx-proactive-perday').value = p.proactivePerDay ?? 0
-  renderProactiveChats(p.allowChats || [], p.proactiveChats || {})
   const sp = s.speaking || null
   $('#wx-now').textContent = sp ? `${sp.ok ? '现在能说' : '现在说不了'}：${sp.why}` : ''
   $('#wx-now').className = 'hint ' + (sp ? (sp.ok ? 'ok' : 'bad') : '')
@@ -216,8 +183,6 @@ function renderWxScope(s) {
   const tr = s.health?.tree
   if (tr && tr.status !== 'ok') bits.push(`⚠ ${tr.alert || `无障碍树状态 ${tr.status}（元素 ${tr.elements}、会话 ${tr.chats}）`}`)
   if (s.health?.stale) bits.push(`⚠ 树落后于屏幕（自 ${new Date(s.health.stale.since).toLocaleTimeString()}）`)
-  const used = Object.entries(s.proactiveUsed || {}).filter(([, v]) => Number(v) > 0)
-  if (used.length) bits.push(`今天主动额度已用：${used.map(([name, v]) => `${name} ${v} 条`).join('、')}`)
   if (garbled.length) bits.push(`⚠ 名单里有 ${garbled.length} 个会话名已坏成问号（${garbled.join('、')}），她对不上这些群。请在上面重新勾选真名后保存，坏的会被一并清掉`)
   $('#wx-scope-msg').textContent = bits.join(' · ')
 }
@@ -334,12 +299,8 @@ async function loadSpeech() {
   $('#speech-gap').value = p.minGapSeconds
   $('#speech-permin').value = p.maxPerMinute
   $('#speech-perhour').value = p.maxPerHour
-  const wx = p.wx || {}
-  $('#speech-wx-gap').value = wx.minGapSeconds ?? 8
-  $('#speech-wx-permin').value = wx.maxPerMinute ?? 4
-  $('#speech-wx-perhour').value = wx.maxPerHour ?? 40
   $('#speech-label').textContent = p.enabled
-    ? `间隔 ${p.minGapSeconds}s · ${p.maxPerMinute}/分 · ${p.maxPerHour}/时 · 微信 ${wx.minGapSeconds ?? 8}s / ${wx.maxPerMinute ?? 4} / ${wx.maxPerHour ?? 40}`
+    ? `间隔 ${p.minGapSeconds}s · ${p.maxPerMinute}/分 · ${p.maxPerHour}/时`
     : '不限'
   setDot($('#speech-dot'), p.enabled ? 'ok' : 'bad')
   const stats = r.stats || []
@@ -470,8 +431,6 @@ export function initChannels({ isActive = () => false } = {}) {
         requireMention: $('#wx-mention').checked,
         mentionWindowMinutes: Number($('#wx-mention-window').value),
         noMentionChats: picked('#wx-nomention-chats'),
-        proactivePerDay: Number($('#wx-proactive-perday').value),
-        proactiveChats: proactiveChatsFromDom(),
       }
       const r = await api('/api/wx/scope', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       if (r.error) { alert(r.error); return }
@@ -614,11 +573,6 @@ export function initChannels({ isActive = () => false } = {}) {
       minGapSeconds: Number($('#speech-gap').value),
       maxPerMinute: Number($('#speech-permin').value),
       maxPerHour: Number($('#speech-perhour').value),
-      wx: {
-        minGapSeconds: Number($('#speech-wx-gap').value),
-        maxPerMinute: Number($('#speech-wx-permin').value),
-        maxPerHour: Number($('#speech-wx-perhour').value),
-      },
     }
     const r = await fetch('/api/speech', {
       method: 'POST',

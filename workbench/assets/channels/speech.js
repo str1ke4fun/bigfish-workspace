@@ -22,6 +22,9 @@ export function renderSpeechCard() {
   const gap = el('input', { type: 'number', min: '0', step: '1' })
   const perMin = el('input', { type: 'number', min: '1', step: '1' })
   const perHour = el('input', { type: 'number', min: '1', step: '1' })
+  const wxGap = el('input', { type: 'number', min: '0', step: '1' })
+  const wxPerMin = el('input', { type: 'number', min: '1', step: '1' })
+  const wxPerHour = el('input', { type: 'number', min: '1', step: '1' })
   const msg = el('span', { class: 'meta' })
   const stats = el('div', { class: 'chips' })
   fields.append(
@@ -29,6 +32,10 @@ export function renderSpeechCard() {
     el('label', { class: 'field' }, el('span', { class: 'meta', text: '两条之间至少隔（秒）' }), gap),
     el('label', { class: 'field' }, el('span', { class: 'meta', text: '一分钟最多几条' }), perMin),
     el('label', { class: 'field' }, el('span', { class: 'meta', text: '一小时最多几条' }), perHour),
+    el('div', { class: 'meta', text: '微信覆盖（QQ 仍用上面的值）' }),
+    el('label', { class: 'field' }, el('span', { class: 'meta', text: '微信：两条之间至少隔（秒）' }), wxGap),
+    el('label', { class: 'field' }, el('span', { class: 'meta', text: '微信：一分钟最多几条' }), wxPerMin),
+    el('label', { class: 'field' }, el('span', { class: 'meta', text: '微信：一小时最多几条' }), wxPerHour),
   )
   const editor = el('details', { class: 'rule-layer' },
     el('summary', {}, el('b', { text: '编辑节奏' })),
@@ -48,8 +55,11 @@ export function renderSpeechCard() {
     gap.value = p.minGapSeconds ?? 0
     perMin.value = p.maxPerMinute ?? 0
     perHour.value = p.maxPerHour ?? 0
+    wxGap.value = p.wx?.minGapSeconds ?? 8
+    wxPerMin.value = p.wx?.maxPerMinute ?? 4
+    wxPerHour.value = p.wx?.maxPerHour ?? 40
     c.setMeta(p.enabled
-      ? `开 · 间隔 ${p.minGapSeconds}s · ${p.maxPerMinute}/分 · ${p.maxPerHour}/时`
+      ? `开 · 间隔 ${p.minGapSeconds}s · ${p.maxPerMinute}/分 · ${p.maxPerHour}/时 · 微信 ${p.wx?.minGapSeconds ?? 8}s / ${p.wx?.maxPerMinute ?? 4} / ${p.wx?.maxPerHour ?? 40}`
       : '不限', p.enabled ? 'ok' : '')
     clear(stats)
     const rows = r.data?.stats || []
@@ -67,6 +77,11 @@ export function renderSpeechCard() {
         minGapSeconds: Number(gap.value),
         maxPerMinute: Number(perMin.value),
         maxPerHour: Number(perHour.value),
+        wx: {
+          minGapSeconds: Number(wxGap.value),
+          maxPerMinute: Number(wxPerMin.value),
+          maxPerHour: Number(wxPerHour.value),
+        },
       }),
     })
     const p = r.data?.policy || {}

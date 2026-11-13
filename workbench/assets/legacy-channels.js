@@ -76,15 +76,8 @@ const HTML = `
     <div class="scope-line"><b>一小时内最多</b>
       <div class="row"><input type="number" id="speech-perhour" min="1" max="10000" style="width:5em" /><span class="meta">条</span></div>
     </div>
-    <div class="scope-line"><b>微信覆盖（QQ 仍用上面的值）</b>
-      <div class="row">
-        <span class="meta">间隔</span><input type="number" id="speech-wx-gap" min="0" max="3600" step="1" style="width:5em" /><span class="meta">秒 · 一分钟最多</span>
-        <input type="number" id="speech-wx-permin" min="1" max="1000" style="width:4.5em" /><span class="meta">条 · 一小时最多</span>
-        <input type="number" id="speech-wx-perhour" min="1" max="10000" style="width:5em" /><span class="meta">条</span>
-      </div>
-    </div>
     <div class="row"><button id="speech-save" class="primary">保存</button><button id="speech-reload">刷新</button></div>
-    <div class="meta">微信默认 8 秒 / 4 条每分钟 / 40 条每小时；QQ 用上面的值。间隔不够就等一会儿再说；一分钟/一小时额度用完，这一条就不发，工具里会写清楚已经说了几条。改完立刻生效，不用重启她。</div>
+    <div class="meta">QQ 和微信共用这一份。间隔不够就等一会儿再说；一分钟/一小时额度用完，这一条就不发，工具里会写清楚已经说了几条。改完立刻生效，不用重启她。</div>
     <div class="meta" id="speech-msg"></div>
     <div class="chips" id="speech-stats"></div>
   </section>
@@ -122,11 +115,6 @@ const HTML = `
         <div class="scope-line"><b>这些会话不用 @（最高权限：不管上面开没开 @ 规则，都直接能说）</b>
           <span class="hint">勾上的会话不用等 @，也不受允许名单限制——它自己就是白名单；用来放私聊、自己的文件传输</span>
           <div class="chips" id="wx-nomention-chats"></div>
-        </div>
-        <div class="scope-line"><b>主动额度（每天不等人 @ 也能接几句）</b>
-          <span class="hint">0 = 不主动。先填默认额度；下面可以按群覆盖，留空就用默认。被 @ 的窗口内、以及上面“不用 @”的会话，都不扣额度。</span>
-          <div class="row"><span class="meta">默认每天</span><input type="number" id="wx-proactive-perday" min="0" max="50" style="width:4.5em" /><span class="meta">条</span></div>
-          <div class="chips" id="wx-proactive-chats"></div>
         </div>
         <div class="row"><input type="text" id="wx-nomention-add" placeholder="手输会话名" /><button id="wx-nomention-add-btn">加</button></div>        <div class="row"><input type="text" id="wx-scope-add" placeholder="手输会话名，如 内部赤石群" /><button id="wx-scope-add-btn">加</button></div>
         <div class="row"><button id="wx-scope-save" class="primary" disabled>保存</button><button id="wx-scope-reload">刷新候选</button></div>

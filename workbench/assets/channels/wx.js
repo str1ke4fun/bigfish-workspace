@@ -56,6 +56,8 @@ function build(root, ctx) {
   SPEC.wxNoMention = el('div', { class: 'chips' })
   SPEC.wxMention = el('input', { type: 'checkbox' })
   SPEC.wxWindow = el('input', { type: 'number', min: '1', step: '1' })
+  SPEC.wxPerDay = el('input', { type: 'number', min: '0', max: '50', step: '1' })
+  SPEC.wxProactive = el('div', { class: 'chips' })
   SPEC.wxNow = el('div', { class: 'meta' })
   SPEC.wxSave = el('button', { class: 'primary small', type: 'button', text: '保存', onclick: () => saveScope() })
   SPEC.wxMsg = el('span', { class: 'meta' })
@@ -63,6 +65,9 @@ function build(root, ctx) {
     el('label', { class: 'chk' }, SPEC.wxEnabled, el('span', { text: '允许她在微信说话' })),
     el('div', { class: 'meta', text: '可以开口的会话' }), SPEC.wxAllow,
     el('div', { class: 'meta', text: '不用 @ 的会话' }), SPEC.wxNoMention,
+    el('label', { class: 'field' },
+      el('span', { class: 'meta', text: '主动额度：默认每天几条（0 = 不主动）' }), SPEC.wxPerDay),
+    el('div', { class: 'meta', text: '按群覆盖（留空 = 用默认；填 0 = 这个群不主动）' }), SPEC.wxProactive,
     el('label', { class: 'chk' }, SPEC.wxMention, el('span', { text: '@ 才回' })),
     el('label', { class: 'field' }, el('span', { class: 'meta', text: '@ 的有效窗口（分钟）' }), SPEC.wxWindow),
     SPEC.wxNow,
@@ -222,10 +227,37 @@ async function loadScope() {
   renderScopeNow(SPEC.scopeData)
 }
 
+/** 每个能开口的群一行额度框；留空 = 用默认，填 0 = 静音。 */
+function renderProactiveChats(p) {
+  clear(SPEC.wxProactive)
+  const chats = [...new Set((p.allowChats || []).map((n) => String(n).trim()).filter(Boolean))]
+  if (!chats.length) {
+    SPEC.wxProactive.append(hint('先勾选能开口的会话，这里才会出现按群额度'))
+    return
+  }
+  for (const name of chats) {
+    const input = el('input', { type: 'number', min: '0', max: '50', step: '1', dataset: { chat: name } })
+    input.value = p.proactiveChats?.[name] ?? ''
+    SPEC.wxProactive.append(el('label', { class: 'field' }, el('span', { class: 'meta', text: name }), input))
+  }
+}
+
+function proactiveChatsFromDom() {
+  const out = {}
+  for (const input of SPEC.wxProactive.querySelectorAll('input[data-chat]')) {
+    const name = input.dataset.chat
+    // 空框 = 用默认；填 0 = 静音。两者不能混成同一个值。
+    if (!name || input.value.trim() === '') continue
+    const n = Number(input.value)
+    if (Number.isFinite(n)) out[name] = Math.min(50, Math.max(0, Math.round(n)))
+  }
+  return out
+}
+
 function renderScopeNow(s) {
   const p = s.policy || {}
   const isBad = (n) => /\?\?|�/.test(String(n))
-  const garbled = [...new Set([...(p.allowChats || []), ...(p.noMentionChats || [])].filter(isBad))]
+  const garbled = [...new Set([...(p.allowChats || []), ...(p.noMentionChats || []), ...Object.keys(p.proactiveChats || {})].filter(isBad))]
   const names = [...(s.labels || [])]
   for (const n of p.allowChats || []) if (!names.includes(n) && !isBad(n)) names.push(n)
   const exempt = Array.isArray(p.noMentionChats) ? p.noMentionChats : []
@@ -241,6 +273,8 @@ function renderScopeNow(s) {
   SPEC.wxEnabled.checked = p.enabled === true
   SPEC.wxMention.checked = p.requireMention !== false
   SPEC.wxWindow.value = p.mentionWindowMinutes ?? 3
+  SPEC.wxPerDay.value = p.proactivePerDay ?? 0
+  renderProactiveChats(p)
 
   const sp = s.speaking
   SPEC.wxNow.textContent = sp ? `${sp.ok ? '现在能说' : '现在说不了'}：${sp.why}` : ''
@@ -254,6 +288,8 @@ function renderScopeNow(s) {
   const tr = s.health?.tree
   if (tr && tr.status !== 'ok') bits.push(`⚠ ${tr.alert || `无障碍树状态 ${tr.status}`}`)
   if (s.health?.stale) bits.push(`⚠ 树落后于屏幕（自 ${fmtTime(s.health.stale.since)}）`)
+  const used = Object.entries(s.proactiveUsed || {}).filter(([, v]) => Number(v) > 0)
+  if (used.length) bits.push(`今天主动额度已用：${used.map(([name, v]) => `${name} ${v} 条`).join('、')}`)
   if (garbled.length) {
     bits.push(`⚠ 名单里有 ${garbled.length} 个会话名已坏成问号（${garbled.join('、')}），请重新勾选真名后保存`)
   }
@@ -274,6 +310,8 @@ async function saveScope() {
       requireMention: SPEC.wxMention.checked,
       mentionWindowMinutes: Number(SPEC.wxWindow.value),
       noMentionChats: picked(SPEC.wxNoMention),
+      proactivePerDay: Number(SPEC.wxPerDay.value),
+      proactiveChats: proactiveChatsFromDom(),
     }),
   })
   const d = r.data || {}
