@@ -31,9 +31,9 @@ test('每个页面模块都满足 page 契约，id 唯一', () => {
 
 test('P0 共享挂载点让旧页面模块只建一次 DOM', () => {
   const host = (slug) => NAV.find((n) => n.id === 'her').pages.find((p) => p.slug === slug).host
-  // 今天页已迁成独立页面（P1），不再借旧 overview 的共享根。
+  // 她组三页都已迁成独立页面（P1），不再借旧 overview 的共享根。
   assert.equal(host('today'), undefined)
-  assert.equal(host('growth'), 'her-legacy')
+  assert.equal(host('growth'), undefined)
   for (const p of NAV.find((n) => n.id === 'bili').pages) assert.equal(p.host, 'bili-legacy')
   for (const p of NAV.find((n) => n.id === 'channels').pages) assert.equal(p.host, 'channels-legacy')
   const sys = NAV.find((n) => n.id === 'system').pages

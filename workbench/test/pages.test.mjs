@@ -41,3 +41,14 @@ test('她·记忆只读且分五段', () => {
   assert.match(s, /事件[\s\S]*日记[\s\S]*日报[\s\S]*判断[\s\S]*模板/)
   assert.doesNotMatch(s, /postFish|local\(|innerHTML/)
 })
+
+test('她·成长只读，没有调人格滑杆', () => {
+  const s = src('her-growth.js')
+  assert.equal(herGrowth.id, 'her-growth')
+  assert.equal(herGrowth.slug, 'growth')
+  for (const k of ['pendingGate', 'stageForced', 'beliefCount', 'tension', 'solidCount', 'scarCount', 'stanceReady']) {
+    assert.ok(s.includes(k), k)
+  }
+  assert.doesNotMatch(s, /postFish|local\(|innerHTML|type:\s*'range'/)
+  assert.match(s, /这里没有数值滑杆/)
+})
