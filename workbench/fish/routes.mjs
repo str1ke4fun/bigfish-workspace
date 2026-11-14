@@ -27,6 +27,10 @@ export const ROUTES = [
   // 桌宠薄壳：状态只读；动作是用户点出来的写操作，不调模型。
   { path: 'pet/state', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'pet/act', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
+  // 桌宠心跳 / 尺寸皮肤 / 陪伴会话轮换：都是用户面写操作，不调模型。
+  { path: 'pet/hello', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
+  { path: 'pet/config', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
+  { path: 'pet/rotate', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'diary', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'reports', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'templates', methods: { GET: 'P1' }, upstream: 'fish' },

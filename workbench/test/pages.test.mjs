@@ -176,11 +176,22 @@ test('陪伴页说明上次为什么停', () => {
   assert.match(s, /max-run/)
 })
 
-test('陪伴页可以让她演一个动作', () => {
-  const s = src('her-presence.js')
-  assert.match(s, /postFish\('pet\/act'/)
+test('桌宠页：状态、动作、外观、陪伴会话四块齐全', async () => {
+  const { herPet } = await import('../assets/pages/pet.js')
+  const s = src('pet.js')
+  assert.equal(herPet.id, 'her-pet')
+  assert.equal(herPet.slug, 'pet')
+  for (const call of ["fish('pet/state')", "postFish('pet/act'", "postFish('pet/config'", "postFish('pet/rotate'"]) assert.ok(s.includes(call), call)
+  assert.match(s, /在线|离线/)
+  assert.match(s, /皮肤/)
+  assert.doesNotMatch(s, /innerHTML|他/)
+  // 七个动作试演按钮搬到桌宠页，原来在陪伴页的覆盖不丢。
   for (const m of ['waving', 'thinking', 'working', 'result', 'waiting', 'success', 'error']) {
     assert.ok(s.includes(m), m)
   }
-  assert.doesNotMatch(s, /innerHTML|他/)
+})
+
+test('陪伴页不再重复动作按钮', () => {
+  const s = src('her-presence.js')
+  assert.doesNotMatch(s, /postFish\('pet\/act'/)
 })

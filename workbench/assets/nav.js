@@ -7,6 +7,7 @@ import { herToday } from './pages/her-today.js'
 import { herMemory } from './pages/her-memory.js'
 import { herGrowth } from './pages/her-growth.js'
 import { herPresence } from './pages/her-presence.js'
+import { herPet } from './pages/pet.js'
 import { biliToday } from './pages/bili-today.js'
 import { biliFootprint } from './pages/bili-footprint.js'
 import { biliManage } from './pages/bili-manage.js'
@@ -28,7 +29,7 @@ const channelPages = CHANNELS.map((ch) => ({
 }))
 
 export const NAV = [
-  { id: 'her', label: '她', pages: [herToday, herMemory, herGrowth, herPresence] },
+  { id: 'her', label: '她', pages: [herToday, herMemory, herGrowth, herPresence, herPet] },
   { id: 'bili', label: 'B 站', pages: [biliToday, biliFootprint, biliManage] },
   { id: 'channels', label: '通道', pages: [channelsOverview, ...channelPages] },
   { id: 'system', label: '系统', pages: [systemSettings, systemTools, systemLogs, systemData, systemPrinciples] },

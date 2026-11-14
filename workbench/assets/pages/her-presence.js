@@ -17,16 +17,6 @@ const MODES = [
   { id: 'work', label: '工作', note: '只看前台白名单窗口（Code / 终端）；长冷却。' },
 ]
 
-const MOTIONS = [
-  { id: 'waving', label: '挥手' },
-  { id: 'thinking', label: '想一想' },
-  { id: 'working', label: '干活' },
-  { id: 'result', label: '结果' },
-  { id: 'waiting', label: '等着' },
-  { id: 'success', label: '成了' },
-  { id: 'error', label: '出错' },
-]
-
 const SPEC = {}
 
 function build(root, ctx) {
@@ -49,21 +39,7 @@ function build(root, ctx) {
     hint('终端里可能有凭据：工作模式首次开启前请确认当前窗口没有敏感内容。', 'meta'),
   )
   SPEC.card.body.append(SPEC.recentCard.root)
-  SPEC.actions = el('div', { class: 'row' })
-  SPEC.actionsNote = el('div', { class: 'meta' })
-  SPEC.actionsCard = card('让她演一个动作', {
-    note: '点一下只是让桌宠演一遍，不调用模型，也不写事件流。',
-  })
-  for (const m of MOTIONS) {
-    SPEC.actions.append(el('button', {
-      class: 'small',
-      type: 'button',
-      text: m.label,
-      onclick: (ev) => act(m.id, ev.currentTarget),
-    }))
-  }
-  SPEC.actionsCard.body.append(SPEC.actions, SPEC.actionsNote)
-  root.append(SPEC.card.root, SPEC.actionsCard.root)
+  root.append(SPEC.card.root)
 }
 
 function render() {
@@ -139,15 +115,6 @@ async function setMode(mode, on) {
 async function stopAll() {
   if (SPEC.state?.mode) await setMode(SPEC.state.mode, false)
   else await load()
-}
-
-async function act(motion, btn) {
-  if (btn) btn.disabled = true
-  SPEC.actionsNote.textContent = '正在演…'
-  const r = await postFish('pet/act', { motion })
-  const ok = r.ok && r.data?.ok !== false
-  SPEC.actionsNote.textContent = ok ? '演好了。' : (r.data?.note || '动作没送到。')
-  if (btn) btn.disabled = false
 }
 
 let poll = null

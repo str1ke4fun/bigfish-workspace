@@ -28,6 +28,15 @@ test('桌宠状态/动作两条 BFF 路由', () => {
   assert.equal(byPath['pet/act'].maxBody, 64 * 1024)
 })
 
+test('桌宠心跳/配置/轮换三条 BFF 路由', () => {
+  const byPath = Object.fromEntries(ROUTES.map((r) => [r.path, r]))
+  for (const p of ['pet/hello', 'pet/config', 'pet/rotate']) {
+    assert.equal(byPath[p].methods.POST, 'P2', p)
+    assert.equal(byPath[p].upstream, 'fish', p)
+    assert.equal(byPath[p].maxBody, 64 * 1024, p)
+  }
+})
+
 test('P2 写路由的 body 上限与超时符合设计', () => {
   const byPath = Object.fromEntries(ROUTES.map((r) => [r.path, r]))
   assert.equal(byPath.say.maxBody, 12_000_000)
