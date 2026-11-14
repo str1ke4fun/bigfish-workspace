@@ -167,3 +167,12 @@ test('她·陪伴：开关即授权，评论按她的话展示', () => {
   assert.match(s, /她看到的这一会儿/)
   assert.doesNotMatch(s, /innerHTML|他/)
 })
+
+test('陪伴页可以让她演一个动作', () => {
+  const s = src('her-presence.js')
+  assert.match(s, /postFish\('pet\/act'/)
+  for (const m of ['waving', 'thinking', 'working', 'result', 'waiting', 'success', 'error']) {
+    assert.ok(s.includes(m), m)
+  }
+  assert.doesNotMatch(s, /innerHTML|他/)
+})

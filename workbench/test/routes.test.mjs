@@ -20,6 +20,14 @@ test('路由表本身没有重复路径，字段合法', () => {
   }
 })
 
+test('桌宠状态/动作两条 BFF 路由', () => {
+  const byPath = Object.fromEntries(ROUTES.map((r) => [r.path, r]))
+  assert.equal(byPath['pet/state'].methods.GET, 'P1')
+  assert.equal(byPath['pet/state'].upstream, 'fish')
+  assert.equal(byPath['pet/act'].methods.POST, 'P2')
+  assert.equal(byPath['pet/act'].maxBody, 64 * 1024)
+})
+
 test('P2 写路由的 body 上限与超时符合设计', () => {
   const byPath = Object.fromEntries(ROUTES.map((r) => [r.path, r]))
   assert.equal(byPath.say.maxBody, 12_000_000)
