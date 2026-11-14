@@ -105,6 +105,20 @@ test('活跃档位 TTL 长于 waiting，终态最短', () => {
   assert.equal(ACTIVITY_TTL_MS.success, ACTIVITY_TTL_MS.error)
 })
 
+test('心跳与轮询是易失的；online 只看 hello', () => {
+  let t = 1000
+  const pv = createPetView({ now: () => t })
+  assert.equal(pv.snapshot().helloAt, null)
+  pv.noteHello({ version: '0.1.0', skins: [{ id: '', name: '默认' }] })
+  pv.markPolled()
+  assert.equal(pv.snapshot().version, '0.1.0')
+  assert.equal(pv.snapshot().skins.length, 1)
+  assert.equal(pv.snapshot().lastPollAt, 1000)
+  assert.equal(pv.snapshot().helloAt, 1000)
+  t += 91_000
+  assert.equal(pv.snapshot().helloAt, 1000, 'hello 时间戳不随轮询刷新')
+})
+
 test('MOTIONS 白名单与 dsh-pet-component 一致', () => {
   assert.deepEqual(PET_MOTIONS, [
     'idle', 'turn', 'moving-left', 'moving-right', 'waving',

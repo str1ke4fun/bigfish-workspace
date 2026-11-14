@@ -878,13 +878,81 @@ export function registerObserve(ctx, deps = {}) {
     ['/pet/state', async (req, res) => {
       const pet = deps.petView
       if (!pet?.snapshot) return send(res, 200, { ok: false, note: '桌宠状态没在跑。' })
+      pet.markPolled?.()
       const s = pet.snapshot()
       const raw = deps.screen?.status?.() ?? null
       const presence = raw ? {
         on: Boolean(raw.on), mode: raw.mode ?? null, busy: Boolean(raw.busy),
         snapshot: raw.snapshot ?? null, recent: Array.isArray(raw.recent) ? raw.recent : [],
       } : null
-      return send(res, 200, { at: Date.now(), presence, activity: s.activity, action: s.action })
+      const cfg = await (ctx.get?.('fishCore')?.config?.get?.() ?? null)
+      const at = Date.now()
+      return send(res, 200, {
+        at,
+        presence,
+        activity: s.activity,
+        action: s.action,
+        settings: {
+          size: Number(cfg?.pet?.size ?? 400),
+          skin: String(cfg?.pet?.skin ?? ''),
+        },
+        companion: deps.screen?.companionInfo?.() ?? null,
+        pet: {
+          // online 只认 hello：轮询不能给已经掉线的窗口续命。
+          online: s.helloAt !== null && at - s.helloAt <= 90_000,
+          lastPollAt: s.lastPollAt,
+          helloAt: s.helloAt,
+          version: s.version,
+          skins: s.skins,
+        },
+      })
+    }],
+    ['/pet/hello', async (req, res) => {
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      const pet = deps.petView
+      if (!pet?.noteHello) return send(res, 200, { ok: false, note: '桌宠状态没在跑。' })
+      let body = {}
+      try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
+      catch { return send(res, 400, { ok: false, note: 'body 不是 JSON' }) }
+      pet.noteHello({ version: body?.version, skins: body?.skins })
+      return send(res, 200, { ok: true })
+    }],
+    ['/pet/config', async (req, res) => {
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      let body = {}
+      try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
+      catch { return send(res, 400, { ok: false, note: 'body 不是 JSON' }) }
+
+      const cfg = await (ctx.get?.('fishCore')?.config?.get?.() ?? null)
+      let size = Number(cfg?.pet?.size ?? 400)
+      let skin = String(cfg?.pet?.skin ?? '')
+
+      if (body?.size !== undefined) {
+        if (typeof body.size !== 'number' || !Number.isFinite(body.size)) {
+          return send(res, 400, { ok: false, note: 'size 必须是数字。' })
+        }
+        size = Math.min(560, Math.max(240, body.size))
+      }
+      if (body?.skin !== undefined) {
+        const s = body.skin
+        if (typeof s !== 'string' || (s !== '' && !/^[a-z0-9-]{1,32}$/.test(s))) {
+          return send(res, 400, { ok: false, note: 'skin 只能是空串或 1–32 位小写字母、数字、连字符。' })
+        }
+        skin = s
+      }
+
+      const pet = { size, skin }
+      const r = await (ctx.get?.('fishCore')?.config?.patch?.({ pet }))
+      if (!r?.ok) return send(res, 200, { ok: false, note: '配置没写进去。' })
+      return send(res, 200, { ok: true, pet })
+    }],
+    ['/pet/rotate', async (req, res) => {
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      const screen = deps.screen
+      if (!screen?.ensureSession) return send(res, 200, { ok: false, note: '陪看没在跑。' })
+      const sessionId = await screen.ensureSession({ rotate: true })
+      if (!sessionId) return send(res, 200, { ok: false, note: '没能开新的陪伴会话。' })
+      return send(res, 200, { ok: true, sessionId: String(sessionId) })
     }],
     ['/pet/act', async (req, res) => {
       if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })

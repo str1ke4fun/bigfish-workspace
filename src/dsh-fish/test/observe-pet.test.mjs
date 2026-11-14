@@ -16,11 +16,21 @@ import { createPetView } from '../lib/pet-view.js'
 function fakeCtx() {
   const routes = []
   const cfg = { connection: null }
+  let config = {}
+  const fishCore = {
+    config: {
+      get: async () => config,
+      patch: async (input) => {
+        config = { ...config, ...input }
+        return { ok: true, config }
+      },
+    },
+  }
   const webServer = { register: (def) => { routes.push(def); return () => {} } }
   return {
     routes,
     cfg,
-    get: (k) => (k === 'connection' ? cfg.connection : k === 'webServer' ? webServer : undefined),
+    get: (k) => (k === 'connection' ? cfg.connection : k === 'webServer' ? webServer : k === 'fishCore' ? fishCore : undefined),
     webServer,
     tools: { register: () => {} },
     slots: { inject: () => {}, register: () => {} },
@@ -108,6 +118,30 @@ test('/pet/act 的文本上限与 ttl 归一交给 petView，不重复校验', a
   const defaulted = await callRoute(ctx.routes, '/pet/act', 'POST', { motion: 'idle', ttlMs: 'nope' })
   assert.equal(defaulted.status, 200)
   assert.equal(defaulted.body.action.ttlMs, 15_000)
+})
+
+test('hello / config / rotate 三条新路由', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  const screen = {
+    status: () => ({ on: true, mode: 'event', busy: false, snapshot: null, recent: [] }),
+    companionInfo: () => ({ sessionId: 's1', sessionComments: 2, chatTurns: 1, rotateAfter: 30 }),
+    ensureSession: async () => 's1',
+  }
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView, screen })
+
+  assert.equal((await callRoute(ctx.routes, '/pet/hello', 'POST', { version: '0.1.0', skins: [{ id: '', name: '默认' }] })).status, 200)
+  assert.equal((await callRoute(ctx.routes, '/pet/state', 'GET')).body.pet.version, '0.1.0')
+
+  const cfg = await callRoute(ctx.routes, '/pet/config', 'POST', { size: 320, skin: '' })
+  assert.equal(cfg.status, 200)
+  assert.equal(cfg.body.pet.size, 320)
+  assert.equal((await callRoute(ctx.routes, '/pet/config', 'POST', { skin: 'Bad ID' })).status, 400)
+
+  const rot = await callRoute(ctx.routes, '/pet/rotate', 'POST', {})
+  assert.equal(rot.status, 200)
+  assert.equal(rot.body.sessionId, 's1')
 })
 
 test('petView 缺席时两条路由都返回 200 ok:false，不 500', async () => {

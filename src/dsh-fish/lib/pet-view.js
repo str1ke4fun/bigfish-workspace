@@ -126,6 +126,12 @@ export function createPetView({ now = Date.now, log } = {}) {
   let seq = 0
   let action = null
   let actionCounter = 0
+  // 桌宠进程的心跳：全部易失。lastPollAt 只证明有人在轮询；
+  // online 只看 hello（窗口真的起来了），免得轮询把掉线的窗口续命。
+  let lastPollAt = null
+  let helloAt = null
+  let version = ''
+  let skins = []
 
   /**
    * 记录她的一条会话事件。只接受 web/screen 面。
@@ -173,6 +179,27 @@ export function createPetView({ now = Date.now, log } = {}) {
     return { ok: true, action: { ...action } }
   }
 
+  /** 桌宠窗口轮询一次；只刷新 lastPollAt。 */
+  function markPolled(at = now()) {
+    lastPollAt = Number(at)
+  }
+
+  /**
+   * 桌宠窗口启动时报到。version 只收字符串，skins 只收数组；
+   * 非法项直接丢弃，不抛错，也不影响 helloAt（窗口确实活着）。
+   */
+  function noteHello({ version: v, skins: s } = {}, at = now()) {
+    helloAt = Number(at)
+    if (typeof v === 'string') version = v
+    if (Array.isArray(s)) {
+      skins = s
+        .filter((x) => x && typeof x === 'object' && typeof x.id === 'string' && typeof x.name === 'string')
+        .map((x) => ({ id: x.id, name: x.name }))
+        .filter((x) => x.name.trim() !== '')
+        .slice(0, 64)
+    }
+  }
+
   /** 剔除超过所在档位有效期的会话条目；返回当前时间避免重复读时钟。 */
   function pruneExpired(nowMs) {
     for (const [sessionId, entry] of sessions) {
@@ -196,14 +223,25 @@ export function createPetView({ now = Date.now, log } = {}) {
       if (nowMs - action.at >= action.ttlMs) action = null
       else currentAction = { ...action }
     }
-    return { activity, action: currentAction }
+    return {
+      activity,
+      action: currentAction,
+      lastPollAt,
+      helloAt,
+      version,
+      skins: skins.map((x) => ({ ...x })),
+    }
   }
 
   /** 清空易失状态；动作序号保持单调，避免同一进程内 id 复用。 */
   function clear() {
     sessions.clear()
     action = null
+    lastPollAt = null
+    helloAt = null
+    version = ''
+    skins = []
   }
 
-  return { noteSessionEvent, act, snapshot, clear }
+  return { noteSessionEvent, act, markPolled, noteHello, snapshot, clear }
 }

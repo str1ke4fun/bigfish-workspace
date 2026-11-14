@@ -195,6 +195,13 @@ export const DEFAULTS = {
     port: 0,                // 0 = 用宿主 webServer 的端口
   },
 
+  // 桌宠窗口（2026-11-14）：只是窗口自己的外观，与她的成长无关。
+  // 不进提示词、不写事件；工作台/桌宠经 BFF 读写。
+  pet: {
+    size: 400,              // 窗口边长（240–560）
+    skin: '',               // '' = 内置默认；否则 [a-z0-9-]{1,32}
+  },
+
   // 界面（2026-10-25 加）
   // 只放「这一版界面怎么显示」的偏好，与她的成长无关。
   ui: {
@@ -210,7 +217,7 @@ export const DEFAULTS = {
 export const CONFIG_PATCH_KEYS = [
   'growthDays', 'wakesPerDay', 'window', 'daily', 'diary', 'absenceAfterDays',
   'avoid', 'browse', 'video', 'comment', 'notify', 'chat', 'memory',
-  'tools', 'observe', 'ui', 'presence',
+  'tools', 'observe', 'ui', 'presence', 'pet',
 ]
 
 const LIMITS = {
