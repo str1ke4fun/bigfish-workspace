@@ -37,6 +37,8 @@ declare global {
       onSkin?(handler: (skin: unknown) => void): () => void
       /** 挂载时主动拉取最近皮肤，避免首推早于订阅时丢失。 */
       getSkin?(): Promise<unknown>
+      /** 主进程拒绝载入皮肤时推来 { id, why }；渲染进程据此弹提示。 */
+      onSkinError?(handler: (error: unknown) => void): () => void
     }
   }
 }
@@ -105,6 +107,13 @@ function parseSkin(raw: unknown): ActiveSkin | null {
     config: message.config as DshPetConfig,
     uri: message.uri,
   }
+}
+
+/** 主进程拒绝皮肤时只带 { id, why }；why 为空时由调用方给兜底文案。 */
+function skinErrorReason(raw: unknown): string {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ''
+  const why = (raw as Record<string, unknown>).why
+  return typeof why === 'string' ? why.trim() : ''
 }
 
 export function App() {
@@ -186,6 +195,26 @@ export function App() {
       unsubscribe?.()
     }
   }, [])
+
+  // 主进程拒绝载入皮肤（坏 JSON、缺动画文件、读盘失败）时保留当前皮肤并弹同一只提示：
+  // 不依赖组件运行时的 onError，否则坏皮肤会在界面上完全静默。
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined
+    try {
+      unsubscribe = window.petBridge?.onSkinError?.((raw) => {
+        pet.bubble({
+          id: 'skin-error',
+          title: '皮肤没载入',
+          description: skinErrorReason(raw) || '先继续用上一个皮肤。',
+          variant: 'danger',
+          timeout: 5000,
+        })
+      })
+    } catch {
+      unsubscribe = undefined
+    }
+    return () => unsubscribe?.()
+  }, [pet])
 
   useEffect(() => {
     let cancelled = false

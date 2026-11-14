@@ -8,12 +8,12 @@ import { readPetSize, savePetSize } from './settings'
 import { clampPetSize, windowSizeFor } from './size'
 import {
   createSkinForwarder,
-  missingSkinMedia,
+  decideSkinLoad,
   noteLocalSize,
   resolveRemoteSize,
   scanSkins,
   shouldApplySettings,
-  validateSkin,
+  skinRefusal,
   SIMPLE_SKIN_ID,
   type PetSettings,
   type ScannedSkin,
@@ -66,6 +66,9 @@ let sizeSync: SizeSyncState = { current: petSize, pending: null }
 const skinForwarder = createSkinForwarder((payload) => {
   if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:skin', payload)
 })
+
+/** 最近一次皮肤拒绝；渲染进程订阅可能晚于首推，`pet:ready` 时补发。 */
+let lastSkinError: { id: string; why: string } | null = null
 
 const MIME_TYPES: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
@@ -245,6 +248,25 @@ function readRemoteSettings(state: unknown): { size?: number; skin?: string } {
   return next
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * 皮肤被拒绝：保留当前皮肤，并把原因送到渲染进程。
+ *
+ * 只写 console.warn 时用户在工作台选了坏皮肤却看不到任何提示，
+ * 所以统一发 `pet:skin-error { id, why }`，由渲染进程弹「皮肤没载入」。
+ */
+function reportSkinError(id: string, why: string): void {
+  const payload = skinRefusal(id, why)
+  lastSkinError = payload
+  console.warn(`[desktop-pet] 皮肤 ${id || '默认'} 没载入，保留当前皮肤：${payload.why}`)
+  if (petWindow && !petWindow.isDestroyed()) {
+    petWindow.webContents.send('pet:skin-error', payload)
+  }
+}
+
 /**
  * 按 id 加载皮肤并推给渲染进程。默认皮肤回到现有 `config.json` + `assets/webm`。
  *
@@ -259,16 +281,19 @@ async function applySkin(id: string): Promise<void> {
     try {
       const config: unknown = JSON.parse(await readFile(appFile('assets', 'config.json'), 'utf8'))
       if (revision === skinRevision) {
+        lastSkinError = null
         skinForwarder.onSkin({ id, revision, config, uri: DEFAULT_SKIN_URI })
       }
     } catch (error) {
-      console.warn('[desktop-pet] 默认皮肤配置没载入，保留当前皮肤', error)
+      if (revision === skinRevision) {
+        reportSkinError('', `默认皮肤配置没载入：${errorText(error)}`)
+      }
     }
     return
   }
 
   if (!SIMPLE_SKIN_ID.test(id)) {
-    console.warn(`[desktop-pet] 皮肤 id 不合法，保留当前皮肤：${id}`)
+    reportSkinError(id, '皮肤 id 不合法。')
     return
   }
 
@@ -276,33 +301,28 @@ async function applySkin(id: string): Promise<void> {
   const skinDir = join(assetsRoot, 'skins', id)
   const file = normalize(join(skinDir, 'skin.json'))
   if (!isInside(assetsRoot, file)) {
-    console.warn(`[desktop-pet] 皮肤路径越界，保留当前皮肤：${id}`)
+    reportSkinError(id, '皮肤路径越界。')
     return
   }
 
   try {
     const parsed: unknown = JSON.parse(await readFile(file, 'utf8'))
     if (revision !== skinRevision) return
-    const validation = validateSkin(parsed)
-    if (!validation.ok) {
-      console.warn(`[desktop-pet] 皮肤 ${id} 没载入，保留当前皮肤：${validation.why}`)
+    const decision = decideSkinLoad(parsed, skinDir)
+    if (!decision.ok) {
+      reportSkinError(id, decision.why)
       return
     }
-    // skin.json 合法但素材缺失时，组件只会在运行时报错；必须提前拒绝，别顶掉能用的皮肤。
-    const missing = missingSkinMedia(skinDir, validation.motions)
-    if (missing.length > 0) {
-      console.warn(`[desktop-pet] 皮肤 ${id} 缺动画文件，保留当前皮肤：${missing.join(', ')}`)
-      return
-    }
+    lastSkinError = null
     skinForwarder.onSkin({
       id,
       revision,
-      config: parsed,
+      config: decision.config,
       uri: `pet-asset://local/skins/${id}/webm`,
     })
   } catch (error) {
     if (revision === skinRevision) {
-      console.warn(`[desktop-pet] 皮肤 ${id} 没载入，保留当前皮肤`, error)
+      reportSkinError(id, `读不了 skin.json：${errorText(error)}`)
     }
   }
 }
@@ -371,6 +391,9 @@ ipcMain.on('pet:ready', () => {
   stateForwarder.resend()
   // 皮肤可能早于渲染进程订阅就绪：就绪后补发最近一份。
   skinForwarder.ready()
+  if (lastSkinError && petWindow && !petWindow.isDestroyed()) {
+    petWindow.webContents.send('pet:skin-error', lastSkinError)
+  }
 })
 
 ipcMain.handle('pet:get-size', () => petSize)
@@ -432,7 +455,7 @@ ipcMain.handle('pet:chat', async (_event, text: unknown) => {
     return { ok: false, herReply: '', note: '没听懂要说什么。' }
   }
   try {
-    return await sendChat(text, { fetchImpl: (url, init) => fetch(url, init) })
+    return await sendChat(text, { target: 'companion', fetchImpl: (url, init) => fetch(url, init) })
   } catch {
     return { ok: false, herReply: '', note: '没送到。' }
   }

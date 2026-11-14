@@ -1,10 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   createSkinForwarder,
+  decideSkinLoad,
   missingSkinMedia,
   noteLocalSize,
   resolveRemoteSize,
@@ -12,6 +13,7 @@ import {
   scanSkins,
   shouldApplySettings,
   SIMPLE_SKIN_ID,
+  skinRefusal,
   validateSkin,
 } from '../electron/skin.ts'
 
@@ -107,6 +109,39 @@ test('皮肤缺 webm 时拒绝加载与上报', (t) => {
   }
   assert.deepEqual(missingSkinMedia(skinDir, motions), [])
   assert.deepEqual(scanSkins(root).map((skin) => skin.id), ['', 'maid-blue'])
+})
+
+test('皮肤拒绝载荷固定为 { id, why }，空原因有兜底', () => {
+  assert.deepEqual(skinRefusal('maid-blue', '缺动画文件：idle'), {
+    id: 'maid-blue',
+    why: '缺动画文件：idle',
+  })
+  assert.deepEqual(skinRefusal('x', '  '), { id: 'x', why: '皮肤没载入。' })
+})
+
+test('decideSkinLoad：校验失败与素材缺失都给出可见原因，齐全才放行', (t) => {
+  const root = makeSkinFixture(t, 'good')
+  const goodDir = join(root, 'skins', 'good')
+  const goodJson: unknown = JSON.parse(readFileSync(join(goodDir, 'skin.json'), 'utf8'))
+
+  const good = decideSkinLoad(goodJson, goodDir)
+  assert.equal(good.ok, true)
+  if (good.ok) assert.deepEqual(good.config, goodJson)
+
+  const badShape = decideSkinLoad({ name: '缺动作', motions: { idle: 'idle' } }, goodDir)
+  assert.equal(badShape.ok, false)
+  if (!badShape.ok) assert.match(badShape.why, /缺少动作/)
+
+  // skin.json 完整但 webm 缺失：必须提前拒绝，而不是等运行时报错。
+  const bareRoot = mkdtempSync(join(tmpdir(), 'pet-skin-'))
+  t.after(() => rmSync(bareRoot, { recursive: true, force: true }))
+  const bareDir = join(bareRoot, 'skins', 'bare')
+  mkdirSync(join(bareDir, 'webm'), { recursive: true })
+  writeFileSync(join(bareDir, 'skin.json'), JSON.stringify({ name: '空壳', motions: motionMap() }))
+  const bareJson: unknown = JSON.parse(readFileSync(join(bareDir, 'skin.json'), 'utf8'))
+  const bare = decideSkinLoad(bareJson, bareDir)
+  assert.equal(bare.ok, false)
+  if (!bare.ok) assert.match(bare.why, /缺动画文件/)
 })
 
 test('皮肤推送 forwarder：ready 补发，重复内容不重发', () => {

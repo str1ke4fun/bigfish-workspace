@@ -378,17 +378,26 @@ export function createScreenService({
     return { ok: true }
   }
 
+  /**
+   * 换一条陪伴会话。新会话必须从零开始：`ensureSession` 清会话评论数，
+   * 这里补清对话轮次与最近评论，否则上一会话的轮次会被算到新会话头上，
+   * 刚换完的下一条桌宠消息就可能再次触发轮换。
+   */
+  async function rotateSession() {
+    const old = state.sessionId
+    const next = await ensureSession({ rotate: true })
+    if (!next || next === old) return ''
+    state.chatTurns = 0
+    state.recentComments = []
+    return next
+  }
+
   /** 一段看屏陪久了就换一个新会话；旧会话留在侧栏，不删。 */
   async function rotateIfNeeded() {
     const limit = Number(presence()?.rotateAfter ?? 0)
     // 评论和对话都算这一条会话用掉了多少轮——聊得多和看屏点评多，都会把上下文撑大。
     if (!(limit > 0) || state.sessionComments + state.chatTurns < limit) return false
-    const old = state.sessionId
-    const next = await ensureSession({ rotate: true })
-    if (!next || next === old) return false
-    state.recentComments = []
-    state.chatTurns = 0
-    return true
+    return (await rotateSession()) !== ''
   }
 
   /** 桌宠聊天计一轮；到阈值时按同一套规则换会话。 */
@@ -612,6 +621,6 @@ export function createScreenService({
 
   return {
     setMode, status, canSpeak, recordComment, currentMode: () => state.mode, dispose, renderActivity,
-    ensureSession, noteChatTurn, companionInfo,
+    ensureSession, rotateSession, noteChatTurn, companionInfo,
   }
 }

@@ -127,7 +127,7 @@ test('hello / config / rotate 三条新路由', async () => {
   const screen = {
     status: () => ({ on: true, mode: 'event', busy: false, snapshot: null, recent: [] }),
     companionInfo: () => ({ sessionId: 's1', sessionComments: 2, chatTurns: 1, rotateAfter: 30 }),
-    ensureSession: async () => 's1',
+    rotateSession: async () => 's1',
   }
   registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView, screen })
 

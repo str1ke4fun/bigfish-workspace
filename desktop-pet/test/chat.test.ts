@@ -9,9 +9,10 @@ test('sendChat 明确区分成功/失败', async () => {
   assert.equal(bad.ok, false)
 })
 
-test('只发用户原话：POST /api/fish/say，body 只有 text', async () => {
+test('只发用户原话与陪伴目标：POST /api/fish/say，body 为 { text, target: "companion" }', async () => {
   let seen: { url: string; init: RequestInit } | null = null
   const out = await sendChat('在吗', {
+    target: 'companion',
     fetchImpl: async (url, init) => {
       seen = { url: String(url), init: init ?? {} }
       return new Response(JSON.stringify({ ok: true, herReply: '在。', note: '' }), { status: 200 })
@@ -21,7 +22,18 @@ test('只发用户原话：POST /api/fish/say，body 只有 text', async () => {
   assert.ok(seen)
   assert.equal(seen.url, 'http://127.0.0.1:8788/api/fish/say')
   assert.equal(seen.init.method, 'POST')
-  assert.deepEqual(JSON.parse(String(seen.init.body)), { text: '在吗' })
+  assert.deepEqual(JSON.parse(String(seen.init.body)), { text: '在吗', target: 'companion' })
+})
+
+test('桌宠默认就走陪伴会话：不显式传 target 时也发 companion', async () => {
+  let body: unknown = null
+  await sendChat('在吗', {
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(String(init?.body))
+      return new Response(JSON.stringify({ ok: true, herReply: '在。', note: '' }), { status: 200 })
+    },
+  })
+  assert.deepEqual(body, { text: '在吗', target: 'companion' })
 })
 
 test('HTTP 200 但 BFF 说没送到时也按失败返回', async () => {

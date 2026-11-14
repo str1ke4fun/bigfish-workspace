@@ -165,6 +165,36 @@ export function missingSkinMedia(skinDir: string, motions: Record<string, unknow
 }
 
 /**
+ * 皮肤加载被拒绝时发给渲染进程的载荷。
+ *
+ * 主进程保留当前皮肤，渲染进程据此弹同一只「皮肤没载入」气泡；
+ * 空原因给兜底文案，避免界面上出现一只没字的提示。
+ */
+export function skinRefusal(id: string, why: string): { id: string; why: string } {
+  const reason = String(why ?? '').trim()
+  return { id: String(id), why: reason === '' ? '皮肤没载入。' : reason.slice(0, 200) }
+}
+
+export type SkinLoadDecision =
+  | { ok: true; config: unknown }
+  | { ok: false; why: string }
+
+/**
+ * 皮肤是否可加载：skin.json 合法且 14 个 webm 齐全。
+ *
+ * 不通过时返回可直接写进日志/气泡的原因；调用方保留旧皮肤并下发 `pet:skin-error`。
+ */
+export function decideSkinLoad(parsed: unknown, skinDir: string): SkinLoadDecision {
+  const validation = validateSkin(parsed)
+  if (!validation.ok) return { ok: false, why: validation.why }
+  const missing = missingSkinMedia(skinDir, validation.motions)
+  if (missing.length > 0) {
+    return { ok: false, why: `缺动画文件：${missing.join(', ')}` }
+  }
+  return { ok: true, config: parsed }
+}
+
+/**
  * 服务的 `settings` 是否带来了新值。
  *
  * 只比较 `next` 显式给出的字段：轮询每 2 秒就会重复下发同一份设置，

@@ -60,6 +60,15 @@ const bridge = {
     return ipcRenderer.invoke('pet:get-skin')
   },
 
+  /** 皮肤被拒绝（坏 JSON、缺动画文件、读盘失败）时推来 { id, why }，渲染进程弹提示。 */
+  onSkinError(handler: (error: unknown) => void): Unsubscribe {
+    const listener = (_event: Electron.IpcRendererEvent, error: unknown): void => handler(error)
+    ipcRenderer.on('pet:skin-error', listener)
+    return () => {
+      ipcRenderer.removeListener('pet:skin-error', listener)
+    }
+  },
+
   /** 在宠物身体上按下/松开时调用，主进程负责跟着光标移动窗口。 */
   startDrag(): void {
     ipcRenderer.send('pet:drag-start')

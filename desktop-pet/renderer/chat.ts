@@ -9,6 +9,8 @@
 
 const SAY_URL = 'http://127.0.0.1:8788/api/fish/say'
 const DEFAULT_TIMEOUT_MS = 90_000
+/** 桌宠说的话固定进陪伴会话；工作台页面自己请求时保持 `home`，不经过这里。 */
+const PET_CHAT_TARGET = 'companion'
 
 export interface ChatResult {
   ok: boolean
@@ -19,6 +21,8 @@ export interface ChatResult {
 export interface SendChatOptions {
   fetchImpl?: typeof fetch
   timeoutMs?: number
+  /** 服务端的会话目标；桌宠缺省就是 `companion`。 */
+  target?: string
 }
 
 function failure(note: string): ChatResult {
@@ -32,13 +36,18 @@ function asText(value: unknown): string {
 /**
  * 把一句话递给她，等她的回话。
  *
- * @param text 用户原话（只发这一个字段，不带人设或任何宿主拼装的内容）
+ * @param text 用户原话（不带人设或任何宿主拼装的内容）
  * @param options.fetchImpl 可注入的 fetch；缺省用当前运行时的全局 fetch
  * @param options.timeoutMs 整次请求的上限，缺省 90s
+ * @param options.target 会话目标；桌宠固定 companion，工作台保持 home
  */
 export async function sendChat(
   text: string,
-  { fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT_MS }: SendChatOptions = {},
+  {
+    fetchImpl = globalThis.fetch,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    target = PET_CHAT_TARGET,
+  }: SendChatOptions = {},
 ): Promise<ChatResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -49,7 +58,7 @@ export async function sendChat(
       response = await fetchImpl(SAY_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, target }),
         signal: controller.signal,
       })
     } catch (cause) {

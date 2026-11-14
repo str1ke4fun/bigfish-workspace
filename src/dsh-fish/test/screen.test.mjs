@@ -311,3 +311,23 @@ test('对话轮次也计入轮换：评论 0 + 对话到阈值就换会话', asy
     assert.equal(h.service.companionInfo().chatTurns, 0)
   })
 })
+
+test('手动换一条：新会话从零开始，轮换计数与最近评论一起清空', async () => {
+  await withRoot(async (root) => {
+    const h = makeService(root, { config: normalizeConfig({ presence: { rotateAfter: 30 } }) })
+    await h.service.setMode({ mode: 'event', on: true })
+    const first = h.service.status().sessionId
+    await h.service.noteChatTurn()
+    await h.service.recordComment({ text: '这一下有点意思。', at: '2026-11-13T10:00:00Z', mode: 'event' })
+    assert.equal(h.service.companionInfo().chatTurns, 1)
+    assert.equal(h.service.companionInfo().sessionComments, 1)
+    assert.ok(h.service.status().recent.length > 0, '先有最近评论可清')
+
+    const next = await h.service.rotateSession()
+    assert.notEqual(next, first)
+    assert.equal(h.service.companionInfo().sessionId, next)
+    assert.equal(h.service.companionInfo().chatTurns, 0, '新会话不能继承上一会话的对话轮次')
+    assert.equal(h.service.companionInfo().sessionComments, 0)
+    assert.deepEqual(h.service.status().recent, [], '新会话不显示上一会话的评论')
+  })
+})

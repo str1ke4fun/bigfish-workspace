@@ -949,8 +949,8 @@ export function registerObserve(ctx, deps = {}) {
     ['/pet/rotate', async (req, res) => {
       if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
       const screen = deps.screen
-      if (!screen?.ensureSession) return send(res, 200, { ok: false, note: '陪看没在跑。' })
-      const sessionId = await screen.ensureSession({ rotate: true })
+      if (!screen?.rotateSession) return send(res, 200, { ok: false, note: '陪看没在跑。' })
+      const sessionId = await screen.rotateSession()
       if (!sessionId) return send(res, 200, { ok: false, note: '没能开新的陪伴会话。' })
       return send(res, 200, { ok: true, sessionId: String(sessionId) })
     }],
