@@ -37,6 +37,7 @@ import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
 import { registerPresenceSpeak } from './presence-speak.js'
 import { createScreenService } from './screen.js'
+import { createPetView, petSurfaceAllowed } from './pet-view.js'
 import { startFrameStream, detectHostCapture } from './host-capture.js'
 import { startForegroundWatcher } from './foreground.js'
 import { createToolLedger } from './tool-ledger.js'
@@ -347,6 +348,25 @@ export function apply(ctx, baseConfig = {}) {
     })
     if (screen?.dispose) disposers.push(() => screen.dispose())
 
+    // ---- 桌宠：她自己的会话事件 → 易失活动状态 ----
+    // 纯内存接线：不落盘、不写台账、不调模型；dispose 时随 disposers 摘掉监听。
+    const petView = createPetView({ log: (...a) => logger.warn(...a) })
+    try {
+      const offPet = ctx.on?.('session/event', (session, event) => {
+        try {
+          if (!isHerAgent({ session }, herDir)) return
+          const surface = String(fishCore?.surface?.current?.({ session }) ?? '')
+          if (!petSurfaceAllowed(surface)) return
+          const sessionId = session?.header?.id ?? session?.id
+          if (!sessionId) return
+          petView.noteSessionEvent({ sessionId, surface }, event)
+        } catch { /* 一条事件不能拖垮总线 */ }
+      })
+      if (typeof offPet === 'function') disposers.push(offPet)
+    } catch (err) {
+      logger.warn('[dsh-fish] 桌宠活动监听没挂上', err?.message ?? err)
+    }
+
     if (bootAbort.signal.aborted) return
     if (ctx.tools?.register) {
       // A2：bili_look / bili_watch / bili_speak 由 dsh-bili 注册，core 不再挂。
@@ -427,7 +447,7 @@ export function apply(ctx, baseConfig = {}) {
       ledger,
       qq: qqExposure(),
     }
-    const obs = registerObserve(ctx, { root, version: VERSION, exposure, screen })
+    const obs = registerObserve(ctx, { root, version: VERSION, exposure, screen, petView })
     if (obs?.dispose) disposers.push(() => obs.dispose())
 
     // ---- 调度钩子（A1.5 / A2）----
