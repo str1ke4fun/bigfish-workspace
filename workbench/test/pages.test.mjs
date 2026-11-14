@@ -12,6 +12,7 @@ import { systemTools } from '../assets/pages/system-tools.js'
 import { systemLogs } from '../assets/pages/system-logs.js'
 import { systemData } from '../assets/pages/system-data.js'
 import { systemPrinciples } from '../assets/pages/system-principles.js'
+import { herPresence } from '../assets/pages/her-presence.js'
 const src = (name) => readFileSync(new URL(`../assets/pages/${name}`, import.meta.url), 'utf8')
 
 test('她·今天契约与数据源', () => {
@@ -153,4 +154,16 @@ test('系统·原理是静态页，不依赖插件', () => {
   assert.match(s, /principle-loop\.svg/)
   assert.match(s, /principle-memory\.svg/)
   assert.doesNotMatch(s, /fish\(|postFish\(|local\(|innerHTML/)
+})
+
+test('她·陪伴：开关即授权，评论按她的话展示', () => {
+  const s = src('her-presence.js')
+  assert.equal(herPresence.id, 'her-presence')
+  assert.equal(herPresence.nav, 'her')
+  assert.equal(herPresence.slug, 'presence')
+  for (const call of ["fish('presence/status')", "postFish('presence/mode'"]) assert.ok(s.includes(call), call)
+  assert.match(s, /confirmOn/)
+  assert.match(s, /recent/)
+  assert.match(s, /她看到的这一会儿/)
+  assert.doesNotMatch(s, /innerHTML|他/)
 })
