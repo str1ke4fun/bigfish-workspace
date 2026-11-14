@@ -9,8 +9,9 @@
     "dev": "vite",
     "build": "vite build && vite build --mode electron-main && vite build --mode electron-preload",
     "start": "electron .",
-    "test": "node --test --experimental-strip-types test/config.test.ts",
-    "dist:win": "npm run build && electron-builder --win"
+    "test": "node --test --experimental-strip-types test/config.test.ts test/controller.test.ts test/poller.test.ts test/pointer.test.ts test/chat.test.ts",
+    "assets": "node scripts/sync-assets.mjs",
+    "dist:win": "node scripts/check-assets.mjs && npm run build && electron-builder --win"
   },
   "dependencies": {
     "dsh-pet-component": "0.2.5",

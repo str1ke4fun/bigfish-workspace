@@ -1,0 +1,10 @@
+appId: com.bigfish.desktop-pet
+directories:
+  output: release
+files:
+  - dist-electron
+  - dist-renderer
+  - assets
+win:
+  target:
+    - portable
