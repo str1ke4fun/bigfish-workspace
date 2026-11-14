@@ -3,9 +3,9 @@ import { readFile } from 'node:fs/promises'
 import { extname, join, normalize, sep } from 'node:path'
 import { createPoller, createStateForwarder, type Poller } from './poller'
 import { sendChat } from '../renderer/chat'
-import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition } from './window'
+import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition, resizePetWindow } from './window'
 import { readPetSize, savePetSize } from './settings'
-import { clampPetSize, windowSizeFor } from './size'
+import { clampPetSize } from './size'
 import {
   createSkinForwarder,
   decideSkinLoad,
@@ -171,9 +171,7 @@ function changePetSize(
   petSettings = { ...petSettings, size: petSize }
   sizeSync = local ? noteLocalSize(petSize) : { ...sizeSync, current: petSize }
   if (!win.isDestroyed()) {
-    const { width, height } = windowSizeFor(petSize)
-    win.setSize(width, height)
-    clampWindowToDisplays(win)
+    resizePetWindow(win, petSize)
     win.webContents.send('pet:size', petSize)
   }
   if (sync) void syncPetConfig({ size: petSize })

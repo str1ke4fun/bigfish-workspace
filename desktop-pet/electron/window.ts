@@ -96,6 +96,23 @@ export function applyIgnoreMouse(win: BrowserWindow, ignore: boolean): void {
   else win.setIgnoreMouseEvents(false)
 }
 
+/**
+ * 程序化改窗口尺寸。
+ *
+ * Windows 下 `resizable:false` 的窗口会**忽略 `setSize`**（实测 438×305 调 358×260
+ * 完全不动）。无边框窗口本来也没有拖拽边框，所以这里临时放开 resizable、改完
+ * 再关回去，既能让工作台下发尺寸，又不给用户留下可拉伸的边。
+ */
+export function resizePetWindow(win: BrowserWindow, size: number): void {
+  if (win.isDestroyed()) return
+  const { width, height } = windowSizeFor(size)
+  const wasResizable = win.isResizable()
+  if (!wasResizable) win.setResizable(true)
+  win.setSize(width, height)
+  if (!wasResizable) win.setResizable(false)
+  clampWindowToDisplays(win)
+}
+
 export function createPetWindow(size: number = PET_SIZE_DEFAULT): BrowserWindow {
   const displays = displaysWithPrimaryFirst()
   const saved = readSavedPosition()
