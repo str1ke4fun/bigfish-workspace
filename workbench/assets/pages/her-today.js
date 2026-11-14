@@ -301,7 +301,7 @@ function renderActions(r) {
   if (!rows.length) { SPEC.actionsList.append(el('li', { class: 'meta', text: '还没有动作' })); return }
   for (const row of rows) {
     SPEC.actionsList.append(el('li', { class: row.ok ? '' : 'bad' },
-      el('span', { class: 't', text: row.at }),
+      el('span', { class: 't', text: fmtTime(row.at) }),
       el('b', { text: row.who }), ' ',
       // 人工代操作带 operator:'human'，单独标出来，别混进她的动作里。
       row.operator === 'human' ? humanChip() : null,

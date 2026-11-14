@@ -1,6 +1,6 @@
 // 她 · 陪伴：屏幕陪伴的三个模式开关与状态。
 // 开关即授权；默认全关；所有请求经 BFF /api/fish/presence/* 转到 8710 插件。
-import { el, clear, card, fish, postFish, clock, errorText, hint } from '../lib.js'
+import { el, clear, card, fish, postFish, clock, errorText, fmtClock, hint } from '../lib.js'
 
 /** 上次为什么停：重启后界面要能说清楚，而不是只显示「关着」。 */
 const STOP_REASONS = {
@@ -69,7 +69,7 @@ function render() {
     SPEC.recent.append(el('li', { class: 'meta', text: on ? '还没说话。' : '还没开始看。' }))
   } else {
     for (const row of rows) {
-      const when = row.at ? String(row.at).slice(11, 16) : ''
+      const when = fmtClock(row.at)
       SPEC.recent.append(el('li', {},
         el('div', { text: String(row.text ?? '') }),
         el('div', { class: 'meta', text: `看屏幕 · ${when}` }),

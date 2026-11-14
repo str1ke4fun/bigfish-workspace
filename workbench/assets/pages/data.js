@@ -1,6 +1,6 @@
 // 数据与运维：日志、备份与恢复、导入、重置、更新检查、路径、头像、观测参数、帧存档。
 // 危险操作要输入确认词；上游的 confirm 不被绕过，这里只是先把人拦住一次。
-import { $, el, clear, card, fish, postFish, local, clock, errorText, writeError, hint } from '../lib.js'
+import { $, el, clear, card, fish, postFish, local, clock, fmtTime, errorText, writeError, hint } from '../lib.js'
 
 const PATH_KEYS = [
   ['root', '数据根目录'],
@@ -180,7 +180,7 @@ async function loadAvatar() {
   if (!info.present) { img.hidden = true; msg.textContent = '还没上传头像（插件不自带图片）。'; return }
   img.src = '/api/fish/avatar?t=' + Date.now()
   img.hidden = false
-  msg.textContent = `${info.mime || '图片'} · ${Math.round((info.bytes || 0) / 1024)} KB · ${info.at || ''}`
+  msg.textContent = `${info.mime || '图片'} · ${Math.round((info.bytes || 0) / 1024)} KB · ${fmtTime(info.at)}`
 }
 
 function readFile(input, as = 'dataURL') {

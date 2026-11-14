@@ -195,3 +195,12 @@ test('陪伴页不再重复动作按钮', () => {
   const s = src('her-presence.js')
   assert.doesNotMatch(s, /postFish\('pet\/act'/)
 })
+
+test('工作台时间统一走本地格式化', () => {
+  for (const f of ['pet.js', 'her-presence.js', 'overview.js', 'her-today.js', 'system-logs.js', 'data.js', 'system-data.js']) {
+    const s = src(f)
+    assert.doesNotMatch(s, /\.slice\(11, 16\)/, f)
+    assert.doesNotMatch(s, /text: row\.at\b/, f)
+    assert.doesNotMatch(s, /\$\{info\.at \|\| ''\}/, f)
+  }
+})

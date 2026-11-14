@@ -34,9 +34,16 @@
 - **尺寸与皮肤下发**：`config.pet = { size: 400, skin: '' }`。工作台写配置后，桌宠壳下一轮轮询（≤2 秒）读 `state.settings` 应用；同一设置重复下发幂等，不抖动窗口或反复重载。桌面壳新增本地皮肤：启动时扫描 `assets/skins/<id>/skin.json`（`motions` 必须覆盖 14 个动作，`webm/<动作>.webm` 必须齐全），通过后把 `{ id, revision, config, uri }` 推给渲染进程。坏 JSON、缺素材、运行期载入失败都保留上一个皮肤并给可见提示，不白屏、不退出。
 - **皮肤目录**：`desktop-pet/assets/skins/<id>/skin.json` 与 `webm/`；默认皮肤仍走 `assets/config.json` + `assets/webm`，不放进 `skins/`。动画素材不进 Git：`assets/webm/` 与 `assets/skins/*/webm/` 都在 `.gitignore` 里，`skin.json` 与 `ATTRIBUTION.md` 仍可提交。
 
-**已验证（WSL，纯 Node）**：`src/dsh-fish` `node --test` 1103 全绿；`workbench` `node --test` 115 全绿；`desktop-pet` `npm test` 36 全绿。这些只覆盖纯函数、路由与契约，不等于真机行为。
+**已验证（WSL，纯 Node）**：`src/dsh-fish` `node --test` 1103 全绿；`workbench` `node --test` 117 全绿；`desktop-pet` `npm test` 36 全绿。这些只覆盖纯函数、路由与契约，不等于真机行为。
 
 **未验收（Windows 真机 + 工作台手动操作，本环境不执行）**：桌宠输入框的消息是否真的落进「陪你看屏幕」（presence 开着/关着两种状态）；工作台聊天是否仍进 home；桌宠页在线/离线是否按 90 秒窗口切换；七个动作是否实际播放；改尺寸、改皮肤是否 2 秒内生效；坏皮肤是否保留上一个；「换一条」后新会话是否出现、旧会话是否留在侧栏。
+
+### 工作台时间统一为本机时间（2026-11-14）
+
+- 工作台里所有时间显示统一走 `fmtTime` / `fmtClock`：服务端的 UTC ISO 串先转本机时区，不再直接 `slice(11, 16)` 或原样显示。
+- 覆盖：桌宠页与陪伴页的评论时间、总览 / 她·今天 / 系统·日志的「人工动作」、通道页与通道总览的动作日志、头像信息时间。
+- 纯日期串（`YYYY-MM-DD`）按日历日显示，不再被当成 UTC 午夜再偏一个时区。
+- 测试：`workbench` 117 全绿。
 
 ### 桌宠薄壳 v1（2026-11-14）
 

@@ -139,7 +139,7 @@ async function loadActions() {
   if (!rows.length) { SPEC.actionsList.append(el('li', { class: 'meta', text: '还没有动作' })); return }
   for (const row of rows) {
     const li = el('li', { class: row.ok ? '' : 'fail' },
-      el('span', { class: 't', text: row.at }),
+      el('span', { class: 't', text: fmtTime(row.at) }),
       el('span', { class: 'kind', text: row.who }),
       el('span', { class: 'x', text: row.text }),
     )

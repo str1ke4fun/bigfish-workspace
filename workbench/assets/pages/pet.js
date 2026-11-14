@@ -2,7 +2,7 @@
 // 页面只读 /pet/state（3 秒轮询）；写只有三件：演动作、改外观、换一条会话。
 // 都经 BFF /api/fish/pet/* 转到 8710 插件，不调用模型，也不写事件流。
 import {
-  el, clear, card, fish, postFish, fmtTime, errorText, writeError, statusDot, hint,
+  el, clear, card, fish, postFish, fmtTime, fmtClock, errorText, writeError, statusDot, hint,
 } from '../lib.js'
 
 const MOTIONS = [
@@ -172,7 +172,7 @@ function render() {
     for (const row of rows) {
       SPEC.recent.append(el('li', {},
         el('div', { text: String(row.text ?? '') }),
-        el('div', { class: 'meta', text: `${MODE_LABEL[row.mode] || '陪看'} · ${String(row.at ?? '').slice(11, 16)}` }),
+        el('div', { class: 'meta', text: `${MODE_LABEL[row.mode] || '陪看'} · ${fmtClock(row.at)}` }),
       ))
     }
   }

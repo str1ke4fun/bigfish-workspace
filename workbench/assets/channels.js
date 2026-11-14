@@ -1,7 +1,7 @@
 // 通道页：QQ / 微信 / 语音 / 她。3 秒轮询、画面 1 秒一帧，轮询只在通道页可见时跑。
 // P2 起 QQ 发送 / 微信打字、按键是「人工代操作」：按钮标注、二次确认，
 // 动作日志由服务端记，不写事件流。
-import { $, setDot } from './lib.js'
+import { $, setDot, fmtTime } from './lib.js'
 
 const state = { qq: null, wx: null, her: null, frames: [] }
 
@@ -280,10 +280,10 @@ async function poll() {
 
   setDot($('#her-dot'), s.her.running ? 'ok' : 'bad')
   $('#her-label').textContent = s.her.label
-  $('#her-meta').textContent = `事件 ${s.her.events} 条 · 最后写入 ${s.her.lastEventAt || '—'} · HTTP ${s.her.http}`
+  $('#her-meta').textContent = `事件 ${s.her.events} 条 · 最后写入 ${fmtTime(s.her.lastEventAt)} · HTTP ${s.her.http}`
 
   $('#log-list').innerHTML = (s.log || []).map((r) =>
-    `<li class="${r.ok ? '' : 'fail'}">${r.at} <b>${escapeHtml(r.who)}</b> ${escapeHtml(r.text)}</li>`).join('') || '<li>还没有动作</li>'
+    `<li class="${r.ok ? '' : 'fail'}">${fmtTime(r.at)} <b>${escapeHtml(r.who)}</b> ${escapeHtml(r.text)}</li>`).join('') || '<li>还没有动作</li>'
 
   loadWatch()
   $('#chan-updated').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN')

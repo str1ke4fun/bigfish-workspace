@@ -1,7 +1,7 @@
 // 系统 · 数据：备份与恢复、导入、观测参数、更新检查、数据路径、头像、帧存档。
 // 危险操作（重置）放在页面最下面；恢复 / 重置要输入确认词，上游的 confirm 不被绕过。
 import {
-  el, clear, card, fish, postFish, local, clock, errorText, writeError, hint,
+  el, clear, card, fish, postFish, local, clock, fmtTime, errorText, writeError, hint,
 } from '../lib.js'
 
 const PATH_KEYS = [
@@ -254,7 +254,7 @@ async function loadAvatar() {
   }
   SPEC.avatarImg.src = '/api/fish/avatar?t=' + Date.now()
   SPEC.avatarImg.hidden = false
-  SPEC.avatarMsg.textContent = `${info.mime || '图片'} · ${Math.round((info.bytes || 0) / 1024)} KB · ${info.at || ''}`
+  SPEC.avatarMsg.textContent = `${info.mime || '图片'} · ${Math.round((info.bytes || 0) / 1024)} KB · ${fmtTime(info.at)}`
 }
 
 async function saveAvatar() {

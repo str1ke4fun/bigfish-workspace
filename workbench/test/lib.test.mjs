@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseList, asText, statusDot, humanChip, segment, emptyState, openHer } from '../assets/lib.js'
+import { parseList, asText, statusDot, humanChip, segment, emptyState, openHer, fmtTime, fmtClock } from '../assets/lib.js'
 
 // 极简 DOM 垫片：这些辅助函数只建节点、设属性，不依赖浏览器布局。
 class FakeNode {
@@ -114,4 +114,18 @@ test('openHer 失败时把原因交回页面', async () => {
   } finally {
     globalThis.fetch = prevFetch
   }
+})
+
+test('fmtTime / fmtClock 统一成本机时间', () => {
+  const iso = '2026-11-14T08:13:51.014Z'
+  const d = new Date(iso)
+  const p = (n) => String(n).padStart(2, '0')
+  assert.equal(fmtClock(iso), `${p(d.getHours())}:${p(d.getMinutes())}`)
+  assert.equal(fmtClock(''), '—')
+  assert.equal(
+    fmtTime(iso),
+    `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`,
+  )
+  // 纯日期是日历日，不能被当成 UTC 午夜再偏一个时区。
+  assert.equal(fmtTime('2026-11-14'), '11-14')
 })

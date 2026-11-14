@@ -1,7 +1,7 @@
 // 通道 · 总览：注册表里的每个通道各一张卡 + 说话节奏 + 她（8710）+ 最近动作。
 // 页面订阅 ctx.onStatus（通道页 3 秒一次），离开取消。
 import {
-  el, clear, card, local, errorText, openHer, humanChip, fillStats,
+  el, clear, card, local, errorText, openHer, humanChip, fillStats, fmtTime,
 } from '../lib.js'
 import { CHANNELS } from './registry.js'
 import { renderSpeechCard } from './speech.js'
@@ -103,7 +103,7 @@ async function loadLog() {
   if (!rows.length) { SPEC.logList.append(el('li', { text: '还没有动作' })); return }
   for (const row of rows) {
     const li = el('li', { class: row.ok ? '' : 'fail' },
-      el('span', { class: 'meta', text: row.at }),
+      el('span', { class: 'meta', text: fmtTime(row.at) }),
       ' ',
       el('b', { text: row.who }),
       ' ',

@@ -132,12 +132,30 @@ export async function local(path, opts = {}) {
   }
 }
 
+const pad2 = (n) => String(n).padStart(2, '0')
+
+/**
+ * 统一把时间显示成**本机时间**。
+ *
+ * 服务端的 `ts` / `at` 多数是 `toISOString()` 出来的 UTC 串；直接 slice(11,16)
+ * 会差整个时区（本机 CST 差 8 小时）。纯日期串（YYYY-MM-DD）本来就是日历日，
+ * 不要拿它当 UTC 午夜再转一次。
+ */
 export function fmtTime(value) {
   if (!value) return '—'
+  const s = String(value)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(5)
+  const t = new Date(s)
+  if (!Number.isFinite(t.getTime())) return s.slice(0, 16)
+  return `${pad2(t.getMonth() + 1)}-${pad2(t.getDate())} ${pad2(t.getHours())}:${pad2(t.getMinutes())}`
+}
+
+/** 只取本地时刻 HH:MM（评论、动作这类「今天什么时候」的场景）。 */
+export function fmtClock(value) {
+  if (!value) return '—'
   const t = new Date(value)
-  if (!Number.isFinite(t.getTime())) return String(value).slice(0, 16)
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}`
+  if (!Number.isFinite(t.getTime())) return String(value).slice(11, 16)
+  return `${pad2(t.getHours())}:${pad2(t.getMinutes())}`
 }
 
 export function clock() {
