@@ -1,9 +1,15 @@
 import { app, BrowserWindow, protocol } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize, sep } from 'node:path'
+import { createPoller, type Poller } from './poller'
 
 const WINDOW_WIDTH = 500
 const WINDOW_HEIGHT = 340
+
+const PET_STATE_URL = 'http://127.0.0.1:8788/api/fish/pet/state'
+const PET_POLL_INTERVAL_MS = 2000
+
+let petPoller: Poller | null = null
 
 const MIME_TYPES: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
@@ -86,20 +92,50 @@ export function createPetWindow(): BrowserWindow {
   return win
 }
 
+/** 状态不变就不 IPC；`at` 每拍都变，比较时忽略。 */
+function stateSignature(state: unknown): string {
+  if (!state || typeof state !== 'object') return JSON.stringify(state)
+  const { at: _at, ...rest } = state as Record<string, unknown>
+  return JSON.stringify(rest)
+}
+
+function startPetPoller(win: BrowserWindow): void {
+  petPoller?.stop()
+  let lastSignature = ''
+
+  petPoller = createPoller({
+    url: PET_STATE_URL,
+    intervalMs: PET_POLL_INTERVAL_MS,
+    fetchImpl: (url, init) => fetch(url, init),
+    onState: (state) => {
+      const signature = stateSignature(state)
+      if (signature === lastSignature) return
+      lastSignature = signature
+      if (!win.isDestroyed()) win.webContents.send('pet:state', state)
+    },
+  })
+  petPoller.start()
+}
+
 app
   .whenReady()
   .then(() => {
     registerAssetProtocol()
-    createPetWindow()
+    startPetPoller(createPetWindow())
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createPetWindow()
+      if (BrowserWindow.getAllWindows().length === 0) startPetPoller(createPetWindow())
     })
   })
   .catch((error: unknown) => {
     console.error('[desktop-pet] failed to start', error)
     app.quit()
   })
+
+app.on('before-quit', () => {
+  petPoller?.stop()
+  petPoller = null
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
