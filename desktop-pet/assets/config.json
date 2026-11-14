@@ -1,0 +1,27 @@
+{
+  "size": 462,
+  "animations": {
+    "idle": ["待机呼吸休闲"],
+    "turn": ["东张西望"],
+    "drag": ["被鼠标拖拽悬空反馈"],
+    "clicks": ["点击回应-元气挥手"],
+    "moves": { "default": { "minDist": 60, "maxDist": 240, "margin": 20, "leadSec": 2, "tailSec": 2 }, "actions": [{ "name": "螃蟹走路" }] },
+    "motions": {
+      "idle": "待机呼吸休闲",
+      "turn": "东张西望",
+      "moving-left": "螃蟹走路",
+      "moving-right": "螃蟹走路",
+      "waving": "点击回应-元气挥手",
+      "thinking": "工作状态-思考冒泡",
+      "working": "工作状态-忙碌点按",
+      "result": "工作状态-清点归档",
+      "waiting": "工作状态-原地踱步张望",
+      "running": "工作状态-忙碌点按",
+      "review": "工作状态-清点归档",
+      "failed": "工作状态-垂头叹气冒汗",
+      "success": "工作状态-雀跃庆祝",
+      "error": "工作状态-垂头叹气冒汗",
+      "dragging": "被鼠标拖拽悬空反馈"
+    }
+  }
+}
