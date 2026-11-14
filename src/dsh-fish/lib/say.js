@@ -302,6 +302,11 @@ export async function sayToHer(ctx, text, deps = {}) {
     // 不能在这里再按聊天轮次把她从陪看会话里换走。
     let rotated = ''
     let note = said.length ? '' : '她这次没说话。'
+    // 桌宠只渲染 note，不读 machine 字段；回落必须说出来，不能让她以为
+    // 这句话正常进了陪看会话（其实进了主页会话）。
+    if (resolved.fellBack) {
+      note = `${note}${note ? ' ' : ''}（陪看会话没接上，这次进了主页会话）`
+    }
     await addExchange(root, { me: body, her: herReply }).catch(() => {})
     if (resolved.target === 'home') {
       const turns = await bumpTurns(root, 1)
