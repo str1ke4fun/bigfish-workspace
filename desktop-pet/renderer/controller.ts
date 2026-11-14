@@ -4,8 +4,11 @@
  * 纯函数：不 import React / Electron，也不读时钟 —— `now` 由调用方传入，
  * 这样同一份逻辑既能被渲染进程使用，也能在 `node --test` 里直接跑。
  *
- * 优先级（与设计文档 5.4 一致）：
- * 显式 action（TTL 内）> 新评论气泡 > activity > idle。
+ * 两层动作模型（与设计文档 5.4 一致）：
+ * - **稳态（steady）**：activity > presence 开启时的 thinking > idle。走 `<Pet motion>` 声明式，
+ *   命令面的一次性动作播完后组件自动回落到它。
+ * - **一次性（motion）**：显式 action、新评论。只走 `pet.motion({ loop: false })`，
+ *   播完回落稳态，不常驻、不锁死。
  */
 
 /** 与 dsh-pet-component 的 14 个动作同名；`dragging` 是手势态，不走控制器。 */
@@ -62,11 +65,15 @@ export interface PetState {
   action: PetAction | null
 }
 
-/** 已播放过的东西；持久化在渲染进程的 localStorage 里，重启不重播。 */
+/**
+ * 已播放过的东西；持久化在渲染进程的 localStorage 里，重启不重播。
+ *
+ * 刻意不存 `activity`：activity 是当前状态，不是「已播放」——重启后重新挂载的
+ * 桌宠必须立刻按当前 activity 显示稳态动作（设计文档 6.3 只要求持久化这两项）。
+ */
 export interface Seen {
   lastActionId: string
   lastCommentAt: string
-  activity: string | null
 }
 
 export interface PetBubbleEffect {
@@ -76,9 +83,19 @@ export interface PetBubbleEffect {
 }
 
 export interface Effects {
+  /** 一次性动作：交给命令面 `pet.motion({ type, loop: false })`。 */
   motion?: PetMotion
+  /** 声明式稳态动作：每次轮询都给出，交给 `<Pet motion={steady}>`。 */
+  steady: PetMotion
   bubble?: PetBubbleEffect
   seen: Seen
+}
+
+/** 菜单/手动表演的动作选项：一次性播放，播完回落声明式稳态。 */
+export interface PerformedMotion {
+  type: PetMotion
+  loop: false
+  replay: true
 }
 
 /** 气泡的稳定 key：同一条评论/动作原地更新，不叠一摞气泡。 */
@@ -102,11 +119,31 @@ const MOTIONS: ReadonlySet<string> = new Set([
 ])
 
 export function emptySeen(): Seen {
-  return { lastActionId: '', lastCommentAt: '', activity: null }
+  return { lastActionId: '', lastCommentAt: '' }
 }
 
 function asMotion(value: unknown): PetMotion | undefined {
   return typeof value === 'string' && MOTIONS.has(value) ? (value as PetMotion) : undefined
+}
+
+/**
+ * 当前该常驻展示的动作：activity 优先；没有活动时，presence 开启 = thinking，
+ * 关闭/未知 = idle（设计文档 5.4）。
+ */
+export function steadyMotion(state: PetState | null): PetMotion {
+  const activity = asMotion(state?.activity?.state)
+  if (activity) return activity
+  return state?.presence?.on === true ? 'thinking' : 'idle'
+}
+
+/**
+ * 右键菜单「演一个动作」的规范化：永远一次性（`loop: false`）并强制重播，
+ * 播完由组件回落到 `<Pet motion>` 的稳态，不会把宠物锁在循环里。
+ * 不认识的动作名返回 null。
+ */
+export function performedMotion(value: string): PerformedMotion | null {
+  const type = asMotion(value)
+  return type ? { type, loop: false, replay: true } : null
 }
 
 /** `recent` 里 `at` 最大的一条（ISO 字符串；无法解析的按最旧处理）。 */
@@ -135,7 +172,8 @@ function latestComment(recent: PetComment[] | undefined): PetComment | null {
  */
 export function decideEffects(prev: Seen, state: PetState | null, now: number): Effects {
   const seen: Seen = { ...prev }
-  const effects: Effects = { seen }
+  // 稳态每拍都给：声明式 prop 幂等，组件按内容指纹去重，不会重复起播。
+  const effects: Effects = { seen, steady: steadyMotion(state) }
 
   const action = state?.action ?? null
   const actionAlive = action !== null && now - action.at < action.ttlMs
@@ -148,27 +186,17 @@ export function decideEffects(prev: Seen, state: PetState | null, now: number): 
       if (action.text) effects.bubble = { id: BUBBLE_ID, text: action.text, motion }
       seen.lastActionId = action.id
     }
-    // 动作播放期间也记录 activity，动作过期后据此回落。
-    seen.activity = state?.activity?.state ?? null
     return effects
   }
 
   const comment = latestComment(state?.presence?.recent)
-  const activityState = state?.activity?.state ?? null
-  const activityMotion = asMotion(activityState)
-  const hadAction = prev.lastActionId !== ''
-
   if (comment && comment.at !== prev.lastCommentAt) {
     const motion: PetMotion = comment.event === 'settlement' ? 'success' : 'waving'
     effects.motion = motion
     effects.bubble = { id: BUBBLE_ID, text: comment.text, motion }
     seen.lastCommentAt = comment.at
-  } else if (hadAction || activityState !== prev.activity) {
-    // 动作过期/消失后即使 activity 没变也要把动作切回来。
-    effects.motion = activityMotion ?? 'idle'
   }
 
   seen.lastActionId = ''
-  seen.activity = activityState
   return effects
 }

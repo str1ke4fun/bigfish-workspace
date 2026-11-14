@@ -38,6 +38,22 @@ const ACTIVITY_PRIORITY = Object.freeze({
   success: 20,
 })
 
+/**
+ * 每档活动的展示有效期。会话轮换/下线后条目不能永久留在 Map 里：
+ * 终态（success/error）只亮一下；abandoned waiting 中等；还在干活的
+ * thinking/working/result 给足时间（每次新事件都会刷新 `at`）。
+ *
+ * 过期只是不再展示并从 Map 剔除，不写事件、不落盘。
+ */
+export const ACTIVITY_TTL_MS = Object.freeze({
+  success: 15_000,
+  error: 15_000,
+  waiting: 90_000,
+  thinking: 10 * 60_000,
+  working: 10 * 60_000,
+  result: 10 * 60_000,
+})
+
 /** 桌宠只认她自己的 web / screen 面。 */
 export function petSurfaceAllowed(surface) {
   return PET_SURFACES.has(surface)
@@ -157,19 +173,30 @@ export function createPetView({ now = Date.now, log } = {}) {
     return { ok: true, action: { ...action } }
   }
 
+  /** 剔除超过所在档位有效期的会话条目；返回当前时间避免重复读时钟。 */
+  function pruneExpired(nowMs) {
+    for (const [sessionId, entry] of sessions) {
+      // hasOwn：别把 'constructor' / '__proto__' 这类原型键当成合法档位。
+      if (!Object.hasOwn(ACTIVITY_TTL_MS, entry.state)) continue
+      if (nowMs - entry.at >= ACTIVITY_TTL_MS[entry.state]) sessions.delete(sessionId)
+    }
+  }
+
   /** @returns {{activity:{state:string, at:number, sessionId:string}|null, action:{id:string, motion:string, text?:string, at:number, ttlMs:number}|null}} */
   function snapshot() {
+    const nowMs = now()
+    pruneExpired(nowMs)
     const picked = pickActivity([...sessions.values()])
     const activity = picked
       ? { state: picked.state, at: picked.at, sessionId: picked.sessionId }
       : null
 
-    let current = null
+    let currentAction = null
     if (action) {
-      if (now() - action.at >= action.ttlMs) action = null
-      else current = { ...action }
+      if (nowMs - action.at >= action.ttlMs) action = null
+      else currentAction = { ...action }
     }
-    return { activity, action: current }
+    return { activity, action: currentAction }
   }
 
   /** 清空易失状态；动作序号保持单调，避免同一进程内 id 复用。 */

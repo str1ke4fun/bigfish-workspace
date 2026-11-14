@@ -3,11 +3,17 @@ import {
   Pet,
   useControllablePet,
   type DshPetConfig,
-  type Motion,
   type PetRef,
 } from 'dsh-pet-component'
 import { shouldIgnoreMouse } from '../electron/pointer'
-import { decideEffects, emptySeen, type PetState, type Seen } from './controller'
+import {
+  decideEffects,
+  emptySeen,
+  performedMotion,
+  type PetMotion,
+  type PetState,
+  type Seen,
+} from './controller'
 import type { ChatResult } from './chat'
 
 declare global {
@@ -50,10 +56,10 @@ function loadSeen(): Seen {
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return emptySeen()
     const record = parsed as Record<string, unknown>
+    // 只恢复去重游标；旧版本存过的 activity 字段直接忽略（它不是「已播放」）。
     return {
       lastActionId: typeof record.lastActionId === 'string' ? record.lastActionId : '',
       lastCommentAt: typeof record.lastCommentAt === 'string' ? record.lastCommentAt : '',
-      activity: typeof record.activity === 'string' ? record.activity : null,
     }
   } catch {
     return emptySeen()
@@ -71,6 +77,8 @@ function saveSeen(seen: Seen): void {
 export function App() {
   const [config, setConfig] = useState<DshPetConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** 声明式稳态：activity / presence；一次性动作播完后由组件自动回落到它。 */
+  const [steady, setSteady] = useState<PetMotion>('idle')
   const petRef = useRef<PetRef>(null)
   const pet = useControllablePet(petRef)
 
@@ -105,7 +113,9 @@ export function App() {
         seen = effect.seen
         saveSeen(seen)
 
-        if (effect.motion) pet.motion({ type: effect.motion, replay: true })
+        // 稳态走声明式 prop；一次性动作走命令面且显式 loop:false，播完自动回落稳态。
+        setSteady(effect.steady)
+        if (effect.motion) pet.motion({ type: effect.motion, loop: false, replay: true })
         if (effect.bubble) {
           pet.bubble({
             id: effect.bubble.id,
@@ -126,10 +136,11 @@ export function App() {
     }
   }, [config, pet])
 
-  // 右键菜单「演一个动作」：main 只发动作名，重播由这里保证。
+  // 右键菜单「演一个动作」：main 只发动作名；这里统一成一次性播放，播完回落稳态。
   useEffect(() => {
     const unsubscribe = window.petBridge?.onAction?.((motion) => {
-      pet.motion({ type: motion as Motion, replay: true })
+      const options = performedMotion(motion)
+      if (options) pet.motion(options)
     })
     return () => {
       unsubscribe?.()
@@ -252,6 +263,7 @@ export function App() {
       config={config}
       uri={{ default: ASSET_BASE }}
       size={PET_SIZE}
+      motion={steady}
       dialogue
       onDialogue={handleDialogue}
     />

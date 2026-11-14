@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   PET_MOTIONS, PET_ACTION_MOTIONS, reduceActivity, pickActivity,
-  createPetView, petSurfaceAllowed,
+  createPetView, petSurfaceAllowed, ACTIVITY_TTL_MS,
 } from '../lib/pet-view.js'
 
 test('六档映射与清空语义', () => {
@@ -63,6 +63,46 @@ test('noteSessionEvent 忽略非她面/非六档事件', () => {
   assert.equal(pv.snapshot().activity.state, 'thinking')
   pv.noteSessionEvent({ sessionId: 's', surface: 'web' }, { type: 'turn/end', data: { reason: { kind: 'aborted' } } })
   assert.equal(pv.snapshot().activity, null)
+})
+
+test('过期条目从快照剔除：旧 error 不永久压住当前 working', () => {
+  let t = 0
+  const pv = createPetView({ now: () => t })
+  pv.noteSessionEvent({ sessionId: 'old-screen', surface: 'screen' },
+    { type: 'turn/end', data: { reason: { kind: 'error' } } })
+  t = 1000
+  pv.noteSessionEvent({ sessionId: 'current-web', surface: 'web' },
+    { type: 'tool/call', data: { name: 'read_image' } })
+  // 未过期时高阶状态仍按优先级优先。
+  assert.equal(pv.snapshot().activity.sessionId, 'old-screen')
+  // error 过期后旧会话被剔除，当前 working 回来。
+  t = 1000 + ACTIVITY_TTL_MS.error
+  const snap = pv.snapshot()
+  assert.equal(snap.activity.state, 'working')
+  assert.equal(snap.activity.sessionId, 'current-web')
+})
+
+test('过期 waiting 不再压住当前 working', () => {
+  let t = 0
+  const pv = createPetView({ now: () => t })
+  pv.noteSessionEvent({ sessionId: 'old-screen', surface: 'screen' },
+    { type: 'approval/asked' })
+  t = 1000
+  pv.noteSessionEvent({ sessionId: 'current-web', surface: 'web' },
+    { type: 'tool/call', data: { name: 'read_image' } })
+  assert.equal(pv.snapshot().activity.sessionId, 'old-screen')
+  t = 1000 + ACTIVITY_TTL_MS.waiting
+  const snap = pv.snapshot()
+  assert.equal(snap.activity.state, 'working')
+  assert.equal(snap.activity.sessionId, 'current-web')
+})
+
+test('活跃档位 TTL 长于 waiting，终态最短', () => {
+  assert.ok(ACTIVITY_TTL_MS.working > ACTIVITY_TTL_MS.waiting)
+  assert.ok(ACTIVITY_TTL_MS.thinking >= ACTIVITY_TTL_MS.working)
+  assert.ok(ACTIVITY_TTL_MS.result >= ACTIVITY_TTL_MS.working)
+  assert.ok(ACTIVITY_TTL_MS.waiting > ACTIVITY_TTL_MS.error)
+  assert.equal(ACTIVITY_TTL_MS.success, ACTIVITY_TTL_MS.error)
 })
 
 test('MOTIONS 白名单与 dsh-pet-component 一致', () => {
