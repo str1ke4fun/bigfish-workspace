@@ -872,6 +872,32 @@ export function registerObserve(ctx, deps = {}) {
       return send(res, 200, r ?? { ok: false, note: '没切成。' })
     }],
 
+    // ---- 桌宠薄壳（BFF-only，不进公开文档）----
+    // 桌宠窗口只跟这两条打交道：状态是易失活动 + 动作 + 屏幕陪伴快照；
+    // 动作是用户点出来的，写 petView 的单槽，不调模型、不碰 events.jsonl。
+    ['/pet/state', async (req, res) => {
+      const pet = deps.petView
+      if (!pet?.snapshot) return send(res, 200, { ok: false, note: '桌宠状态没在跑。' })
+      const s = pet.snapshot()
+      const raw = deps.screen?.status?.() ?? null
+      const presence = raw ? {
+        on: Boolean(raw.on), mode: raw.mode ?? null, busy: Boolean(raw.busy),
+        snapshot: raw.snapshot ?? null, recent: Array.isArray(raw.recent) ? raw.recent : [],
+      } : null
+      return send(res, 200, { at: Date.now(), presence, activity: s.activity, action: s.action })
+    }],
+    ['/pet/act', async (req, res) => {
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      const pet = deps.petView
+      if (!pet?.act) return send(res, 200, { ok: false, note: '桌宠状态没在跑。' })
+      let body = {}
+      try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
+      catch { return send(res, 400, { ok: false, note: 'body 不是 JSON' }) }
+      const r = pet.act({ motion: body?.motion, text: body?.text, ttlMs: body?.ttlMs })
+      if (!r.ok) return send(res, 400, r)
+      return send(res, 200, r)
+    }],
+
     // ---- P3-3：桌面提醒 ----
     // GET 返回开关状态与「今天弹过没有」；POST { enabled } 改开关。
     // 弹窗本身在 scheduler 的唤醒流程里（lib/notify.js），这里只读/只改配置，
