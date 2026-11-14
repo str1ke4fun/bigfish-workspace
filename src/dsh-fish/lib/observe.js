@@ -680,7 +680,7 @@ export function registerObserve(ctx, deps = {}) {
       }
 
       if (!text && !imagePath) return send(res, 400, { error: 'text 不能为空' })
-      const r = await sayToHer(ctx, text, { root, imagePath, log: (...a) => console.log('[dsh-fish]', ...a) })
+      const r = await sayToHer(ctx, text, { root, imagePath, target: body.target, screen: deps.screen, log: (...a) => console.log('[dsh-fish]', ...a) })
       // 一律 200：请求本身是合法的，被拦下是**规则的结果**，不是接口出错。
       // 用 503 会让观测台的 jpost 抛异常，把「这句我没递给她」变成一句技术错误。
       send(res, 200, r)

@@ -118,12 +118,44 @@ async function recordReaction({ events = [], model, body, root }) {
 }
 
 /**
+ * 这句话该进哪个会话。
+ *
+ * - 缺省 / `home`：走屋子里的会话（网页工作台聊天）。
+ * - `companion`：先接上「陪你看屏幕」那条会话，并计一轮对话；接不上就
+ *   回落 home，用 `fellBack` 告诉调用方（她还在，只是没进陪看会话）。
+ *
+ * @param {{target?:string, screen?:object, talkSession:Function, log?:Function}} deps
+ * @returns {Promise<{sessionId:string, target:'home'|'companion', fellBack:boolean}>}
+ */
+export async function resolveSaySession({ target, screen, talkSession, log } = {}) {
+  if (String(target ?? '') === 'companion') {
+    try {
+      const ensured = await screen?.ensureSession?.()
+      if (ensured) {
+        const turn = await screen.noteChatTurn?.()
+        return {
+          sessionId: String(turn?.sessionId || ensured),
+          target: 'companion',
+          fellBack: false,
+        }
+      }
+    } catch (err) {
+      log?.(`companion session failed: ${String(err?.message ?? err).slice(0, 120)}`)
+    }
+    const sessionId = await talkSession?.()
+    return { sessionId: String(sessionId ?? ''), target: 'home', fellBack: true }
+  }
+  const sessionId = await talkSession?.()
+  return { sessionId: String(sessionId ?? ''), target: 'home', fellBack: false }
+}
+
+/**
  * 跟她说一句话。
  *
  * @param {object} ctx 宿主 ctx（需要 sessionController）
  * @param {string} text 你说的话
- * @param {object} deps { root, log, waitMs }
- * @returns {Promise<{ok, note, said: Array, herReply: string, waitedMs}>}
+ * @param {object} deps { root, log, waitMs, target, screen }
+ * @returns {Promise<{ok, note, said: Array, herReply: string, waitedMs, target, sessionId, fellBack}>}
  */
 export async function sayToHer(ctx, text, deps = {}) {
   const root = deps.root ?? rootDir()
@@ -207,12 +239,18 @@ export async function sayToHer(ctx, text, deps = {}) {
   // 那种会话没有工作区归属，宿主侧栏会把它丢进「未分组」——用户在 GUI 里
   // 看到的那串 20 小时前的陌生对话就是这么来的。宁可这句递不出去（会明确告诉她），
   // 也不在用户侧栏里留垃圾。
-  let sessionId = deps.sessionId
+  //
+  // 2026-11-14 改：`target` 决定进屋子还是进「陪你看屏幕」会话。桌宠聊天走
+  // companion，工作台聊天仍然走 home；companion 接不上时回落 home 并标记。
+  const resolved = await resolveSaySession({
+    target: deps.target,
+    screen: deps.screen,
+    talkSession: () => talkSessionId(ctx, { root, log }),
+    log,
+  })
+  const sessionId = resolved.sessionId
   if (!sessionId) {
-    sessionId = await talkSessionId(ctx, { root, log: deps.log })
-    if (!sessionId) {
-      return { ok: false, said: [], note: '屋子没接上，这句没递出去。看看设置页的「她住在哪」。' }
-    }
+    return { ok: false, said: [], note: '屋子没接上，这句没递出去。看看设置页的「她住在哪」。' }
   }
 
   try {
@@ -260,20 +298,24 @@ export async function sayToHer(ctx, text, deps = {}) {
     // ---- 会话轮换 ----
     // 满了就换，旧的改名留档，原话搬几句到新会话（talkmem）。
     // 换失败不算对话失败：她还在旧会话里，只是这次没换成。
+    // 只对 home 生效：陪看会话有自己的轮换（screen.js 的 noteChatTurn），
+    // 不能在这里再按聊天轮次把她从陪看会话里换走。
     let rotated = ''
     let note = said.length ? '' : '她这次没说话。'
     await addExchange(root, { me: body, her: herReply }).catch(() => {})
-    const turns = await bumpTurns(root, 1)
-    const rotateAfter = Number(config?.chat?.rotateAfter ?? 0)
-    if (rotateAfter > 0 && turns >= rotateAfter) {
-      const rot = await rotateTalkSession(ctx, { root, wsId: deps.wsId })
-      if (rot.ok) {
-        rotated = rot.old
-        note = `${note}${note ? ' ' : ''}（聊满 ${turns} 轮，换了个新会话；上一段还在侧栏里，叫「跟她说话·${new Date().toISOString().slice(0, 10)} 之前」）`
-        // 新会话要把「上次说到这」带上——身份文档变了才会被宿主重读
-        await refreshSelfDoc(root, { log }).catch(() => {})
-      } else {
-        log('rotate failed', rot.why)
+    if (resolved.target === 'home') {
+      const turns = await bumpTurns(root, 1)
+      const rotateAfter = Number(config?.chat?.rotateAfter ?? 0)
+      if (rotateAfter > 0 && turns >= rotateAfter) {
+        const rot = await rotateTalkSession(ctx, { root, wsId: deps.wsId })
+        if (rot.ok) {
+          rotated = rot.old
+          note = `${note}${note ? ' ' : ''}（聊满 ${turns} 轮，换了个新会话；上一段还在侧栏里，叫「跟她说话·${new Date().toISOString().slice(0, 10)} 之前」）`
+          // 新会话要把「上次说到这」带上——身份文档变了才会被宿主重读
+          await refreshSelfDoc(root, { log }).catch(() => {})
+        } else {
+          log('rotate failed', rot.why)
+        }
       }
     }
 
@@ -284,6 +326,9 @@ export async function sayToHer(ctx, text, deps = {}) {
       herReply,
       waitedMs: Date.now() - t0,
       rotated,
+      target: resolved.target,
+      sessionId: resolved.sessionId,
+      fellBack: resolved.fellBack,
       // 这句话归因到她哪次拒绝上（没归因就是 null）。观测台与测试用。
       reaction,
     }

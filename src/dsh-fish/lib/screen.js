@@ -71,6 +71,8 @@ export function createScreenService({
     segmentDayKey: '',
     segmentComments: 0,
     sessionComments: 0,
+    // 陪看期间她和他在桌宠里聊的轮次；与 sessionComments 一起决定换不换会话。
+    chatTurns: 0,
     recentComments: [],
     commentsThisHour: 0,
     candidatesThisHour: 0,
@@ -379,12 +381,31 @@ export function createScreenService({
   /** 一段看屏陪久了就换一个新会话；旧会话留在侧栏，不删。 */
   async function rotateIfNeeded() {
     const limit = Number(presence()?.rotateAfter ?? 0)
-    if (!(limit > 0) || state.sessionComments < limit) return false
+    // 评论和对话都算这一条会话用掉了多少轮——聊得多和看屏点评多，都会把上下文撑大。
+    if (!(limit > 0) || state.sessionComments + state.chatTurns < limit) return false
     const old = state.sessionId
     const next = await ensureSession({ rotate: true })
     if (!next || next === old) return false
     state.recentComments = []
+    state.chatTurns = 0
     return true
+  }
+
+  /** 桌宠聊天计一轮；到阈值时按同一套规则换会话。 */
+  async function noteChatTurn() {
+    state.chatTurns += 1
+    const rotated = await rotateIfNeeded()
+    return { rotated, sessionId: state.sessionId }
+  }
+
+  /** 工作台/桌宠读取陪伴会话状态用；只读快照，不改状态。 */
+  function companionInfo() {
+    return {
+      sessionId: state.sessionId,
+      sessionComments: state.sessionComments,
+      chatTurns: state.chatTurns,
+      rotateAfter: Number(presence()?.rotateAfter ?? 0),
+    }
   }
 
   function onCaptureError(err) {
@@ -589,5 +610,8 @@ export function createScreenService({
   void recoverOpenSegment()
   void resumeRuntime()
 
-  return { setMode, status, canSpeak, recordComment, currentMode: () => state.mode, dispose, renderActivity }
+  return {
+    setMode, status, canSpeak, recordComment, currentMode: () => state.mode, dispose, renderActivity,
+    ensureSession, noteChatTurn, companionInfo,
+  }
 }

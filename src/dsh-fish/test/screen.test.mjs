@@ -42,10 +42,12 @@ function makeService(root, { mode = 'event', startOk = true, promptText = '', co
     emit(sample) { return fg.at(-1)?.onSample?.(sample) },
   }
   let turnHandler = null
+  // 每建一次会话 id 递增，轮换测试才能看出“换成了另一个会话”。
+  let seq = 0
   const core = {
     surface: { reserve() {}, current: () => 'screen' },
     sessions: {
-      create: async () => ({ sessionId: 's1' }),
+      create: async () => ({ sessionId: `s${++seq}` }),
       async prompt(sid, text) {
         prompts.push({ sid, text })
         // 模拟宿主一轮结束：watchTurn 在 prompt 之前注册，下一轮事件循环再发。
@@ -294,5 +296,18 @@ test('work 模式没有前台探测时明确失败，不留半启动状态', asy
     assert.equal(r.ok, false)
     assert.match(r.note, /看不了/)
     assert.equal(service.status().on, false)
+  })
+})
+
+test('对话轮次也计入轮换：评论 0 + 对话到阈值就换会话', async () => {
+  await withRoot(async (root) => {
+    const h = makeService(root, { config: normalizeConfig({ presence: { rotateAfter: 2 } }) })
+    await h.service.setMode({ mode: 'event', on: true })
+    const first = h.service.status().sessionId
+    await h.service.noteChatTurn()
+    assert.equal(h.service.status().sessionId, first)
+    await h.service.noteChatTurn()
+    assert.notEqual(h.service.status().sessionId, first)
+    assert.equal(h.service.companionInfo().chatTurns, 0)
   })
 })
