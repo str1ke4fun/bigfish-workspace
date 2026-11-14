@@ -80,6 +80,47 @@ node scripts/sync-assets.mjs --from "D:\dsh-pet\asar-v0.4.8\assets\webm"
 换全量素材时只需把同名（或多出的）文件放进 `assets/webm/` 并更新
 `assets/config.json` 的映射，不用改代码。
 
+## 工作台改尺寸与皮肤
+
+8788 工作台的「她 · 桌宠」页（`#her/pet`）可以不用 Windows 右键菜单就改桌宠：
+
+- **在线判定**：壳启动时与每 60 秒 `POST /api/fish/pet/hello` 上报版本与皮肤清单；
+  工作台只认这条心跳，超过 90 秒没报到就显示离线。壳每 2 秒轮询
+  `/api/fish/pet/state`，只刷新「最后轮询」，不会把离线续成在线。
+- **尺寸**：小 320 / 中 400 / 大 462。工作台写 `POST /api/fish/pet/config { size }`，
+  壳下一轮轮询（≤2 秒）应用；同一尺寸重复下发不会抖动窗口。右键「大小」仍本地生效，
+  并尽力把新尺寸同步回服务端。
+- **皮肤**：下拉列表来自壳通过心跳上报的皮肤清单。选中后工作台写
+  `POST /api/fish/pet/config { skin }`；壳按 id 读本地皮肤并重载 `<Pet>`，
+  默认项（`skin: ''`）回到 `assets/config.json` + `assets/webm`。
+- **坏皮肤**：`skin.json` 不合法、缺任一动画文件或运行期载入失败时，壳保留上一个可用皮肤，
+  不会白屏、不会退出；渲染进程会给出「皮肤没载入」的提示。
+- **换一条会话**：同一页的「陪伴会话」卡片只调 `POST /api/fish/pet/rotate`，让陪看服务
+  换一条新会话；桌宠壳不读写会话内容。
+
+### 本地皮肤目录
+
+在 `desktop-pet/assets/` 下放：
+
+```text
+assets/skins/
+  <id>/
+    skin.json     # { "name": "显示名", "motions": { ...14 个动作... }, "size": 400 }
+    webm/
+      <动画名>.webm
+    ATTRIBUTION.md   # 皮肤自己的素材署名
+```
+
+- `<id>` 只允许小写字母、数字与连字符（`[a-z0-9-]{1,32}`），也是工作台下拉里的值；
+  显示名取 `skin.json` 的 `name`。
+- `motions` 必须覆盖 14 个动作：`idle / turn / moving-left / moving-right / waving /
+  thinking / working / result / waiting / running / review / failed / success / error`
+  （`dragging` 是手势态，不算在内），每个值对应 `webm/<动画名>.webm`，文件必须存在。
+- 默认皮肤不放进 `skins/`，仍用 `assets/config.json` + `assets/webm/`。
+- 壳启动时扫描一次皮肤目录；新增皮肤后要重启壳才会出现在工作台下拉里。
+- **素材不进 Git**：默认动画 `assets/webm/` 已被 `desktop-pet/.gitignore` 忽略；皮肤目录里的
+  `webm/` 目前不在忽略名单，放素材或提交前自行确认不要把有版权的 WebM 带进仓库。
+
 ## 许可
 
 - 播放器组件 `dsh-pet-component` 0.2.5、动作协议参考 `dsh-pet`：MIT。
