@@ -90,7 +90,8 @@ function attachPetMenu(win: BrowserWindow): void {
         })),
       },
       { type: 'separator' },
-      { label: '隐藏', click: () => win.hide() },
+      // v1 没有托盘：无边框 + skipTaskbar 的窗口一旦 hide() 就没有恢复入口，
+      // 所以只给退出。托盘/显示按 spec §6.2 留到后续阶段。
       { label: '退出', click: () => app.quit() },
     ])
     menu.popup({ window: win })
