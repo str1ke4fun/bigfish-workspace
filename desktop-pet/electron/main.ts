@@ -258,7 +258,9 @@ async function applySkin(id: string): Promise<void> {
   if (id === '') {
     try {
       const config: unknown = JSON.parse(await readFile(appFile('assets', 'config.json'), 'utf8'))
-      if (revision === skinRevision) skinForwarder.onSkin({ id, config, uri: DEFAULT_SKIN_URI })
+      if (revision === skinRevision) {
+        skinForwarder.onSkin({ id, revision, config, uri: DEFAULT_SKIN_URI })
+      }
     } catch (error) {
       console.warn('[desktop-pet] 默认皮肤配置没载入，保留当前皮肤', error)
     }
@@ -294,6 +296,7 @@ async function applySkin(id: string): Promise<void> {
     }
     skinForwarder.onSkin({
       id,
+      revision,
       config: parsed,
       uri: `pet-asset://local/skins/${id}/webm`,
     })

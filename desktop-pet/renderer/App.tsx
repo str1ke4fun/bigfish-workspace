@@ -6,6 +6,7 @@ import {
   type PetRef,
 } from 'dsh-pet-component'
 import { shouldIgnoreMouse } from '../electron/pointer'
+import { resolveSkinApply, type SkinRef } from '../electron/skin-apply'
 import {
   decideEffects,
   emptySeen,
@@ -85,8 +86,7 @@ function saveSeen(seen: Seen): void {
 }
 
 /** 主进程推来的皮肤：config 是已校验过的 skin.json，uri 是素材基地址。 */
-interface ActiveSkin {
-  id: string
+interface ActiveSkin extends SkinRef {
   config: DshPetConfig
   uri: string
 }
@@ -96,9 +96,15 @@ function parseSkin(raw: unknown): ActiveSkin | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const message = raw as Record<string, unknown>
   if (typeof message.id !== 'string') return null
+  if (typeof message.revision !== 'number' || !Number.isFinite(message.revision)) return null
   if (typeof message.uri !== 'string' || message.uri === '') return null
   if (!message.config || typeof message.config !== 'object' || Array.isArray(message.config)) return null
-  return { id: message.id, config: message.config as DshPetConfig, uri: message.uri }
+  return {
+    id: message.id,
+    revision: message.revision,
+    config: message.config as DshPetConfig,
+    uri: message.uri,
+  }
 }
 
 export function App() {
@@ -115,6 +121,8 @@ export function App() {
   /** 当前/上一个皮肤用 ref 同步记录，事件回调里读到的永远是最新值。 */
   const skinRef = useRef<ActiveSkin | null>(null)
   const previousSkinRef = useRef<ActiveSkin | null>(null)
+  /** 运行期失败过的皮肤；防止 ready/getSkin 的重放立刻把回退撤销并形成循环。 */
+  const failedSkinRef = useRef<SkinRef | null>(null)
   const pet = useControllablePet(petRef)
 
   useEffect(() => {
@@ -151,7 +159,9 @@ export function App() {
       const next = parseSkin(raw)
       if (!next) return
       const current = skinRef.current
-      if (current && current.id === next.id && current.uri === next.uri) return
+      // 失败皮肤的重放（同一 revision）必须忽略；换皮肤或新 revision 才重新应用。
+      if (resolveSkinApply(current, next, failedSkinRef.current) === 'ignore') return
+      failedSkinRef.current = null
       previousSkinRef.current = current
       skinRef.current = next
       setSkin(next)
@@ -321,6 +331,8 @@ export function App() {
     const current = skinRef.current
     if (!current) return
 
+    // 记下失败的是哪一份 revision：之后 ready/getSkin 补发它时会被忽略。
+    failedSkinRef.current = { id: current.id, revision: current.revision }
     const previous = previousSkinRef.current
     previousSkinRef.current = null
     skinRef.current = previous

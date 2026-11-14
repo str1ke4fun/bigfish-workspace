@@ -16,6 +16,9 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, normalize, sep } from 'node:path'
+import type { SkinRef } from './skin-apply.ts'
+
+export { resolveSkinApply, type SkinRef } from './skin-apply.ts'
 
 /** 14 个动作名，与 `dsh-pet-component` 的 `MOTIONS` 一致（`dragging` 是手势态，不算）。 */
 export const MOTIONS = [
@@ -53,8 +56,9 @@ export interface ScannedSkin {
   config: unknown
 }
 
-export interface SkinPayload {
-  id: string
+export interface SkinPayload extends SkinRef {
+  /** 主进程每次真正下发皮肤时递增；渲染进程用它区分「重放」与「用户重新选中」。 */
+  revision: number
   config: unknown
   uri: string
 }

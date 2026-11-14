@@ -8,6 +8,7 @@ import {
   missingSkinMedia,
   noteLocalSize,
   resolveRemoteSize,
+  resolveSkinApply,
   scanSkins,
   shouldApplySettings,
   SIMPLE_SKIN_ID,
@@ -120,6 +121,7 @@ test('皮肤推送 forwarder：ready 补发，重复内容不重发', () => {
 
   const skin = {
     id: 'maid-blue',
+    revision: 1,
     config: { motions: motionMap() },
     uri: 'pet-asset://local/skins/maid-blue/webm',
   }
@@ -135,6 +137,26 @@ test('皮肤推送 forwarder：ready 补发，重复内容不重发', () => {
   forwarder.ready()
   assert.equal(sent.length, 2)
   assert.deepEqual(sent[1], skin)
+})
+
+test('运行期失败的皮肤不会被 ready/getSkin 重放，只有换皮肤或新 revision 才重新应用', () => {
+  const broken = { id: 'broken', revision: 2 }
+
+  // 同一份失败皮肤的重放（ready / getSkin / 旧 revision）一律忽略。
+  assert.equal(resolveSkinApply(null, { id: 'broken', revision: 2 }, broken), 'ignore')
+  assert.equal(resolveSkinApply(null, { id: 'broken', revision: 1 }, broken), 'ignore')
+
+  // 换成别的皮肤：应用，并允许调用方清掉墓碑。
+  assert.equal(resolveSkinApply({ id: 'broken', revision: 2 }, { id: 'other', revision: 3 }, broken), 'apply')
+
+  // 用户重新选中同一个皮肤会带一个新 revision：允许再试。
+  assert.equal(resolveSkinApply(null, { id: 'broken', revision: 3 }, broken), 'apply')
+
+  // 墓碑清掉后（reset），同一 id 的同一 revision 也能重新应用。
+  assert.equal(resolveSkinApply(null, { id: 'broken', revision: 2 }, null), 'apply')
+
+  // 同一 revision 的重复推送去重。
+  assert.equal(resolveSkinApply({ id: 'broken', revision: 2 }, { id: 'broken', revision: 2 }, null), 'ignore')
 })
 
 test('本地尺寸覆盖优先，服务端回声后清除', () => {
