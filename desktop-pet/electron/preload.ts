@@ -46,6 +46,15 @@ const bridge = {
     }
   },
 
+  /** 服务端设置里的皮肤变化后，主进程把校验过的 config 与素材基地址推过来。 */
+  onSkin(handler: (skin: unknown) => void): Unsubscribe {
+    const listener = (_event: Electron.IpcRendererEvent, skin: unknown): void => handler(skin)
+    ipcRenderer.on('pet:skin', listener)
+    return () => {
+      ipcRenderer.removeListener('pet:skin', listener)
+    }
+  },
+
   /** 在宠物身体上按下/松开时调用，主进程负责跟着光标移动窗口。 */
   startDrag(): void {
     ipcRenderer.send('pet:drag-start')

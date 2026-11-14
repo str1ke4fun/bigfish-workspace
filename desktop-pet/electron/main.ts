@@ -5,10 +5,23 @@ import { createPoller, createStateForwarder, type Poller } from './poller'
 import { sendChat } from '../renderer/chat'
 import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition } from './window'
 import { readPetSize, savePetSize } from './settings'
-import { windowSizeFor } from './size'
+import { clampPetSize, windowSizeFor } from './size'
+import {
+  scanSkins,
+  shouldApplySettings,
+  validateSkin,
+  SIMPLE_SKIN_ID,
+  type PetSettings,
+  type ScannedSkin,
+} from './skin'
 
 const PET_STATE_URL = 'http://127.0.0.1:8788/api/fish/pet/state'
+const PET_CONFIG_URL = 'http://127.0.0.1:8788/api/fish/pet/config'
+const PET_HELLO_URL = 'http://127.0.0.1:8788/api/fish/pet/hello'
 const PET_POLL_INTERVAL_MS = 2000
+const PET_REQUEST_TIMEOUT_MS = 5000
+const PET_HELLO_INTERVAL_MS = 60_000
+const DEFAULT_SKIN_URI = 'pet-asset://local/webm'
 
 /** 右键「演一个动作」：只列用户可选的七个动作，`dragging` 是手势态，不进菜单。 */
 const MOTION_MENU_ITEMS: ReadonlyArray<{ label: string; motion: string }> = [
@@ -31,6 +44,13 @@ const PET_SIZE_PRESETS: ReadonlyArray<{ label: string; size: number }> = [
 let petPoller: Poller | null = null
 let petWindow: BrowserWindow | null = null
 let petSize = 400
+/** 最近一次应用/尝试应用的设置；用来让每 2 秒重复下发的同一份设置保持幂等。 */
+let petSettings: PetSettings = { size: petSize, skin: '' }
+/** 启动时扫描到的本地皮肤；只用于 hello 上报，实际加载按需读盘复核。 */
+let skinCatalog: ScannedSkin[] = [{ id: '', name: '默认', config: null }]
+let helloTimer: ReturnType<typeof setInterval> | null = null
+/** 皮肤加载的单调序号：慢的旧请求不能覆盖后来的新请求。 */
+let skinRevision = 0
 
 const MIME_TYPES: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
@@ -111,14 +131,173 @@ function sendAction(win: BrowserWindow, motion: string): void {
   if (!win.isDestroyed()) win.webContents.send('pet:action', motion)
 }
 
-/** 改尺寸：窗口按比例缩放，先夹回工作区，再把新尺寸推给渲染进程。 */
-function changePetSize(win: BrowserWindow, size: number): void {
-  petSize = savePetSize(size)
-  if (win.isDestroyed()) return
-  const { width, height } = windowSizeFor(petSize)
-  win.setSize(width, height)
-  clampWindowToDisplays(win)
-  win.webContents.send('pet:size', petSize)
+/**
+ * 改尺寸：窗口按比例缩放，先夹回工作区，再把新尺寸推给渲染进程。
+ *
+ * - 右键菜单：`persist` + `sync`，本地落盘并尽力写回服务端。
+ * - 服务端轮询：两者都关掉，只跟随远端值，避免「写回 → 再读到 → 再写回」的循环。
+ */
+interface ChangePetSizeOptions {
+  persist?: boolean
+  sync?: boolean
+}
+
+function changePetSize(
+  win: BrowserWindow,
+  size: number,
+  { persist = true, sync = true }: ChangePetSizeOptions = {},
+): void {
+  petSize = persist ? savePetSize(size) : clampPetSize(size)
+  petSettings = { ...petSettings, size: petSize }
+  if (!win.isDestroyed()) {
+    const { width, height } = windowSizeFor(petSize)
+    win.setSize(width, height)
+    clampWindowToDisplays(win)
+    win.webContents.send('pet:size', petSize)
+  }
+  if (sync) void syncPetConfig({ size: petSize })
+}
+
+/** 尽力把本地设置同步回服务端；失败只影响工作台显示，本地照常生效。 */
+async function syncPetConfig(update: { size?: number; skin?: string }): Promise<void> {
+  try {
+    const response = await fetch(PET_CONFIG_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(update),
+      signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  } catch {
+    // 本地已经生效；不打扰用户，也不刷日志。
+  }
+}
+
+/** 心跳：窗口真的起来了才让服务端判 online。失败静默，不刷屏。 */
+async function sendHello(): Promise<void> {
+  try {
+    const response = await fetch(PET_HELLO_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        version: app.getVersion(),
+        skins: skinCatalog.map(({ id, name }) => ({ id, name })),
+      }),
+      signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  } catch {
+    // 心跳失败不影响桌宠本身；下一拍再试。
+  }
+}
+
+function startPetHeartbeat(): void {
+  stopPetHeartbeat()
+  void sendHello()
+  helloTimer = setInterval(() => {
+    void sendHello()
+  }, PET_HELLO_INTERVAL_MS)
+}
+
+function stopPetHeartbeat(): void {
+  if (helloTimer) clearInterval(helloTimer)
+  helloTimer = null
+}
+
+/** 从 `/pet/state` 里取出可用的设置；缺字段/类型不对就不算一次变化。 */
+function readRemoteSettings(state: unknown): { size?: number; skin?: string } {
+  if (!state || typeof state !== 'object') return {}
+  const settings = (state as Record<string, unknown>).settings
+  if (!settings || typeof settings !== 'object') return {}
+  const record = settings as Record<string, unknown>
+
+  const next: { size?: number; skin?: string } = {}
+  if (typeof record.size === 'number' && Number.isFinite(record.size)) {
+    next.size = clampPetSize(record.size)
+  }
+  if (typeof record.skin === 'string') next.skin = record.skin
+  return next
+}
+
+interface SkinPayload {
+  id: string
+  config: unknown
+  uri: string
+}
+
+function sendSkin(win: BrowserWindow, payload: SkinPayload): void {
+  if (!win.isDestroyed()) win.webContents.send('pet:skin', payload)
+}
+
+/**
+ * 按 id 加载皮肤并推给渲染进程。默认皮肤回到现有 `config.json` + `assets/webm`。
+ *
+ * 先记录服务端意图（`petSettings.skin`），这样同一份失败设置不会每 2 秒重试并刷日志；
+ * 但渲染进程只在校验通过后收到新皮肤，失败时继续用旧皮肤。
+ */
+async function applySkin(id: string): Promise<void> {
+  const revision = ++skinRevision
+  petSettings = { ...petSettings, skin: id }
+
+  const win = petWindow
+  if (!win || win.isDestroyed()) return
+
+  if (id === '') {
+    try {
+      const config: unknown = JSON.parse(await readFile(appFile('assets', 'config.json'), 'utf8'))
+      if (revision === skinRevision) sendSkin(win, { id, config, uri: DEFAULT_SKIN_URI })
+    } catch (error) {
+      console.warn('[desktop-pet] 默认皮肤配置没载入，保留当前皮肤', error)
+    }
+    return
+  }
+
+  if (!SIMPLE_SKIN_ID.test(id)) {
+    console.warn(`[desktop-pet] 皮肤 id 不合法，保留当前皮肤：${id}`)
+    return
+  }
+
+  const assetsRoot = appFile('assets')
+  const file = normalize(join(assetsRoot, 'skins', id, 'skin.json'))
+  if (!isInside(assetsRoot, file)) {
+    console.warn(`[desktop-pet] 皮肤路径越界，保留当前皮肤：${id}`)
+    return
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(await readFile(file, 'utf8'))
+    if (revision !== skinRevision) return
+    const validation = validateSkin(parsed)
+    if (!validation.ok) {
+      console.warn(`[desktop-pet] 皮肤 ${id} 没载入，保留当前皮肤：${validation.why}`)
+      return
+    }
+    sendSkin(win, {
+      id,
+      config: parsed,
+      uri: `pet-asset://local/skins/${id}/webm`,
+    })
+  } catch (error) {
+    if (revision === skinRevision) {
+      console.warn(`[desktop-pet] 皮肤 ${id} 没载入，保留当前皮肤`, error)
+    }
+  }
+}
+
+/** 每拍轮询后比较服务端设置；只在真正变化时改窗口/皮肤。 */
+function applyRemoteSettings(state: unknown): void {
+  const next = readRemoteSettings(state)
+  if (!shouldApplySettings(petSettings, next)) return
+
+  if (typeof next.size === 'number' && next.size !== petSettings.size) {
+    const win = petWindow
+    if (win && !win.isDestroyed()) {
+      changePetSize(win, next.size, { persist: false, sync: false })
+    }
+  }
+  if (typeof next.skin === 'string' && next.skin !== petSettings.skin) {
+    void applySkin(next.skin)
+  }
 }
 
 function attachPetMenu(win: BrowserWindow): void {
@@ -232,7 +411,10 @@ function startPetPoller(win: BrowserWindow): void {
     url: PET_STATE_URL,
     intervalMs: PET_POLL_INTERVAL_MS,
     fetchImpl: (url, init) => fetch(url, init),
-    onState: (state) => stateForwarder.onState(state),
+    onState: (state) => {
+      stateForwarder.onState(state)
+      applyRemoteSettings(state)
+    },
   })
   petPoller.start()
 }
@@ -248,8 +430,12 @@ app
   .whenReady()
   .then(() => {
     petSize = readPetSize()
+    petSettings = { size: petSize, skin: '' }
     registerAssetProtocol()
+    skinCatalog = scanSkins(appFile('assets'))
     startPetWindow()
+    // 窗口先建好再报到，服务端的 online 才真的代表「窗口起来了」。
+    startPetHeartbeat()
 
     app.on('activate', () => {
       if (!petWindow || petWindow.isDestroyed()) {
@@ -268,6 +454,7 @@ app
 app.on('before-quit', () => {
   endDrag()
   flushPosition()
+  stopPetHeartbeat()
   petPoller?.stop()
   petPoller = null
   petWindow = null

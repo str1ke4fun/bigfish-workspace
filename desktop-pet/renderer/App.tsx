@@ -32,6 +32,8 @@ declare global {
       /** 当前宠物尺寸与尺寸变化。 */
       getSize?(): Promise<number>
       onSize?(handler: (size: number) => void): () => void
+      /** 服务端设置切换皮肤后，主进程推来校验过的 config 与素材基地址。 */
+      onSkin?(handler: (skin: unknown) => void): () => void
     }
   }
 }
@@ -86,6 +88,10 @@ export function App() {
   /** 声明式稳态：activity / presence；一次性动作播完后由组件自动回落到它。 */
   const [steady, setSteady] = useState<PetMotion>('idle')
   const [size, setSize] = useState(PET_SIZE_DEFAULT)
+  /** 服务端下发的皮肤；null = 默认皮肤（继续用 assets/config.json + assets/webm）。 */
+  const [skin, setSkin] = useState<{ config: DshPetConfig; uri: string } | null>(null)
+  const activeConfig = skin?.config ?? config
+  const activeUri = skin?.uri ?? ASSET_BASE
   const petRef = useRef<PetRef>(null)
   const pet = useControllablePet(petRef)
 
@@ -113,6 +119,23 @@ export function App() {
     )
   }, [size])
 
+  // 皮肤切换：主进程已经校验过 skin.json 并读好内容，这里只接住并换渲染配置。
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined
+    try {
+      unsubscribe = window.petBridge?.onSkin?.((raw) => {
+        if (!raw || typeof raw !== 'object') return
+        const message = raw as Record<string, unknown>
+        if (typeof message.uri !== 'string' || message.uri === '') return
+        if (!message.config || typeof message.config !== 'object' || Array.isArray(message.config)) return
+        setSkin({ config: message.config as DshPetConfig, uri: message.uri })
+      })
+    } catch {
+      unsubscribe = undefined
+    }
+    return () => unsubscribe?.()
+  }, [])
+
   useEffect(() => {
     let cancelled = false
 
@@ -134,7 +157,7 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (!config) return
+    if (!activeConfig) return
     let seen = loadSeen()
     let unsubscribe: (() => void) | undefined
 
@@ -165,7 +188,7 @@ export function App() {
     return () => {
       unsubscribe?.()
     }
-  }, [config, pet])
+  }, [activeConfig, pet])
 
   // 右键菜单「演一个动作」：main 只发动作名；这里统一成一次性播放，播完回落稳态。
   useEffect(() => {
@@ -180,7 +203,7 @@ export function App() {
 
   // 点击穿透：默认整窗穿透，指针落到身体/UI 上才翻成可交互。
   useEffect(() => {
-    if (!config) return
+    if (!activeConfig) return
 
     let overPet = false
     let overUi = false
@@ -247,7 +270,7 @@ export function App() {
       window.removeEventListener('blur', endDrag)
       window.petBridge?.setIgnoreMouse?.(true)
     }
-  }, [config])
+  }, [activeConfig])
 
   /**
    * 对话气泡的三种收尾，绝不把失败显示成成功：
@@ -314,14 +337,16 @@ export function App() {
       })
   }
 
-  if (error) return <p className="pet-error">桌宠配置没加载出来：{error}</p>
-  if (!config) return null
+  if (!activeConfig) {
+    if (error) return <p className="pet-error">桌宠配置没加载出来：{error}</p>
+    return null
+  }
 
   return (
     <Pet
       ref={petRef}
-      config={config}
-      uri={{ default: ASSET_BASE }}
+      config={activeConfig}
+      uri={activeUri}
       size={size}
       motion={steady}
       dialogue
