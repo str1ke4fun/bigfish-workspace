@@ -1,10 +1,8 @@
 import { app, BrowserWindow, screen, type BrowserWindowConstructorOptions, type Display } from 'electron'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { clampToDisplays } from './pointer'
-
-export const PET_WINDOW_WIDTH = 500
-export const PET_WINDOW_HEIGHT = 340
+import { clampToDisplays, defaultPosition, ensureVisible } from './pointer'
+import { PET_SIZE_DEFAULT, windowSizeFor } from './size'
 
 /** 窗口移动会连发 `moved`，攒一下再落盘。 */
 const POSITION_SAVE_DELAY_MS = 300
@@ -70,16 +68,19 @@ function displaysWithPrimaryFirst(): Display[] {
   return [primary, ...screen.getAllDisplays().filter((display) => display.id !== primary.id)]
 }
 
-function clampIntoDisplays(win: BrowserWindow): void {
+/**
+ * 拖拽结束时只保证“还看得见”（允许贴边/半出屏）；
+ * 显示器变化或启动时则完整夹回工作区，避免换屏后找不到宠物。
+ */
+export function clampWindowToDisplays(win: BrowserWindow, allowPartial = false): void {
   if (win.isDestroyed()) return
   const displays = displaysWithPrimaryFirst()
   const [x, y] = win.getPosition()
-  const next = clampToDisplays(
-    { x, y, width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT },
-    displays,
-    (display) => display.workArea,
-    displays[0],
-  )
+  const [width, height] = win.getSize()
+  const bounds = { x, y, width, height }
+  const next = allowPartial
+    ? ensureVisible(bounds, displays, (display) => display.workArea, displays[0])
+    : clampToDisplays(bounds, displays, (display) => display.workArea, displays[0])
   if (next.x !== x || next.y !== y) win.setPosition(next.x, next.y)
 }
 
@@ -95,13 +96,14 @@ export function applyIgnoreMouse(win: BrowserWindow, ignore: boolean): void {
   else win.setIgnoreMouseEvents(false)
 }
 
-export function createPetWindow(): BrowserWindow {
+export function createPetWindow(size: number = PET_SIZE_DEFAULT): BrowserWindow {
   const displays = displaysWithPrimaryFirst()
   const saved = readSavedPosition()
+  const { width, height } = windowSizeFor(size)
 
   const options: BrowserWindowConstructorOptions = {
-    width: PET_WINDOW_WIDTH,
-    height: PET_WINDOW_HEIGHT,
+    width,
+    height,
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -116,23 +118,23 @@ export function createPetWindow(): BrowserWindow {
     },
   }
 
-  if (saved) {
-    const position = clampToDisplays(
-      { ...saved, width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT },
-      displays,
-      (display) => display.workArea,
-      displays[0],
-    )
-    options.x = position.x
-    options.y = position.y
-  }
+  // 从没保存过位置时放主屏右下角；保存过的位置要按当前显示器夹一遍。
+  const initial = saved ?? defaultPosition(displays[0].workArea, width, height)
+  const position = clampToDisplays(
+    { ...initial, width, height },
+    displays,
+    (display) => display.workArea,
+    displays[0],
+  )
+  options.x = position.x
+  options.y = position.y
 
   const win = new BrowserWindow(options)
   applyIgnoreMouse(win, true)
 
   win.on('moved', () => schedulePositionSave(win))
 
-  const onDisplaysChanged = (): void => clampIntoDisplays(win)
+  const onDisplaysChanged = (): void => clampWindowToDisplays(win)
   screen.on('display-removed', onDisplaysChanged)
   screen.on('display-metrics-changed', onDisplaysChanged)
   win.on('closed', () => {

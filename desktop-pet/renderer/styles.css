@@ -20,6 +20,21 @@ body {
   justify-content: center;
 }
 
+/*
+ * 组件默认气泡最小宽度是 size × 0.92（462 → 425px），在 500px 的透明窗里显得过大。
+ * 这里把它收窄到 300px、字号降到 13px；!important 用来压过组件注入的样式。
+ */
+.dsh-pet__bubble {
+  min-width: 0 !important;
+  max-width: var(--pet-bubble-max, 300px) !important;
+}
+
+.dsh-pet__bubble-text,
+.dsh-pet__bubble-title {
+  font-size: 13px !important;
+  line-height: 18px !important;
+}
+
 .pet-error {
   margin: 0;
   padding: 12px 16px;

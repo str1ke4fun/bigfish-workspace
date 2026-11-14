@@ -26,13 +26,19 @@ declare global {
       ready?(): void
       /** 把用户原话交给主进程请求 /api/fish/say；老 preload 没有时提示说不了。 */
       requestChat?(text: string): Promise<ChatResult>
+      /** 拖拽窗口：在宠物身体上按下/松开时通知主进程。 */
+      startDrag?(): void
+      endDrag?(): void
+      /** 当前宠物尺寸与尺寸变化。 */
+      getSize?(): Promise<number>
+      onSize?(handler: (size: number) => void): () => void
     }
   }
 }
 
 const CONFIG_URL = 'pet-asset://local/config.json'
 const ASSET_BASE = 'pet-asset://local/webm'
-const PET_SIZE = 462
+const PET_SIZE_DEFAULT = 400
 const SEEN_STORAGE_KEY = 'desktop-pet:seen'
 const BUBBLE_TIMEOUT_MS = 10_000
 /** 对话的加载/失败气泡共用一个 key：失败时原地更新，不叠第二只气泡。 */
@@ -79,8 +85,33 @@ export function App() {
   const [error, setError] = useState<string | null>(null)
   /** 声明式稳态：activity / presence；一次性动作播完后由组件自动回落到它。 */
   const [steady, setSteady] = useState<PetMotion>('idle')
+  const [size, setSize] = useState(PET_SIZE_DEFAULT)
   const petRef = useRef<PetRef>(null)
   const pet = useControllablePet(petRef)
+
+  useEffect(() => {
+    const bridge = window.petBridge
+    let unsubscribe: (() => void) | undefined
+    void bridge?.getSize?.().then((value) => {
+      if (typeof value === 'number') setSize(value)
+    })
+    try {
+      unsubscribe = bridge?.onSize?.((value) => {
+        if (typeof value === 'number') setSize(value)
+      })
+    } catch {
+      // 老 preload 没有 onSize：保持默认尺寸即可。
+    }
+    return () => unsubscribe?.()
+  }, [])
+
+  // 气泡宽度跟着宠物尺寸走，避免小宠物配大水泡。
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      '--pet-bubble-max',
+      `${Math.round(Math.min(360, Math.max(240, size * 0.75)))}px`,
+    )
+  }, [size])
 
   useEffect(() => {
     let cancelled = false
@@ -153,9 +184,10 @@ export function App() {
 
     let overPet = false
     let overUi = false
+    let dragging = false
 
     const publish = (): void => {
-      window.petBridge?.setIgnoreMouse?.(shouldIgnoreMouse({ overPet, overUi, dragging: false }))
+      window.petBridge?.setIgnoreMouse?.(shouldIgnoreMouse({ overPet, overUi, dragging }))
     }
 
     const update = (x: number, y: number): void => {
@@ -177,14 +209,42 @@ export function App() {
       publish()
     }
 
+    const inBody = (x: number, y: number): boolean => {
+      const body = petRef.current?.geometry?.body
+      return (
+        body !== undefined && x >= body.left && x <= body.right && y >= body.top && y <= body.bottom
+      )
+    }
+
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.button !== 0 || !inBody(event.clientX, event.clientY)) return
+      dragging = true
+      overPet = true
+      publish()
+      window.petBridge?.startDrag?.()
+    }
+
+    const endDrag = (): void => {
+      if (!dragging) return
+      dragging = false
+      window.petBridge?.endDrag?.()
+      publish()
+    }
+
     window.addEventListener('mousemove', onMouseMove, true)
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('pointerup', endDrag, true)
+    window.addEventListener('pointercancel', endDrag, true)
     document.addEventListener('mouseleave', reset)
-    window.addEventListener('blur', reset)
+    window.addEventListener('blur', endDrag)
 
     return () => {
       window.removeEventListener('mousemove', onMouseMove, true)
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('pointerup', endDrag, true)
+      window.removeEventListener('pointercancel', endDrag, true)
       document.removeEventListener('mouseleave', reset)
-      window.removeEventListener('blur', reset)
+      window.removeEventListener('blur', endDrag)
       window.petBridge?.setIgnoreMouse?.(true)
     }
   }, [config])
@@ -262,7 +322,7 @@ export function App() {
       ref={petRef}
       config={config}
       uri={{ default: ASSET_BASE }}
-      size={PET_SIZE}
+      size={size}
       motion={steady}
       dialogue
       onDialogue={handleDialogue}

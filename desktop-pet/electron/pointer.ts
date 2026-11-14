@@ -21,6 +21,38 @@ export type PointerContext = {
   dragging: boolean
 }
 
+/**
+ * 第一次启动的默认位置：主屏工作区右下角，留一点边距。
+ * 有保存过的位置时以保存值为准；这个函数只负责“从没放过”的情况。
+ */
+export function defaultPosition(
+  workArea: WindowRect,
+  width: number,
+  height: number,
+  margin = 24,
+): { x: number; y: number } {
+  return {
+    x: Math.round(workArea.x + workArea.width - width - margin),
+    y: Math.round(workArea.y + workArea.height - height - margin),
+  }
+}
+
+/**
+ * 拖拽落点只要求“还看得见”：与任一工作区有交集就保持原位，
+ * 这样宠物可以贴边甚至半只挂在屏幕外；完全丢出屏幕才拉回主屏。
+ */
+export function ensureVisible<T>(
+  bounds: WindowRect,
+  displays: readonly T[],
+  workAreaOf: (display: T) => WindowRect,
+  primary?: T,
+): { x: number; y: number } {
+  if (displays.some((display) => intersectionArea(bounds, workAreaOf(display)) > 0)) {
+    return { x: Math.round(bounds.x), y: Math.round(bounds.y) }
+  }
+  return clampToDisplays(bounds, displays, workAreaOf, primary)
+}
+
 /** 只有身体、UI、拖拽三者都不在时，整窗才穿透。 */
 export function shouldIgnoreMouse({ overPet, overUi, dragging }: PointerContext): boolean {
   return !(overPet || overUi || dragging)
