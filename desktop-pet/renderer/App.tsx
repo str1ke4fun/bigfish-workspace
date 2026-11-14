@@ -1,11 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
-import { Pet, useControllablePet, type DshPetConfig, type PetRef } from 'dsh-pet-component'
+import {
+  Pet,
+  useControllablePet,
+  type DshPetConfig,
+  type Motion,
+  type PetRef,
+} from 'dsh-pet-component'
+import { shouldIgnoreMouse } from '../electron/pointer'
 import { decideEffects, emptySeen, type PetState, type Seen } from './controller'
 
 declare global {
   interface Window {
     petBridge?: {
       onState(handler: (state: unknown) => void): () => void
+      onAction?(handler: (motion: string) => void): () => void
+      setIgnoreMouse?(ignore: boolean): void
       /** 通知主进程补发最近一次缓存状态；老 preload 没有时退回只等下一拍。 */
       ready?(): void
     }
@@ -17,6 +26,17 @@ const ASSET_BASE = 'pet-asset://local/webm'
 const PET_SIZE = 462
 const SEEN_STORAGE_KEY = 'desktop-pet:seen'
 const BUBBLE_TIMEOUT_MS = 10_000
+/** 气泡层指针事件是 none，只能按几何矩形判断；对话框与错误提示同理。 */
+const UI_SELECTORS = '.dsh-pet__bubbles, .dsh-pet__dialogue, .pet-error'
+
+function isPointerOverUi(x: number, y: number): boolean {
+  for (const node of document.querySelectorAll<HTMLElement>(UI_SELECTORS)) {
+    const rect = node.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) continue
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return true
+  }
+  return false
+}
 
 function loadSeen(): Seen {
   try {
@@ -100,6 +120,58 @@ export function App() {
       unsubscribe?.()
     }
   }, [config, pet])
+
+  // 右键菜单「演一个动作」：main 只发动作名，重播由这里保证。
+  useEffect(() => {
+    const unsubscribe = window.petBridge?.onAction?.((motion) => {
+      pet.motion({ type: motion as Motion, replay: true })
+    })
+    return () => {
+      unsubscribe?.()
+    }
+  }, [pet])
+
+  // 点击穿透：默认整窗穿透，指针落到身体/UI 上才翻成可交互。
+  useEffect(() => {
+    if (!config) return
+
+    let overPet = false
+    let overUi = false
+
+    const publish = (): void => {
+      window.petBridge?.setIgnoreMouse?.(shouldIgnoreMouse({ overPet, overUi, dragging: false }))
+    }
+
+    const update = (x: number, y: number): void => {
+      const body = petRef.current?.geometry?.body
+      const nextOverPet =
+        body !== undefined && x >= body.left && x <= body.right && y >= body.top && y <= body.bottom
+      const nextOverUi = isPointerOverUi(x, y)
+      if (nextOverPet === overPet && nextOverUi === overUi) return
+      overPet = nextOverPet
+      overUi = nextOverUi
+      publish()
+    }
+
+    const onMouseMove = (event: MouseEvent): void => update(event.clientX, event.clientY)
+    const reset = (): void => {
+      if (!overPet && !overUi) return
+      overPet = false
+      overUi = false
+      publish()
+    }
+
+    window.addEventListener('mousemove', onMouseMove, true)
+    document.addEventListener('mouseleave', reset)
+    window.addEventListener('blur', reset)
+
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove, true)
+      document.removeEventListener('mouseleave', reset)
+      window.removeEventListener('blur', reset)
+      window.petBridge?.setIgnoreMouse?.(true)
+    }
+  }, [config])
 
   if (error) return <p className="pet-error">桌宠配置没加载出来：{error}</p>
   if (!config) return null

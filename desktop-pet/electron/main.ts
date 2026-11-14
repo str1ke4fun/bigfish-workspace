@@ -1,13 +1,22 @@
-import { app, BrowserWindow, ipcMain, protocol } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, protocol } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize, sep } from 'node:path'
 import { createPoller, createStateForwarder, type Poller } from './poller'
-
-const WINDOW_WIDTH = 500
-const WINDOW_HEIGHT = 340
+import { applyIgnoreMouse, createPetWindow, flushPosition } from './window'
 
 const PET_STATE_URL = 'http://127.0.0.1:8788/api/fish/pet/state'
 const PET_POLL_INTERVAL_MS = 2000
+
+/** 右键「演一个动作」：只列用户可选的七个动作，`dragging` 是手势态，不进菜单。 */
+const MOTION_MENU_ITEMS: ReadonlyArray<{ label: string; motion: string }> = [
+  { label: '挥手', motion: 'waving' },
+  { label: '思考', motion: 'thinking' },
+  { label: '忙碌', motion: 'working' },
+  { label: '看结果', motion: 'result' },
+  { label: '等待', motion: 'waiting' },
+  { label: '庆祝', motion: 'success' },
+  { label: '沮丧', motion: 'error' },
+]
 
 let petPoller: Poller | null = null
 let petWindow: BrowserWindow | null = null
@@ -65,32 +74,27 @@ function registerAssetProtocol(): void {
   })
 }
 
-export function createPetWindow(): BrowserWindow {
-  const win = new BrowserWindow({
-    width: WINDOW_WIDTH,
-    height: WINDOW_HEIGHT,
-    transparent: true,
-    frame: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    hasShadow: false,
-    resizable: false,
-    webPreferences: {
-      preload: appFile('dist-electron', 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+function sendAction(win: BrowserWindow, motion: string): void {
+  if (!win.isDestroyed()) win.webContents.send('pet:action', motion)
+}
+
+function attachPetMenu(win: BrowserWindow): void {
+  win.webContents.on('context-menu', () => {
+    if (win.isDestroyed()) return
+    const menu = Menu.buildFromTemplate([
+      {
+        label: '演一个动作',
+        submenu: MOTION_MENU_ITEMS.map(({ label, motion }) => ({
+          label,
+          click: () => sendAction(win, motion),
+        })),
+      },
+      { type: 'separator' },
+      { label: '隐藏', click: () => win.hide() },
+      { label: '退出', click: () => app.quit() },
+    ])
+    menu.popup({ window: win })
   })
-
-  const devServerUrl = process.env.VITE_DEV_SERVER_URL
-  if (devServerUrl) {
-    void win.loadURL(devServerUrl)
-  } else {
-    void win.loadFile(appFile('dist-renderer', 'index.html'))
-  }
-
-  return win
 }
 
 /**
@@ -103,6 +107,11 @@ const stateForwarder = createStateForwarder((state) => {
 
 ipcMain.on('pet:ready', () => {
   stateForwarder.resend()
+})
+
+ipcMain.on('pet:ignore-mouse', (event, ignore: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win) applyIgnoreMouse(win, ignore === true)
 })
 
 function startPetPoller(win: BrowserWindow): void {
@@ -118,14 +127,26 @@ function startPetPoller(win: BrowserWindow): void {
   petPoller.start()
 }
 
+function startPetWindow(): BrowserWindow {
+  const win = createPetWindow()
+  attachPetMenu(win)
+  startPetPoller(win)
+  return win
+}
+
 app
   .whenReady()
   .then(() => {
     registerAssetProtocol()
-    startPetPoller(createPetWindow())
+    startPetWindow()
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) startPetPoller(createPetWindow())
+      if (!petWindow || petWindow.isDestroyed()) {
+        startPetWindow()
+      } else {
+        petWindow.show()
+        petWindow.focus()
+      }
     })
   })
   .catch((error: unknown) => {
@@ -134,6 +155,7 @@ app
   })
 
 app.on('before-quit', () => {
+  flushPosition()
   petPoller?.stop()
   petPoller = null
   petWindow = null
