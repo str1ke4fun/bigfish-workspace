@@ -147,7 +147,17 @@ export function createPetWindow(size: number = PET_SIZE_DEFAULT): BrowserWindow 
   options.y = position.y
 
   const win = new BrowserWindow(options)
+  // Windows 上构造参数里的 alwaysOnTop 有时不会真正带上 WS_EX_TOPMOST（实测 exstyle=0x200000），
+  // 必须显式再设一次；screen-saver 级别才能压过普通置顶窗口和无边框全屏游戏。
+  win.setAlwaysOnTop(true, 'screen-saver')
   applyIgnoreMouse(win, true)
+
+  // 游戏/播放器会把自己的窗口设成 topmost，把宠物挤到下面：失焦时和每 15 秒重申一次。
+  const reassertTop = (): void => {
+    if (!win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
+  }
+  const topTimer = setInterval(reassertTop, 15_000)
+  win.on('blur', reassertTop)
 
   win.on('moved', () => schedulePositionSave(win))
 
@@ -155,6 +165,8 @@ export function createPetWindow(size: number = PET_SIZE_DEFAULT): BrowserWindow 
   screen.on('display-removed', onDisplaysChanged)
   screen.on('display-metrics-changed', onDisplaysChanged)
   win.on('closed', () => {
+    clearInterval(topTimer)
+    win.removeListener('blur', reassertTop)
     screen.removeListener('display-removed', onDisplaysChanged)
     screen.removeListener('display-metrics-changed', onDisplaysChanged)
     if (pendingWindow === win) {

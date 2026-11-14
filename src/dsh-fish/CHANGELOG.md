@@ -33,6 +33,7 @@
 - **工作台「桌宠」页**：`her` 组新增 `#her/pet`，3 秒轮询 `/pet/state`，四块——状态（在线/离线、最后轮询、activity、action、presence 开关与最近 5 条评论）、动作试演（七个动作；离线时禁用）、外观（小/中/大 320/400/462 与皮肤下拉）、陪伴会话（短码、评论数、对话轮数、阈值，「换一条」先确认）。原「陪伴」页移除重复的动作卡片，只留开关、状态与最近评论。
 - **尺寸与皮肤下发**：`config.pet = { size: 400, skin: '' }`。工作台写配置后，桌宠壳下一轮轮询（≤2 秒）读 `state.settings` 应用；同一设置重复下发幂等，不抖动窗口或反复重载。桌面壳新增本地皮肤：启动时扫描 `assets/skins/<id>/skin.json`（`motions` 必须覆盖 14 个动作，`webm/<动作>.webm` 必须齐全），通过后把 `{ id, revision, config, uri }` 推给渲染进程。坏 JSON、缺素材、运行期载入失败都保留上一个皮肤并给可见提示，不白屏、不退出。
 - **远程尺寸修复**：Windows 上 `resizable:false` 的窗口会直接忽略 `setSize`；改尺寸时临时放开 resizable、改完关回去，工作台下发的尺寸才真正生效。
+- **置顶修复**：Windows 上构造参数里的 `alwaysOnTop` 有时不会真正带上 `WS_EX_TOPMOST`；创建后显式 `setAlwaysOnTop(true, 'screen-saver')`，并在失焦与每 15 秒重申一次，游戏/播放器抢 topmost 后宠物不会被盖住。
 - **皮肤目录**：`desktop-pet/assets/skins/<id>/skin.json` 与 `webm/`；默认皮肤仍走 `assets/config.json` + `assets/webm`，不放进 `skins/`。动画素材不进 Git：`assets/webm/` 与 `assets/skins/*/webm/` 都在 `.gitignore` 里，`skin.json` 与 `ATTRIBUTION.md` 仍可提交。
 
 **已验证（WSL，纯 Node）**：`src/dsh-fish` `node --test` 1103 全绿；`workbench` `node --test` 117 全绿；`desktop-pet` `npm test` 36 全绿。这些只覆盖纯函数、路由与契约，不等于真机行为。
