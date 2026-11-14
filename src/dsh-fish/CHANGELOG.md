@@ -22,6 +22,22 @@
 
 验收：`node --test` 1077 全绿；真机 event 模式截到游戏画面，她读图后自然说了一句，presence 台账与工作台状态都有；一局结束写 `meta presence:2026-11-14:event:3:6`。前台 watcher 真机读出 `StarRail` / `Weixin` 与显示器矩形（工作模式会拒绝非白名单的 `StarRail`）。**工作模式实时切换与 T0 帧率影响仍未验收。**
 
+### 桌宠薄壳 v1（2026-11-14）
+
+**Windows 桌宠有了自己的薄壳：她能演一个动作、跟着工作状态动，点它还能和她说话**
+
+- `src/dsh-fish` 新增易失的 `lib/pet-view.js`：把她自己 web / screen 面的会话事件压成六档活动状态（thinking / working / result / waiting / success / error），外加一个内存动作单槽；不写 `events.jsonl`、不写 presence 台账、不调模型，重启后清空。`observe.js` 增加 `/dsh-fish/pet/state`（GET）与 `/pet/act`（POST），`index.js` 接上 `session/event`。事件流与 schema 未改，三个依赖字段仍为 `{}`。
+- 8788 BFF 增加两条白名单路由：`pet/state` GET（P1）、`pet/act` POST（P2，64 KB 上限）；工作台「陪伴」页新增「让她演一个动作」七个按钮（`waving / thinking / working / result / waiting / success / error`）。
+- `desktop-pet/` 是独立 Electron + React 19 项目（`dsh-pet-component` 0.2.5），不进插件包。窗口透明、无边框、置顶、跳过任务栏；命中区外整窗点击穿透，身体、气泡、输入框、右键菜单可交互；启动和显示器变化时按工作区夹取位置并持久化。
+- 薄壳每 2 秒轮询 `/api/fish/pet/state`，失败按 2 / 4 / 8 / 16 / 30 秒退避，一次断线只记一次错误。播放优先级：显式动作 → 新评论气泡（`settlement` 用 `success`，其余用 `waving`，同一条评论只弹一次）→ 她的工作状态 → `idle`；同一动作不会因轮询重复重播，显式再点会重播。
+- 右键菜单 v1 只有「演一个动作」和「退出」。**「隐藏」已移除**：无边框、`skipTaskbar` 且没有托盘时，`hide()` 之后没有恢复入口；托盘/显示按 spec §6.2 留到后续阶段。
+- 点宠物打开输入框说话（P3）：`POST /api/fish/say` 由 Electron **主进程**经 IPC `pet:chat` 发起——渲染进程从 `file://` 加载，8788 BFF 不带 CORS 头，浏览器侧直接请求会被拦。回复显示成气泡；超时、非 2xx、HTTP 200 但 `ok:false` 都明确显示「没送到」，不冒充成功。
+- 素材是 dsh-pet 的 **11 段子集**（约 4.6 MB，`desktop-pet/assets/webm/` 不进 Git）；代码 MIT，形象/素材 CC BY-NC-SA 4.0，署名与商用限制见 `desktop-pet/assets/ATTRIBUTION.md`。
+
+**已验证（WSL，纯 Node）**：`src/dsh-fish` `node --test` 1086 全绿；`workbench` `node --test` 112 全绿；`desktop-pet` 五个测试文件 16 全绿；`node scripts/check-assets.mjs` 报 `assets ok: 11 files`。这些只覆盖纯函数、路由与契约，**不等于** Windows 窗口或真实消息收发的验收。
+
+**未验收（Windows 真机，本环境不执行）**：没有 `npm install`、Vite/Electron 构建、`npm run dist:win`，也没有 `release/*.exe`；透明/置顶/点击穿透、七个动作的播放与重播、presence 气泡去重、BFF 断开与恢复、拖到副屏/混合 DPI 后的位置恢复、点宠物 `/say` 端到端往返均未实测，TypeScript 类型检查也未运行。v1 不做物理/甩动、不做多宠物、不做托盘，也未打包全量 114 段素材。
+
 ## 0.9.0 — 2026-11-13
 
 **人物记忆 / 多通道 contact / 成长自触发 / 屏幕陪伴 v1**（用户：新一轮需求合并与落地）。
