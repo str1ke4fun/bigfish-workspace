@@ -34,6 +34,8 @@ declare global {
       onSize?(handler: (size: number) => void): () => void
       /** 服务端设置切换皮肤后，主进程推来校验过的 config 与素材基地址。 */
       onSkin?(handler: (skin: unknown) => void): () => void
+      /** 挂载时主动拉取最近皮肤，避免首推早于订阅时丢失。 */
+      getSkin?(): Promise<unknown>
     }
   }
 }
@@ -82,6 +84,23 @@ function saveSeen(seen: Seen): void {
   }
 }
 
+/** 主进程推来的皮肤：config 是已校验过的 skin.json，uri 是素材基地址。 */
+interface ActiveSkin {
+  id: string
+  config: DshPetConfig
+  uri: string
+}
+
+/** 容忍老 preload / 坏消息：字段不全的皮肤直接丢掉，绝不让渲染进程崩掉。 */
+function parseSkin(raw: unknown): ActiveSkin | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const message = raw as Record<string, unknown>
+  if (typeof message.id !== 'string') return null
+  if (typeof message.uri !== 'string' || message.uri === '') return null
+  if (!message.config || typeof message.config !== 'object' || Array.isArray(message.config)) return null
+  return { id: message.id, config: message.config as DshPetConfig, uri: message.uri }
+}
+
 export function App() {
   const [config, setConfig] = useState<DshPetConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -89,10 +108,13 @@ export function App() {
   const [steady, setSteady] = useState<PetMotion>('idle')
   const [size, setSize] = useState(PET_SIZE_DEFAULT)
   /** 服务端下发的皮肤；null = 默认皮肤（继续用 assets/config.json + assets/webm）。 */
-  const [skin, setSkin] = useState<{ config: DshPetConfig; uri: string } | null>(null)
+  const [skin, setSkin] = useState<ActiveSkin | null>(null)
   const activeConfig = skin?.config ?? config
   const activeUri = skin?.uri ?? ASSET_BASE
   const petRef = useRef<PetRef>(null)
+  /** 当前/上一个皮肤用 ref 同步记录，事件回调里读到的永远是最新值。 */
+  const skinRef = useRef<ActiveSkin | null>(null)
+  const previousSkinRef = useRef<ActiveSkin | null>(null)
   const pet = useControllablePet(petRef)
 
   useEffect(() => {
@@ -119,21 +141,40 @@ export function App() {
     )
   }, [size])
 
-  // 皮肤切换：主进程已经校验过 skin.json 并读好内容，这里只接住并换渲染配置。
+  // 皮肤切换：主进程已经校验过 skin.json（含 14 个动画文件）并读好内容。
+  // 先订阅再主动拉一次，覆盖「主进程首推早于本 effect 注册」的竞态。
   useEffect(() => {
+    let cancelled = false
     let unsubscribe: (() => void) | undefined
+
+    const receive = (raw: unknown): void => {
+      const next = parseSkin(raw)
+      if (!next) return
+      const current = skinRef.current
+      if (current && current.id === next.id && current.uri === next.uri) return
+      previousSkinRef.current = current
+      skinRef.current = next
+      setSkin(next)
+    }
+
     try {
-      unsubscribe = window.petBridge?.onSkin?.((raw) => {
-        if (!raw || typeof raw !== 'object') return
-        const message = raw as Record<string, unknown>
-        if (typeof message.uri !== 'string' || message.uri === '') return
-        if (!message.config || typeof message.config !== 'object' || Array.isArray(message.config)) return
-        setSkin({ config: message.config as DshPetConfig, uri: message.uri })
-      })
+      unsubscribe = window.petBridge?.onSkin?.(receive)
     } catch {
       unsubscribe = undefined
     }
-    return () => unsubscribe?.()
+    void window.petBridge
+      ?.getSkin?.()
+      .then((raw) => {
+        if (!cancelled) receive(raw)
+      })
+      .catch(() => {
+        // 老 preload 没有 getSkin：只能等后续推送。
+      })
+
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -273,6 +314,28 @@ export function App() {
   }, [activeConfig])
 
   /**
+   * 皮肤运行期出错（素材损坏/解码失败等）：回退到上一个皮肤并弹气泡。
+   * 主进程发送前已检查 14 个文件是否存在，这里兜住运行期才暴露的问题。
+   */
+  const handlePetError = (cause: unknown): void => {
+    const current = skinRef.current
+    if (!current) return
+
+    const previous = previousSkinRef.current
+    previousSkinRef.current = null
+    skinRef.current = previous
+    setSkin(previous)
+    console.warn('[desktop-pet] 皮肤运行出错，已回退上一个皮肤', cause)
+    pet.bubble({
+      id: 'skin-error',
+      title: '皮肤没载入',
+      description: previous ? '先换回上一个皮肤。' : '先换回默认皮肤。',
+      variant: 'danger',
+      timeout: 5000,
+    })
+  }
+
+  /**
    * 对话气泡的三种收尾，绝不把失败显示成成功：
    * - 有回话：收掉加载气泡，走 `pet.reply` 的说话链路；
    * - 送到了但她没开口：用普通气泡如实说一句；
@@ -351,6 +414,7 @@ export function App() {
       motion={steady}
       dialogue
       onDialogue={handleDialogue}
+      onError={handlePetError}
     />
   )
 }

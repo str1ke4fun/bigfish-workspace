@@ -55,6 +55,11 @@ const bridge = {
     }
   },
 
+  /** 挂载时主动拉取最近皮肤；首推早于订阅时不会丢。 */
+  getSkin(): Promise<unknown> {
+    return ipcRenderer.invoke('pet:get-skin')
+  },
+
   /** 在宠物身体上按下/松开时调用，主进程负责跟着光标移动窗口。 */
   startDrag(): void {
     ipcRenderer.send('pet:drag-start')

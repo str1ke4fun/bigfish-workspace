@@ -14,8 +14,8 @@
  * 默认皮肤不在 `skins/` 下，清单首项固定为 `{ id: '', name: '默认' }`。
  */
 
-import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join, normalize, sep } from 'node:path'
 
 /** 14 个动作名，与 `dsh-pet-component` 的 `MOTIONS` 一致（`dragging` 是手势态，不算）。 */
 export const MOTIONS = [
@@ -53,8 +53,55 @@ export interface ScannedSkin {
   config: unknown
 }
 
+export interface SkinPayload {
+  id: string
+  config: unknown
+  uri: string
+}
+
+/** 渲染进程可能晚于首推订阅；用缓存保证 ready 时能补发最近一份皮肤。 */
+export interface SkinForwarder {
+  /** 收到一份新皮肤：记下来并推送；内容完全相同则不重复推。 */
+  onSkin: (payload: SkinPayload) => void
+  /** 渲染进程就绪时补发最近一份，绕过去重。 */
+  ready: () => void
+  /** 供渲染进程挂载时主动拉取，避免首推丢失后一直停在默认皮肤。 */
+  get: () => SkinPayload | null
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isInside(root: string, target: string): boolean {
+  return target === root || target.startsWith(root + sep)
+}
+
+/**
+ * 皮肤推送器的纯逻辑：不 import Electron，发送动作由调用方注入。
+ *
+ * 首推可能早于渲染进程注册 `onSkin`（和 `pet:state` 是同一个竞态），
+ * 所以这里缓存最近一份；`ready()` 补发、`get()` 供挂载时主动拉取。
+ */
+export function createSkinForwarder(send: (payload: SkinPayload) => void): SkinForwarder {
+  let latest: SkinPayload | null = null
+  let lastSignature: string | null = null
+
+  return {
+    onSkin(payload: SkinPayload): void {
+      latest = payload
+      const signature = JSON.stringify(payload)
+      if (signature === lastSignature) return
+      lastSignature = signature
+      send(payload)
+    },
+    ready(): void {
+      if (latest) send(latest)
+    },
+    get(): SkinPayload | null {
+      return latest
+    },
+  }
 }
 
 /**
@@ -82,6 +129,38 @@ export function validateSkin(json: unknown): SkinValidation {
 }
 
 /**
+ * 检查 14 个动作引用的 `webm/<动画名>.webm` 是否都存在。
+ *
+ * 只校验 `skin.json` 不够：目录里缺素材时组件会在运行时才报错，坏皮肤会先顶掉
+ * 能用的皮肤。返回缺失的动作名（按 `MOTIONS` 顺序），空数组表示齐全。
+ * 动画名会先做目录内路径校验，`../` 之类的名字按缺失处理。
+ */
+export function missingSkinMedia(skinDir: string, motions: Record<string, unknown>): string[] {
+  const webmDir = normalize(join(skinDir, 'webm'))
+  const missing: string[] = []
+
+  for (const motion of MOTIONS) {
+    const name = motions[motion]
+    if (typeof name !== 'string' || name.trim() === '') {
+      missing.push(motion)
+      continue
+    }
+    const file = normalize(join(webmDir, `${name}.webm`))
+    if (!isInside(webmDir, file)) {
+      missing.push(motion)
+      continue
+    }
+    try {
+      if (!statSync(file).isFile()) missing.push(motion)
+    } catch {
+      missing.push(motion)
+    }
+  }
+
+  return missing
+}
+
+/**
  * 服务的 `settings` 是否带来了新值。
  *
  * 只比较 `next` 显式给出的字段：轮询每 2 秒就会重复下发同一份设置，
@@ -96,11 +175,46 @@ export function shouldApplySettings(
   return false
 }
 
+export interface SizeSyncState {
+  /** 当前窗口实际尺寸。 */
+  current: number
+  /** 本地刚改、还没被服务端回声确认的尺寸；null = 没有待确认覆盖。 */
+  pending: number | null
+}
+
+/** 右键本地改尺寸：立即生效，并记下待服务端 `settings.size` 回声确认。 */
+export function noteLocalSize(size: number): SizeSyncState {
+  return { current: size, pending: size }
+}
+
+/**
+ * 决定一次远端 `settings.size` 是否要改窗口。
+ *
+ * - 没有 pending：远端与当前不同就应用；
+ * - pending 与远端相同：服务端已回声，清掉覆盖，不重复设置窗口；
+ * - pending 与远端不同：本地覆盖优先，忽略远端（`/pet/config` 写失败时窗口不会被拉回去）。
+ */
+export function resolveRemoteSize(
+  state: SizeSyncState,
+  remote: number,
+): { state: SizeSyncState; apply: number | null } {
+  if (state.pending !== null) {
+    if (remote === state.pending) {
+      return { state: { current: state.current, pending: null }, apply: null }
+    }
+    return { state, apply: null }
+  }
+  if (remote !== state.current) {
+    return { state: { current: remote, pending: null }, apply: remote }
+  }
+  return { state, apply: null }
+}
+
 /**
  * 扫描 `<rootDir>/skins/*\/skin.json`。`rootDir` 是 `assets` 目录。
  *
  * 首项固定为默认皮肤；其余按目录名排序，保证每次上报的清单顺序稳定。
- * 非法目录名、读不到的文件、非法 JSON、未通过校验的条目一律跳过，不抛错。
+ * 非法目录名、读不到的文件、非法 JSON、未通过校验或缺动画文件的条目一律跳过，不抛错。
  */
 export function scanSkins(rootDir: string): ScannedSkin[] {
   const skins: ScannedSkin[] = [{ id: '', name: '默认', config: null }]
@@ -117,14 +231,16 @@ export function scanSkins(rootDir: string): ScannedSkin[] {
   }
 
   for (const id of entries) {
+    const skinDir = join(skinsDir, id)
     let parsed: unknown
     try {
-      parsed = JSON.parse(readFileSync(join(skinsDir, id, 'skin.json'), 'utf8'))
+      parsed = JSON.parse(readFileSync(join(skinDir, 'skin.json'), 'utf8'))
     } catch {
       continue
     }
     const validation = validateSkin(parsed)
     if (!validation.ok) continue
+    if (missingSkinMedia(skinDir, validation.motions).length > 0) continue
     skins.push({ id, name: validation.name, config: parsed })
   }
 

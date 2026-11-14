@@ -7,12 +7,17 @@ import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition
 import { readPetSize, savePetSize } from './settings'
 import { clampPetSize, windowSizeFor } from './size'
 import {
+  createSkinForwarder,
+  missingSkinMedia,
+  noteLocalSize,
+  resolveRemoteSize,
   scanSkins,
   shouldApplySettings,
   validateSkin,
   SIMPLE_SKIN_ID,
   type PetSettings,
   type ScannedSkin,
+  type SizeSyncState,
 } from './skin'
 
 const PET_STATE_URL = 'http://127.0.0.1:8788/api/fish/pet/state'
@@ -51,6 +56,16 @@ let skinCatalog: ScannedSkin[] = [{ id: '', name: '默认', config: null }]
 let helloTimer: ReturnType<typeof setInterval> | null = null
 /** 皮肤加载的单调序号：慢的旧请求不能覆盖后来的新请求。 */
 let skinRevision = 0
+/** 本地尺寸覆盖：服务端回声前不让旧值把窗口拉回去。 */
+let sizeSync: SizeSyncState = { current: petSize, pending: null }
+
+/**
+ * 皮肤推送缓存：首推可能早于渲染进程注册 `onSkin`（和 `pet:state` 同样的竞态）。
+ * 渲染进程挂载时用 `pet:get-skin` 主动拉取，`pet:ready` 时再补发一次。
+ */
+const skinForwarder = createSkinForwarder((payload) => {
+  if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:skin', payload)
+})
 
 const MIME_TYPES: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
@@ -140,15 +155,18 @@ function sendAction(win: BrowserWindow, motion: string): void {
 interface ChangePetSizeOptions {
   persist?: boolean
   sync?: boolean
+  /** 是否来自右键本地操作；远端应用只更新当前值，不产生新的待确认覆盖。 */
+  local?: boolean
 }
 
 function changePetSize(
   win: BrowserWindow,
   size: number,
-  { persist = true, sync = true }: ChangePetSizeOptions = {},
+  { persist = true, sync = true, local = true }: ChangePetSizeOptions = {},
 ): void {
   petSize = persist ? savePetSize(size) : clampPetSize(size)
   petSettings = { ...petSettings, size: petSize }
+  sizeSync = local ? noteLocalSize(petSize) : { ...sizeSync, current: petSize }
   if (!win.isDestroyed()) {
     const { width, height } = windowSizeFor(petSize)
     win.setSize(width, height)
@@ -158,8 +176,13 @@ function changePetSize(
   if (sync) void syncPetConfig({ size: petSize })
 }
 
-/** 尽力把本地设置同步回服务端；失败只影响工作台显示，本地照常生效。 */
-async function syncPetConfig(update: { size?: number; skin?: string }): Promise<void> {
+/**
+ * 尽力把本地设置同步回服务端；失败只影响工作台显示，本地照常生效。
+ *
+ * `/pet/config` 写配置失败时仍返回 HTTP 200 + `{ ok:false }`，只看状态码会把失败
+ * 当成成功，所以这里显式检查 `ok === true`。
+ */
+async function syncPetConfig(update: { size?: number; skin?: string }): Promise<boolean> {
   try {
     const response = await fetch(PET_CONFIG_URL, {
       method: 'POST',
@@ -167,9 +190,12 @@ async function syncPetConfig(update: { size?: number; skin?: string }): Promise<
       body: JSON.stringify(update),
       signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
     })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) return false
+    const body: unknown = await response.json()
+    return typeof body === 'object' && body !== null && (body as Record<string, unknown>).ok === true
   } catch {
     // 本地已经生效；不打扰用户，也不刷日志。
+    return false
   }
 }
 
@@ -219,33 +245,20 @@ function readRemoteSettings(state: unknown): { size?: number; skin?: string } {
   return next
 }
 
-interface SkinPayload {
-  id: string
-  config: unknown
-  uri: string
-}
-
-function sendSkin(win: BrowserWindow, payload: SkinPayload): void {
-  if (!win.isDestroyed()) win.webContents.send('pet:skin', payload)
-}
-
 /**
  * 按 id 加载皮肤并推给渲染进程。默认皮肤回到现有 `config.json` + `assets/webm`。
  *
  * 先记录服务端意图（`petSettings.skin`），这样同一份失败设置不会每 2 秒重试并刷日志；
- * 但渲染进程只在校验通过后收到新皮肤，失败时继续用旧皮肤。
+ * 但渲染进程只在校验通过（含 14 个动画文件齐全）后收到新皮肤，失败时继续用旧皮肤。
  */
 async function applySkin(id: string): Promise<void> {
   const revision = ++skinRevision
   petSettings = { ...petSettings, skin: id }
 
-  const win = petWindow
-  if (!win || win.isDestroyed()) return
-
   if (id === '') {
     try {
       const config: unknown = JSON.parse(await readFile(appFile('assets', 'config.json'), 'utf8'))
-      if (revision === skinRevision) sendSkin(win, { id, config, uri: DEFAULT_SKIN_URI })
+      if (revision === skinRevision) skinForwarder.onSkin({ id, config, uri: DEFAULT_SKIN_URI })
     } catch (error) {
       console.warn('[desktop-pet] 默认皮肤配置没载入，保留当前皮肤', error)
     }
@@ -258,7 +271,8 @@ async function applySkin(id: string): Promise<void> {
   }
 
   const assetsRoot = appFile('assets')
-  const file = normalize(join(assetsRoot, 'skins', id, 'skin.json'))
+  const skinDir = join(assetsRoot, 'skins', id)
+  const file = normalize(join(skinDir, 'skin.json'))
   if (!isInside(assetsRoot, file)) {
     console.warn(`[desktop-pet] 皮肤路径越界，保留当前皮肤：${id}`)
     return
@@ -272,7 +286,13 @@ async function applySkin(id: string): Promise<void> {
       console.warn(`[desktop-pet] 皮肤 ${id} 没载入，保留当前皮肤：${validation.why}`)
       return
     }
-    sendSkin(win, {
+    // skin.json 合法但素材缺失时，组件只会在运行时报错；必须提前拒绝，别顶掉能用的皮肤。
+    const missing = missingSkinMedia(skinDir, validation.motions)
+    if (missing.length > 0) {
+      console.warn(`[desktop-pet] 皮肤 ${id} 缺动画文件，保留当前皮肤：${missing.join(', ')}`)
+      return
+    }
+    skinForwarder.onSkin({
       id,
       config: parsed,
       uri: `pet-asset://local/skins/${id}/webm`,
@@ -287,15 +307,22 @@ async function applySkin(id: string): Promise<void> {
 /** 每拍轮询后比较服务端设置；只在真正变化时改窗口/皮肤。 */
 function applyRemoteSettings(state: unknown): void {
   const next = readRemoteSettings(state)
-  if (!shouldApplySettings(petSettings, next)) return
 
-  if (typeof next.size === 'number' && next.size !== petSettings.size) {
-    const win = petWindow
-    if (win && !win.isDestroyed()) {
-      changePetSize(win, next.size, { persist: false, sync: false })
+  // size 每拍都过一遍纯决策：pending 的清账不能被「值看起来没变」的幂等判断挡掉
+  // （本地可能刚好改成和最后一次远端值相同）。resolveRemoteSize 自己保证幂等。
+  if (typeof next.size === 'number') {
+    const decision = resolveRemoteSize(sizeSync, next.size)
+    sizeSync = decision.state
+    petSettings = { ...petSettings, size: next.size }
+    if (decision.apply !== null) {
+      const win = petWindow
+      if (win && !win.isDestroyed()) {
+        changePetSize(win, decision.apply, { persist: false, sync: false, local: false })
+      }
     }
   }
-  if (typeof next.skin === 'string' && next.skin !== petSettings.skin) {
+
+  if (typeof next.skin === 'string' && shouldApplySettings(petSettings, { skin: next.skin })) {
     void applySkin(next.skin)
   }
 }
@@ -339,9 +366,14 @@ const stateForwarder = createStateForwarder((state) => {
 
 ipcMain.on('pet:ready', () => {
   stateForwarder.resend()
+  // 皮肤可能早于渲染进程订阅就绪：就绪后补发最近一份。
+  skinForwarder.ready()
 })
 
 ipcMain.handle('pet:get-size', () => petSize)
+
+/** 渲染进程挂载时主动拉取最近皮肤，避免首推丢失后一直停在默认皮肤。 */
+ipcMain.handle('pet:get-skin', () => skinForwarder.get())
 
 ipcMain.on('pet:ignore-mouse', (event, ignore: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
@@ -431,6 +463,7 @@ app
   .then(() => {
     petSize = readPetSize()
     petSettings = { size: petSize, skin: '' }
+    sizeSync = { current: petSize, pending: null }
     registerAssetProtocol()
     skinCatalog = scanSkins(appFile('assets'))
     startPetWindow()
