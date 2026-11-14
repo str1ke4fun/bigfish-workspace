@@ -326,6 +326,7 @@ export function apply(ctx, baseConfig = {}) {
     const screen = createScreenService({
       root,
       core: fishCore ?? {},
+      bus: ctx,
       config,
       capture: {
         startFrameStream(o) {
@@ -334,7 +335,14 @@ export function apply(ctx, baseConfig = {}) {
           return startFrameStream({ ...o, ffmpegExe: det.ffmpegExe })
         },
       },
-      foreground: { startForegroundWatcher: (o) => startForegroundWatcher(o) },
+      // 服务的 PATH 不含 Windows 路径；和抓帧一样用绝对路径，不依赖 interop shell。
+      foreground: {
+        startForegroundWatcher: (o) => startForegroundWatcher({
+          ...o,
+          powershellExe: config?.presence?.powershellExe
+            || '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+        }),
+      },
       log: (...a) => logger.info(...a),
     })
     if (screen?.dispose) disposers.push(() => screen.dispose())

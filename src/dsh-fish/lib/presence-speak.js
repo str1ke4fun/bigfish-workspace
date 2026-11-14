@@ -1,5 +1,9 @@
 /**
- * presence-speak.js —— 陪伴面唯一的输出工具 `presence_speak`
+ * presence-speak.js —— 陪伴面的输出工具 `presence_speak`（2026-11-14 起不再暴露）
+ *
+ * 现在她自然说出口的话由 `screen.js` 从 `session/event` 接住；这个工具仍注册
+ * （宿主的 restrictableNames 校验需要），但 `tool-policy.js` 的 screen 面不挂它，
+ * 因此任何会话都看不见。保留实现是为了以后确实需要“显式落账一句话”时能复用。
  *
  * 陪你看屏幕的小会话能看图、能翻旧事，但**只能通过这一个工具说一句**：
  *   - 只允许 screen 面。cwd/reserve 判出来的面不是 screen 就直接拒绝；

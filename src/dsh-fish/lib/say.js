@@ -25,6 +25,7 @@ import { parseWatchIntent, watchHint } from './intent.js'
 import { loadConfig, dateKey } from './settings.js'
 import { deriveSelf } from './derive.js'
 import { writeInboxFile, newHerEventsSince } from './inbox.js'
+import { assistantTextOf } from './turnend.js'
 import { bumpTurns, rotateTalkSession, talkSessionId } from './home.js'
 import { addExchange } from './talkmem.js'
 import { slashed } from './posix.js'
@@ -40,20 +41,25 @@ const REPLY_WAIT_MS = 75_000
 const MAX_TEXT = 4000
 
 /**
- * 等这一轮真正结束（turn/end）。与 scheduler.watchTurnEnd 同源，
- * 但这里**需要等待**，所以返回 Promise。
+ * 等这一轮真正结束（turn/end），同时收下她自然说出口的文本。
+ * 与 scheduler.watchTurnEnd 同源，但这里**需要等待**，所以返回 Promise。
+ *
+ * 以前只看「她这一轮新写了哪些事件」：她不调 `growth_commit` 就等于没说话，
+ * 用户在 /say 里会看到「她这次没说话」，哪怕她其实回了一整段。现在把
+ * `assistant/message` 的文本也带回来，只用于展示与返回，**不写事件流**。
  */
 function waitTurnEnd(ctx, sessionId, timeoutMs) {
   return new Promise((resolve) => {
     let done = false
     let timer = null
     let off = null
+    let text = ''
     const finish = () => {
       if (done) return
       done = true
       if (timer) clearTimeout(timer)
       try { off?.() } catch { /* ignore */ }
-      resolve()
+      resolve({ text })
     }
     // 拿不到事件总线（单测 / 老宿主）就没有信号，只能等超时。
     // 真机上这条分支意味着"她回了，但我们不知道什么时候回完"——如实降级，不假装成功。
@@ -69,6 +75,8 @@ function waitTurnEnd(ctx, sessionId, timeoutMs) {
       off = ctx.on('session/event', (session, event) => {
         const id = session?.header?.id ?? session?.id
         if (id !== sessionId) return
+        const fresh = assistantTextOf(event)
+        if (fresh) text = text ? `${text}\n${fresh}` : fresh
         if (event?.type === 'turn/end') finish()
       })
       if (typeof off !== 'function') off = null
@@ -217,6 +225,11 @@ export async function sayToHer(ctx, text, deps = {}) {
   const t0 = Date.now()
 
   try {
+    // 先挂监听再 prompt：markSeen 的文件写入会让出事件循环，她回得快时
+    // 后挂监听会漏掉第一条（甚至整轮）。静帧陪玩同一条顺序。
+    const waitMs = Math.max(500, Math.min(deps.waitMs ?? REPLY_WAIT_MS, 120_000))
+    const turn = waitTurnEnd(ctx, sessionId, waitMs)
+
     await sc.prompt(
       { requestId: `say-${dk}-${Date.now()}`, sessionId, mode: 'queue', content: [{ type: 'text', text: content }] },
       ac.signal,
@@ -227,13 +240,16 @@ export async function sayToHer(ctx, text, deps = {}) {
     // markSeen 先写全局 seen:，再写 contact:<source>:；source 默认 web（/say 是网页面）。
     await markSeen(root, { source: deps.channel ?? 'web' }).catch(() => {})
 
-    const waitMs = Math.max(500, Math.min(deps.waitMs ?? REPLY_WAIT_MS, 120_000))
-    await waitTurnEnd(ctx, sessionId, waitMs)
+    const { text: natural } = await turn
 
     // 她这一轮新写的话（可能一句都没有——允许她不回）
     const after = await readEvents(root)
     const fresh = newHerEventsSince(after.events, sinceId)
-    const said = fresh.map((e) => ({ id: e.id, type: e.type, text: e.text, verdict: e.verdict ?? null }))
+    // 落进事件流的那几句优先；她没调用写入口时，用她自然说出口的文本补上。
+    // 自然文本只用于展示与返回，不写 events.jsonl（写入仍只走 growth_commit）。
+    const said = fresh.length
+      ? fresh.map((e) => ({ id: e.id, type: e.type, text: e.text, verdict: e.verdict ?? null }))
+      : (natural ? [{ id: 'natural', type: 'utterance', text: natural, natural: true }] : [])
     const herReply = said.map((s) => s.text).join('\n\n')
 
     // 信箱落盘：她开口了才重写（没开口就没必要动文件）

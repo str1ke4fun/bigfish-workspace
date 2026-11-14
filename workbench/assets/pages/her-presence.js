@@ -18,6 +18,9 @@ function build(root, ctx) {
   SPEC.status = el('div', { class: 'meta', text: '正在读状态…' })
   SPEC.note = el('div', { class: 'meta' })
   SPEC.body = el('div', { class: 'row' })
+  SPEC.recent = el('ul', { class: 'timeline' })
+  SPEC.recentCard = card('她看到的这一会儿', { note: '她愿意说的时候才说；这些话不进事件流。' })
+  SPEC.recentCard.body.append(SPEC.recent, el('div', { class: 'meta', text: '没有任何一句也正常——陪看不等于每次都要说话。' }))
   SPEC.stop = el('button', { class: 'small', type: 'button', text: '立即停止', onclick: () => stopAll() })
   SPEC.stop.hidden = true
   SPEC.card.body.append(
@@ -26,6 +29,7 @@ function build(root, ctx) {
     el('div', { class: 'row' }, SPEC.stop, SPEC.note),
     hint('终端里可能有凭据：工作模式首次开启前请确认当前窗口没有敏感内容。', 'meta'),
   )
+  SPEC.card.body.append(SPEC.recentCard.root)
   root.append(SPEC.card.root)
 }
 
@@ -49,6 +53,19 @@ function render() {
     : `关着 · ${clock()}`
   SPEC.stop.hidden = !on
   SPEC.note.textContent = SPEC.state?.lastError ? `上次错误：${SPEC.state.lastError}` : ''
+  clear(SPEC.recent)
+  const rows = Array.isArray(SPEC.state?.recent) ? [...SPEC.state.recent].reverse() : []
+  if (!rows.length) {
+    SPEC.recent.append(el('li', { class: 'meta', text: on ? '还没说话。' : '还没开始看。' }))
+  } else {
+    for (const row of rows) {
+      const when = row.at ? String(row.at).slice(11, 16) : ''
+      SPEC.recent.append(el('li', {},
+        el('div', { text: String(row.text ?? '') }),
+        el('div', { class: 'meta', text: `看屏幕 · ${when}` }),
+      ))
+    }
+  }
 }
 
 async function load() {

@@ -206,9 +206,10 @@ export const MEDIA_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 /**
  * 清掉过期的图片与截图。**只删自己写在 media/ 下的文件**，不碰别处。
- * 返回 {removed, kept}。删不掉不算错（可能正被别的程序占着），静默跳过。
+ * `prefix` 非空时只处理这个前缀（陪伴候选帧是 `presence-`），避免一次清理
+ * 顺带扫掉她的头像、他发的图。返回 {removed, kept}。删不掉不算错，静默跳过。
  */
-export async function sweepMedia(root, { now = Date.now(), ttlMs = MEDIA_TTL_MS } = {}) {
+export async function sweepMedia(root, { now = Date.now(), ttlMs = MEDIA_TTL_MS, prefix = '' } = {}) {
   const dir = await mediaDir(root)
   let removed = 0
   let kept = 0
@@ -219,6 +220,7 @@ export async function sweepMedia(root, { now = Date.now(), ttlMs = MEDIA_TTL_MS 
     return { removed, kept }
   }
   for (const name of names) {
+    if (prefix && !name.startsWith(prefix)) continue
     const p = join(dir, name)
     try {
       const st = await fs.stat(p)

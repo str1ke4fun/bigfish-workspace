@@ -1,10 +1,21 @@
 # 大肥鱼陪伴面：看屏、事件点评与开关（v1 设计草案）
 
+> **2026-11-14 真机回写（取代本文对应的早期口径）**：
+>
+> 1. **读图前提**：宿主 `llm-pi-ai` 只按 model 的 `input` 声明放行 `read_image`。默认 endpoint 原来只声明 `text`，真机 `read_image` 直接报 `model ... does not declare image input`。已在 web profile 的 `cordis.patch.yml` 给该 model 加 `input: [text, image]`；真机读图成功。这是宿主配置，不在插件仓库里。
+> 2. **输出改自然文本**：`presence_speak` 从 `screen` 面撤下（工具仍注册，任何面不可见）。`screen.js` 监听宿主 `session/event` 的 `assistant/message`，在 `turn/end` 时把她这一轮自然说的文本写 presence 台账并推工作台。§7.3/§7.4 中“必须调用 `presence_speak` 才算说了”的段落作废；沉默仍允许。
+> 3. **事件总线**：`fishCore` 不含 `on`，陪伴服务必须单独拿宿主 `ctx`；否则监听静默失败，表现是 `busy` 卡到 90 秒兜底。
+> 4. **帧契约**：`startFrameStream` 交给 `onFrame` 的对象必须带 `{buf,yavg,scene,bytes,event,frozen}`；event 模式用 `scdet` + `freezedetect` 保留全部帧，不再用 `select` 丢帧（静帧/结算需要有帧可送）。§6.2 的 `select='gt(scene,…)'` 作废。真机实测静态菜单的 `scd.score` 在 0.05–1.1 抖动，默认阈值从 0.12 改 **2.0**；画面已 `frozen` 时不再按分数重复出候选，只在 `freeze_start` 那一帧说一次。
+> 5. **工作模式**：screen 状态机必须真的挂 `foreground.startForegroundWatcher`，deny 立即停、allow 才按窗口矩形 crop；§6.3/§8.2 的实现缺口已在 2026-11-14 补上。
+> 6. **提示边界**：陪伴 prompt 明确“不要复述屏幕上的具体文字、账号或聊天内容”；event 模式仍截主屏，可能带出桌面上的其它窗口，开关旁要保留说明。
+>
+> 真机验收（2026-11-14）：event 模式截到星穹铁道活动界面 → 她 `read_image` 读出界面与任务栏 → 自然说“还是那屏，进度没动…” → presence 台账、工作台 `recent`、`meta presence:` 汇总都有。工作模式实时切换与 T0 帧率影响仍未验收。
+>
 > **2026-11-13 落地回写**：本文件与合并稿冲突的段落，以 `docs/superpowers/specs/2026-11-13-new-round-merged-requirements.md` §2 为准。
 > 关键差异：D1 UI 落 8788（不改 8710 client.js）；D2 schema v4 同时加 screen；D5 recall 边界（owner facts 仅 web/wx/screen、非 owner Phase 1 不召回、screen 排除 web 事件）；D6 fish:owner 预算 facts 300 / extras 400 / 总 700；D10 absenceDays 回来即 0；D12 browsejob 测试在 dsh-bili；D17 B 站用 s.ctime 且先判 isOwner；D26 收盘报告失败不落完成标记；D27 presence 0 也写、启动补写；D30 v4 事件后不降级；D32 /memory people/contacts/closing 合并响应。
 
 - 日期：2026-11-13
-- 状态：设计草案，待评审；T4 工作模式静态验证已通过；未实施
+- 状态：v1 已实施；2026-11-14 真机 event 模式验收通过；工作模式实时切换与 T0 帧率影响待验收
 - 范围：她偶尔看一眼 Windows 宿主屏幕（游戏或工作），在值得说的时候说一句；三个模式各有开关
 - 关联：
   - `2026-11-12-host-desktop-capture-design.md`（一键截图，本文修正其采集路径）

@@ -1,3 +1,27 @@
+## 未发布 — 2026-11-14
+
+**屏幕陪玩真机验收：她能看见了，而且不用调工具才说话**（用户：继续宿主机截图/陪玩，后台测试）。
+
+真机跑通前先修了三处会让功能“看起来有、其实没有”的问题：
+
+- **模型没有声明图片输入**：宿主按 `llm-pi-ai` 的 model `input` 放行 `read_image`；当前默认 endpoint 只声明了 `text`，所以她每次都说“图打不开”。在 web profile 的 `cordis.patch.yml` 给该 model 加 `input: [text, image]` 后，真机 `read_image` 成功，能读出游戏活动界面、任务栏、窗口层级。
+- **帧契约对不上**：`parseJpegStream` 交出的是 `Buffer`，`screen.js` 却按 `{buf,yavg}` 读，真机上每帧都被当成黑帧，5 分钟后自动关。现在 `startFrameStream` 把 `YAVG` / `scd.score` / 冻结标记盖在帧对象上；event 模式改用 `scdet`，不再用 `select` 丢帧（静帧也要有帧可送）。实测静态菜单的场景分在 0.05–1.1 抖动，默认阈值从 0.12 提到 **2.0**，并且画面已冻结时不再按分数重复出候选——之前会 30 秒一句地重复点评同一屏。
+- **事件总线没接**：`screen.js` 拿 `fishCore` 当事件总线，但 `fishCore` 只有服务、没有 `on`。现在单独传宿主 `ctx`；她的 `assistant/message` 文本在 `turn/end` 时被收下。
+
+陪玩输出改成**自然文本**：
+
+- `screen` 面只留 `read_image` + `her_recall`，不再挂 `presence_speak`；她想说就直接说，`screen.js` 从 `session/event` 收下她这一轮的话，写 `presence/YYYY-MM-DD.jsonl` 并推到工作台 `#her/presence` 的「她看到的这一会儿」。工具仍注册（宿主校验用），但任何面都不可见。
+- `/say` 同样带回她的自然文本：她没调 `growth_commit` 时不再显示“她这次没说话”；自然文本只用于展示/返回，**不写 `events.jsonl`**。
+- 陪伴提示补上“不要复述屏幕上的具体文字、账号或聊天内容”。
+
+工作模式接上真实前台探测：
+
+- work 模式先挂 per-monitor V2 的 PowerShell watcher；前台命中 allowlist 才启动 `ddagrab` 并按窗口矩形 `crop`，窗口/显示器变化才重启；命中 denylist（飞书/微信/密码管理器）立即停采集并移除 provider。
+- 启动时 `screen-session.json` 里的会话 id 先 `surface.reserve(id,'screen')`；评论累计到 `presence.rotateAfter` 换新会话。
+- `sweepMedia` 支持 `prefix`，只清 `presence-` 候选帧。
+
+验收：`node --test` 1077 全绿；真机 event 模式截到游戏画面，她读图后自然说了一句，presence 台账与工作台状态都有；一局结束写 `meta presence:2026-11-14:event:3:6`。前台 watcher 真机读出 `StarRail` / `Weixin` 与显示器矩形（工作模式会拒绝非白名单的 `StarRail`）。**工作模式实时切换与 T0 帧率影响仍未验收。**
+
 ## 0.9.0 — 2026-11-13
 
 **人物记忆 / 多通道 contact / 成长自触发 / 屏幕陪伴 v1**（用户：新一轮需求合并与落地）。

@@ -13,10 +13,17 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
-/** 生成 ddagrab 参数。crop 存在时只保留窗口矩形；event 模式加 scene/freeze 过滤。 */
+/**
+ * 生成 ddagrab 参数。crop 存在时只保留窗口矩形。
+ *
+ * event 模式**不再用 `select` 丢帧**：`select` 只在场景变化时输出，静帧
+ * （结算/菜单/加载）根本没有帧可交给模型。改成每帧都编码，`scdet` 把场景分数
+ * 写到 stderr，由 `screen.js` 在本地决定要不要当候选——帧在 Node 手里，
+ * 静帧开始时才有东西可送。
+ */
 export function buildDdagrabArgs({
   outputIdx = 0, fps = 1, crop = null, mode = 'event', scaleWidth = 1280,
-  sceneThreshold = 0.12, freezeSeconds = 4,
+  sceneThreshold = 2, freezeSeconds = 4,
 } = {}) {
   const args = [
     '-hide_banner', '-loglevel', 'info',
@@ -27,8 +34,10 @@ export function buildDdagrabArgs({
   if (crop && crop.w > 0 && crop.h > 0) vf.push(`crop=${crop.w}:${crop.h}:${crop.x}:${crop.y}`)
   vf.push(`scale=${scaleWidth}:-2`)
   if (mode === 'event') {
-    vf.push(`freezedetect=n=0.003:d=${freezeSeconds}`)
-    vf.push(`select='gt(scene,${sceneThreshold})'`)
+    vf.push(`scdet=threshold=${sceneThreshold}`)
+    // n=0.02：菜单/结算页的待机动画、鼠标呼吸灯都算“没动”。
+    // n=0.003 在本机实测会把静态页判成一直在动，30 秒一帧地重复送模型。
+    vf.push(`freezedetect=n=0.02:d=${freezeSeconds}`)
   }
   // signalstats 用来算 YAVG（黑帧/锁屏检测）；metadata=print 写到 stderr。
   vf.push('signalstats', 'metadata=print')
@@ -61,7 +70,8 @@ export function parseCaptureStderr(line) {
   const s = String(line ?? '')
   let m = /lavfi\.signalstats\.YAVG=([0-9.]+)/.exec(s)
   if (m) return { yavg: Number(m[1]) }
-  m = /lavfi\.scene_score=([0-9.]+)/.exec(s)
+  // scdet 输出 `lavfi.scd.score`；旧写法 `lavfi.scene_score` 兼容保留。
+  m = /lavfi\.(?:scd\.score|scene_score)=([0-9.]+)/.exec(s)
   if (m) return { scene: Number(m[1]) }
   m = /freeze_(start|end):\s*([0-9.]+)?/i.exec(s)
   if (m) return { freeze: m[1].toLowerCase() }
@@ -81,7 +91,7 @@ export function detectHostCapture({ ffmpegExe = '' } = {}) {
  */
 export function startFrameStream({
   spawn = nodeSpawn, ffmpegExe, outputIdx = 0, fps = 1, crop = null, mode = 'event',
-  scaleWidth = 1280, sceneThreshold = 0.12, freezeSeconds = 4,
+  scaleWidth = 1280, sceneThreshold = 2, freezeSeconds = 4,
   onFrame, onEvent, onError, log,
 } = {}) {
   const args = buildDdagrabArgs({ outputIdx, fps, crop, mode, scaleWidth, sceneThreshold, freezeSeconds })
@@ -92,7 +102,22 @@ export function startFrameStream({
     onError?.({ ok: false, why: String(err?.message ?? err) })
     return { stop: async () => {}, pid: 0 }
   }
-  const offJpeg = parseJpegStream(child.stdout, onFrame)
+  // ffmpeg 的元数据在 stderr、帧在 stdout，两条流没有逐帧配对关系；
+  // 取「最近一条」元数据盖在当前帧上。1fps 下这个误差远小于一次候选冷却。
+  const meta = { yavg: Number.NaN, scene: Number.NaN, event: '', frozen: false }
+  const offJpeg = parseJpegStream(child.stdout, (buf) => {
+    onFrame?.({
+      buf,
+      bytes: buf.length,
+      yavg: meta.yavg,
+      scene: meta.scene,
+      event: meta.event,
+      frozen: meta.frozen,
+      at: Date.now(),
+    })
+    // 场景/静帧标记只贴一帧：下一帧没有被重新判定，就按普通帧处理。
+    meta.event = ''
+  })
   let stderrBuf = ''
   child.stderr?.on?.('data', (chunk) => {
     stderrBuf += String(chunk)
@@ -100,7 +125,17 @@ export function startFrameStream({
     stderrBuf = lines.pop() ?? ''
     for (const line of lines) {
       const ev = parseCaptureStderr(line)
-      if (ev) onEvent?.(ev)
+      if (!ev) continue
+      if (ev.yavg !== undefined) meta.yavg = ev.yavg
+      if (ev.scene !== undefined) {
+        meta.scene = ev.scene
+        if (ev.scene >= sceneThreshold) meta.event = 'scene_change'
+      }
+      if (ev.freeze) {
+        meta.frozen = ev.freeze === 'start'
+        meta.event = ev.freeze === 'start' ? 'settlement' : ''
+      }
+      onEvent?.({ ...ev, at: Date.now() })
     }
   })
   child.on?.('error', (err) => onError?.({ ok: false, why: String(err?.message ?? err) }))

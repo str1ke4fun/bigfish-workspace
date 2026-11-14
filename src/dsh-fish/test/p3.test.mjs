@@ -252,6 +252,35 @@ test('她正在醒着时你说话，仍然算你来了（say 不看唤醒窗）'
   } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
 })
 
+test('她只用自然文本回复时，/say 也能带回她的话（不写事件流）', async () => {
+  const root = await tmpRoot()
+  resetContactCache()
+  try {
+    await appendEvent({ type: 'seed', text: '起点。' }, { day: 1, stage: 1, source: 'system' }, root)
+    const ctx = fakeCtx()
+    const handlers = new Set()
+    ctx.on = (_ev, fn) => { handlers.add(fn); return () => handlers.delete(fn) }
+    ctx.sessionController.prompt = async (req) => {
+      const session = { header: { id: req.sessionId } }
+      const emit = (event) => { for (const fn of [...handlers]) fn(session, event) }
+      // 宿主是「先 resolve prompt、稍后事件才到」；监听在 prompt 返回后才挂上。
+      setTimeout(() => {
+        emit({ type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: '我看见了，这局有点意思。' }] } } })
+        emit({ type: 'turn/end' })
+      }, 0)
+    }
+
+    const r = await sayToHer(ctx, '在吗', { root, waitMs: 1_000 })
+    assert.equal(r.ok, true)
+    assert.equal(r.herReply, '我看见了，这局有点意思。')
+    assert.equal(r.said.length, 1)
+    assert.equal(r.said[0].natural, true)
+
+    const { events } = await readEvents(root)
+    assert.equal(events.filter((e) => e.type === 'utterance').length, 0, '自然文本只用于展示，不写事件流')
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
+})
+
 test('她一言不发也不算失败：ok 但带一句说明', async () => {
   const root = await tmpRoot()
   resetContactCache()

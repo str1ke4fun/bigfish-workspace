@@ -174,7 +174,9 @@ export const DEFAULTS = {
     enabled: true,
     mode: 'event',
     ffmpegExe: '',
-    event: { fps: 1, sceneThreshold: 0.12, freezeSeconds: 4, cooldownSec: 30, maxCandidatesPerHour: 20, maxCommentsPerHour: 6 },
+    // sceneThreshold 2.0：本机实测静态菜单/待机动画的 scdet 分数在 0.05–1.1
+    // 之间抖动；0.12 会把同一屏 30 秒一帧地重复送模型。2.0 只让真正的切屏通过。
+    event: { fps: 1, sceneThreshold: 2, freezeSeconds: 4, cooldownSec: 30, maxCandidatesPerHour: 20, maxCommentsPerHour: 6 },
     ambient: { fps: 0.2, cooldownSec: 20, maxCandidatesPerHour: 40, maxCommentsPerHour: 40 },
     work: {
       fps: 0.2,

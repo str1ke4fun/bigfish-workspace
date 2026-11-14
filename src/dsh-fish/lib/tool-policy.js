@@ -96,16 +96,19 @@ function coreEntries(surface) {
 }
 
 /**
- * screen 面（陪你看屏幕）的独立策略：只看图、说一句、翻旧事。
+ * screen 面（陪你看屏幕）的独立策略：只看图、翻旧事。
  *
  * 刻意**不用** `coreEntries('screen')`：那会把 growth_commit / her_leave /
- * her_tools 一起带进陪伴会话，而陪伴会话只该「看图 + 说一句 + 翻旧事」。
+ * her_tools 一起带进陪伴会话，而陪伴会话只该「看图 + 翻旧事」。
+ *
+ * 不挂 `presence_speak`：她自然说出口的那句会被 `screen.js` 接住，不需要
+ * 在聊天里多一次工具调用。工具仍注册（`OWN_TOOL_NAMES` 里有，供宿主校验），
+ * 但任何面都不可见；这是刻意的“推送而不是工具”。
  */
 function screenEntries() {
   const s = 'screen'
   return [
     tool('read_image', s, ALWAYS, '', '看一张图', 'read', ['hasImageRoute']),
-    tool('presence_speak', s, ALWAYS, '', '看屏幕时说一句', 'write'),
     tool('her_recall', s, ALWAYS, '', '翻自己的旧事和记忆', 'read'),
   ]
 }
@@ -176,7 +179,7 @@ function qqDeferred() {
 const BUILTIN = Object.freeze([
   ...coreEntries('web'),
 
-  // screen 面只给 read_image + presence_speak + her_recall。
+  // screen 面只给 read_image + her_recall；她直接说话，不调输出工具。
   ...screenEntries(),
 
   ...coreEntries('wx'),
