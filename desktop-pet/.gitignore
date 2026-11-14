@@ -3,3 +3,4 @@ dist-electron/
 dist-renderer/
 release/
 assets/webm/
+assets/skins/*/webm/
