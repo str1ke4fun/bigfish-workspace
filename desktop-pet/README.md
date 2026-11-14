@@ -118,8 +118,8 @@ assets/skins/
   （`dragging` 是手势态，不算在内），每个值对应 `webm/<动画名>.webm`，文件必须存在。
 - 默认皮肤不放进 `skins/`，仍用 `assets/config.json` + `assets/webm/`。
 - 壳启动时扫描一次皮肤目录；新增皮肤后要重启壳才会出现在工作台下拉里。
-- **素材不进 Git**：默认动画 `assets/webm/` 已被 `desktop-pet/.gitignore` 忽略；皮肤目录里的
-  `webm/` 目前不在忽略名单，放素材或提交前自行确认不要把有版权的 WebM 带进仓库。
+- **素材不进 Git**：默认动画 `assets/webm/` 与皮肤目录里的 `assets/skins/<id>/webm/` 都已被
+  `desktop-pet/.gitignore` 忽略；`skin.json` 与 `ATTRIBUTION.md` 仍可提交。
 
 ## 许可
 
@@ -133,7 +133,7 @@ assets/skins/
 desktop-pet/
   electron/       主进程：窗口、穿透、轮询、右键菜单、平台探测
   renderer/       React 渲染进程：<Pet>、动作控制器、对话、样式
-  assets/         config.json、ATTRIBUTION.md、webm/（gitignored）
+  assets/         config.json、ATTRIBUTION.md、webm/（gitignored）、skins/<id>/（webm/ gitignored）
   scripts/        sync-assets.mjs、check-assets.mjs
-  test/           Node 单测（controller/poller/pointer/chat/config）
+  test/           Node 单测（controller/poller/pointer/chat/config/skin.test.ts）
 ```
