@@ -6,6 +6,8 @@ declare global {
   interface Window {
     petBridge?: {
       onState(handler: (state: unknown) => void): () => void
+      /** 通知主进程补发最近一次缓存状态；老 preload 没有时退回只等下一拍。 */
+      ready?(): void
     }
   }
 }
@@ -88,6 +90,8 @@ export function App() {
           })
         }
       })
+      // 订阅已经挂上：让 main 补发首拍缓存，避免它早于订阅被丢掉。
+      window.petBridge?.ready?.()
     } catch {
       unsubscribe = undefined
     }

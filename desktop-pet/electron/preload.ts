@@ -23,6 +23,11 @@ const bridge = {
     ipcRenderer.send('pet:ignore-mouse', Boolean(ignore))
   },
 
+  /** 渲染进程已订阅 pet:state；主进程收到后补发最近一次缓存状态。 */
+  ready(): void {
+    ipcRenderer.send('pet:ready')
+  },
+
   requestAction(motion: string): void {
     ipcRenderer.send('pet:action-request', motion)
   },
