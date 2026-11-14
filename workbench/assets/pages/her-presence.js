@@ -2,6 +2,15 @@
 // 开关即授权；默认全关；所有请求经 BFF /api/fish/presence/* 转到 8710 插件。
 import { el, clear, card, fish, postFish, clock, errorText, hint } from '../lib.js'
 
+/** 上次为什么停：重启后界面要能说清楚，而不是只显示「关着」。 */
+const STOP_REASONS = {
+  manual: '手动关闭',
+  'max-run': '到了 4 小时上限',
+  black: '黑屏太久自动停',
+  crashes: '采集连续失败自动停',
+  'start-failed': '抓帧启动失败',
+}
+
 const MODES = [
   { id: 'event', label: '事件', note: '场景突变 / 结算 / 菜单；每 30 秒最多一次候选。' },
   { id: 'ambient', label: '氛围', note: '10–30 秒一档；值得说才说。' },
@@ -72,9 +81,10 @@ function render() {
     SPEC.body.append(el('div', { class: 'field' },
       el('span', { class: 'meta', text: m.note }), btn))
   }
+  const stopLabel = STOP_REASONS[String(SPEC.state?.stopReason ?? '')] ?? ''
   SPEC.status.textContent = on
     ? `正在看：${mode || '—'} · ${SPEC.state?.lastComment ? '最近一句：' + SPEC.state.lastComment : '还没说话'} · ${clock()}`
-    : `关着 · ${clock()}`
+    : `陪看没开${stopLabel ? `（上次：${stopLabel}）` : ''} · ${clock()}`
   SPEC.stop.hidden = !on
   SPEC.note.textContent = SPEC.state?.lastError ? `上次错误：${SPEC.state.lastError}` : ''
   clear(SPEC.recent)

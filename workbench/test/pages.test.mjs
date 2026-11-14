@@ -168,6 +168,14 @@ test('她·陪伴：开关即授权，评论按她的话展示', () => {
   assert.doesNotMatch(s, /innerHTML|他/)
 })
 
+test('陪伴页说明上次为什么停', () => {
+  const s = src('her-presence.js')
+  assert.match(s, /stopReason/)
+  assert.match(s, /4 小时上限/)
+  assert.match(s, /陪看没开/)
+  assert.match(s, /max-run/)
+})
+
 test('陪伴页可以让她演一个动作', () => {
   const s = src('her-presence.js')
   assert.match(s, /postFish\('pet\/act'/)

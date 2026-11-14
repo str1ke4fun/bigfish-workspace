@@ -21,8 +21,8 @@ async function withRoot(fn) {
   }
 }
 
-function makeService(root, { mode = 'event', startOk = true, promptText = '', config = normalizeConfig({}) } = {}) {
-  let t = Date.parse('2026-11-13T10:00:00Z')
+function makeService(root, { mode = 'event', startOk = true, promptText = '', config = normalizeConfig({}), startAt = '2026-11-13T10:00:00Z', maxRunMs } = {}) {
+  let t = Date.parse(startAt)
   const prompts = []
   const comments = []
   const providers = []
@@ -70,6 +70,7 @@ function makeService(root, { mode = 'event', startOk = true, promptText = '', co
   const service = createScreenService({
     root, core, config, capture, foreground,
     now: () => t, dateKey: () => '2026-11-13',
+    ...(maxRunMs ? { maxRunMs } : {}),
   })
   return {
     service, prompts, comments, providers, removed, instances, capture, fg, foreground,
@@ -78,6 +79,60 @@ function makeService(root, { mode = 'event', startOk = true, promptText = '', co
     emitTurnEnd: (sid = 's1') => turnHandler?.({ header: { id: sid } }, { type: 'turn/end' }),
   }
 }
+
+test('开着时重启：自动恢复同一模式，起点沿用', async () => {
+  await withRoot(async (root) => {
+    const first = makeService(root)
+    await first.service.setMode({ mode: 'event', on: true })
+    assert.equal(first.service.status().on, true)
+
+    const second = makeService(root)
+    await new Promise((r) => setTimeout(r, 30))
+    const st = second.service.status()
+    assert.equal(st.on, true)
+    assert.equal(st.mode, 'event')
+    assert.equal(st.startedAt, Date.parse('2026-11-13T10:00:00Z'))
+    assert.equal(second.instances.length, 1)
+  })
+})
+
+test('重启时已过 4 小时上限：不再恢复，并记下到点', async () => {
+  await withRoot(async (root) => {
+    const first = makeService(root)
+    await first.service.setMode({ mode: 'ambient', on: true })
+
+    const second = makeService(root, { startAt: '2026-11-13T14:00:01Z' })
+    await new Promise((r) => setTimeout(r, 30))
+    const st = second.service.status()
+    assert.equal(st.on, false)
+    assert.equal(st.stopReason, 'max-run')
+  })
+})
+
+test('手动关闭后重启不恢复，原因留在状态里', async () => {
+  await withRoot(async (root) => {
+    const first = makeService(root)
+    await first.service.setMode({ mode: 'event', on: true })
+    await first.service.setMode({ mode: 'event', on: false })
+
+    const second = makeService(root)
+    await new Promise((r) => setTimeout(r, 30))
+    const st = second.service.status()
+    assert.equal(st.on, false)
+    assert.equal(st.stopReason, 'manual')
+  })
+})
+
+test('到点自动停止：上限从本次开启算，停止原因记为 max-run', async () => {
+  await withRoot(async (root) => {
+    const h = makeService(root, { maxRunMs: 60 })
+    await h.service.setMode({ mode: 'event', on: true })
+    await new Promise((r) => setTimeout(r, 120))
+    const st = h.service.status()
+    assert.equal(st.on, false)
+    assert.equal(st.stopReason, 'max-run')
+  })
+})
 
 test('event 模式启动采集与 provider，关闭写汇总', async () => {
   await withRoot(async (root) => {

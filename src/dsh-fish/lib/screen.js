@@ -53,6 +53,8 @@ export function createScreenService({
   // 宿主事件总线。`fishCore` 只有服务、没有 `on`；屏幕会话的 assistant 文本
   // 必须从宿主 ctx 上听，所以单独传进来。
   bus = null,
+  // 单次开启的上限；默认 4 小时，测试可以调小。
+  maxRunMs = MAX_RUN_MS,
   log, now = Date.now, dateKey = () => new Date(now()).toISOString().slice(0, 10),
 } = {}) {
   const state = {
@@ -78,6 +80,9 @@ export function createScreenService({
     crashes: 0,
     snapshot: null,
     workKey: '',
+    // 本次手动开启的起点与停止原因；用于重启恢复与界面提醒。
+    startedAt: 0,
+    stopReason: '',
     // 设置页保存后，下一次开/关模式重新读一遍；开屏期间沿用这一份。
     liveConfig: null,
     stream: null,
@@ -115,6 +120,21 @@ export function createScreenService({
   }
 
   function segmentFile() { return join(paths(root).root, SEGMENT_FILE) }
+
+  /** 运行时状态（不是台账）：只记“开着哪一档、从什么时候开始”，重启后据此恢复。 */
+  function runtimeFile() { return join(paths(root).root, 'presence', 'state.json') }
+
+  async function persistRuntime() {
+    await ensureDir()
+    const body = JSON.stringify({
+      on: state.on,
+      mode: state.mode,
+      startedAt: state.startedAt,
+      stopReason: state.stopReason,
+      stoppedAt: state.stopReason ? new Date(now()).toISOString() : '',
+    })
+    await writeAtomic(runtimeFile(), body).catch(() => {})
+  }
 
   async function persistSegment() {
     const body = JSON.stringify({
@@ -302,7 +322,7 @@ export function createScreenService({
     const black = (Number.isFinite(yavg) && yavg < 1) || bytes < 8 * 1024
     if (black) {
       if (!state.blackSince) state.blackSince = now()
-      if (now() - state.blackSince >= BLACK_STOP_MS) await setMode({ mode: state.mode, on: false })
+      if (now() - state.blackSince >= BLACK_STOP_MS) await setMode({ mode: state.mode, on: false, reason: 'black' })
       return
     }
     state.blackSince = 0
@@ -370,7 +390,7 @@ export function createScreenService({
   function onCaptureError(err) {
     state.crashes += 1
     state.lastError = String(err?.why ?? err).slice(0, 160)
-    if (state.crashes >= 3) void setMode({ mode: state.mode, on: false })
+    if (state.crashes >= 3) void setMode({ mode: state.mode, on: false, reason: 'crashes' })
   }
 
   function startCapture({ crop = null, outputIdx = 0 } = {}) {
@@ -445,7 +465,7 @@ export function createScreenService({
     await sweepMedia(root, { ttlMs: hours * 3600_000, prefix: 'presence-' }).catch(() => {})
   }
 
-  async function setMode({ mode, on } = {}) {
+  async function setMode({ mode, on, reason = '', startedAt } = {}) {
     if (on === false) {
       stopCapture()
       clearTimers()
@@ -456,8 +476,12 @@ export function createScreenService({
       state.busy = false
       state.snapshot = null
       state.workKey = ''
+      state.startedAt = 0
+      // 手动关 / 到点 / 黑屏 / 采集失败都记下来；重启后界面能说清上次为什么停。
+      state.stopReason = String(reason || 'manual')
       clearWakeSection(state.sessionId)
       await sweep()
+      await persistRuntime()
       return { ok: true, status: status(), summary }
     }
     if (!SCREEN_MODES.includes(String(mode ?? ''))) return { ok: false, note: '未知的陪伴模式。', status: status() }
@@ -468,6 +492,9 @@ export function createScreenService({
     clearTimers()
     state.mode = String(mode)
     state.on = true
+    // 重启恢复时沿用上次的起点，4 小时上限不会被重置。
+    state.startedAt = Number(startedAt) > 0 ? Number(startedAt) : now()
+    state.stopReason = ''
     state.crashes = 0
     state.workKey = ''
     state.segmentStartedAt = now()
@@ -489,12 +516,17 @@ export function createScreenService({
       stopCapture()
       removeProvider()
       state.lastError = String(err?.message ?? err).slice(0, 160)
+      state.startedAt = 0
+      state.stopReason = 'start-failed'
+      await persistRuntime()
       return { ok: false, note: '这个屏幕现在看不了（抓帧启动失败）。', status: status() }
     }
-    const auto = setTimeout(() => { void setMode({ mode: state.mode, on: false }) }, MAX_RUN_MS)
+    const remaining = Math.max(0, maxRunMs - (now() - state.startedAt))
+    const auto = setTimeout(() => { void setMode({ mode: state.mode, on: false, reason: 'max-run' }) }, remaining)
     auto.unref?.()
     state.timers.push(auto)
     await persistSegment()
+    await persistRuntime()
     await sweep()
     return { ok: true, status: status() }
   }
@@ -509,6 +541,8 @@ export function createScreenService({
       lastCommentAt: state.lastCommentAt || null,
       lastComment: state.lastComment,
       lastError: state.lastError,
+      startedAt: state.startedAt || null,
+      stopReason: state.stopReason,
       comments: state.segmentComments,
       busy: state.busy,
       snapshot: state.snapshot,
@@ -522,14 +556,38 @@ export function createScreenService({
     clearTimers()
     await stopSegment()
     removeProvider()
+    clearWakeSection(state.sessionId)
+    // 插件停用/服务重启：把“当时还开着”留在盘上，下次启动据此恢复；
+    // 只有用户或自动停止才会把 on 写成 false。
+    await persistRuntime()
     state.on = false
     state.mode = null
-    clearWakeSection(state.sessionId)
+  }
+
+  /** 启动时按上次的运行时状态恢复：上次开着、且没到 4 小时上限，就接着看。 */
+  async function resumeRuntime() {
+    const saved = await readJson(runtimeFile(), null).catch(() => null)
+    if (!saved || typeof saved !== 'object') return
+    if (!saved.on || !SCREEN_MODES.includes(String(saved.mode ?? ''))) {
+      state.stopReason = String(saved.stopReason ?? '')
+      return
+    }
+    const startedAt = Number(saved.startedAt) || 0
+    if (!(startedAt > 0) || now() - startedAt >= maxRunMs) {
+      state.stopReason = 'max-run'
+      state.on = false
+      state.mode = null
+      state.startedAt = 0
+      await persistRuntime()
+      return
+    }
+    await setMode({ mode: saved.mode, on: true, startedAt })
   }
 
   // 启动时补写上一段（SIGKILL/重启）；不阻塞构造。
   void loadRecentComments()
   void recoverOpenSegment()
+  void resumeRuntime()
 
   return { setMode, status, canSpeak, recordComment, currentMode: () => state.mode, dispose, renderActivity }
 }

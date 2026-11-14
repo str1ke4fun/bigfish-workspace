@@ -34,9 +34,15 @@
 - 点宠物打开输入框说话（P3）：`POST /api/fish/say` 由 Electron **主进程**经 IPC `pet:chat` 发起——渲染进程从 `file://` 加载，8788 BFF 不带 CORS 头，浏览器侧直接请求会被拦。回复显示成气泡；超时、非 2xx、HTTP 200 但 `ok:false` 都明确显示「没送到」，不冒充成功。
 - 素材是 dsh-pet 的 **11 段子集**（约 4.6 MB，`desktop-pet/assets/webm/` 不进 Git）；代码 MIT，形象/素材 CC BY-NC-SA 4.0，署名与商用限制见 `desktop-pet/assets/ATTRIBUTION.md`。
 
-**已验证（WSL，纯 Node）**：`src/dsh-fish` `node --test` 1089 全绿；`workbench` `node --test` 112 全绿；`desktop-pet` 五个测试文件 21 全绿；`node scripts/check-assets.mjs` 报 `assets ok: 11 files`。这些只覆盖纯函数、路由与契约，**不等于** Windows 窗口或真实消息收发的验收。
+**已验证（WSL，纯 Node）**：`src/dsh-fish` `node --test` 1093 全绿；`workbench` `node --test` 113 全绿；`desktop-pet` 五个测试文件 21 全绿；`node scripts/check-assets.mjs` 报 `assets ok: 11 files`。这些只覆盖纯函数、路由与契约，**不等于** Windows 窗口或真实消息收发的验收。
 
 **未验收（Windows 真机，本环境不执行）**：没有 `npm install`、Vite/Electron 构建、`npm run dist:win`，也没有 `release/*.exe`；透明/置顶/点击穿透、七个动作的播放与重播、presence 气泡去重、BFF 断开与恢复、拖到副屏/混合 DPI 后的位置恢复、点宠物 `/say` 端到端往返均未实测，TypeScript 类型检查也未运行。v1 不做物理/甩动、不做多宠物、不做托盘，也未打包全量 114 段素材。
+
+### 陪伴生命周期修订（2026-11-14）
+
+- 陪看屏幕的运行时状态写到 `~/.dsh-fish/presence/state.json`。服务/插件重启时，若上次是手动开着且未到 4 小时上限，自动恢复同一模式；起点沿用，上限不重置。
+- 手动关闭、到点、黑屏、采集崩溃都会记下 `stopReason`；工作台「陪伴」页关闭时显示「陪看没开（上次：…）」，不再只写「关着」。
+- 测试：`src/dsh-fish` 1093 全绿、`workbench` 113 全绿。
 
 ## 0.9.0 — 2026-11-13
 
