@@ -29,12 +29,12 @@
 - **会话归属**：`/say` 增加 `target`。桌宠输入框传 `companion` 时先 `screen.ensureSession()` 再计一轮对话，回复落在陪伴会话；陪看会话接不上（屏幕服务缺席、建会话失败）时回落 home，并在返回的 `note` 里说明「陪看会话没接上，这次进了主页会话」。工作台聊天不带 `target`，仍进 home。
 - **轮换合并计数**：`screen` 的轮换阈值改为「评论数 + 对话轮数」（`sessionComments` 加 `state.chatTurns`），任一先到 `presence.rotateAfter` 就换新会话。`chatTurns` 只在内存里，重启后从 0 开始。
 - **心跳与在线判定**：`lib/pet-view.js` 增加易失的 `lastPollAt` / `helloAt` / `version` / `skins`；桌宠壳启动时与每 60 秒 `POST /pet/hello`，`/pet/state.pet.online` 只认 90 秒内的 hello——工作台自己轮询 `/pet/state` 只刷新 `lastPollAt`，不会把离线续成在线。
-- **三条新路由**（都走 `observe.js` 的 `guarded()`，只由本机 8788 BFF 转发）：`/pet/hello` 记录版本与皮肤清单；`/pet/config` 写 `config.pet.size` / `skin`，尺寸夹在 240–560、皮肤 id 只允许 `[a-z0-9-]{1,32}`；`/pet/rotate` 调 `ensureSession({ rotate: true })` 手动换一条陪伴会话。8788 BFF 同步加三条 `P2` 白名单路由（64 KB 上限）。
+- **三条新路由**（都走 `observe.js` 的 `guarded()`，只由本机 8788 BFF 转发）：`/pet/hello` 记录版本与皮肤清单；`/pet/config` 写 `config.pet.size` / `skin`，尺寸夹在 240–560、皮肤 id 只允许 `[a-z0-9-]{1,32}`；`/pet/rotate` 调 `screen.rotateSession()` 手动换一条陪伴会话，并清空评论/对话计数与最近评论。8788 BFF 同步加三条 `P2` 白名单路由（64 KB 上限）。
 - **工作台「桌宠」页**：`her` 组新增 `#her/pet`，3 秒轮询 `/pet/state`，四块——状态（在线/离线、最后轮询、activity、action、presence 开关与最近 5 条评论）、动作试演（七个动作；离线时禁用）、外观（小/中/大 320/400/462 与皮肤下拉）、陪伴会话（短码、评论数、对话轮数、阈值，「换一条」先确认）。原「陪伴」页移除重复的动作卡片，只留开关、状态与最近评论。
 - **尺寸与皮肤下发**：`config.pet = { size: 400, skin: '' }`。工作台写配置后，桌宠壳下一轮轮询（≤2 秒）读 `state.settings` 应用；同一设置重复下发幂等，不抖动窗口或反复重载。桌面壳新增本地皮肤：启动时扫描 `assets/skins/<id>/skin.json`（`motions` 必须覆盖 14 个动作，`webm/<动作>.webm` 必须齐全），通过后把 `{ id, revision, config, uri }` 推给渲染进程。坏 JSON、缺素材、运行期载入失败都保留上一个皮肤并给可见提示，不白屏、不退出。
-- **皮肤目录**：`desktop-pet/assets/skins/<id>/skin.json` 与 `webm/`；默认皮肤仍走 `assets/config.json` + `assets/webm`，不放进 `skins/`。动画素材不进 Git（`assets/webm/` 在 `.gitignore` 里；自定义皮肤的 `webm/` 当前不在忽略名单，放素材时自行确认不要误提交）。
+- **皮肤目录**：`desktop-pet/assets/skins/<id>/skin.json` 与 `webm/`；默认皮肤仍走 `assets/config.json` + `assets/webm`，不放进 `skins/`。动画素材不进 Git：`assets/webm/` 与 `assets/skins/*/webm/` 都在 `.gitignore` 里，`skin.json` 与 `ATTRIBUTION.md` 仍可提交。
 
-**已验证（WSL，纯 Node）**：`src/dsh-fish` `node --test` 1102 全绿；`workbench` `node --test` 115 全绿；`desktop-pet` `npm test` 33 全绿。这些只覆盖纯函数、路由与契约，不等于真机行为。
+**已验证（WSL，纯 Node）**：`src/dsh-fish` `node --test` 1103 全绿；`workbench` `node --test` 115 全绿；`desktop-pet` `npm test` 36 全绿。这些只覆盖纯函数、路由与契约，不等于真机行为。
 
 **未验收（Windows 真机 + 工作台手动操作，本环境不执行）**：桌宠输入框的消息是否真的落进「陪你看屏幕」（presence 开着/关着两种状态）；工作台聊天是否仍进 home；桌宠页在线/离线是否按 90 秒窗口切换；七个动作是否实际播放；改尺寸、改皮肤是否 2 秒内生效；坏皮肤是否保留上一个；「换一条」后新会话是否出现、旧会话是否留在侧栏。
 
