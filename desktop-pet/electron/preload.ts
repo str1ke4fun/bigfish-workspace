@@ -31,6 +31,11 @@ const bridge = {
   requestAction(motion: string): void {
     ipcRenderer.send('pet:action-request', motion)
   },
+
+  /** 把用户的一句话交给主进程请求 /api/fish/say，返回 { ok, herReply, note }。 */
+  requestChat(text: string): Promise<{ ok: boolean; herReply: string; note: string }> {
+    return ipcRenderer.invoke('pet:chat', text)
+  },
 }
 
 contextBridge.exposeInMainWorld('petBridge', bridge)

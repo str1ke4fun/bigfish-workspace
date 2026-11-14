@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, protocol } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize, sep } from 'node:path'
 import { createPoller, createStateForwarder, type Poller } from './poller'
+import { sendChat } from '../renderer/chat'
 import { applyIgnoreMouse, createPetWindow, flushPosition } from './window'
 
 const PET_STATE_URL = 'http://127.0.0.1:8788/api/fish/pet/state'
@@ -113,6 +114,22 @@ ipcMain.on('pet:ready', () => {
 ipcMain.on('pet:ignore-mouse', (event, ignore: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win) applyIgnoreMouse(win, ignore === true)
+})
+
+/**
+ * 对话请求从主进程发：渲染进程是 `file://`，BFF 不带 CORS 头，
+ * 在渲染进程里 fetch 会被浏览器拦住。这里永远 resolve 成
+ * `{ ok, herReply, note }`，不让异常跨 IPC 边界。
+ */
+ipcMain.handle('pet:chat', async (_event, text: unknown) => {
+  if (typeof text !== 'string') {
+    return { ok: false, herReply: '', note: '没听懂要说什么。' }
+  }
+  try {
+    return await sendChat(text, { fetchImpl: (url, init) => fetch(url, init) })
+  } catch {
+    return { ok: false, herReply: '', note: '没送到。' }
+  }
 })
 
 function startPetPoller(win: BrowserWindow): void {
