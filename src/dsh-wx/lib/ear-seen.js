@@ -75,6 +75,43 @@ export function freshHits(hits, seen, { isEcho = () => false } = {}) {
   return (hits ?? []).filter((m) => !seen.has(m.key) && (m.why === '@' || !isEcho(m)))
 }
 
+/** 同一会话里同一句话，这么久之内只投一次。 */
+export const CONTENT_WINDOW_MS = 5 * 60_000
+
+/**
+ * 按「会话 + 正文」在时间窗口内去重。
+ *
+ * msgId 和 key 都会因为整屏采集的「上一条 / 发言人」变化而换新，同一句话被重新读到
+ * 就成了新 key（2026-11-13 04:05 的「中午吃什么」隔 17 秒投了两次）。内容记录独立于
+ * seen：会话被读到不清它，所以采集清掉未读后同一句话也不会再投。
+ *
+ * recent 是数组 `{chat, text, at}`，由调用方持有；这里只读，写入走 noteContent。
+ */
+export function dropRecentContent(hits, recent, { now = Date.now(), windowMs = CONTENT_WINDOW_MS, same = samePreviewText } = {}) {
+  const batch = []
+  return (hits ?? []).filter((m) => {
+    const text = String(m?.preview ?? '')
+    if (!text) return true
+    const dup = (r) => sameName(r.chat, m.chat) && same(r.text, text)
+    if ((Array.isArray(recent) ? recent : []).some((r) => now - (Number(r.at) || 0) <= windowMs && dup(r))) return false
+    if (batch.some(dup)) return false
+    batch.push({ chat: m.chat, text })
+    return true
+  })
+}
+
+/** 投递成功后记一笔。同一句话刷新时间，不重复堆。 */
+export function noteContent(recent, hit, { now = Date.now(), windowMs = CONTENT_WINDOW_MS, same = samePreviewText } = {}) {
+  const text = String(hit?.preview ?? '')
+  if (!text) return
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const r = recent[i]
+    if (now - (Number(r.at) || 0) > windowMs) recent.splice(i, 1)
+    else if (sameName(r.chat, hit.chat) && same(r.text, text)) recent.splice(i, 1)
+  }
+  recent.push({ chat: hit.chat, text, at: now })
+}
+
 /** 过期清理 + 按时间保留最新 cap 条。 */
 export function pruneSeen(seen, { now = Date.now(), ttlMs = SEEN_TTL_MS, cap = SEEN_CAP } = {}) {
   for (const [key, rec] of seen) {

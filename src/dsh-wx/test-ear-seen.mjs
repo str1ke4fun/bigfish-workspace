@@ -1,7 +1,7 @@
 // 耳朵的投递记忆：同一个 key 只能压住「同一个未读回合」。
 // 跑：node test-ear-seen.mjs
 import assert from 'node:assert/strict'
-import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen, SEEN_TTL_MS } from './lib/ear-seen.js'
+import { dropRecentContent, noteContent, CONTENT_WINDOW_MS, freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen, SEEN_TTL_MS } from './lib/ear-seen.js'
 
 const NOW = Date.parse('2026-11-05T01:50:00.000Z')
 const HOUR = 3600_000
@@ -68,5 +68,24 @@ assert.equal(many.has('c204||m'), true)
 // 7. 落盘再读回来，key/时间/会话都不丢
 const round = parseSeen(JSON.parse(JSON.stringify(serializeSeen(many, NOW))), NOW)
 assert.deepEqual([...round], [...many])
+
+// 8. 内容窗口：同会话同正文换 key 也不重投；窗口外、别的会话、别的正文照常投
+const recent = []
+const h1 = { key: 'capture:m_c6b1', chat: '某个猫', why: 'exempt', preview: '中午吃什么' }
+const h2 = { key: 'capture:m_8ec5', chat: '某个猫', why: 'exempt', preview: '中午吃什么' }
+assert.equal(dropRecentContent([h1], recent, { now: NOW }).length, 1, '没投过就放行')
+noteContent(recent, h1, { now: NOW })
+assert.equal(dropRecentContent([h2], recent, { now: NOW + 17_000 }).length, 0, '17 秒后换 key 的同一句要拦')
+assert.equal(dropRecentContent([{ ...h2, why: '@' }], recent, { now: NOW + 17_000 }).length, 0, '@ 也一样')
+assert.equal(dropRecentContent([h2], recent, { now: NOW + CONTENT_WINDOW_MS + 1 }).length, 1, '窗口外放行')
+assert.equal(dropRecentContent([{ ...h2, chat: '别的猫' }], recent, { now: NOW + 1000 }).length, 1, '别的会话放行')
+assert.equal(dropRecentContent([{ ...h2, preview: '晚上吃什么' }], recent, { now: NOW + 1000 }).length, 1, '别的正文放行')
+assert.equal(dropRecentContent([h1, h2], [], { now: NOW }).length, 1, '同一批里的重复只留一条')
+// 会话读到后清 seen 不影响内容记录
+const s8 = parseSeen({ delivered: [{ key: h1.key, at: NOW, chat: '某个猫' }] }, NOW)
+forgetReadChats(s8, [{ name: '某个猫', unread: 0 }])
+assert.equal(dropRecentContent([h2], recent, { now: NOW + 1000 }).length, 0, '已读清 key 后内容窗口仍然生效')
+noteContent(recent, h1, { now: NOW + 100_000 })
+assert.equal(recent.length, 1, '同一句话刷新时间而不是堆叠')
 
 console.log('ear-seen: 全部通过')

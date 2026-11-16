@@ -31,7 +31,7 @@ import { ocrSnapshot } from './ocr.js'
 import { isContactWhy } from './contact.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
 import { consume as consumeProactive, dateKey, decideProactive, loadState, normalizeProactive, quotaFor, remaining, saveState } from './proactive.js'
-import { freshHits, forgetReadChats, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
+import { dropRecentContent, freshHits, forgetReadChats, noteContent, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { openChatHit } from './ear-open.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
 import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, pauseReason, previewSig, shouldEnqueue } from './capture.js'
@@ -1506,6 +1506,8 @@ export function apply(ctx, config = {}) {
   let lastSig = null
   let lastNudge = 0
   let lastHeldLog = 0
+  // 近期投过的「会话 + 正文」，按内容拦同一句话换 key 重投（不随会话已读清空）
+  const recentContent = []
   let lastFailLog = 0
   let lastRelogin = 0
   let scanning = false
@@ -2218,7 +2220,13 @@ export function apply(ctx, config = {}) {
       const fresh1 = freshHits([...now.values()], seen, {
         isEcho: (m) => ownEcho(m.chat, m.preview, outbox, { echoMs: ECHO_MS }),
       })
-      const hits = fresh1
+      const hits = dropRecentContent(fresh1, recentContent)
+      if (hits.length < fresh1.length) {
+        // 内容重复的命中记账，不再每轮重试：key 记进 seen，之后同 key 也不会再来。
+        for (const m of fresh1) if (!hits.includes(m)) seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat) })
+        saveSeen()
+        console.log('[dsh-wx] 耳朵：内容近期已投过，跳过 ' + (fresh1.length - hits.length) + ' 条')
+      }
       // 压着没投出去的 @：本轮采集让路（投递循环后按实际成功数重算）。
       heldHits = hits.length
       if (hits.length === 0) {
@@ -2278,6 +2286,7 @@ export function apply(ctx, config = {}) {
           sentChats.push(chat)
           // 投成功才记账：失败下一轮还投，不会丢这条 @
           seen.set(h.key, { at: Date.now(), chat })
+          noteContent(recentContent, h)
           // 每个会话投完都给采集留一段静默期（取较大值，不会无限延长）。
           quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
           console.log('[dsh-wx] 耳朵：已投递（' + sid + '）→ ' + chat)
