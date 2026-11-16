@@ -70,6 +70,18 @@ const COOKIE_HINT = [
 const PREFIX = '/dsh-fish'
 
 /** 读一天 `browse:` 记账里的视频条目。纯函数、只认事件流，不依赖 B 站插件是否加载。 */
+/** 桌宠气泡外观：透明度 40–100（默认 90）；宽度 220–420，0 = 跟随桌宠大小。 */
+function clampBubbleOpacity(v) {
+  const n = Number(v)
+  if (v === undefined || v === null || !Number.isFinite(n)) return 90
+  return Math.round(Math.min(100, Math.max(40, n)))
+}
+function clampBubbleWidth(v) {
+  const n = Number(v)
+  if (v === undefined || v === null || !Number.isFinite(n) || n <= 0) return 0
+  return Math.round(Math.min(420, Math.max(220, n)))
+}
+
 function browseItemsFromEvents(events, dk) {
   const out = []
   const seen = new Set()
@@ -895,6 +907,8 @@ export function registerObserve(ctx, deps = {}) {
         settings: {
           size: Number(cfg?.pet?.size ?? 400),
           skin: String(cfg?.pet?.skin ?? ''),
+          bubbleOpacity: clampBubbleOpacity(cfg?.pet?.bubbleOpacity),
+          bubbleWidth: clampBubbleWidth(cfg?.pet?.bubbleWidth),
         },
         companion: deps.screen?.companionInfo?.() ?? null,
         pet: {
@@ -926,6 +940,8 @@ export function registerObserve(ctx, deps = {}) {
       const cfg = await (ctx.get?.('fishCore')?.config?.get?.() ?? null)
       let size = Number(cfg?.pet?.size ?? 400)
       let skin = String(cfg?.pet?.skin ?? '')
+      let bubbleOpacity = clampBubbleOpacity(cfg?.pet?.bubbleOpacity)
+      let bubbleWidth = clampBubbleWidth(cfg?.pet?.bubbleWidth)
 
       if (body?.size !== undefined) {
         if (typeof body.size !== 'number' || !Number.isFinite(body.size)) {
@@ -941,7 +957,20 @@ export function registerObserve(ctx, deps = {}) {
         skin = s
       }
 
-      const pet = { size, skin }
+      if (body?.bubbleOpacity !== undefined) {
+        if (typeof body.bubbleOpacity !== 'number' || !Number.isFinite(body.bubbleOpacity)) {
+          return send(res, 400, { ok: false, note: 'bubbleOpacity 必须是数字。' })
+        }
+        bubbleOpacity = clampBubbleOpacity(body.bubbleOpacity)
+      }
+      if (body?.bubbleWidth !== undefined) {
+        if (typeof body.bubbleWidth !== 'number' || !Number.isFinite(body.bubbleWidth)) {
+          return send(res, 400, { ok: false, note: 'bubbleWidth 必须是数字（0 = 跟随大小）。' })
+        }
+        bubbleWidth = clampBubbleWidth(body.bubbleWidth)
+      }
+
+      const pet = { size, skin, bubbleOpacity, bubbleWidth }
       const r = await (ctx.get?.('fishCore')?.config?.patch?.({ pet }))
       if (!r?.ok) return send(res, 200, { ok: false, note: '配置没写进去。' })
       return send(res, 200, { ok: true, pet })

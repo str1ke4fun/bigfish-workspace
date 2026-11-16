@@ -144,6 +144,32 @@ test('hello / config / rotate 三条新路由', async () => {
   assert.equal(rot.body.sessionId, 's1')
 })
 
+test('/pet/config 接受气泡透明度和宽度，并在 state.settings 里回显', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView: createPetView({ now: () => 1000 }) })
+
+  const ok = await callRoute(ctx.routes, '/pet/config', 'POST', { bubbleOpacity: 70, bubbleWidth: 300 })
+  assert.equal(ok.status, 200)
+  assert.equal(ok.body.pet.bubbleOpacity, 70)
+  assert.equal(ok.body.pet.bubbleWidth, 300)
+  assert.equal(ok.body.pet.size, 400)
+
+  const clamped = await callRoute(ctx.routes, '/pet/config', 'POST', { bubbleOpacity: 5, bubbleWidth: 999 })
+  assert.equal(clamped.body.pet.bubbleOpacity, 40)
+  assert.equal(clamped.body.pet.bubbleWidth, 420)
+
+  const follow = await callRoute(ctx.routes, '/pet/config', 'POST', { bubbleWidth: 0 })
+  assert.equal(follow.body.pet.bubbleWidth, 0)
+
+  assert.equal((await callRoute(ctx.routes, '/pet/config', 'POST', { bubbleOpacity: 'x' })).status, 400)
+  assert.equal((await callRoute(ctx.routes, '/pet/config', 'POST', { bubbleWidth: null })).status, 400)
+
+  const state = await callRoute(ctx.routes, '/pet/state', 'GET')
+  assert.equal(state.body.settings.bubbleOpacity, 40)
+  assert.equal(state.body.settings.bubbleWidth, 0)
+})
+
 test('petView 缺席时两条路由都返回 200 ok:false，不 500', async () => {
   const ctx = fakeCtx()
   ctx.cfg.connection = { requestRejection: () => null }
