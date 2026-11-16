@@ -34,7 +34,7 @@ Windows                                  WSL (Linux)
 - **对话与观察**：提供对话入口、成长状态和记忆展示界面。
 - **微信桥接**：通过客户端窗口观察与交互接入微信，包含会话识别、提及检测、投递去重与发送限制。
 - **QQ 通道**：LinuxQQ + NapCat（OneBot）接入，掉线观察与人工代发在工作台通道页。
-- **桌宠**：Windows 桌宠壳显示她的状态、气泡与动作，支持陪你看屏幕；工作台可调外观并一键拉起壳。
+- **桌宠**：Windows 桌宠壳显示她的状态、气泡与动作，支持陪你看屏幕；工作台可调外观并一键拉起壳。桌宠素材为非商业授权，见文末「来源与授权」。
 - **交流频率控制**：在不同通道中管理发送间隔和配额。
 - **工具可见性**：按面由策略表决定常驻与按需工具，按需工具经 `her_tools` 查看和打开；工具调用另记只读台账，不进事件流。
 
@@ -84,4 +84,18 @@ node selftest.mjs
 
 ## 来源与授权
 
-核心插件基于 [ssamurias/dsh-fish](https://github.com/ssamurias/dsh-fish) 继续开发，原作者与 MIT 授权声明保留在 [`src/dsh-fish/LICENSE`](src/dsh-fish/LICENSE)。本仓库维护大肥鱼项目使用的插件源码及后续改进。
+> **非商业使用。** 桌宠使用的角色形象与动画素材采用 **CC BY-NC-SA 4.0**（署名、非商业、相同方式共享），
+> **不得用于商业用途**；公开分发前必须替换为自有素材或另行取得授权。动画素材 `assets/webm/` 不进入本仓库；托盘图标 `desktop-pet/assets/tray.png` 取自默认待机动画的一帧，同样受该许可约束。详见下表与
+> [`desktop-pet/assets/ATTRIBUTION.md`](desktop-pet/assets/ATTRIBUTION.md)。
+
+本项目在下列开源项目的基础上继续开发。各自的许可以其项目页面为准：
+
+| 部分 | 来源项目 | 许可 | 本仓库里的用法 |
+| --- | --- | --- | --- |
+| 核心插件 `src/dsh-fish`，以及从它拆出的 B 站面 `src/dsh-bili`（刷站、看画面、评论） | [ssamurias/dsh-fish](https://github.com/ssamurias/dsh-fish) | MIT | 在其基础上继续开发；原作者与 MIT 声明保留在 [`src/dsh-fish/LICENSE`](src/dsh-fish/LICENSE) |
+| 桌宠动作协议与工作状态映射 | [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) | 代码 MIT | 参考其协议与映射，只用表现层，不含对方的人设、对话、记忆或模型能力 |
+| 桌宠角色形象与动画素材（含由其中一帧得到的托盘图标） | [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) | **CC BY-NC-SA 4.0** | `assets/webm/` 由脚本从本地同步，不进入 Git |
+| 桌宠 React 组件 `dsh-pet-component` 0.2.5 | [dsh-tauri/dsh-pet-component](https://github.com/dsh-tauri/dsh-pet-component) | MIT | 作为依赖使用 |
+
+`src/dsh-bili` 的 B 站接口行为来自上游 `dsh-fish` 的本机实测，不是官方 API；它与 `src/dsh-fish` 共用同一份 MIT 授权来源。
+本仓库维护大肥鱼项目使用的插件源码及后续改进。
