@@ -113,6 +113,15 @@ export function resizePetWindow(win: BrowserWindow, size: number): void {
   clampWindowToDisplays(win)
 }
 
+/** 托盘「回到右下角」：忽略保存的位置，放回主屏默认位置。 */
+export function resetPetPosition(win: BrowserWindow): void {
+  if (win.isDestroyed()) return
+  const [width, height] = win.getSize()
+  const spot = defaultPosition(screen.getPrimaryDisplay().workArea, width, height)
+  win.setPosition(spot.x, spot.y)
+  schedulePositionSave(win)
+}
+
 export function createPetWindow(size: number = PET_SIZE_DEFAULT): BrowserWindow {
   const displays = displaysWithPrimaryFirst()
   const saved = readSavedPosition()

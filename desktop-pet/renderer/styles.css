@@ -29,6 +29,10 @@ body {
   max-width: var(--pet-bubble-max, 300px) !important;
 }
 
+.dsh-pet__bubbles {
+  opacity: var(--pet-bubble-opacity, 0.9);
+}
+
 .dsh-pet__bubble-text,
 .dsh-pet__bubble-title {
   font-size: 13px !important;

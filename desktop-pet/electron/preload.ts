@@ -46,6 +46,19 @@ const bridge = {
     }
   },
 
+  /** 气泡外观（透明度/宽度）：首帧主动拉，之后右键或工作台改了会推送。 */
+  getLook(): Promise<{ opacity: number; width: number }> {
+    return ipcRenderer.invoke('pet:get-look')
+  },
+
+  onLook(handler: (look: { opacity: number; width: number }) => void): Unsubscribe {
+    const listener = (_event: Electron.IpcRendererEvent, look: { opacity: number; width: number }): void => handler(look)
+    ipcRenderer.on('pet:look', listener)
+    return () => {
+      ipcRenderer.removeListener('pet:look', listener)
+    }
+  },
+
   /** 服务端设置里的皮肤变化后，主进程把校验过的 config 与素材基地址推过来。 */
   onSkin(handler: (skin: unknown) => void): Unsubscribe {
     const listener = (_event: Electron.IpcRendererEvent, skin: unknown): void => handler(skin)

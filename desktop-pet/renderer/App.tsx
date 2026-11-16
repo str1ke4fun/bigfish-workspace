@@ -16,6 +16,15 @@ import {
   type Seen,
 } from './controller'
 import type { ChatResult } from './chat'
+import {
+  BUBBLE_OPACITY_DEFAULT,
+  clampBubbleOpacity,
+  clampBubbleWidth,
+  createPager,
+  defaultBubbleWidth,
+  PAGE_BUBBLE_ID,
+  pageBubble,
+} from './bubble-pages'
 
 declare global {
   interface Window {
@@ -39,6 +48,9 @@ declare global {
       getSkin?(): Promise<unknown>
       /** 主进程拒绝载入皮肤时推来 { id, why }；渲染进程据此弹提示。 */
       onSkinError?(handler: (error: unknown) => void): () => void
+      /** 气泡外观：透明度 % 与最大宽度 px（0 = 跟随大小）。 */
+      getLook?(): Promise<{ opacity: number; width: number }>
+      onLook?(handler: (look: { opacity: number; width: number }) => void): () => void
     }
   }
 }
@@ -133,6 +145,40 @@ export function App() {
   /** 运行期失败过的皮肤；防止 ready/getSkin 的重放立刻把回退撤销并形成循环。 */
   const failedSkinRef = useRef<SkinRef | null>(null)
   const pet = useControllablePet(petRef)
+  const petApiRef = useRef(pet)
+  petApiRef.current = pet
+  const [look, setLook] = useState({ opacity: BUBBLE_OPACITY_DEFAULT, width: 0 })
+  /** 长回复逐句翻：同一个气泡原地换字，新消息取消上一轮。 */
+  const pagerRef = useRef<ReturnType<typeof createPager> | null>(null)
+  if (!pagerRef.current) {
+    pagerRef.current = createPager({
+      show: (text, _index, motion) => {
+        petApiRef.current.bubble(pageBubble(text))
+        // 动作只在首句播一次（一次性，播完回落稳态），不挂在常驻气泡上。
+        const options = motion ? performedMotion(motion) : null
+        if (options) petApiRef.current.motion(options)
+      },
+      close: () => petApiRef.current.bubble.close(PAGE_BUBBLE_ID),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    })
+  }
+
+  useEffect(() => {
+    const bridge = window.petBridge
+    void bridge?.getLook?.().then((value) => {
+      if (value) setLook({ opacity: clampBubbleOpacity(value.opacity), width: clampBubbleWidth(value.width) })
+    })
+    let unsubscribe: (() => void) | undefined
+    try {
+      unsubscribe = bridge?.onLook?.((value) =>
+        setLook({ opacity: clampBubbleOpacity(value.opacity), width: clampBubbleWidth(value.width) }),
+      )
+    } catch {
+      unsubscribe = undefined
+    }
+    return () => unsubscribe?.()
+  }, [])
 
   useEffect(() => {
     const bridge = window.petBridge
@@ -150,13 +196,12 @@ export function App() {
     return () => unsubscribe?.()
   }, [])
 
-  // 气泡宽度跟着宠物尺寸走，避免小宠物配大水泡。
+  // 气泡宽度默认跟着宠物尺寸走；手动设了宽度就用手动值。透明度同理。
   useEffect(() => {
-    document.documentElement.style.setProperty(
-      '--pet-bubble-max',
-      `${Math.round(Math.min(360, Math.max(240, size * 0.75)))}px`,
-    )
-  }, [size])
+    const root = document.documentElement.style
+    root.setProperty('--pet-bubble-max', `${look.width > 0 ? look.width : defaultBubbleWidth(size)}px`)
+    root.setProperty('--pet-bubble-opacity', String(look.opacity / 100))
+  }, [size, look])
 
   // 皮肤切换：主进程已经校验过 skin.json（含 14 个动画文件）并读好内容。
   // 先订阅再主动拉一次，覆盖「主进程首推早于本 effect 注册」的竞态。
@@ -251,12 +296,7 @@ export function App() {
         setSteady(effect.steady)
         if (effect.motion) pet.motion({ type: effect.motion, loop: false, replay: true })
         if (effect.bubble) {
-          pet.bubble({
-            id: effect.bubble.id,
-            description: effect.bubble.text,
-            motion: effect.bubble.motion,
-            timeout: BUBBLE_TIMEOUT_MS,
-          })
+          pagerRef.current?.play(effect.bubble.text, effect.bubble.motion)
         }
       })
       // 订阅已经挂上：让 main 补发首拍缓存，避免它早于订阅被丢掉。
@@ -402,7 +442,7 @@ export function App() {
         if (result.ok && result.herReply.trim() !== '') {
           // 加载气泡是常驻的，必须自己收掉；reply 会另开说话气泡。
           pet.bubble.close(CHAT_BUBBLE_ID)
-          pet.reply(result.herReply)
+          pagerRef.current?.play(result.herReply, 'waving')
           return
         }
         if (result.ok) {

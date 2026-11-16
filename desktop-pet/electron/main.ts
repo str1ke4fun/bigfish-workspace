@@ -1,9 +1,12 @@
-import { app, BrowserWindow, ipcMain, Menu, protocol, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray, type MenuItemConstructorOptions } from 'electron'
 import { readFile } from 'node:fs/promises'
-import { extname, join, normalize, sep } from 'node:path'
+import { extname, join, normalize, resolve, sep } from 'node:path'
 import { createPoller, createStateForwarder, type Poller } from './poller'
 import { sendChat } from '../renderer/chat'
-import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition, resizePetWindow } from './window'
+import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition, resetPetPosition, resizePetWindow } from './window'
+import { DEFAULT_LOOK, noteLocalLook, readRemoteLook, resolveRemoteLook, type BubbleLook, type LookSyncState } from './look'
+import { buildMenuModel, type MenuItemModel } from './menu-model'
+import { OPEN_PROTOCOL, protocolTarget } from './open-link'
 import { readPetSize, savePetSize } from './settings'
 import { clampPetSize } from './size'
 import {
@@ -28,23 +31,8 @@ const PET_REQUEST_TIMEOUT_MS = 5000
 const PET_HELLO_INTERVAL_MS = 60_000
 const DEFAULT_SKIN_URI = 'pet-asset://local/webm'
 
-/** 右键「演一个动作」：只列用户可选的七个动作，`dragging` 是手势态，不进菜单。 */
-const MOTION_MENU_ITEMS: ReadonlyArray<{ label: string; motion: string }> = [
-  { label: '挥手', motion: 'waving' },
-  { label: '思考', motion: 'thinking' },
-  { label: '忙碌', motion: 'working' },
-  { label: '看结果', motion: 'result' },
-  { label: '等待', motion: 'waiting' },
-  { label: '庆祝', motion: 'success' },
-  { label: '沮丧', motion: 'error' },
-]
-
-/** 右键「大小」预设：宠物身体宽度（px）。 */
-const PET_SIZE_PRESETS: ReadonlyArray<{ label: string; size: number }> = [
-  { label: '小', size: 320 },
-  { label: '中', size: 400 },
-  { label: '大', size: 462 },
-]
+const WORKBENCH_PET_URL = 'http://127.0.0.1:8788/#her/pet'
+const PRESENCE_MODE_URL = 'http://127.0.0.1:8788/api/fish/presence/mode'
 
 let petPoller: Poller | null = null
 let petWindow: BrowserWindow | null = null
@@ -58,6 +46,14 @@ let helloTimer: ReturnType<typeof setInterval> | null = null
 let skinRevision = 0
 /** 本地尺寸覆盖：服务端回声前不让旧值把窗口拉回去。 */
 let sizeSync: SizeSyncState = { current: petSize, pending: null }
+/** 气泡外观：同样本地优先，回声前不被旧的远端值拉回去。 */
+let petLook: BubbleLook = DEFAULT_LOOK
+let lookSync: LookSyncState = { current: DEFAULT_LOOK, pending: null }
+/** 托盘「隐藏」只存内存，重启后默认可见。 */
+let petHidden = false
+let tray: Tray | null = null
+/** 最近一次 `/pet/state` 里的陪看状态，托盘菜单用。 */
+let lastPresence: { on: boolean; mode: string | null } | null = null
 
 /**
  * 皮肤推送缓存：首推可能早于渲染进程注册 `onSkin`（和 `pet:state` 同样的竞态）。
@@ -183,7 +179,7 @@ function changePetSize(
  * `/pet/config` 写配置失败时仍返回 HTTP 200 + `{ ok:false }`，只看状态码会把失败
  * 当成成功，所以这里显式检查 `ok === true`。
  */
-async function syncPetConfig(update: { size?: number; skin?: string }): Promise<boolean> {
+async function syncPetConfig(update: { size?: number; skin?: string; bubbleOpacity?: number; bubbleWidth?: number }): Promise<boolean> {
   try {
     const response = await fetch(PET_CONFIG_URL, {
       method: 'POST',
@@ -198,6 +194,18 @@ async function syncPetConfig(update: { size?: number; skin?: string }): Promise<
     // 本地已经生效；不打扰用户，也不刷日志。
     return false
   }
+}
+
+/** 改气泡外观：立即推给渲染进程，并尽力写回服务端（失败只影响工作台显示）。 */
+function changePetLook(
+  win: BrowserWindow,
+  look: BubbleLook,
+  { sync = true, local = true }: { sync?: boolean; local?: boolean } = {},
+): void {
+  petLook = look
+  lookSync = local ? noteLocalLook(look) : { ...lookSync, current: look }
+  if (!win.isDestroyed()) win.webContents.send('pet:look', look)
+  if (sync) void syncPetConfig({ bubbleOpacity: look.opacity, bubbleWidth: look.width })
 }
 
 /** 心跳：窗口真的起来了才让服务端判 online。失败静默，不刷屏。 */
@@ -343,38 +351,98 @@ function applyRemoteSettings(state: unknown): void {
     }
   }
 
+  const remoteLook = readRemoteLook(state)
+  if (remoteLook) {
+    const decision = resolveRemoteLook(lookSync, remoteLook)
+    lookSync = decision.state
+    if (decision.apply && petWindow && !petWindow.isDestroyed()) {
+      changePetLook(petWindow, decision.apply, { sync: false, local: false })
+    }
+  }
+
   if (typeof next.skin === 'string' && shouldApplySettings(petSettings, { skin: next.skin })) {
     void applySkin(next.skin)
   }
 }
 
+function toElectronItems(items: MenuItemModel[]): MenuItemConstructorOptions[] {
+  return items.map((item) => {
+    if (item.separator) return { type: 'separator' as const }
+    const out: MenuItemConstructorOptions = { label: item.label }
+    if (item.submenu) out.submenu = toElectronItems(item.submenu)
+    else if (item.checked !== undefined) {
+      out.type = 'radio'
+      out.checked = item.checked
+    }
+    if (item.click) out.click = item.click
+    return out
+  })
+}
+
+/** 陪看模式开关：经工作台 BFF 走现有 `/presence/mode`；点托盘本身就是用户的明确操作。 */
+async function setPresence(mode: 'off' | 'event' | 'ambient' | 'work'): Promise<void> {
+  const target = mode === 'off' ? lastPresence?.mode : mode
+  if (!target) return
+  try {
+    await fetch(PRESENCE_MODE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: target, on: mode !== 'off' }),
+      signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
+    })
+  } catch {
+    // 工作台没起来就算了；下一拍状态会如实反映。
+  }
+}
+
+function setPetHidden(hidden: boolean): void {
+  petHidden = hidden
+  const win = petWindow
+  if (!win || win.isDestroyed()) return
+  if (hidden) win.hide()
+  else win.showInactive()
+}
+
+function buildMenu(kind: 'context' | 'tray'): Menu {
+  const win = petWindow
+  const model = buildMenuModel(
+    { size: petSize, opacity: petLook.opacity, width: petLook.width, hidden: petHidden, presence: lastPresence },
+    {
+      motion: (motion) => win && sendAction(win, motion),
+      size: (size) => win && changePetSize(win, size),
+      opacity: (opacity) => win && changePetLook(win, { ...petLook, opacity }),
+      width: (width) => win && changePetLook(win, { ...petLook, width }),
+      toggleHidden: () => setPetHidden(!petHidden),
+      resetPosition: () => {
+        if (!win || win.isDestroyed()) return
+        resetPetPosition(win)
+        if (petHidden) setPetHidden(false)
+      },
+      presence: (mode) => void setPresence(mode),
+      openWorkbench: () => void shell.openExternal(WORKBENCH_PET_URL),
+      quit: () => app.quit(),
+    },
+    kind,
+  )
+  return Menu.buildFromTemplate(toElectronItems(model))
+}
+
 function attachPetMenu(win: BrowserWindow): void {
   win.webContents.on('context-menu', () => {
     if (win.isDestroyed()) return
-    const menu = Menu.buildFromTemplate([
-      {
-        label: '演一个动作',
-        submenu: MOTION_MENU_ITEMS.map(({ label, motion }) => ({
-          label,
-          click: () => sendAction(win, motion),
-        })),
-      },
-      {
-        label: '大小',
-        submenu: PET_SIZE_PRESETS.map(({ label, size }) => ({
-          label,
-          type: 'radio' as const,
-          checked: petSize === size,
-          click: () => changePetSize(win, size),
-        })),
-      },
-      { type: 'separator' },
-      // v1 没有托盘：无边框 + skipTaskbar 的窗口一旦 hide() 就没有恢复入口，
-      // 所以只给退出。托盘/显示按 spec §6.2 留到后续阶段。
-      { label: '退出', click: () => app.quit() },
-    ])
-    menu.popup({ window: win })
+    buildMenu('context').popup({ window: win })
   })
+}
+
+/** 通知区图标：左键/双击切换显示，右键弹菜单。窗口隐藏后这里是唯一的恢复入口。 */
+function createPetTray(): void {
+  if (tray) return
+  const icon = nativeImage.createFromPath(appFile('assets', 'tray.png')).resize({ width: 16, height: 16 })
+  tray = new Tray(icon)
+  tray.setToolTip('大肥鱼桌宠')
+  tray.on('click', () => setPetHidden(!petHidden))
+  tray.on('double-click', () => setPetHidden(!petHidden))
+  tray.on('right-click', () => tray?.popUpContextMenu(buildMenu('tray')))
 }
 
 /**
@@ -382,6 +450,11 @@ function attachPetMenu(win: BrowserWindow): void {
  * 避免首拍 IPC 早于订阅被丢掉。
  */
 const stateForwarder = createStateForwarder((state) => {
+  const presence = state && typeof state === 'object' ? (state as Record<string, unknown>).presence : null
+  if (presence && typeof presence === 'object') {
+    const p = presence as Record<string, unknown>
+    lastPresence = { on: p.on === true, mode: typeof p.mode === 'string' ? p.mode : null }
+  }
   if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:state', state)
 })
 
@@ -395,6 +468,7 @@ ipcMain.on('pet:ready', () => {
 })
 
 ipcMain.handle('pet:get-size', () => petSize)
+ipcMain.handle('pet:get-look', () => petLook)
 
 /** 渲染进程挂载时主动拉取最近皮肤，避免首推丢失后一直停在默认皮肤。 */
 ipcMain.handle('pet:get-skin', () => skinForwarder.get())
@@ -482,15 +556,49 @@ function startPetWindow(): BrowserWindow {
   return win
 }
 
-app
+/** 把桌宠带到前台：窗口没了就重建，隐藏了就显示。工作台「打开桌宠」和重复启动都走这里。 */
+function showPet(): void {
+  if (!petWindow || petWindow.isDestroyed()) {
+    petWindow = startPetWindow()
+    return
+  }
+  if (petWindow.isMinimized()) petWindow.restore()
+  setPetHidden(false)
+}
+
+/** 登记 bigfishpet:// 到当前用户（HKCU），之后工作台链接才能拉起壳。失败只记日志。 */
+function registerOpenProtocol(): void {
+  try {
+    const { exec, args } = protocolTarget({
+      execPath: process.execPath,
+      portableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+      defaultApp: process.defaultApp,
+      appArg: process.argv[1] ? resolve(process.argv[1]) : undefined,
+    })
+    if (!app.setAsDefaultProtocolClient(OPEN_PROTOCOL, exec, args)) {
+      console.warn('[desktop-pet] 登记 bigfishpet:// 协议没成功，工作台打开按钮可能无效')
+    }
+  } catch (error) {
+    console.warn('[desktop-pet] 登记协议出错', error)
+  }
+}
+
+// 只留一个壳：再次启动（包括点工作台链接）只把已有窗口带到前台。
+const gotInstanceLock = app.requestSingleInstanceLock()
+if (!gotInstanceLock) app.quit()
+else app.on('second-instance', () => showPet())
+
+if (gotInstanceLock) app
   .whenReady()
   .then(() => {
     petSize = readPetSize()
     petSettings = { size: petSize, skin: '' }
     sizeSync = { current: petSize, pending: null }
     registerAssetProtocol()
+    registerOpenProtocol()
     skinCatalog = scanSkins(appFile('assets'))
     startPetWindow()
+    createPetTray()
     // 窗口先建好再报到，服务端的 online 才真的代表「窗口起来了」。
     startPetHeartbeat()
 
@@ -498,8 +606,7 @@ app
       if (!petWindow || petWindow.isDestroyed()) {
         startPetWindow()
       } else {
-        petWindow.show()
-        petWindow.focus()
+        setPetHidden(false)
       }
     })
   })
@@ -515,6 +622,8 @@ app.on('before-quit', () => {
   petPoller?.stop()
   petPoller = null
   petWindow = null
+  tray?.destroy()
+  tray = null
 })
 
 app.on('window-all-closed', () => {
