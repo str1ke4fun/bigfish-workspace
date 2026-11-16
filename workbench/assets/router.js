@@ -10,6 +10,8 @@ export const LEGACY_HASH = {
   tools: 'system/tools',
   data: 'system/data',
   principles: 'system/principles',
+  // 2026-11-15：「陪伴」并入「桌宠」页，老书签不 404。
+  'her/presence': 'her/pet',
 }
 
 export const DEFAULT_ROUTE = 'her/today'

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { herToday } from '../assets/pages/her-today.js'
 import { herMemory } from '../assets/pages/her-memory.js'
 import { herGrowth } from '../assets/pages/her-growth.js'
@@ -12,7 +12,6 @@ import { systemTools } from '../assets/pages/system-tools.js'
 import { systemLogs } from '../assets/pages/system-logs.js'
 import { systemData } from '../assets/pages/system-data.js'
 import { systemPrinciples } from '../assets/pages/system-principles.js'
-import { herPresence } from '../assets/pages/her-presence.js'
 const src = (name) => readFileSync(new URL(`../assets/pages/${name}`, import.meta.url), 'utf8')
 
 test('她·今天契约与数据源', () => {
@@ -156,24 +155,27 @@ test('系统·原理是静态页，不依赖插件', () => {
   assert.doesNotMatch(s, /fish\(|postFish\(|local\(|innerHTML/)
 })
 
-test('她·陪伴：开关即授权，评论按她的话展示', () => {
-  const s = src('her-presence.js')
-  assert.equal(herPresence.id, 'her-presence')
-  assert.equal(herPresence.nav, 'her')
-  assert.equal(herPresence.slug, 'presence')
+test('桌宠页吸收陪看：开关即授权，上次停止原因，她看到的这一会儿', () => {
+  const s = src('pet.js')
   for (const call of ["fish('presence/status')", "postFish('presence/mode'"]) assert.ok(s.includes(call), call)
   assert.match(s, /confirmOn/)
-  assert.match(s, /recent/)
   assert.match(s, /她看到的这一会儿/)
-  assert.doesNotMatch(s, /innerHTML|他/)
-})
-
-test('陪伴页说明上次为什么停', () => {
-  const s = src('her-presence.js')
   assert.match(s, /stopReason/)
   assert.match(s, /4 小时上限/)
   assert.match(s, /陪看没开/)
   assert.match(s, /max-run/)
+  assert.doesNotMatch(s, /他/)
+})
+
+test('桌宠页外观区有气泡透明度和宽度，走 pet/config', () => {
+  const s = src('pet.js')
+  assert.match(s, /bubbleOpacity/)
+  assert.match(s, /bubbleWidth/)
+  assert.match(s, /气泡/)
+})
+
+test('陪伴页已并入桌宠页，不再有独立文件', () => {
+  assert.equal(existsSync(new URL('../assets/pages/her-presence.js', import.meta.url)), false)
 })
 
 test('桌宠页：状态、动作、外观、陪伴会话四块齐全', async () => {
@@ -191,13 +193,15 @@ test('桌宠页：状态、动作、外观、陪伴会话四块齐全', async ()
   }
 })
 
-test('陪伴页不再重复动作按钮', () => {
-  const s = src('her-presence.js')
-  assert.doesNotMatch(s, /postFish\('pet\/act'/)
+test('桌宠页有「仅打开桌宠」链接，走 bigfishpet 协议且不碰陪看', () => {
+  const s = src('pet.js')
+  assert.match(s, /仅打开桌宠/)
+  assert.match(s, /href: 'bigfishpet:\/\/open'/)
+  assert.doesNotMatch(s, /openPet[^\n]*presence\/mode/)
 })
 
 test('工作台时间统一走本地格式化', () => {
-  for (const f of ['pet.js', 'her-presence.js', 'overview.js', 'her-today.js', 'system-logs.js', 'data.js', 'system-data.js']) {
+  for (const f of ['pet.js', 'overview.js', 'her-today.js', 'system-logs.js', 'data.js', 'system-data.js']) {
     const s = src(f)
     assert.doesNotMatch(s, /\.slice\(11, 16\)/, f)
     assert.doesNotMatch(s, /text: row\.at\b/, f)

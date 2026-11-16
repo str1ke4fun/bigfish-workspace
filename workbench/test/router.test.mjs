@@ -12,8 +12,10 @@ test('旧 hash 映射到新路由', () => {
     tools: 'system/tools',
     data: 'system/data',
     principles: 'system/principles',
+    'her/presence': 'her/pet',
   })
   assert.equal(normalizeRoute('#overview'), 'her/today')
+  assert.equal(normalizeRoute('#her/presence'), 'her/pet')
   assert.equal(normalizeRoute('#bili'), 'bili/today')
   assert.equal(normalizeRoute('#channels'), 'channels/overview')
   assert.equal(normalizeRoute('#env'), 'system/settings')

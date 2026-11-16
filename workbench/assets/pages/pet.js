@@ -1,6 +1,6 @@
-// 她 · 桌宠：在线状态、动作试演、尺寸与皮肤、陪伴会话。
-// 页面只读 /pet/state（3 秒轮询）；写只有三件：演动作、改外观、换一条会话。
-// 都经 BFF /api/fish/pet/* 转到 8710 插件，不调用模型，也不写事件流。
+// 她 · 桌宠：在线状态、屏幕陪伴开关、动作试演、尺寸/皮肤/气泡、陪伴会话。
+// 页面读 /pet/state 与 /presence/status（3 秒轮询）；写：演动作、改外观、换会话、开关陪看。
+// 都经 BFF /api/fish/* 转到 8710 插件；开关即授权，默认全关。
 import {
   el, clear, card, fish, postFish, fmtTime, fmtClock, errorText, writeError, statusDot, hint,
 } from '../lib.js'
@@ -25,6 +25,29 @@ const ACTIVITY_LABEL = {
 }
 
 const MODE_LABEL = { event: '事件', ambient: '氛围', work: '工作' }
+
+/** 上次为什么停：重启后界面要能说清楚，而不是只显示「关着」。 */
+const STOP_REASONS = {
+  manual: '手动关闭',
+  'max-run': '到了 4 小时上限',
+  black: '黑屏太久自动停',
+  crashes: '采集连续失败自动停',
+  'start-failed': '抓帧启动失败',
+}
+
+const PRESENCE_MODES = [
+  { id: 'event', label: '事件', note: '场景突变 / 结算 / 菜单；每 30 秒最多一次候选。' },
+  { id: 'ambient', label: '氛围', note: '10–30 秒一档；值得说才说。' },
+  { id: 'work', label: '工作', note: '只看前台白名单窗口（Code / 终端）；长冷却。' },
+]
+
+const OPACITIES = [90, 70, 50]
+const WIDTHS = [
+  { id: 0, label: '跟随大小' },
+  { id: 260, label: '小' },
+  { id: 320, label: '中' },
+  { id: 400, label: '大' },
+]
 
 // 与 observe.js /pet/config 的夹取区间（240–560）兼容。
 const SIZES = [
@@ -52,8 +75,12 @@ function build(root, ctx) {
   SPEC.activity = el('div', { class: 'meta' })
   SPEC.action = el('div', { class: 'meta' })
   SPEC.presence = el('div', { class: 'meta' })
+  // 仅拉起桌宠壳，不碰陪看。链接交给浏览器、由 Windows 按 bigfishpet:// 协议启动壳；
+  // 服务端不起子进程。协议要壳在 Windows 上手动启动过一次才登记。
+  SPEC.openPet = el('a', { class: 'button small', href: 'bigfishpet://open', text: '仅打开桌宠' })
+  SPEC.openPetNote = el('div', { class: 'meta', text: '只把桌宠拉起来，不开陪看。第一次要先在 Windows 上手动启动一次桌宠壳，之后才能点开。' })
   SPEC.recent = el('ul', { class: 'timeline' })
-  SPEC.recentCard = card('最近说的几句', { note: '最多 5 条；这些话不进事件流。' })
+  SPEC.recentCard = card('她看到的这一会儿', { note: '最多 5 条；她愿意说的时候才说，这些话不进事件流。' })
   SPEC.recentCard.body.append(SPEC.recent)
   SPEC.statusCard.body.append(
     SPEC.statusLine,
@@ -61,7 +88,25 @@ function build(root, ctx) {
     SPEC.activity,
     SPEC.action,
     SPEC.presence,
+    el('div', { class: 'row' }, SPEC.openPet),
+    SPEC.openPetNote,
     SPEC.recentCard.root,
+  )
+
+  // ---- 1b. 屏幕陪伴 ----
+  SPEC.presenceCard = card('陪你看屏幕', {
+    note: '默认关。开启后会把当前窗口/屏幕的低频候选帧发给模型；关闭立即停采集。',
+  })
+  SPEC.presenceStatus = el('div', { class: 'meta', text: '正在读状态…' })
+  SPEC.presenceModes = el('div', { class: 'row' })
+  SPEC.presenceNote = el('div', { class: 'meta' })
+  SPEC.presenceStop = el('button', { class: 'small', type: 'button', text: '立即停止', onclick: () => stopPresence() })
+  SPEC.presenceStop.hidden = true
+  SPEC.presenceCard.body.append(
+    SPEC.presenceStatus,
+    SPEC.presenceModes,
+    el('div', { class: 'row' }, SPEC.presenceStop, SPEC.presenceNote),
+    hint('终端里可能有凭据：工作模式首次开启前请确认当前窗口没有敏感内容。', 'meta'),
   )
 
   // ---- 2. 动作试演 ----
@@ -99,6 +144,32 @@ function build(root, ctx) {
     SPEC.sizeButtons.set(s.id, btn)
     SPEC.sizes.append(btn)
   }
+  SPEC.opacityButtons = new Map()
+  SPEC.opacities = el('div', { class: 'row' })
+  for (const value of OPACITIES) {
+    const btn = el('button', {
+      class: 'small',
+      type: 'button',
+      text: `${value}%`,
+      onclick: () => applyConfig({ bubbleOpacity: value }),
+    })
+    SPEC.opacityButtons.set(value, btn)
+    SPEC.opacities.append(btn)
+  }
+  SPEC.opacitySlider = el('input', { type: 'range', min: '40', max: '100', step: '5' })
+  SPEC.opacitySlider.addEventListener('change', () => applyConfig({ bubbleOpacity: Number(SPEC.opacitySlider.value) }))
+  SPEC.widthButtons = new Map()
+  SPEC.widths = el('div', { class: 'row' })
+  for (const w of WIDTHS) {
+    const btn = el('button', {
+      class: 'small',
+      type: 'button',
+      text: w.label,
+      onclick: () => applyConfig({ bubbleWidth: w.id }),
+    })
+    SPEC.widthButtons.set(w.id, btn)
+    SPEC.widths.append(btn)
+  }
   SPEC.skin = el('select', { class: 'small' })
   SPEC.skin.addEventListener('change', () => applyConfig({ skin: SPEC.skin.value }))
   SPEC.skinSignature = ''
@@ -106,6 +177,8 @@ function build(root, ctx) {
   SPEC.looksNote = el('div', { class: 'meta' })
   SPEC.looksCard.body.append(
     el('div', { class: 'field' }, el('span', { class: 'meta', text: '尺寸' }), SPEC.sizes),
+    el('div', { class: 'field' }, el('span', { class: 'meta', text: '气泡不透明度（调低不挡游戏）' }), SPEC.opacities, SPEC.opacitySlider),
+    el('div', { class: 'field' }, el('span', { class: 'meta', text: '气泡宽度' }), SPEC.widths),
     SPEC.skinLabel,
     SPEC.looksNote,
   )
@@ -130,7 +203,7 @@ function build(root, ctx) {
     hint('换了会话，前面的评论和对话仍在原会话里，不会被删。'),
   )
 
-  root.append(SPEC.statusCard.root, SPEC.actionsCard.root, SPEC.looksCard.root, SPEC.companionCard.root, SPEC.note)
+  root.append(SPEC.statusCard.root, SPEC.presenceCard.root, SPEC.actionsCard.root, SPEC.looksCard.root, SPEC.companionCard.root, SPEC.note)
 }
 
 function timeText(ms) {
@@ -182,6 +255,14 @@ function render() {
   const settings = s.settings || {}
   const size = Number(settings.size ?? 400)
   for (const [id, btn] of SPEC.sizeButtons) btn.className = size === id ? 'primary small' : 'small'
+
+  const opacity = Number(settings.bubbleOpacity ?? 90)
+  for (const [value, btn] of SPEC.opacityButtons) btn.className = opacity === value ? 'primary small' : 'small'
+  if (document.activeElement !== SPEC.opacitySlider) SPEC.opacitySlider.value = String(opacity)
+  const width = Number(settings.bubbleWidth ?? 0)
+  for (const [id, btn] of SPEC.widthButtons) btn.className = width === id ? 'primary small' : 'small'
+
+  renderPresence(presence)
 
   const skins = Array.isArray(pet.skins) ? pet.skins : []
   const signature = skins.map((x) => `${x.id}:${x.name}`).join('|') + `#${settings.skin ?? ''}`
@@ -244,6 +325,68 @@ async function load() {
   }
   SPEC.state = data
   render()
+  void loadPresenceMeta()
+}
+
+function renderPresence(presence) {
+  clear(SPEC.presenceModes)
+  const on = Boolean(presence?.on)
+  const mode = String(presence?.mode ?? '')
+  for (const m of PRESENCE_MODES) {
+    const active = on && mode === m.id
+    const btn = el('button', {
+      class: active ? 'primary small' : 'small',
+      type: 'button',
+      text: `${m.label}${active ? ' · 开' : ''}`,
+      onclick: () => togglePresence(m),
+    })
+    SPEC.presenceModes.append(el('div', { class: 'field' }, el('span', { class: 'meta', text: m.note }), btn))
+  }
+  const stopLabel = STOP_REASONS[String(SPEC.presenceStopReason ?? '')] ?? ''
+  const last = Array.isArray(presence?.recent) && presence.recent.length ? presence.recent[presence.recent.length - 1] : null
+  SPEC.presenceStatus.textContent = on
+    ? `正在看：${MODE_LABEL[mode] || mode || '—'} · ${last ? '最近一句：' + String(last.text ?? '') : '还没说话'}`
+    : `陪看没开${stopLabel ? `（上次：${stopLabel}）` : ''}`
+  SPEC.presenceStop.hidden = !on
+}
+
+function confirmOn(mode) {
+  const label = PRESENCE_MODES.find((m) => m.id === mode)?.label || mode
+  return window.confirm(`开启「${label}」后，会把当前窗口/屏幕的低频候选帧发给模型。继续？`)
+}
+
+async function loadPresenceMeta() {
+  const r = await fish('presence/status')
+  if (!r.ok) {
+    SPEC.presenceNote.textContent = '屏幕陪伴接口不可达；可能还没部署或版本较旧。'
+    return
+  }
+  SPEC.presenceStopReason = r.data?.stopReason ?? ''
+  SPEC.presenceNote.textContent = r.data?.lastError ? `上次错误：${r.data.lastError}` : ''
+  if (SPEC.state) renderPresence(SPEC.state.presence)
+}
+
+async function setPresence(mode, on) {
+  SPEC.presenceNote.textContent = on ? '正在开启…' : '正在关闭…'
+  const r = await postFish('presence/mode', { mode, on })
+  if (!r.ok) { SPEC.presenceNote.textContent = errorText(r); return }
+  if (r.data?.ok === false) SPEC.presenceNote.textContent = r.data?.note || '没切成。'
+  else SPEC.presenceNote.textContent = ''
+  await load()
+}
+
+async function togglePresence(m) {
+  const presence = SPEC.state?.presence
+  const same = Boolean(presence?.on) && presence?.mode === m.id
+  if (same) return setPresence(m.id, false)
+  if (!confirmOn(m.id)) return
+  return setPresence(m.id, true)
+}
+
+async function stopPresence() {
+  const mode = SPEC.state?.presence?.mode
+  if (mode) await setPresence(mode, false)
+  else await load()
 }
 
 async function act(motion, btn) {
@@ -257,7 +400,9 @@ async function act(motion, btn) {
 }
 
 async function applyConfig(body) {
-  const what = body.size !== undefined ? '尺寸' : '皮肤'
+  const what = body.size !== undefined ? '尺寸'
+    : body.skin !== undefined ? '皮肤'
+    : body.bubbleOpacity !== undefined ? '气泡透明度' : '气泡宽度'
   SPEC.looksNote.textContent = `正在改${what}…`
   const r = await postFish('pet/config', body)
   if (!r.ok || r.data?.ok === false) {
