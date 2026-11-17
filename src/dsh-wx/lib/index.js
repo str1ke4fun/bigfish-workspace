@@ -65,9 +65,9 @@ import {
   projectWxSend,
   projectWxTaskDone,
   projectWxTaskSnooze,
-  resolveWxSendTask,
   shouldBookWxSend,
 } from './project.js'
+import { createWxSendTool } from './wx-send-tool.js'
 
 export const name = 'dsh-wx'
 // ⚠️ 不要 inject 'sessionController'：它要等工作区注册表起来才可用，而工作区是有人打开界面时才起来的。
@@ -1055,10 +1055,11 @@ export function apply(ctx, config = {}) {
    * 把一句话发到指定会话。永不自己吞错：发不出去就抛，让调用方如实说。
    * permit 存在时只绕过 @ / 主机闸；允许名单、说话频率、当前会话核对都照走。
    */
-  async function sendToChat({ chat, text, permit = '', taskId = '', replyTask = null } = {}) {
+  async function sendToChat({ chat, targetChat = '', text, permit = '', taskId = '', replyTask = null } = {}) {
     const p = policy()
     if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]', '微信通道已关闭。')
     const want = String(chat ?? '').trim()
+    const navigateTo = String(targetChat ?? '').trim() || want
     const body = String(text ?? '')
     if (!want) throw new WxToolError('WX_MISSING_CHAT', '[没做成，过会儿再试]', '没有指定要发到哪个会话。')
     if (!body) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]', '要发送的正文为空。')
@@ -1067,6 +1068,7 @@ export function apply(ctx, config = {}) {
 
     const allowed = canSendWithPolicy(p, want)
     if (!allowed.ok) throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]', allowed.why)
+    const gateTarget = { chat: allowed.chat, canonicalChat: navigateTo }
 
     const token = String(permit ?? '').trim()
     if (token) {
@@ -1079,8 +1081,8 @@ export function apply(ctx, config = {}) {
     if (!s.parsed.ok) throw new WxToolError('WX_WINDOW_UNAVAILABLE', '[没看清。屏幕可能慢半拍]')
     if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
 
-    if (!sameName(s.parsed.current, allowed.chat)) {
-      const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+    if (!sameName(s.parsed.current, navigateTo)) {
+      const target = s.parsed.chats.find((c) => sameName(c.name, navigateTo))
       if (!target) throw new WxToolError('WX_CHAT_NOT_FOUND', '[这个会话现在说不了]')
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset()
@@ -1088,18 +1090,18 @@ export function apply(ctx, config = {}) {
       await sleep(700)
       s = await look({ confirm: false })
       if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
-      if (!sameName(s.parsed.current, allowed.chat)) {
+      if (!sameName(s.parsed.current, navigateTo)) {
         throw new WxToolError(
           'WX_CHAT_CHANGED',
           '[没做成，过会儿再试]',
-          `切到目标会话后 expected=${allowed.chat}；actual=${s.parsed.current || '读不到'}`,
+          `切到目标会话后 expected=${navigateTo}；actual=${s.parsed.current || '读不到'}`,
         )
       }
     }
 
     if (!token) {
       // 许可只免 @ / 主机两道闸；频率和名单仍然要过（频率在回车前只记一次）。
-      const g = await gateSend()
+      const g = await gateSend({ target: gateTarget })
       if (!sameName(g.chat, allowed.chat)) {
         throw new WxToolError(
           'WX_CHAT_CHANGED',
@@ -1114,11 +1116,11 @@ export function apply(ctx, config = {}) {
     fresh.reset()
     s = await look({ confirm: false })
     if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
-    if (!sameName(s.parsed.current, allowed.chat)) {
+    if (!sameName(s.parsed.current, navigateTo)) {
       throw new WxToolError(
         'WX_CHAT_CHANGED',
         '[没做成，过会儿再试]',
-        `清浮层后 expected=${allowed.chat}；actual=${s.parsed.current || '读不到'}`,
+        `清浮层后 expected=${navigateTo}；actual=${s.parsed.current || '读不到'}`,
       )
     }
     const focus = findInputBox(s.parsed)
@@ -1133,15 +1135,15 @@ export function apply(ctx, config = {}) {
       const again = permitStore.check({ id: token, chat: allowed.chat, text: body })
       if (!again.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
       const now = await look({ confirm: false })
-      if (!sameName(now.parsed.current, allowed.chat)) {
+      if (!sameName(now.parsed.current, navigateTo)) {
         throw new WxToolError(
           'WX_CHAT_CHANGED',
           '[没做成，过会儿再试]',
-          `回车前许可复核 expected=${allowed.chat}；actual=${now.parsed.current || '读不到'}`,
+          `回车前许可复核 expected=${navigateTo}；actual=${now.parsed.current || '读不到'}`,
         )
       }
     } else {
-      const g = await gateSend()
+      const g = await gateSend({ target: gateTarget })
       if (!sameName(g.chat, allowed.chat)) {
         throw new WxToolError(
           'WX_CHAT_CHANGED',
@@ -1159,16 +1161,16 @@ export function apply(ctx, config = {}) {
       const still = permitStore.check({ id: token, chat: allowed.chat, text: body })
       if (!still.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
       const last = await look({ confirm: false })
-      if (!sameName(last.parsed.current, allowed.chat)) {
+      if (!sameName(last.parsed.current, navigateTo)) {
         throw new WxToolError(
           'WX_CHAT_CHANGED',
           '[没做成，过会儿再试]',
-          `频率闸后许可复核 expected=${allowed.chat}；actual=${last.parsed.current || '读不到'}`,
+          `频率闸后许可复核 expected=${navigateTo}；actual=${last.parsed.current || '读不到'}`,
         )
       }
     } else {
       // 最后一道闸：真正回车前才扣主动额度，一次发送只扣一次。
-      const last = await gateSend({ consume: true, expected: allowed.chat })
+      const last = await gateSend({ consume: true, target: gateTarget })
       proactive = last.proactive
       proactiveLeft = last.proactiveLeft
       if (!sameName(last.chat, allowed.chat)) {
@@ -1192,7 +1194,7 @@ export function apply(ctx, config = {}) {
     const typed = body.replace(/\s+/g, ' ').replace(/"/g, '＂')
     const head = typed.slice(0, 14)
     const inMsgs = after.parsed.messages.slice(-4).some((m) => m.text.includes(head))
-    const chatRow = after.parsed.chats.find((c) => sameName(c.name, allowed.chat))
+    const chatRow = after.parsed.chats.find((c) => sameName(c.name, navigateTo))
     const inPreview = !!chatRow && chatRow.preview.includes(head.slice(0, 10))
     const receipt = inMsgs
       ? '末尾那儿已经出现了。'
@@ -1203,11 +1205,11 @@ export function apply(ctx, config = {}) {
     // 侧栏预览也要进回声保护；只有末尾真看见才写历史、任务回复。
     const booked = applyWxSendBookkeeping({
       sent,
-      chat: allowed.chat,
+      chat: navigateTo,
       text: body,
       noteOutbox,
       capture: () => contextStore.capture({
-          chat: allowed.chat,
+          chat: navigateTo,
           source: 'sent',
           taskId,
           ignoreChats: p.ignoreChats,
@@ -1220,7 +1222,17 @@ export function apply(ctx, config = {}) {
     })
     // 发送本身也算一次活动：给后台采集留出静默期，别紧接着点开会话。
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, receipt, sent, outMsgId: booked.outMsgId, proactive, proactiveLeft }
+    return {
+      ok: true,
+      chat: allowed.chat,
+      targetChat: navigateTo,
+      receipt,
+      sent,
+      outMsgId: booked.outMsgId,
+      booking: booked,
+      proactive,
+      proactiveLeft,
+    }
   }
 
   /**
@@ -2290,6 +2302,19 @@ export function apply(ctx, config = {}) {
   console.log(`[dsh-wx] mounted (display=${display}, tools=${disposers.length}, policy=${POLICY}, stickers=${stickerDir})`)
 
   // ---------------------------------------------------------------- 工具
+  const wxSendTool = createWxSendTool({
+    getPolicy: policy,
+    directory,
+    board: contextStore.board,
+    deny,
+    sendToChat: (req) => withSendLock(() => sendToChat(req)),
+    recordReply: ({ taskId, msgId }) => {
+      const rep = contextStore.recordReply({ taskId, msgId })
+      if (!rep.ok) console.log('[dsh-wx] 回复已发出，任务没记上：' + String(rep.why ?? 'unknown'))
+      return rep
+    },
+  })
+
   reg({
     name: 'wx_see',
     description: '看一眼微信窗口。这里看不见图，想知道屏幕上的文字就换个办法。',
@@ -2473,37 +2498,7 @@ export function apply(ctx, config = {}) {
     },
     output: textOut,
     isConcurrencySafe: () => false,
-    execute: async (args, exec) => {
-      deny(exec)
-      const p = policy()
-      if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
-      const a = args || {}
-      const binding = resolveWxSendTask({
-        chat: a.chat,
-        taskId: a.task_id,
-        directory,
-        board: contextStore.board,
-        implicitTaskBinding: p.implicitTaskBinding !== false,
-      })
-      if (!binding.ok) {
-        throw new WxToolError(binding.code, '[没做成，过会儿再试]')
-      }
-      const task = binding.task
-      const taskId = task?.taskId ?? ''
-      const r = await withSendLock(() => sendToChat({
-        chat: binding.chatName,
-        text: a.text,
-        permit: String(a.permit ?? '').trim(),
-        taskId,
-        replyTask: task
-          ? (outMsgId) => {
-              const rep = contextStore.recordReply({ taskId, msgId: outMsgId })
-              if (!rep.ok) console.log('[dsh-wx] 回复已发出，任务没记上：' + String(rep.why ?? 'unknown'))
-            }
-          : null,
-      }))
-      return projectWxSend(r)
-    },
+    execute: wxSendTool.execute,
   })
 
   reg({

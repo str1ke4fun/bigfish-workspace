@@ -109,10 +109,10 @@ function apply(state, rec) {
   const t = state.get(id)
   if (!t) return
   const at = str(rec.at)
-  if (at) t.updatedAt = at
 
   if (type === 'inbound') {
     if (rec.dedupeKey && t.dedupeKeys.includes(str(rec.dedupeKey))) return
+    if (at) t.updatedAt = at
     if (rec.dedupeKey) t.dedupeKeys.push(str(rec.dedupeKey))
     t.lastInboundMsgId = str(rec.msgId) || t.lastInboundMsgId
     if (rec.text) t.lastText = str(rec.text)
@@ -145,17 +145,18 @@ function apply(state, rec) {
   }
   if (type === 'reply') {
     const msgId = str(rec.msgId)
-    if (msgId && (t.outboundMsgIds ?? []).includes(msgId)) return
+    if (!msgId) return
+    if ((t.outboundMsgIds ?? []).includes(msgId)) return
+    if (at) t.updatedAt = at
     t.status = 'replying'
     t.replyCount += 1
-    if (msgId) {
-      t.outboundMsgIds.push(msgId)
-      t.lastOutboundMsgId = msgId
-    }
+    t.outboundMsgIds.push(msgId)
+    t.lastOutboundMsgId = msgId
     if (rec.final === true) t.final = true
     if (rec.nextCheckAt) t.nextCheckAt = str(rec.nextCheckAt)
     return
   }
+  if (at) t.updatedAt = at
   if (type === 'done') {
     t.status = 'done'
     t.lease = null
@@ -356,7 +357,8 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
     const t = states.get(str(taskId))
     if (!t) return { ok: false, why: '没有这个任务。' }
     const cleanMsgId = str(msgId)
-    if (cleanMsgId && t.outboundMsgIds.includes(cleanMsgId)) {
+    if (!cleanMsgId) return { ok: false, why: '没有稳定的消息记号，回复没记上。' }
+    if (t.outboundMsgIds.includes(cleanMsgId)) {
       return { ok: true, duplicate: true, task: get(t.taskId) }
     }
     if (t.status === 'done') return { ok: false, why: '这个任务已经结束了。' }

@@ -103,11 +103,25 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
   let entries = readEntries(file, log)
   let dirty = false
 
-  const findByName = (name) => {
+  const findMatches = (name) => {
     const n = norm(name)
-    if (!n) return null
-    return entries.find((e) => norm(e.fullName) === n || norm(e.displayName) === n ||
-      (e.aliases ?? []).some((a) => norm(a) === n)) ?? null
+    if (!n) return []
+    return entries.filter((e) => norm(e.fullName) === n || norm(e.displayName) === n ||
+      (e.aliases ?? []).some((a) => norm(a) === n))
+  }
+  const findByName = (name) => {
+    const matches = findMatches(name)
+    return matches.length === 1 ? matches[0] : null
+  }
+  const markAmbiguous = (list, why = 'name-collision') => {
+    let changed = false
+    for (const e of new Set(list)) {
+      if (e.nameConfidence === 'ambiguous') continue
+      e.nameConfidence = 'ambiguous'
+      e.resolvedBy = why
+      changed = true
+    }
+    if (changed) dirty = true
   }
   const byId = () => new Map(entries.map((e) => [e.chatId, e]))
 
@@ -152,10 +166,40 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
     ]
     const direct = new Set((directNames ?? []).map(norm).filter(Boolean))
     const touched = []
+    const inputCounts = new Map()
+    for (const row of chats) {
+      const name = norm(row?.name)
+      if (name) inputCounts.set(name, (inputCounts.get(name) ?? 0) + 1)
+    }
+    const seenInput = new Map()
 
     const upsert = (rawName, row = {}) => {
       const name = norm(rawName)
       if (!name) return null
+      const occurrence = seenInput.get(name) ?? 0
+      seenInput.set(name, occurrence + 1)
+      if ((inputCounts.get(name) ?? 0) > 1) {
+        // 同名行没有第二个稳定身份可用；用可重放的临时 id 留下两条 ambiguous 记录，
+        // 发送和 idFor 都会因为一对多而拒绝。
+        const existing = findMatches(name)
+        markAmbiguous(existing, 'duplicate-name')
+        touched.push(...existing)
+        const tempId = tempIdFor(`${name}#${occurrence}`)
+        let dup = byId().get(tempId)
+        if (!dup) {
+          dup = blankEntry(name, at)
+          dup.chatId = tempId
+          entries.push(dup)
+        }
+        dup.displayName = name
+        dup.fullName = name
+        dup.nameConfidence = 'ambiguous'
+        dup.resolvedBy = 'duplicate-name'
+        dup.lastSeenAt = at
+        dirty = true
+        touched.push(dup)
+        return dup
+      }
       const ignored = isIgnoredChat(name, ignoreChats)
       const clean = stripEllipsis(name)
       const truncated = looksTruncated(name)
@@ -164,7 +208,15 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       const fullName = !truncated ? name : resolvedFull
       const displayName = fullName || name
 
-      let e = findByName(name) || (fullName ? findByName(fullName) : null)
+      const nameMatches = findMatches(name)
+      const fullNameMatches = fullName && fullName !== name ? findMatches(fullName) : []
+      const matches = [...new Set([...nameMatches, ...fullNameMatches])]
+      if (matches.length > 1) {
+        markAmbiguous(matches)
+        touched.push(...matches)
+        return null
+      }
+      let e = matches[0] ?? null
       if (!e) {
         // 用全名派生 id；截断名用临时 id，解析后保留这个 id（台账不能换账本名）。
         e = blankEntry(displayName, at)
@@ -200,6 +252,13 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       }
       if (row.pinned !== undefined) e.pinned = row.pinned === true
       if (Number.isFinite(Number(row.position))) e.position = Number(row.position)
+      const names = [e.displayName, e.fullName, ...(e.aliases ?? [])].map(norm).filter(Boolean)
+      const collisions = [...new Set(names.flatMap((n) => findMatches(n)).filter((x) => x !== e))]
+      if (collisions.length) {
+        markAmbiguous([e, ...collisions], 'name-or-alias-reuse')
+        touched.push(e, ...collisions)
+        return null
+      }
       dirty = true
       touched.push(e)
       return e
@@ -237,26 +296,38 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
 
   /** 稳定 chatId：目录里认识这个名字就用目录的；否则按全名派生（不入目录）。 */
   function idFor(name) {
-    const e = findByName(name)
-    if (e) return e.chatId
+    const matches = findMatches(name)
+    if (matches.length > 1) return ''
+    const e = matches[0] ?? null
+    if (e) return e.nameConfidence === 'ambiguous' ? '' : e.chatId
     const n = norm(name)
     return n ? chatIdFor(n) : ''
   }
 
+  /** 查询发送身份：同名一对多、截断、ambiguous 都 fail closed。 */
+  function sendableLookup(name) {
+    const matches = findMatches(name)
+    if (matches.length > 1) return { status: 'ambiguous', target: null }
+    const e = matches[0] ?? null
+    if (!e) return { status: 'unknown', target: null }
+    if (e.nameConfidence !== 'exact' && e.nameConfidence !== 'resolved') {
+      return { status: e.nameConfidence || 'ambiguous', target: null }
+    }
+    const chatName = e.fullName || e.displayName || ''
+    return {
+      status: e.nameConfidence,
+      target: chatName && e.chatId ? { chatName, chatId: e.chatId } : null,
+    }
+  }
+
   /** 能作为发送目标的全名：只有 exact / resolved。截断名、歧义名返回空。 */
   function sendableName(name) {
-    const e = findByName(name)
-    if (!e) return ''
-    if (e.nameConfidence !== 'exact' && e.nameConfidence !== 'resolved') return ''
-    return e.fullName || e.displayName || ''
+    return sendableLookup(name).target?.chatName || ''
   }
 
   /** exact / resolved 名字的发送目标：规范名 + 稳定 chatId；其余不猜。 */
   function sendableTarget(name) {
-    const chatName = sendableName(name)
-    if (!chatName) return null
-    const chatId = idFor(chatName)
-    return chatId ? { chatName, chatId } : null
+    return sendableLookup(name).target
   }
 
   /** 截断名 → 全名（只做已知名字的唯一前缀；不做包含）。 */
@@ -299,7 +370,7 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
   }
 
   return {
-    file, merge, idFor, sendableName, sendableTarget, resolveName, entry, all, snapshot, stats, save, reset,
+    file, merge, idFor, sendableLookup, sendableName, sendableTarget, resolveName, entry, all, snapshot, stats, save, reset,
   }
 }
 

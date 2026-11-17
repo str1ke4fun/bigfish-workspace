@@ -158,6 +158,22 @@ test('unconfirmed 发送不写回声凭据、不记历史，也不记任务回�
   assert.deepEqual(calls, [])
   assert.equal(result.outMsgId, '')
 })
+test('confirmed 但捕获结果没有稳定 msgId 时不挂任务，并明确标未记录', () => {
+  const calls = []
+  const result = applyWxSendBookkeeping({
+    sent: 'confirmed',
+    chat: '测试群A',
+    text: '晚上见',
+    noteOutbox: (...args) => calls.push(['outbox', ...args]),
+    capture: () => ({ records: [], added: 0 }),
+    replyTask: (...args) => calls.push(['task-reply', ...args]),
+  })
+  assert.deepEqual(calls, [['outbox', '测试群A', '晚上见']])
+  assert.equal(result.outMsgId, '')
+  assert.equal(result.status, 'not-recorded')
+  assert.equal(result.recorded, false)
+  assert.equal(result.reason, 'missing-msg-id')
+})
 
 test('implicit task binding 只把规范会话名对应到唯一活动任务', () => {
   const exact = bindingFixture()
@@ -195,8 +211,11 @@ test('implicit task binding 不猜歧义名，改名别名仍走同一个目录 
   }] }), 'utf8')
   const ambiguous = bindingFixture({ chat: '星晓', directoryFile: ambiguousFile, taskChatId: 'c_ambiguous' })
   const ambiguousResult = resolveWxSendTask({ chat: '星晓', directory: ambiguous.directory, board: ambiguous.board })
+  assert.equal(ambiguousResult.ok, false)
+  assert.equal(ambiguousResult.code, 'WX_CHAT_AMBIGUOUS')
   assert.equal(ambiguousResult.source, 'unresolved')
-  assert.equal(ambiguousResult.task, null)
+  assert.equal(ambiguousResult.status, 'ambiguous')
+  assert.equal(ambiguousResult.task, undefined)
 
   const renamedFile = tempFile('renamed-directory.json')
   writeFileSync(renamedFile, JSON.stringify({ version: 1, chats: [{
@@ -248,8 +267,8 @@ test('显式 task_id 不存在时明确拒绝', () => {
     chat: '测试群A', taskId: 't_missing', directory: fixture.directory, board: fixture.board,
   })
   assert.deepEqual(missing, {
-    ok: false, code: 'WX_TASK_NOT_FOUND', source: 'explicit',
-    chatName: '测试群A', chatId: fixture.target.chatId,
+    ok: false, code: 'WX_TASK_NOT_FOUND', source: 'explicit', status: 'task-not-found',
+    requestedChat: '测试群A', chatName: '测试群A', targetChat: '测试群A', chatId: fixture.target.chatId,
   })
 })
 
@@ -261,8 +280,8 @@ test('显式 task_id 指到别的会话时拒绝绑定', () => {
     directory: second.directory, board: first.board,
   })
   assert.deepEqual(wrong, {
-    ok: false, code: 'WX_TASK_CHAT_MISMATCH', source: 'explicit',
-    chatName: '测试群B', chatId: second.target.chatId,
+    ok: false, code: 'WX_TASK_CHAT_MISMATCH', source: 'explicit', status: 'chat-mismatch',
+    requestedChat: '测试群B', chatName: '测试群B', targetChat: '测试群B', chatId: second.target.chatId,
   })
 })
 

@@ -101,6 +101,15 @@ t('同一 reply msgId 重放不重复计数，也不覆盖最新出站消息', (
   assert.equal(b.get(task.taskId).replyCount, 2)
   assert.equal(b.get(task.taskId).lastOutboundMsgId, 'out2')
 })
+t('没有稳定 msgId 的 reply 不推进任务', () => {
+  const b = make()
+  const { task } = seed(b)
+  const r = b.reply(task.taskId, { msgId: '', at: at(2) })
+  assert.equal(r.ok, false)
+  assert.match(r.why, /消息记号/)
+  assert.equal(b.get(task.taskId).replyCount, 0)
+  assert.equal(b.get(task.taskId).updatedAt, at(0))
+})
 t('done → 结束；之后同会话新消息会开新任务', () => {
   const b = make()
   const a = seed(b)
@@ -187,11 +196,13 @@ t('重放同一 reply msgId 的两条旧记录也只算一次', () => {
     { v: 1, type: 'create', taskId: 't_replay', chatId: 'c1', chatName: '测试群A', at: at(0) },
     { v: 1, type: 'reply', taskId: 't_replay', msgId: 'out1', at: at(1) },
     { v: 1, type: 'reply', taskId: 't_replay', msgId: 'out1', at: at(2) },
+    { v: 1, type: 'reply', taskId: 't_replay', msgId: '', at: at(3) },
   ]
   writeFileSync(f, events.map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8')
   const board = createTaskBoard({ file: f, now: () => T, log: () => {} })
   assert.equal(board.get('t_replay').replyCount, 1)
   assert.deepEqual(board.get('t_replay').outboundMsgIds, ['out1'])
+  assert.equal(board.get('t_replay').updatedAt, at(1), '重复回执不能推进 updatedAt')
 })
 
 t('重开一个实例 → 状态原样重放', () => {

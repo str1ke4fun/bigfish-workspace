@@ -28,7 +28,7 @@ export function createSendGate({
   logInbound,
   now = Date.now,
 }) {
-  return async function gateSend({ consume = false, expected = '' } = {}) {
+  return async function gateSend({ consume = false, expected = '', target = null } = {}) {
     const p = policy()
     if (!p.enabled) {
       throw new WxToolError('WX_DISABLED', '[微信现在没开]', '发送闸：微信通道已关闭。')
@@ -56,9 +56,21 @@ export function createSendGate({
       throw new WxToolError('WX_CHAT_UNKNOWN', '[没看清。屏幕可能慢半拍]', '发送闸：当前会话名为空。')
     }
 
+    // 目录别名可以改变导航名，但不能绕过名单：只有 target.chat 本身仍在策略里，
+    // 且当前窗口已经切到 canonicalChat，才把策略名当作 hit。
+    const policyChat = String(target?.chat ?? '').trim()
+    const canonicalChat = String(target?.canonicalChat ?? '').trim()
+    const policyHit = policyChat
+      ? (p.allowChats.find((n) => sameName(n, policyChat)) ??
+        p.noMentionChats.find((n) => sameName(n, policyChat)) ?? null)
+      : null
+    const targetHit = policyHit && canonicalChat && sameName(s.parsed.current, canonicalChat)
+      ? policyHit
+      : null
     // 「这些会话不用 @」是最高权限：既不用等 @，也不用先进允许名单——它自己就是白名单。
-    const exempt = p.noMentionChats.find((n) => sameName(n, s.parsed.current)) ?? null
-    const hit = allowedCurrent(s.parsed, p.allowChats) || exempt
+    const exempt = p.noMentionChats.find((n) => sameName(n, s.parsed.current)) ??
+      (targetHit && p.noMentionChats.some((n) => sameName(n, targetHit)) ? targetHit : null)
+    const hit = targetHit || allowedCurrent(s.parsed, p.allowChats) || exempt
     if (!hit) {
       throw new WxToolError(
         'WX_NOT_ALLOWED',
@@ -74,18 +86,20 @@ export function createSendGate({
 
     // 调用方知道目标会话时必须在这里复核：频率闸等待期间窗口可能被切走，
     // 不能在切换后的会话上扣掉另一群/另一个人的主动额度。
-    if (expected && !sameName(hit, expected)) {
+    const wanted = policyChat || String(expected ?? '').trim()
+    if (wanted && !sameName(hit, wanted)) {
       throw new WxToolError(
         'WX_CHAT_CHANGED',
         '[没做成，过会儿再试]',
-        `发送闸：expected=${expected}；actual=${hit}`,
+        `发送闸：expected=${wanted}；actual=${hit}`,
       )
     }
 
     // @ 才回：只有最近被 @ 过的会话才开口（QQ 那边是同一条规矩，按条判；微信只能按会话判）。
     // 没被 @ 时还可以用当天主动额度，由 proactive.js 统一判定。
+    const mentionChat = targetHit && canonicalChat ? canonicalChat : hit
     const verdict = p.requireMention && !exempt
-      ? canSpeak(readMentions(), hit, now(), p.mentionWindowMinutes)
+      ? canSpeak(readMentions(), mentionChat, now(), p.mentionWindowMinutes)
       : { ok: true }
     const state = loadState()
     const dec = decideProactive({ policy: p, state, chat: hit, mention: verdict, exempt, now: now() })

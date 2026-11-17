@@ -97,6 +97,57 @@ await t('ambiguous 名字不猜发送目标', async () => {
     now: () => T,
   })
   assert.equal(d.sendableTarget('星晓'), null)
+  assert.equal(d.idFor('星晓'), '')
+})
+await t('同名 exact 条目撞在一起时，查找、发送和 idFor 都 fail closed', async () => {
+  const at = new Date(T).toISOString()
+  const d = createDirectory({
+    file: seeded([
+      { chatId: 'c_dup_a', displayName: '同名群', fullName: '同名群', aliases: [], nameConfidence: 'exact', firstSeenAt: at },
+      { chatId: 'c_dup_b', displayName: '同名群', fullName: '同名群', aliases: [], nameConfidence: 'exact', firstSeenAt: at },
+    ]),
+    now: () => T,
+  })
+  assert.equal(d.entry('同名群'), null)
+  assert.equal(d.sendableTarget('同名群'), null)
+  assert.equal(d.idFor('同名群'), '')
+})
+await t('合并时发现全名与旧别名复用，相关条目都标 ambiguous', async () => {
+  const at = new Date(T).toISOString()
+  const d = createDirectory({
+    file: seeded([
+      {
+        chatId: 'c_old', displayName: '群甲', fullName: '群甲', aliases: ['共享名'],
+        nameConfidence: 'exact', firstSeenAt: at,
+      },
+      {
+        chatId: 'c_new', displayName: '共享名', fullName: '共享名', aliases: [],
+        nameConfidence: 'exact', firstSeenAt: at,
+      },
+    ]),
+    now: () => T,
+  })
+  d.merge({ chats: [{ name: '共享名' }] })
+  const collided = d.all().filter((e) => [e.displayName, e.fullName, ...e.aliases].includes('共享名'))
+  assert.equal(collided.length, 2)
+  assert.ok(collided.every((e) => e.nameConfidence === 'ambiguous'))
+  assert.equal(d.idFor('共享名'), '')
+})
+await t('同一页出现两个同名行时不复用第一条，标 ambiguous', async () => {
+  const at = new Date(T).toISOString()
+  const d = createDirectory({
+    file: seeded([{
+      chatId: 'c_existing', displayName: '撞名群', fullName: '撞名群', aliases: [],
+      nameConfidence: 'exact', firstSeenAt: at,
+    }]),
+    now: () => T,
+  })
+  d.merge({ chats: [{ name: '撞名群' }, { name: '撞名群' }] })
+  assert.equal(d.entry('撞名群'), null)
+  assert.equal(d.sendableTarget('撞名群'), null)
+  assert.equal(d.idFor('撞名群'), '')
+  assert.ok(d.all().filter((e) => [e.displayName, e.fullName].includes('撞名群'))
+    .every((e) => e.nameConfidence === 'ambiguous'))
 })
 await t('改名后的旧名字仍指向新规范名和同一个 id', async () => {
   const d = createDirectory({

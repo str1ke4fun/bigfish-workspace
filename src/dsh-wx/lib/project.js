@@ -48,29 +48,65 @@ export function resolveWxSendTask({
   chat = '', taskId = '', directory = null, board = null, implicitTaskBinding = true,
 } = {}) {
   const requestedChat = String(chat ?? '').trim()
-  const target = directory?.sendableTarget?.(requestedChat) ?? null
+  const lookup = typeof directory?.sendableLookup === 'function'
+    ? directory.sendableLookup(requestedChat)
+    : { status: 'unknown', target: directory?.sendableTarget?.(requestedChat) ?? null }
+  const target = lookup.target ?? null
   const chatName = target?.chatName || requestedChat
   const chatId = target?.chatId || ''
   const explicitTaskId = String(taskId ?? '').trim()
+  const base = { requestedChat, chatName, targetChat: chatName, chatId }
+
+  if (lookup.status === 'ambiguous' || lookup.status === 'truncated') {
+    return {
+      ok: false,
+      code: 'WX_CHAT_AMBIGUOUS',
+      source: 'unresolved',
+      status: lookup.status,
+      ...base,
+    }
+  }
 
   if (explicitTaskId) {
     const task = board?.get?.(explicitTaskId) ?? null
     if (!task) {
-      return { ok: false, code: 'WX_TASK_NOT_FOUND', source: 'explicit', chatName, chatId }
+      return { ok: false, code: 'WX_TASK_NOT_FOUND', source: 'explicit', status: 'task-not-found', ...base }
     }
     const matches = target
       ? task.chatId === target.chatId
       : sameChatName(task.chatName, requestedChat)
     if (!matches) {
-      return { ok: false, code: 'WX_TASK_CHAT_MISMATCH', source: 'explicit', chatName, chatId }
+      return { ok: false, code: 'WX_TASK_CHAT_MISMATCH', source: 'explicit', status: 'chat-mismatch', ...base }
     }
-    return { ok: true, source: 'explicit', chatName, chatId: task.chatId, task }
+    return {
+      ok: true,
+      source: 'explicit',
+      status: 'bound',
+      ...base,
+      chatName: task.chatName || chatName,
+      targetChat: task.chatName || chatName,
+      chatId: task.chatId,
+      task,
+    }
   }
 
-  if (implicitTaskBinding === false) return { ok: true, source: 'disabled', chatName, chatId, task: null }
-  if (!target) return { ok: true, source: 'unresolved', chatName, chatId, task: null }
+  if (implicitTaskBinding === false) {
+    return {
+      ok: true, source: 'disabled', status: 'disabled', ...base, chatName: requestedChat,
+      targetChat: requestedChat, chatId: '', task: null,
+    }
+  }
+  if (!target) {
+    return { ok: true, source: 'unresolved', status: 'unresolved', ...base, task: null }
+  }
   const task = board?.activeForChat?.(chatId) ?? null
-  return { ok: true, source: task ? 'implicit' : 'none', chatName, chatId, task }
+  return {
+    ok: true,
+    source: task ? 'implicit' : 'none',
+    status: task ? 'bound' : 'no-active-task',
+    ...base,
+    task,
+  }
 }
 
 /** 发送后的调用点统一按三态处理回声、历史和任务回复，避免几处闸再次绑在一起。 */
@@ -83,17 +119,40 @@ export function applyWxSendBookkeeping({
   replyTask,
 } = {}) {
   if (shouldNoteWxEcho(sent) && typeof noteOutbox === 'function') noteOutbox(chat, text)
-  if (!shouldBookWxSend(sent)) return { outMsgId: '' }
+  if (!shouldBookWxSend(sent)) {
+    return { outMsgId: '', recorded: false, status: 'not-booked', reason: 'not-confirmed' }
+  }
 
   let outMsgId = ''
+  let captureReason = ''
   try {
     const captured = typeof capture === 'function' ? capture() : null
-    outMsgId = captured?.records?.at(-1)?.msgId ?? ''
+    outMsgId = String(captured?.records?.at(-1)?.msgId ?? '').trim()
   } catch {
     // 历史没记下，不影响已经确认发出的消息。
+    captureReason = 'capture-failed'
   }
-  if (typeof replyTask === 'function') replyTask(outMsgId)
-  return { outMsgId }
+  if (!outMsgId) {
+    return {
+      outMsgId: '', recorded: false, status: 'not-recorded', reason: captureReason || 'missing-msg-id',
+    }
+  }
+  if (typeof replyTask !== 'function') {
+    return { outMsgId, recorded: false, status: 'no-task', reason: 'no-active-task' }
+  }
+  try {
+    const booked = replyTask(outMsgId)
+    if (booked?.ok === false) {
+      return { outMsgId, recorded: false, status: 'not-recorded', reason: 'reply-not-recorded' }
+    }
+    return {
+      outMsgId,
+      recorded: true,
+      status: booked?.duplicate === true ? 'duplicate' : 'recorded',
+    }
+  } catch {
+    return { outMsgId, recorded: false, status: 'not-recorded', reason: 'reply-not-recorded' }
+  }
 }
 
 /** wx_send / wx_type 回车后的三句世界声。 */
