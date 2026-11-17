@@ -41,9 +41,11 @@
 
 **Interfaces:** third reminder blocks/silences; workbench read-only blocked/overdue summary; new inbound on blocked task must produce a defined state.
 
-- [ ] 写失败测试：three reminders then block, no fourth; blocked+inbound; summary/workbench route.
-- [ ] 实现 pump/workbench read-only card; no task body/ID exposed at BFF.
-- [ ] 跑 wx/workbench tests，提交。
+- [x] 写失败测试：three reminders then block, no fourth; blocked+inbound; summary/workbench route.
+- [x] 实现 pump/workbench read-only card; no task body/ID exposed at BFF.
+- [x] 跑 wx/workbench tests，提交。
+
+**Evidence (2026-11-18, `baae3f3`):** `src/dsh-wx`: `node --test` → 125 pass / 0 fail；`workbench`: `node --test` → 124 pass / 0 fail。覆盖 stale inbound/block precondition、提醒落盘失败退避、最终 block 单事件与旧半截修复、`overdueVisibility=false/true` 运行时回滚，以及任务摘要不可读时 `ok:false` / `unavailable`。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未部署、未重启服务。
 
 ### Task 3: Durable mechanical reminder delivery
 
