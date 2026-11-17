@@ -1,0 +1,299 @@
+/**
+ * 桌宠事件触发器归约器。
+ *
+ * 纯函数：不读时钟、不访问 Electron/React；动作选择随机源由调用方注入，
+ * 同一状态序列可以稳定重放。`seen` 是触发器自己的游标，不与手动动作目录混用。
+ */
+
+import type { TriggerDefinition } from '../electron/triggers.ts'
+import {
+  isPetMotion,
+  type PetState,
+  type PetMotion,
+  type PlaybackAction,
+} from './controller.ts'
+
+export const TRIGGER_SEEN_LIMIT = 64
+
+export interface TriggerSeen {
+  /** 已消费的 cue id；有界，避免 localStorage 无限增长。 */
+  cueIds: string[]
+  lastActivityState: string | null
+  lastSceneKind: 'rest' | 'out' | null
+  sceneLoopActionId: string | null
+  sceneLoopActive: boolean
+  ambientConsumed: boolean
+}
+
+export interface TriggerBubbleEffect {
+  id: string
+  text: string
+}
+
+export type TriggerActionEffect =
+  | { type: 'startAction'; actionId: string; loop: boolean }
+  | { type: 'stopAction' }
+
+export interface TriggerEffects {
+  action?: TriggerActionEffect
+  bubble?: TriggerBubbleEffect
+  steady: PetMotion
+  seen: TriggerSeen
+}
+
+export interface ReduceTriggersInput {
+  state: PetState | null
+  triggers: readonly TriggerDefinition[]
+  actions: readonly PlaybackAction[]
+  seen: TriggerSeen
+  now: number
+  /** 用户手动动作正在播放时为 true；它压住所有自动触发。 */
+  manualBusy: boolean
+  rng?: () => number
+}
+
+export function emptyTriggerSeen(): TriggerSeen {
+  return {
+    cueIds: [],
+    lastActivityState: null,
+    lastSceneKind: null,
+    sceneLoopActionId: null,
+    sceneLoopActive: false,
+    ambientConsumed: false,
+  }
+}
+
+function boundedSeen(values: readonly string[]): string[] {
+  const unique: string[] = []
+  const ids = new Set<string>()
+  for (const value of values) {
+    if (typeof value !== 'string' || value === '' || ids.has(value)) continue
+    ids.add(value)
+    unique.push(value)
+  }
+  return unique.slice(-TRIGGER_SEEN_LIMIT)
+}
+
+function cloneSeen(seen: TriggerSeen): TriggerSeen {
+  return {
+    cueIds: boundedSeen(seen?.cueIds ?? []),
+    lastActivityState: typeof seen?.lastActivityState === 'string' ? seen.lastActivityState : null,
+    lastSceneKind: seen?.lastSceneKind === 'rest' || seen?.lastSceneKind === 'out'
+      ? seen.lastSceneKind
+      : null,
+    sceneLoopActionId: typeof seen?.sceneLoopActionId === 'string' ? seen.sceneLoopActionId : null,
+    sceneLoopActive: seen?.sceneLoopActive === true,
+    ambientConsumed: seen?.ambientConsumed === true,
+  }
+}
+
+function rememberCue(seen: TriggerSeen, id: string): void {
+  if (seen.cueIds.includes(id)) return
+  seen.cueIds = boundedSeen([...seen.cueIds, id])
+}
+
+function pickWeighted(trigger: TriggerDefinition, rng: () => number): string | null {
+  if (trigger.pool.length === 0 || trigger.pool.length !== trigger.w.length) return null
+  if (trigger.w.some((weight) => !Number.isFinite(weight) || weight < 0)) return null
+  const total = trigger.w.reduce((sum, weight) => sum + weight, 0)
+  if (!(total > 0)) return null
+
+  const sample = rng()
+  if (typeof sample !== 'number' || !Number.isFinite(sample)) return null
+  const target = Math.min(1, Math.max(0, sample)) * total
+  let cumulative = 0
+  let lastPositive: string | null = null
+  for (let index = 0; index < trigger.pool.length; index += 1) {
+    const weight = trigger.w[index]
+    if (weight <= 0) continue
+    lastPositive = trigger.pool[index]
+    cumulative += weight
+    if (target < cumulative) return trigger.pool[index]
+  }
+  return lastPositive
+}
+
+function selectAction(
+  when: string,
+  triggers: readonly TriggerDefinition[],
+  actions: readonly PlaybackAction[],
+  rng: () => number,
+): PlaybackAction | null {
+  const trigger = triggers.find((entry) => entry?.when === when)
+  if (!trigger) return null
+  const actionId = pickWeighted(trigger, rng)
+  if (actionId === null) return null
+  return actions.find((entry) => entry?.id === actionId) ?? null
+}
+
+function cueWhen(kind: unknown): 'speak' | 'bili_replied' | null {
+  if (kind === 'speak') return 'speak'
+  if (kind === 'replied') return 'bili_replied'
+  return null
+}
+
+function steadyMotion(state: PetState | null): PetMotion {
+  const activity = state?.activity?.state
+  if (activity === 'waiting') return 'waiting'
+  if (state?.scene) return 'idle'
+  if (isPetMotion(activity)) return activity
+  return state?.presence?.on === true ? 'thinking' : 'idle'
+}
+
+/** 归约一拍：高优先级事件先消费，低优先级状态留到后续拍继续处理。 */
+export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
+  const seen = cloneSeen(input.seen)
+  const steady = steadyMotion(input.state)
+  const rng = input.rng ?? Math.random
+  const now = Number.isFinite(input.now) ? input.now : 0
+
+  if (input.manualBusy) {
+    // 用户手动动作先占据播放器；只暂时卸下 scene loop，事件游标保持待消费。
+    if (seen.sceneLoopActive) seen.sceneLoopActive = false
+    seen.ambientConsumed = false
+    return { steady, seen }
+  }
+
+  const cues = Array.isArray(input.state?.cues) ? input.state.cues : []
+  for (const cue of cues) {
+    const id = typeof cue?.id === 'string' ? cue.id.trim() : ''
+    if (id === '') continue
+    const when = cueWhen(cue.kind)
+    const text = typeof cue.text === 'string' ? cue.text.trim() : ''
+    const at = Number(cue.at)
+    const ttlMs = Number(cue.ttlMs)
+    const alive = Number.isFinite(at) && Number.isFinite(ttlMs) && ttlMs > 0
+      && now - at < ttlMs
+    if (seen.cueIds.includes(id)) continue
+    if (!alive) {
+      rememberCue(seen, id)
+      continue
+    }
+
+    rememberCue(seen, id)
+    const action = when === null ? null : selectAction(when, input.triggers, input.actions, rng)
+    if (action !== null) seen.sceneLoopActive = false
+    return {
+      steady,
+      seen,
+      ...(text === '' ? {} : { bubble: { id, text } }),
+      ...(action === null
+        ? {}
+        : { action: { type: 'startAction' as const, actionId: action.id, loop: false } }),
+    }
+  }
+
+  const activityState = typeof input.state?.activity?.state === 'string'
+    ? input.state.activity.state
+    : null
+  const scene = input.state?.scene
+  const sceneKind = scene?.kind === 'rest' || scene?.kind === 'out'
+    ? scene.kind
+    : null
+
+  if (activityState === 'waiting' && seen.lastActivityState !== 'waiting') {
+    const action = selectAction('activity:waiting', input.triggers, input.actions, rng)
+    const shouldStop = action === null && seen.sceneLoopActive
+    seen.lastActivityState = 'waiting'
+    seen.sceneLoopActive = false
+    const effect: TriggerActionEffect | undefined = action !== null
+      ? { type: 'startAction', actionId: action.id, loop: false }
+      : shouldStop
+        ? { type: 'stopAction' }
+        : undefined
+    return { steady, seen, ...(effect === undefined ? {} : { action: effect }) }
+  }
+
+  if (activityState === 'waiting') {
+    // waiting 已经消费过，但仍高于 scene/activity transition；让它们继续排队。
+    return { steady, seen }
+  }
+
+  if (sceneKind !== seen.lastSceneKind) {
+    const exiting = seen.lastSceneKind !== null
+    const when = exiting
+      ? `scene:${seen.lastSceneKind}:exit`
+      : `scene:${sceneKind}:enter`
+    const action = selectAction(when, input.triggers, input.actions, rng)
+    const effect: TriggerActionEffect | undefined = action !== null
+      ? {
+          type: 'startAction',
+          actionId: action.id,
+          loop: !exiting && action.loop,
+        }
+      : exiting && seen.sceneLoopActive
+        ? { type: 'stopAction' }
+        : undefined
+
+    if (exiting) {
+      seen.lastSceneKind = null
+      seen.sceneLoopActionId = null
+      seen.sceneLoopActive = false
+    } else {
+      seen.lastSceneKind = sceneKind
+      seen.sceneLoopActionId = action !== null && action.loop ? action.id : null
+      seen.sceneLoopActive = action !== null && action.loop
+    }
+    // scene 压住 activity：记住它但不让低优先级 transition 抢占 scene 动作。
+    seen.lastActivityState = activityState
+    return { steady, seen, ...(effect === undefined ? {} : { action: effect }) }
+  }
+
+  if (activityState !== seen.lastActivityState) {
+    if (activityState === null) {
+      seen.lastActivityState = null
+    } else if (sceneKind !== null) {
+      seen.lastActivityState = activityState
+    } else {
+      const action = selectAction(`activity:${activityState}`, input.triggers, input.actions, rng)
+      seen.lastActivityState = activityState
+      return {
+        steady,
+        seen,
+        ...(action === null
+          ? {}
+          : { action: { type: 'startAction' as const, actionId: action.id, loop: false } }),
+      }
+    }
+  }
+
+  if (
+    sceneKind !== null
+    && activityState !== 'waiting'
+    && seen.sceneLoopActionId !== null
+    && !seen.sceneLoopActive
+  ) {
+    const action = input.actions.find((entry) => entry.id === seen.sceneLoopActionId) ?? null
+    if (action === null) {
+      seen.sceneLoopActionId = null
+    } else {
+      seen.sceneLoopActive = true
+      return {
+        steady,
+        seen,
+        action: { type: 'startAction', actionId: action.id, loop: true },
+      }
+    }
+  }
+
+  const ambientEligible = sceneKind === null
+    && activityState === null
+    && input.state?.presence?.on !== true
+  if (!ambientEligible) {
+    seen.ambientConsumed = false
+    return { steady, seen }
+  }
+  if (!seen.ambientConsumed) {
+    seen.ambientConsumed = true
+    const action = selectAction('ambient', input.triggers, input.actions, rng)
+    if (action !== null) {
+      return {
+        steady,
+        seen,
+        action: { type: 'startAction', actionId: action.id, loop: false },
+      }
+    }
+  }
+
+  return { steady, seen }
+}

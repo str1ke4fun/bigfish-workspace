@@ -49,6 +49,19 @@ export interface PetActivity {
   sessionId: string
 }
 
+export interface PetScene {
+  kind: 'rest' | 'out'
+  at: number
+}
+
+export interface PetCue {
+  id: string
+  kind: 'speak' | 'replied'
+  text: string
+  at: number
+  ttlMs: number
+}
+
 export interface PetAction {
   id: string
   motion: string
@@ -57,12 +70,14 @@ export interface PetAction {
   ttlMs: number
 }
 
-/** `GET /api/fish/pet/state` 的形状；所有字段都可能是 null。 */
+/** `GET /api/fish/pet/state` 的形状；标量状态可为 null，cues 缺省为空数组。 */
 export interface PetState {
   at: number
   presence: PetPresence | null
   activity: PetActivity | null
   action: PetAction | null
+  scene: PetScene | null
+  cues: PetCue[]
 }
 
 /**
@@ -143,7 +158,13 @@ export interface PlaybackAnimation {
 }
 
 export type PlaybackEvent =
-  | { type: 'startAction'; action?: string | PlaybackAction; actionId?: string }
+  | {
+      type: 'startAction'
+      action?: string | PlaybackAction
+      actionId?: string
+      /** trigger 可覆盖注册表里的 loop；缺省沿用动作定义。 */
+      loop?: boolean
+    }
   | { type: 'stopAction' }
   | { type: 'motionChanged'; motion: PetMotion | 'dragging'; generation: number }
   | { type: 'animationChanged'; animation: PlaybackAnimation | null; generation: number }
@@ -214,6 +235,11 @@ export function emptySeen(): Seen {
 
 function asMotion(value: unknown): PetMotion | undefined {
   return typeof value === 'string' && MOTIONS.has(value) ? (value as PetMotion) : undefined
+}
+
+/** 触发表和状态接口共用同一套 14 个动作名。 */
+export function isPetMotion(value: unknown): value is PetMotion {
+  return asMotion(value) !== undefined
 }
 
 /**
@@ -421,7 +447,8 @@ export function reducePlayback(
     if (animations.length === 0) return { state: current, effects: [] }
 
     const generation = current.generation + 1
-    const holdsLoop = action.loop === true && animations.length === 1
+    const loop = typeof event.loop === 'boolean' ? event.loop : action.loop === true
+    const holdsLoop = loop && animations.length === 1
     const status: PlaybackStatus = holdsLoop
       ? 'holding-loop'
       : animations.length > 1
@@ -442,7 +469,7 @@ export function reducePlayback(
         actionId: action.id,
         animations,
         index: 0,
-        loop: action.loop === true,
+        loop,
         expectedAnimation: animations[0],
         targetSeen: false,
         startedAt: context.now,
