@@ -442,29 +442,35 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
   function summary({ max = 5, at = now() } = {}) {
     const rows = active().slice(0, Math.max(1, Number(max) || 5))
     if (!rows.length) return ''
-    const waited = (t) => {
-      const ms = Math.max(0, at - timeOf(t.updatedAt || t.createdAt, at))
-      const m = Math.round(ms / 60_000)
-      return m < 1 ? '刚刚' : m < 60 ? `已等 ${m} 分钟` : `已等 ${Math.floor(m / 60)} 小时`
-    }
-    const who = (t) => {
-      const name = t.requester?.name ?? ''
-      const kind = t.requester?.kind
-      const why = t.reason ? `（${t.reason}）` : ''
-      return (name || '发言人未识别') + why
+    const who = (t) => t.requester?.name || '有人'
+    const preview = (t) => {
+      let text = String(t.lastText ?? '')
+      const name = String(t.requester?.name ?? '').trim()
+      if (name) {
+        for (const prefix of [`${name}:`, `${name}：`]) {
+          if (text.trimStart().startsWith(prefix)) {
+            text = text.trimStart().slice(prefix.length).trimStart()
+            break
+          }
+        }
+      }
+      return text.replace(/^\s*(?:@\S+\s+)+/, '').slice(0, 80)
     }
     const status = (t) => {
-      if (t.status === 'blocked') return `卡住：${t.blockedWhy || '需要人处理'}`
-      if (t.status === 'waiting') return timeOf(t.nextCheckAt) <= at ? '在等对方（已到复查时间）' : '在等对方'
-      if (t.status === 'replying') return '回了一半'
-      if (t.status === 'reading') return '在看'
-      return timeOf(t.nextCheckAt) <= at ? '未回（已逾期）' : '未回'
+      if (t.status === 'blocked') return '这件事先放着。'
+      if (t.status === 'waiting') return timeOf(t.nextCheckAt) <= at ? '还搁着。' : '先搁着。'
+      if (t.status === 'replying') return '回了一半。'
+      if (t.status === 'reading') return '在看。'
+      return timeOf(t.nextCheckAt) <= at ? '还搁着。' : '还没回。'
     }
-    return rows.map((t) => [
-      `- ${t.taskId}｜${t.chatName || t.chatId}｜${who(t)}｜${waited(t)}`,
-      `  「${String(t.lastText ?? '').slice(0, 80)}」`,
-      `  状态：${status(t)}`,
-    ].join('\n')).join('\n')
+    return rows.map((t) => {
+      const lines = [
+        `「${t.chatName || t.chatId}」里，${who(t)}说：${preview(t)}`,
+        status(t),
+      ]
+      if (t.taskId) lines.push(`〔${t.taskId}〕`)
+      return lines.join('\n')
+    }).join('\n\n')
   }
 
   function reload() {

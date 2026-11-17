@@ -1,9 +1,9 @@
-// 微信提示词拆段：短规则放判断依据，工具手册放后段。
+// 微信常驻段：只留会改变下一句判断的现实，不再挂工具手册。
 // 跑：node --test test-prompt-split.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { channelManualText, channelRulesText, proactivePromptLine } from './lib/index.js'
+import { channelRulesText } from './lib/index.js'
 
 const NOW = new Date(2026, 10, 13, 10, 0, 0).getTime()
 const policy = {
@@ -17,40 +17,28 @@ const policy = {
 }
 const state = { day: '2026-11-13', used: { 群A: 2 } }
 const short = channelRulesText(policy, { proactiveState: state, now: NOW })
-const manual = channelManualText()
+const expected = [
+  '## 微信',
+  '有人找你时，你会看见是哪个会话、谁说的、最后那句。那句多半是预览，不是全文。要看全，先点开那个会话。',
+  '只在被叫到的地方说话。私聊、以及他跟你说过不用等 @ 的地方，可以自己开口。别的群，等他们叫你。',
+  '对话框里他问的事，在这儿答。他没让你发去微信，就别发。',
+  '发不出去就在这儿说一声。群里只说事，不说你这边怎么操作的。',
+  '屏幕可能慢半拍。没看见落下去，就别说发出去了。',
+].join('\n')
 
-test('短段保留判断依据：通知语义、任务 id、隐私禁令、发送失败', () => {
-  assert.match(short, /\[微信\]/)
-  assert.match(short, /侧栏预览/)
-  assert.match(short, /任务：t_/)
-  assert.match(short, /窗口、坐标、白名单/)
-  assert.match(short, /发不出去就算了/)
-  assert.match(short, /主动说/)
+test('微信常驻段只保留设计里的五句现实规则', () => {
+  assert.equal(short, expected)
+  assert.equal(short.split('\n').length, 6, '标题之外只有五行规则')
 })
 
-test('短段不背工具手册', () => {
-  assert.doesNotMatch(short, /wx_sticker_send/)
-  assert.doesNotMatch(short, /wx_context：/)
+test('常驻段不报会话名单、额度、@ 分钟数或工具手册', () => {
+  for (const bad of ['群A', '私聊B', '剩 3/5', '3 分钟', 'wx_', 'dsh-wx', '白名单', '额度', '任务：']) {
+    assert.doesNotMatch(short, new RegExp(bad.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  }
 })
 
-test('手册段保留工具用法与易错点', () => {
-  assert.match(manual, /wx_peek/)
-  assert.match(manual, /wx_send/)
-  assert.match(manual, /不能含换行/)
-  assert.match(manual, /点下去就发送/)
-  assert.ok(manual.length > short.length, '手册应该比短规则长')
-})
-
-test('主动额度句只列有额度且没用完的会话', () => {
-  assert.equal(proactivePromptLine({ proactiveChats: {} }, state, NOW), '')
-  assert.match(proactivePromptLine(policy, state, NOW), /群A（剩 3\/5）/)
-  assert.match(proactivePromptLine(policy, state, NOW), /额度用完就等下次 @/)
-})
-
-test('两段各自可独立求值，段名与顺序固定', () => {
-  assert.equal(typeof short, 'string')
-  assert.equal(typeof manual, 'string')
+test('只注册一个微信常驻段，不再注册工具手册', () => {
   const src = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
   assert.match(src, /name: 'channel:dsh-wx',\s*\n\s*order: 92/)
-  assert.match(src, /name: 'channel:dsh-wx-manual',\s*\n\s*order: 8600/)
+  assert.doesNotMatch(src, /channel:dsh-wx-manual|channelManualText/)
 })

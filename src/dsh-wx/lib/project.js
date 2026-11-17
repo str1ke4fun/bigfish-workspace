@@ -15,9 +15,29 @@ const CONTEXT_META = /^\s*(?:匹配|来源|置信度)\s*[：:]/
 const OCR_SKIP_KEYS = new Set([
   'box', 'confidence', 'score', 'x', 'y', 'width', 'height',
   'source', 'note', 'verified', 'currentVerified', 'ocrName', 'nameConfidence',
+  'msgId', 'messageId', 'matchReason', 'matchReasons', 'reason', 'reasons',
 ])
 // 无障碍树每行末尾的屏幕坐标：`中心(711,555) 250x68`。
 const PEEK_CENTER = /\s*中心\(-?\d+,-?\d+\) \d+x\d+\s*$/
+
+/** 发送确认只能有一个结论：末尾看见、只看见侧栏预览、没看见。 */
+export function classifyWxSend({ inMsgs = false, inPreview = false } = {}) {
+  if (inMsgs) return 'confirmed'
+  if (inPreview) return 'preview'
+  return 'unconfirmed'
+}
+
+export function shouldBookWxSend(sent) {
+  return sent === 'confirmed'
+}
+
+/** wx_send / wx_type 回车后的三句世界声。 */
+export function projectWxSend({ chat = '', sent = 'unconfirmed' } = {}) {
+  const target = String(chat ?? '').trim() || '那个会话'
+  if (sent === 'confirmed') return `[发到「${target}」了，末尾能看见]`
+  if (sent === 'preview') return '[按下去了，末尾还没看见，先别当发出去了]'
+  return '[按下去了，没看见落下去。可能出去了，也可能没有]'
+}
 
 /** 按字符截断（中文一个字算一个），尾部标明截断。 */
 function cut(text, limit) {
@@ -50,12 +70,77 @@ export function clipPeekBody(text, tail = '', limit = PEEK_LIMIT) {
  * wx_context：每条引用卡片第三行是「匹配：…；来源：台账 msg_1；置信度：…」。
  * 这些是给维护者看的检索元数据，模型只需要原文和发言人，整行去掉。
  */
+const cleanParty = (value) => {
+  const who = String(value ?? '').trim()
+  if (!who) return '看不出是谁'
+  if (/^大肥鱼(?:（发出）)?$/.test(who)) return '你'
+  return who
+}
+
+const cleanClock = (value) => {
+  const text = String(value ?? '').trim()
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/)
+  return iso ? `${iso[1]}-${iso[2]}-${iso[3]} ${iso[4]}:${iso[5]}` : text || '时间不明'
+}
+
+/**
+ * wx_context：检索层保留可解释卡片供内部审计；模型这里只看见谁在何时说了什么。
+ */
 export function projectWxContext(raw) {
-  return String(raw ?? '')
+  const text = String(raw ?? '').trim()
+  if (!text) return '[翻到]\n没有找到。'
+
+  // 新投影已经是世界声；顺手去掉可能混入的旧检索元数据。
+  if (text.startsWith('[翻到]')) {
+    return text
+      .split('\n')
+      .filter((line) => !CONTEXT_META.test(line))
+      .filter((line) => !/^（只查这个任务自己的会话/.test(line.trim()))
+      .join('\n')
+      .trim()
+  }
+
+  if (/^[\[{]/.test(text) && !text.startsWith('[上下文')) {
+    return '[翻到]\n（这段记录没能显示出来）'
+  }
+
+  const cards = []
+  let current = null
+  for (const line of text.split('\n')) {
+    if (CONTEXT_META.test(line)) continue
+    const header = line.match(/^\[上下文\s+\d+\/\d+\]\s*(.*?)\s*[｜|]\s*(.*?)\s*[｜]\s*(.*)$/)
+    if (header) {
+      current = { chat: header[1].trim(), who: header[2].trim(), at: header[3].trim(), text: '' }
+      cards.push(current)
+      continue
+    }
+    const body = line.trim().match(/^「([\s\S]*)」$/)
+    if (body && current && !current.text) {
+      current.text = body[1]
+    }
+  }
+
+  if (cards.length) {
+    const chat = cards[0].chat || '那个会话'
+    const lines = [`[翻到] 「${chat}」里相关的 ${cards.length} 条：`]
+    for (const card of cards) {
+      if (!card.text) continue
+      lines.push(`${cleanParty(card.who)}（${cleanClock(card.at)}）：${card.text}`)
+    }
+    return lines.join('\n')
+  }
+
+  const safe = text
     .split('\n')
     .filter((line) => !CONTEXT_META.test(line))
+    .filter((line) => !/^（只查这个任务自己的会话/.test(line.trim()))
     .join('\n')
     .trim()
+  if (!safe || safe.includes('[上下文') || /[{}]|\bmsg_|taskId|matchReason|confidence/.test(safe)) {
+    return '[翻到]\n（这段记录没能显示出来）'
+  }
+  if (safe.includes('没有找到')) return '[翻到]\n没有找到。'
+  return `[翻到]\n${safe}`
 }
 
 /**
@@ -90,31 +175,43 @@ export function projectWxOcr(raw) {
     // 绝不把原始 JSON（含字段名和坐标）交给她：解析不了就只说结果没读完。
     return '[屏幕上看到]\n（结果太长，没读完）'
   }
+  const screen = renderScreen(data, { untrusted: true })
+  if (screen) return screen
   const lines = []
   collectStrings(data, lines, new Set())
   return '[屏幕上看到]\n' + (lines.length ? lines.join('\n') : '（没有识别到文字）')
 }
 
-/** wx_peek 在 OCR 模式下返回 JSON：转成模型能读的几行，字段全部脱敏。 */
-function renderPeekOcr(data) {
+/**
+ * 把 structured screen 数据写成世界声。OCR 的结果天生慢半拍，所以不冒充“现在停在”。
+ */
+function renderScreen(data, { untrusted = false } = {}) {
   if (!data || typeof data !== 'object') return null
   const chats = Array.isArray(data.chats) ? data.chats : []
   const messages = Array.isArray(data.messages) ? data.messages : []
   if (!Array.isArray(data.chats) && !Array.isArray(data.messages)) return null
-  const lines = ['[屏幕上看到（OCR 未校验）]']
+
+  const current = String(data.current ?? '').trim()
+  const lines = [untrusted
+    ? '[微信] 屏幕可能慢半拍，下面可能是刚才的。'
+    : current
+      ? `[微信] 停在「${current}」。`
+      : '[微信] 看不出现在停在哪个会话。']
+
+  if (chats.length) lines.push('侧栏：')
   for (const chat of chats) {
     if (!chat || typeof chat !== 'object') continue
     const name = String(chat.name ?? '').trim()
-    let line = '会话：' + (name || '（未识别）')
+    let line = `- 「${name || '没认出来的会话'}」`
     const unread = Number(chat.unread)
-    if (Number.isFinite(unread) && unread > 0) line += `（未读 ${unread}）`
-    if (chat.mention === true) line += '（@我）'
-    const preview = String(chat.preview ?? '').trim()
-    if (preview) line += '｜' + preview
+    if (Number.isFinite(unread) && unread > 0) line += `${unread} 条未读`
+    else line += '没有未读'
+    const preview = String(chat.preview ?? chat.text ?? '').trim()
+    if (preview) line += `，最后一句：${preview}`
     lines.push(line)
   }
   if (messages.length) {
-    lines.push('最近消息：')
+    lines.push('当前对话最后几句（看不出是谁）：')
     for (const message of messages) {
       if (!message || typeof message !== 'object') continue
       const text = String(message.text ?? '').trim()
@@ -135,18 +232,44 @@ export function projectWxPeek(raw) {
   const trimmed = text.trim()
   if (trimmed.startsWith('{')) {
     try {
-      const rendered = renderPeekOcr(JSON.parse(trimmed))
+      const rendered = renderScreen(JSON.parse(trimmed), { untrusted: true })
       if (rendered) return cut(rendered, PEEK_LIMIT)
     } catch {
       // 解析失败：退回普通文本路径。
     }
   }
-  const stripped = text
+
+  const currentMatch = text.match(/当前会话[：:]\s*(?:"([^"]*)"|“([^”]*)”|「([^」]*)」)/)
+  const current = currentMatch ? (currentMatch[1] ?? currentMatch[2] ?? currentMatch[3] ?? '').trim() : ''
+  const stale = text.includes('[提示]')
+  const chats = []
+  const messages = []
+
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(PEEK_CENTER, '').trim()
+    const chat = line.match(/^会话\s*(?:["“「])(.*?)(?:["”」])\s*(.*)$/)
+    if (chat) {
+      const tail = chat[2]
+      const unread = Number((tail.match(/未读(?:=|\s*[：:])?\s*(\d+)/) ?? [])[1] || 0)
+      const preview = (tail.match(/预览\s*=\s*"([^"]*)"/) ?? tail.match(/预览\s*[：:]\s*["“「]([^"”」]*)/) ?? [])[1] ?? ''
+      chats.push({ name: chat[1].trim(), unread, preview: preview.trim() })
+      continue
+    }
+    const message = line.match(/^消息\s*(?:["“「])(.*?)(?:["”」])/)
+    if (message) messages.push({ text: message[1].trim() })
+  }
+
+  if (!chats.length && !messages.length && !current && !stale) {
+    return '[微信] 没看清。'
+  }
+
+  const rendered = renderScreen({ current, chats, messages }, { untrusted: stale })
+  const extras = text
     .split('\n')
-    .map((line) => (line.startsWith('微信窗口') ? '[微信窗口]' : line.replace(PEEK_CENTER, '')))
-    .join('\n')
-    .replace(/\s*box=\[[^\]]*\]/g, '')
-  return cut(stripped, PEEK_LIMIT)
+    .filter((line) => line.startsWith('[气氛]'))
+    .map((line) => line.trim())
+  if (text.includes('…（已截断）')) extras.unshift('…（已截断）')
+  return cut([rendered, ...extras].filter(Boolean).join('\n'), PEEK_LIMIT)
 }
 
 /**

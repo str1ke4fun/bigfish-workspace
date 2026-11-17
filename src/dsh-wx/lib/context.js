@@ -425,7 +425,7 @@ export function createContextStore({
     }
     // L0 原文 + L2 每日摘要一起检索；摘要命中也标注来源，不冒充原文。
     const docs = [...ledger.searchDocs(task.chatId), ...searchSummaryDocs(summariesDir, task.chatId, { log })]
-    if (!docs.length) return { ok: true, text: '这个会话还没有可查的记录。', cards: [], shown: 0, chatId: task.chatId }
+    if (!docs.length) return { ok: true, text: '[翻到]\n这个会话还没有可查的记录。', cards: [], shown: 0, chatId: task.chatId }
 
     const threadIds = docs.filter((d) => d.taskId && d.taskId === task.taskId).map((d) => d.msgId)
     if (task.firstInboundMsgId) threadIds.push(task.firstInboundMsgId)
@@ -437,7 +437,7 @@ export function createContextStore({
       const rows = ledger.window(task.chatId, { before, limit: n }).map((doc) => ({
         doc, score: 0, reasons: [str(before) ? '按时间翻页' : '最近'],
       }))
-      const out = formatCards(rows, { max: n, sanitize })
+      const out = formatCards(rows, { max: n, sanitize, world: true, now: now() })
       logQuery({ taskId: task.taskId, chatId: task.chatId, query: '', hitIds: rows.map((r) => r.doc.msgId), tookMs: now() - t0, semantic: false })
       return { ok: true, ...out, chatId: task.chatId }
     }
@@ -467,9 +467,9 @@ export function createContextStore({
 
     if (!rows.length) {
       logQuery({ taskId: task.taskId, chatId: task.chatId, query: q, hitIds: [], tookMs: now() - t0, semantic })
-      return { ok: true, text: '没有找到相关的上下文。', cards: [], shown: 0, chatId: task.chatId, semantic }
+      return { ok: true, text: '[翻到]\n没有找到。', cards: [], shown: 0, chatId: task.chatId, semantic }
     }
-    const out = formatCards(rows, { max: Math.max(1, Math.min(CARD_MAX, Number(limit) || CARD_MAX)), sanitize })
+    const out = formatCards(rows, { max: Math.max(1, Math.min(CARD_MAX, Number(limit) || CARD_MAX)), sanitize, world: true, now: now() })
     logQuery({ taskId: task.taskId, chatId: task.chatId, query: q, hitIds: rows.map((r) => r.doc.msgId), tookMs: now() - t0, semantic })
     return { ok: true, ...out, chatId: task.chatId, semantic }
   }

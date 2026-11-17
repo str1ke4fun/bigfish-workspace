@@ -253,6 +253,20 @@ const timeText = (iso) => {
   })
 }
 
+const worldTimeText = (iso, now = Date.now()) => {
+  const t = Date.parse(String(iso ?? ''))
+  if (!Number.isFinite(t)) return '时间不明'
+  const date = new Date(t)
+  const ref = new Date(now)
+  const day = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+  const yesterday = new Date(ref)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const hhmm = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  if (day(date) === day(ref)) return `今天 ${hhmm}`
+  if (day(date) === day(yesterday)) return `昨天 ${hhmm}`
+  return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${hhmm}`
+}
+
 const confidenceText = (doc) => {
   const s = String(doc?.senderConfidence ?? 'unknown')
   if (s === 'high') return '高'
@@ -276,6 +290,8 @@ export function formatCards(hits, {
   budget = CARD_BUDGET,
   sanitize = (t) => ({ text: String(t ?? ''), dropped: 0 }),
   chatNameOf = (doc) => String(doc?.chatName ?? ''),
+  world = false,
+  now = Date.now(),
 } = {}) {
   const rows = (hits ?? []).slice(0, Math.max(1, Number(max) || CARD_MAX))
   const cards = []
@@ -290,6 +306,15 @@ export function formatCards(hits, {
     const n = cards.length + 1
     // L2 摘要不是原文，也不是某个人的发言：来源和说话人都要标清楚，别冒充台账里的原话。
     const isSummary = doc.kind === 'summary' || doc.source === 'summary'
+    if (world) {
+      const who = isSummary ? '那天的一段摘要' : (doc.direction === 'out' ? '你' : (doc.sender || '看不出是谁'))
+      const line = `${who}（${worldTimeText(doc.at, now)}）：${cut(body, CARD_TEXT_MAX)}`
+      const size = [...line].length
+      if (cards.length > 0 && used + size > budget) break
+      cards.push(line)
+      used += size
+      continue
+    }
     const who = isSummary
       ? '每日摘要'
       : (doc.sender || (doc.direction === 'out' ? '大肥鱼（发出）' : '发言人未识别'))
@@ -305,6 +330,31 @@ export function formatCards(hits, {
     if (cards.length > 0 && used + size > budget) break
     cards.push(card)
     used += size
+  }
+  if (world) {
+    const tail = dropped > 0 ? `还有 ${dropped} 行没显示。` : ''
+    if (!cards.length) {
+      return {
+        text: ['[翻到]', dropped > 0 ? '没有能显示的话。' : '没有找到。', tail].filter(Boolean).join('\n'),
+        cards,
+        shown: 0,
+        dropped,
+      }
+    }
+    const chat = chatNameOf(rows[0]?.doc) || '那个会话'
+    const recentOnly = rows.every((hit) => (hit.reasons ?? []).includes('最近'))
+    const beforeOnly = rows.every((hit) => (hit.reasons ?? []).includes('按时间翻页'))
+    const header = beforeOnly
+      ? `[翻到] 「${chat}」更早的话：`
+      : recentOnly
+        ? `[翻到] 「${chat}」最近的话：`
+        : `[翻到] 「${chat}」里相关的 ${cards.length} 条：`
+    return {
+      text: [header, ...cards, tail].filter(Boolean).join('\n'),
+      cards,
+      shown: cards.length,
+      dropped,
+    }
   }
   const tail = dropped > 0 ? `\n（返回前有 ${dropped} 行被拦下，未显示。）` : ''
   return {

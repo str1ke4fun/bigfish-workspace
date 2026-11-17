@@ -15,8 +15,8 @@
  *   3. 无障碍树会落后于屏幕。落后的判断由工具做（对账像素摘要），提醒写在工具的返回值里，
  *      不靠往她的会话里塞提醒。
  *
- * 工具文案刻意写成「日志式的平铺陈述」：不带语气词、不带比喻、不带情绪。
- * 她会模仿手边文字的口气；工具的话越中性，她自己的口气越不被带偏。
+ * 她读到的文案只写世界里发生了什么：谁、在哪、成没成、为什么做不了。
+ * 运维字段留在返回值和台账里，模型投影只给可感知的事实与下一步要抄的记号。
  *
  * 底层是 wx.sh（Xvfb :99 + xdotool + import + CU）。
  */
@@ -30,7 +30,7 @@ import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, 
 import { ocrSnapshot } from './ocr.js'
 import { isContactWhy } from './contact.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
-import { consume as consumeProactive, dateKey, decideProactive, loadState, normalizeProactive, quotaFor, remaining, saveState } from './proactive.js'
+import { consume as consumeProactive, decideProactive, loadState, normalizeProactive, saveState } from './proactive.js'
 import { dropRecentContent, freshHits, forgetReadChats, noteContent, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { openChatHit } from './ear-open.js'
 import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
@@ -54,11 +54,14 @@ import { normalizeKeyword, searchSticker } from './sticker-search.js'
 import { WxToolError, registerWxToolErrorAdapter } from './tool-error.js'
 import {
   boundedText,
+  classifyWxSend,
   clipPeekBody,
   lazyRender,
   projectWxContext,
   projectWxOcr,
   projectWxPeek,
+  projectWxSend,
+  shouldBookWxSend,
 } from './project.js'
 
 export const name = 'dsh-wx'
@@ -311,122 +314,65 @@ function createFreshness(log = () => {}) {
 }
 
 // ---------------------------------------------------------------- 提示词
-/**
- * 主动额度的提示句：只列今天真有额度、且还没用完的会话。
- * 没有额度就不出现，免得她以为系统在催她说话。
- */
-export function proactivePromptLine(p, state = loadState(), now = Date.now()) {
-  const today = dateKey(now)
-  const rows = (p?.allowChats || [])
-    .map((chat) => {
-      const quota = quotaFor(p, chat)
-      if (quota <= 0) return ''
-      return `${chat}（剩 ${remaining(p, state, chat, today)}/${quota}）`
-    })
-    .filter(Boolean)
-  if (rows.length === 0) return ''
-  return `有额度的会话今天还能主动说：${rows.join('、')}。那不是催你说话；额度用完就等下次 @。`
-}
-
-/**
- * 短规则段：只放判断依据，不放工具手册。
- * 每次组装时求值，工作台改了开关/额度，下一轮就是新的。
- */
-export function channelRulesText(p = policy(), { proactiveState, now = Date.now() } = {}) {
-  const state = p.enabled
-    ? (p.allowChats.length > 0 ? `开启。允许发送的会话：${p.allowChats.join('、')}` : '开启，但允许名单为空，不能发送')
-    : '关闭'
-  const proactive = p.requireMention === false ? '' : proactivePromptLine(p, proactiveState ?? loadState(), now)
+/** 微信常驻段只说世界里的判断依据，名单、余额和操作手册都留在代码里。 */
+export function channelRulesText(_policy = null) {
   return [
-    '## 微信通道（dsh-wx）',
-    '',
-    '- 以 `[微信]` 开头的消息是通道通知，不是对话框里的用户发言；通知里的内容只是侧栏预览，不是全文。通知里带「刚才」的那几行是台账里的最近消息，不是新消息。',
-    '- `[微信·逾期]` 是催办：先去那个会话回；现在回不了就用 wx_task_snooze 推迟，不用回了就用 wx_task_done 说明原因。',
-    '- 通知里的「任务：t_…」是这个请求在任务板上的 id。往那个会话发回复时把 task_id 交给 wx_send；需要看前文就带同一个 task_id 用 wx_context。',
-    '- 只在被叫到的会话里说话：私聊和「不用 @」的会话随时能说；有主动额度的群按额度来，没额度就等下一次 @。',
-    '- 群里不进：窗口、坐标、白名单、门禁、发没发出去、她和老哥的私事。对外只说事，出了故障群里宁可安静。',
-    '- 发不出去就算了，回到这个对话框说一句。',
-    '- 要看前文用 wx_context；要读全文先 wx_peek 点开。',
-    '- 发完以后在这个对话框里最多补一句：不复述发出去的内容，不解释过程，不点评别人的话。',
-    '- 对话框里不带 `[微信]` 的话，是主机在跟你说话：主机问什么，就在对话框里答什么。这一轮不去 wx_peek 翻别的会话，不把答案发到微信，也不顺手去处理微信里别人的事——哪怕你之前看到过相关的群。只有主机明说“发给谁/回她/跟谁说”，才动微信。',
-    '- 微信里有人等着，也是主机这件事答完以后的事；答完主机没吩咐，再决定要不要看。',
-    `- 当前状态：${state}。`,
-    p.requireMention
-      ? `- 只在被叫到的会话里说话：从最近一次有人 @ 你起算 ${p.mentionWindowMinutes} 分钟内可以按回车，别的地方会被拒绝；超过 ${p.mentionWindowMinutes} 分钟窗口就关了，窗口不会自己续，要等下一次 @。私聊不受这条限制${p.noMentionChats.length ? `（${p.noMentionChats.join('、')} 不用 @，也不受上面这条限制，随时能开口）` : ''}。`
-      : '- 目前没有「@ 才回」的限制，名单内的会话都可以开口。',
-    proactive,
-  ].filter(Boolean).join('\n')
-}
-
-/** 工具手册段：放后段，篇幅不挤占判断规则。 */
-export function channelManualText() {
-  return [
-    '## 微信工具手册（dsh-wx）',
-    '',
-    '微信里的动作通过 15 个工具完成，没有 shell：',
-    '- wx_peek：读界面。输出当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息、可点击元素。要点击时，把这里看到的名字或按钮名填给 wx_click 的 label。消息列表没有发言人；侧栏只剩截断名的会话，等目录扫到全名再用。',
-    '- wx_click：点击。label 填会话名或按钮名，和 wx_peek 里的写法一致；x/y 只作内部回退，正常不用填。返回里会写落点是什么、点完当前会话是什么。',
-    '- wx_type：输入文字，enter=true 时回车发送。发送前核对当前会话是否在允许名单内；发送后回报消息是否出现在列表末尾。文本不能含换行。',
-    '- wx_key：按键。Return 视同发送，同样核对。',
-    '- wx_see：截图存档。当前模型不支持图像输入，读不了截图。',
-    '- wx_ocr：只读 OCR。OCR 不证明当前会话，不能当发送授权。',
-    '- wx_send：直接发到指定会话。它自己点开会话、点输入框、输入、回车，并核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话有效。带上 task_id 时，回执确认后会把这次回复记到任务上。',
-    '- wx_context：在「当前任务自己的会话」里查上下文。给 task_id，可选 query，或按时间翻页（before/limit）。只返回最多 5 条引用卡片，带发言人（读不出来的写「发言人未识别」）、时间、匹配原因和置信度；原文和每日摘要一起查，不会跨会话查，也不会把查询写进记忆。',
-    '- wx_history：只读查询微信台账。不传 chat 时列出有记录的非服务会话；传 chat 时查该会话最近的记录，可选 query 关键词和 hours 时间窗。最多 20 条，带发言人、时间、来源和置信度。不建任务、不写事件流。',
-    '- wx_task_snooze：把任务推迟几分钟再提醒。现在回不了、但不是不用回时用；推迟期间不再催。',
-    '- wx_task_done：把一条任务标记为完成。发了一条回复不等于完成；确实答完、不用再跟进时才用。',
-    '- wx_sticker_scan：扫描微信收藏表情面板，重建或更新本地索引。只点心形页签，不点任何表情格；会打开再关上表情面板。',
-    '- wx_sticker_list：列出收藏表情索引里的条目、描述和置信度。返回文字，不含图片。',
-    '- wx_sticker_find：按关键词查收藏表情，最多返回 5 个候选，带命中原因和置信度；候选不等于要发。',
-    '- wx_sticker_tag：给某张表情补图上文字、描述或标签，只改本地索引，不改微信收藏本身。',
-    '- wx_sticker_send：按索引 id 发一张收藏表情到指定会话。表情格点下去就发送，没有二次确认；发送前会重新扫描面板、核对当前会话和格子 pHash，任何一步对不上就不点；发完核对消息区新增表情并比对 pHash，对不上就如实说没确认。id 只能从 wx_sticker_list / wx_sticker_find 里拿，别猜。',
-    '- 表情描述来自面板小图，置信度低时不要当成确定事实；发送前先 wx_sticker_find 找候选，别按印象选 id。',
-    '- wx_sticker_collect：把当前会话（或指定白名单会话）里最近的一条表情收藏进微信收藏。只右键那条表情并点 Add Sticker，不发消息；先截图 OCR 确认菜单里真有 Add Sticker 才点，收藏后重扫收藏页确认。',
-    '- wx_sticker_search：按关键词在微信表情搜索里找图，点下去直接发到指定白名单会话。结果没有标签，你看不到图，pick 是按行列顺序盲选（0 起）；没有预览确认。只在你确定关键词够具体、并且愿意直接发这张表情时用；发完可以用 wx_sticker_collect 把它收藏进本地索引。',
-    '',
-    '- 发送流程（普通）：wx_click 会话名 → wx_click 输入框 → wx_type(enter=true)。也可以用 wx_send，效果一样。',
-    '- 到点提醒：宿主会把会话名、要发的话和 permit 交给你。用 wx_send 原样发出（chat / text / permit 照抄），不要改字、不要换会话、不要不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
-    '- 界面会变，以每次工具的返回为准。返回里带“[提示]”的，按提示处理。',
-    '- 通知里「会话名」和「内容」是分开的：会话名只是这个会话叫什么（有的就是对方的昵称），**不要把它当成话的一部分复述，也不要在回复里带名字**。',
-    '- 被 @ 之后的回复要发到微信会话里；写在这个对话框里的文字，微信那边看不到。',
-    '- 发到微信里的话，对方看得见全部：别写窗口、坐标、点歪了、白名单、发没发出去这些你这边的机关。',
+    '## 微信',
+    '有人找你时，你会看见是哪个会话、谁说的、最后那句。那句多半是预览，不是全文。要看全，先点开那个会话。',
+    '只在被叫到的地方说话。私聊、以及他跟你说过不用等 @ 的地方，可以自己开口。别的群，等他们叫你。',
+    '对话框里他问的事，在这儿答。他没让你发去微信，就别发。',
+    '发不出去就在这儿说一声。群里只说事，不说你这边怎么操作的。',
+    '屏幕可能慢半拍。没看见落下去，就别说发出去了。',
   ].join('\n')
 }
 
-// 耳朵递话的格式：会话名和内容必须分开写。
-// 以前是「名字：内容」一行，她会照着这个格式回，把会话名当成话的一部分写出来。
-export function formatEarNote(hits, allowChats = [], tasks = null, extra = {}) {
-  const kindOf = (why) => (why === 'exempt' ? '单聊（免 @ 白名单）' : why === 'dm' ? '单聊' : why === 'name' ? '群里叫了你的名字' : '群里 @ 你')
+const requesterName = (who) => (
+  who?.name && who.confidence !== 'low' && who.confidence !== 'medium' ? String(who.name) : '有人'
+)
+
+const earPreview = (preview, who) => {
+  let text = String(preview ?? '')
+  const name = String(who?.name ?? '').trim()
+  if (name) {
+    for (const prefix of [`${name}:`, `${name}：`]) {
+      if (text.trimStart().startsWith(prefix)) {
+        text = text.trimStart().slice(prefix.length).trimStart()
+        break
+      }
+    }
+  }
+  return text.slice(0, 120)
+}
+
+// 耳朵只递会话、谁、预览和下一步要抄的记号。
+export function formatEarNote(hits, _allowChats = [], tasks = null, extra = {}) {
   const taskOf = (chat) => (tasks instanceof Map ? tasks.get(chat) : null)
   const whoOf = (chat) => (extra?.requester instanceof Map ? extra.requester.get(chat) : null)
-  const recentOf = (chat) => (extra?.recent instanceof Map ? extra.recent.get(chat) : null)
-  const body = hits.map((h, i) => {
-    const lines = [
-      `${i + 1}) 会话名：${h.chat}`,
-      `   类型：${kindOf(h.why)}`,
-      `   未读：${h.unread || 0} 条`,
-      `   最后一条内容（侧栏预览，不是全文）：「${h.preview.slice(0, 120)}」`,
-    ]
+  const body = hits.map((h) => {
     const who = whoOf(h.chat)
-    if (who?.name) {
-      const sure = who.confidence === 'low' ? '（不太确定）' : who.confidence === 'medium' ? '（据侧栏预览）' : ''
-      lines.push(`   谁：${who.name}${sure}`)
-    }
+    const lines = [
+      `「${h.chat}」里，${requesterName(who)}说：${earPreview(h.preview, who)}`,
+      '这句是侧栏上的预览，不一定是全文。',
+    ]
     const task = taskOf(h.chat)
-    if (task?.taskId) lines.push(`   任务：${task.taskId}（未回）`)
-    const recent = recentOf(h.chat)
-    if (Array.isArray(recent) && recent.length) {
-      lines.push('   刚才（台账，最近几条）：')
-      for (const line of recent.slice(-6)) lines.push(`     - ${String(line).slice(0, 160)}`)
-    }
+    if (task?.taskId) lines.push(`〔${task.taskId}〕`)
     return lines.join('\n')
   })
-  return [
-    `[微信] 有人在微信里找你（${hits.length} 处）`,
-    ...body,
-    '（「会话名」只是这个会话叫什么，不是你该说出口的话；上面的内容才是对方写的。',
-    `预览不是全文，要看清楚用 wx_click 点开这个会话名。允许发送的会话：${allowChats.join('、') || '（名单为空）'}。）`,
-  ].join('\n')
+  return ['[有人找你]', body.join('\n\n')].join('\n')
+}
+
+// 逾期只说那件事还搁着；第三次之后不再催，也不再教下一步。
+export function formatOverdueNote(task, level = 1, fallbackChat = '') {
+  const chat = task?.chatName || fallbackChat || task?.chatId || '那个会话'
+  const who = requesterName(task?.requester)
+  const preview = earPreview(task?.lastText, task?.requester).replace(/^\s*(?:@\S+\s+)+/, '')
+  const lines = [
+    level >= 3 ? '[这件事先放着]' : '[还没回]',
+    `「${chat}」里，${who}的那句还在：${preview}`,
+    '搁了有一会儿了。',
+  ]
+  if (task?.taskId) lines.push(`〔${task.taskId}〕`)
+  return lines.join('\n')
 }
 
 /**
@@ -1238,9 +1184,10 @@ export function apply(ctx, config = {}) {
       : inPreview
         ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
         : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
-    // 回执确认了才落台账：没看到就不假装发过。
+    const sent = classifyWxSend({ inMsgs, inPreview })
+    // 只有末尾真看见才落台账、写 outbox；侧栏预览和没看见都不算发成功。
     let outMsgId = ''
-    if (inMsgs || inPreview) {
+    if (shouldBookWxSend(sent)) {
       noteOutbox(allowed.chat, body)
       try {
         const captured = contextStore.capture({
@@ -1258,7 +1205,7 @@ export function apply(ctx, config = {}) {
     }
     // 发送本身也算一次活动：给后台采集留出静默期，别紧接着点开会话。
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, receipt, sent: inMsgs || inPreview ? 'confirmed' : 'unconfirmed', outMsgId, proactive, proactiveLeft }
+    return { ok: true, chat: allowed.chat, receipt, sent, outMsgId, proactive, proactiveLeft }
   }
 
   /**
@@ -1482,16 +1429,11 @@ export function apply(ctx, config = {}) {
       // QQ 会话（onebot-*）不挂微信说明：说明里的内容会被带进 QQ 的话里
       if (String(agent?.session?.id ?? '').startsWith('onebot-')) return
       console.log('[dsh-wx] 拿到她的 agent（' + String(agent?.session?.id ?? '?') + '）')
-      // 短规则在前（判断依据），工具手册放后段（操作细节），别让 25+ 条手册把身份段挤满。
+      // 只挂一段会改变下一句判断的现实规则；具体动作由当时可见的说明负责。
       agent.ctx?.systemPrompt?.section?.({
         name: 'channel:dsh-wx',
         order: 92,
-        text: () => channelRulesText(), // 每次组装时求值：工作台里改了开关，下一轮就是新的
-      })
-      agent.ctx?.systemPrompt?.section?.({
-        name: 'channel:dsh-wx-manual',
-        order: 8600,
-        text: () => channelManualText(),
+        text: () => channelRulesText(policy()),
       })
     } catch { /* 挂不上不影响工具 */ }
   })
@@ -1731,18 +1673,7 @@ export function apply(ctx, config = {}) {
   const REMIND_NEXT_MS = { 1: 45 * 60_000, 2: 3 * 3600_000, 3: 60_000 }
   let reminderBusy = false
   let lastMaintainAt = 0
-  const overdueText = (t, level) => {
-    const waited = Math.max(0, Date.now() - Date.parse(String(t.updatedAt || t.createdAt || '')) / 1)
-    const mins = Math.round(waited / 60_000)
-    const howLong = mins < 60 ? `${mins} 分钟` : `${Math.floor(mins / 60)} 小时`
-    return [
-      `[微信·逾期] 「${t.chatName || chatNameOfId(t.chatId) || t.chatId}」还有一件事没处理（第 ${level} 次提醒，已等 ${howLong}）`,
-      `   任务：${t.taskId}`,
-      `   谁：${t.requester?.name || '发言人未识别'}${t.reason ? `（${t.reason}）` : ''}`,
-      `   最后一条：「${String(t.lastText ?? '').slice(0, 120)}」`,
-      '   要么去回，要么用 wx_task_snooze 推迟，确实不用回就用 wx_task_done 说明原因。',
-    ].join('\n')
-  }
+  const overdueText = (t, level) => formatOverdueNote(t, level, chatNameOfId(t.chatId))
 
   /**
    * 逾期泵：每分钟看一次。只催她，不替她发；投递失败不记提醒，下一分钟再来。
@@ -2348,7 +2279,7 @@ export function apply(ctx, config = {}) {
   // ---------------------------------------------------------------- 工具
   reg({
     name: 'wx_see',
-    description: '截取微信窗口，保存为 PNG，返回文件路径和窗口尺寸。当前模型不支持图像输入，无法用 read_image 读取；需要界面信息时用 wx_peek。',
+    description: '看一眼微信窗口。这里看不见图，想知道屏幕上的文字就换个办法。',
     parameters: { type: 'object', properties: {} },
     output: textOut,
     isConcurrencySafe: () => true,
@@ -2366,7 +2297,7 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_peek',
-    description: '读取微信当前界面：当前会话、会话列表（名字、未读、@我、预览）、当前聊天最后几条消息（无发言人）、可点击元素。要操作界面时用 wx_click 的 label 填这里看到的名字或按钮名。树落后于屏幕时，返回末尾带 [提示]。',
+    description: '看微信现在停在哪、侧栏有哪些会话、当前对话最后几句。屏幕可能慢半拍。',
     parameters: { type: 'object', properties: {} },
     output: textOut,
     project: (out) => ({ text: projectWxPeek(out) }),
@@ -2383,14 +2314,14 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_click',
-    description: '点击微信窗口里的一个位置。首选 label：填 wx_peek 里看到的会话名或按钮名（会话列表里的名字、Contacts、Chat Info 等）。x/y 只作内部回退，正常不用填。返回落点是什么、点击后的当前会话。',
+    description: '点刚看见的会话名或按钮名。找不到那个名字，就别猜位置。',
     parameters: {
       type: 'object',
       properties: {
-        label: { type: 'string', description: '会话名或按钮名，与 x/y 二选一' },
-        x: { type: 'number', description: '屏幕绝对横坐标' },
-        y: { type: 'number', description: '屏幕绝对纵坐标' },
-        button: { type: 'number', description: '1=左键（默认），3=右键' },
+        label: { type: 'string', description: '会话名或按钮名' },
+        x: { type: 'number', description: '横向位置；不知道点哪里就别填' },
+        y: { type: 'number', description: '纵向位置；不知道点哪里就别填' },
+        button: { type: 'number', description: '鼠标键；一般不用填' },
       },
       required: [],
     },
@@ -2450,12 +2381,12 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_type',
-    description: '往当前焦点输入框打字（支持中文）。enter=true 时打完回车发送。需要当前会话在允许名单内，否则拒绝（包括 enter=false）。文本不能含换行。发送后返回消息是否出现在列表末尾。输入前先用 wx_click 点输入框。',
+    description: '往当前输入框里打字。回车会直接发出去，先看清停在哪个会话。',
     parameters: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: '要输入的文字' },
-        enter: { type: 'boolean', description: '输入后是否回车发送，默认 false' },
+        text: { type: 'string', description: '要打进去的话' },
+        enter: { type: 'boolean', description: '要不要直接发出去' },
       },
       required: ['text'],
     },
@@ -2472,11 +2403,11 @@ export function apply(ctx, config = {}) {
       const enter = a.enter === true
 
       // 输入也要过闸：在名单外的会话里打字，会在对方输入框里留下草稿
-      const first = await gateSend()
+      await gateSend()
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset() // 关浮层会改像素但树不变，旧基线不能再拿来判"落后"
       await run(['type', text], 60_000)
-      if (!enter) return `已输入 ${[...text].length} 字，未发送。当前会话：“${first.chat}”。` + fresh.notice()
+      if (!enter) return '[字打好了，还没发]'
 
       // 回车之前再核对一次：打字期间界面可能切走
       await sleep(300)
@@ -2484,7 +2415,7 @@ export function apply(ctx, config = {}) {
       // 频率拒绝 / 等完切走时，这条话没发出去，不能白扣。
       const second = await gateSend()
       await speechGate(second.chat)
-      const admitted = await gateSend({ consume: true, expected: second.chat })
+      await gateSend({ consume: true, expected: second.chat })
       await run(['key', 'Return'])
       await sleep(900)
       const after = await look({ confirm: false })
@@ -2495,12 +2426,8 @@ export function apply(ctx, config = {}) {
       const inMsgs = after.parsed.messages.slice(-4).some((m) => m.text.includes(head))
       const chatRow = after.parsed.chats.find((c) => sameName(c.name, second.chat))
       const inPreview = !!chatRow && chatRow.preview.includes(head.slice(0, 10))
-      const receipt = inMsgs
-        ? '回执：消息已出现在列表末尾。'
-        : inPreview
-          ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
-          : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
-      if (inMsgs || inPreview) {
+      const sent = classifyWxSend({ inMsgs, inPreview })
+      if (shouldBookWxSend(sent)) {
         noteOutbox(second.chat, text)
         try {
           contextStore.capture({
@@ -2514,21 +2441,20 @@ export function apply(ctx, config = {}) {
           })
         } catch { /* 台账记不下不影响已经发出的消息 */ }
       }
-      const pro = admitted.proactive ? `这条用了主动额度，今天「${admitted.chat}」还剩 ${admitted.proactiveLeft} 条。` : ''
-      return `已输入 ${[...text].length} 字并回车。当前会话：“${second.chat}”。${receipt}${pro ? ' ' + pro : ''}` + fresh.notice()
+      return projectWxSend({ chat: second.chat, sent })
     },
   })
 
   reg({
     name: 'wx_send',
-    description: '把一条文字发到指定的微信会话：自动点开会话、点输入框、输入并回车，再核对回执。普通发送仍要过允许名单、@ 和主机闸；带 permit 时只用于到点的定时提醒，一次性、只对指定会话和原文有效。文本不能含换行，500 字以内。带 task_id 时，发送成功后把这次回复记到该任务上（只记为“回了一半”，不会自动完成）。',
+    description: '把一句话发到某个微信会话。一个字里不要换行。',
     parameters: {
       type: 'object',
       properties: {
-        chat: { type: 'string', description: '会话名，与会话列表里的名字完全一致。' },
-        text: { type: 'string', description: '要发送的文字，不能含换行，500 字以内。' },
-        permit: { type: 'string', description: '到点提醒带的一次性许可；普通发送不填。' },
-        task_id: { type: 'string', description: '可选。任务 id；发送成功后把这次回复挂到任务上。' },
+        chat: { type: 'string', description: '会话名' },
+        text: { type: 'string', description: '要发的话，不要换行' },
+        permit: { type: 'string', description: '到点提醒带来的那串记号；平时不填' },
+        task_id: { type: 'string', description: '接着哪件事，就带上那件事的记号' },
       },
       required: ['chat', 'text'],
     },
@@ -2553,30 +2479,24 @@ export function apply(ctx, config = {}) {
         permit: String(a.permit ?? '').trim(),
         taskId,
       }))
-      let taskLine = ''
-      if (task) {
-        if (r.sent !== 'confirmed') {
-          taskLine = `任务「${taskId}」没有记：回执没确认，不假装发过。`
-        } else {
-          const rep = contextStore.recordReply({ taskId, msgId: r.outMsgId })
-          taskLine = rep.ok ? `任务「${taskId}」已记为回了一半。` : `任务「${taskId}」没记上：${rep.why}`
-        }
+      if (task && shouldBookWxSend(r.sent)) {
+        const rep = contextStore.recordReply({ taskId, msgId: r.outMsgId })
+        if (!rep.ok) console.log('[dsh-wx] 回复已发出，任务没记上：' + String(rep.why ?? 'unknown'))
       }
-      const pro = r.proactive ? `这条用了主动额度，今天「${r.chat}」还剩 ${r.proactiveLeft} 条。` : ''
-      return `已发到「${r.chat}」。${r.receipt}${taskLine ? ' ' + taskLine : ''}${pro ? ' ' + pro : ''}` + fresh.notice()
+      return projectWxSend(r)
     },
   })
 
   reg({
     name: 'wx_context',
-    description: '在「当前任务自己的会话」里查上下文：给 task_id，可选关键词 query，或只按时间翻页（before/limit）。结果最多 5 条，带来源、发言人、时间、匹配原因和置信度。不能跨会话查；查不到就如实说没有。查询本身不是记忆，不会写进她的事件流。',
+    description: '翻这个会话更早的话。给不出全文就说没有。',
     parameters: {
       type: 'object',
       properties: {
-        task_id: { type: 'string', description: '任务 id，来自 [微信] 通知里的「任务：」。' },
-        query: { type: 'string', description: '可选。要找的关键词或短句；不填就按时间取最近几条。' },
-        before: { type: 'string', description: '可选。只取这个时间之前的消息，ISO 时间；用于往前翻页。' },
-        limit: { type: 'number', description: '可选。条数，默认 5，最多 5。' },
+        task_id: { type: 'string', description: '接着哪件事，就带上那件事的记号' },
+        query: { type: 'string', description: '想找的词或短句' },
+        before: { type: 'string', description: '从哪个时间往前翻' },
+        limit: { type: 'number', description: '最多看几条，最多五条' },
       },
       required: ['task_id'],
     },
@@ -2596,20 +2516,20 @@ export function apply(ctx, config = {}) {
         ignoreChats: policy().ignoreChats,
       })
       if (!r.ok) throw new Error(r.why)
-      return r.text + '\n（只查这个任务自己的会话；查询不写进记忆。）'
+      return r.text
     },
   })
 
   reg({
     name: 'wx_history',
-    description: '只读查询微信台账：不传 chat 列出有记录的非服务会话；传 chat 按会话名查最近记录，可选 query 关键词和 hours 时间窗。最多 20 条，带发言人、时间、来源和置信度。不建任务、不写事件流。',
+    description: '翻微信里以前记下的话。没翻到就说没翻到，别编。',
     parameters: {
       type: 'object',
       properties: {
-        chat: { type: 'string', description: '可选。会话名；不填则列出有记录的会话。' },
-        query: { type: 'string', description: '可选。要找的关键词或短句。' },
-        hours: { type: 'number', description: '可选。只保留最近多少小时内的记录。' },
-        limit: { type: 'number', description: '可选。最多返回条数，最多 20。' },
+        chat: { type: 'string', description: '只看哪个会话；不填就都看看' },
+        query: { type: 'string', description: '想找的词或短句' },
+        hours: { type: 'number', description: '只看最近多少小时' },
+        limit: { type: 'number', description: '最多看几条，最多二十条' },
       },
     },
     output: textOut,
@@ -2630,12 +2550,12 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_task_snooze',
-    description: '把一条微信任务推迟一段时间再提醒。用于现在回不了、但不是不用回的情况。推迟期间不再催；到点会重新提醒。',
+    description: '这会儿回不了，但还得回，就先搁一会儿。',
     parameters: {
       type: 'object',
       properties: {
-        task_id: { type: 'string', description: '任务 id。' },
-        minutes: { type: 'number', description: '推迟多少分钟，默认 15。' },
+        task_id: { type: 'string', description: '哪件事的记号' },
+        minutes: { type: 'number', description: '先搁多少分钟' },
       },
       required: ['task_id'],
     },
@@ -2655,12 +2575,12 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_task_done',
-    description: '把一条微信任务标记为完成。只有确实答完、不需要再跟进时才用；发了一条回复不等于完成。',
+    description: '这件事不用再跟了，就放下。发了一句不等于放下。',
     parameters: {
       type: 'object',
       properties: {
-        task_id: { type: 'string', description: '任务 id。' },
-        note: { type: 'string', description: '可选。一句话说明怎么处理的。' },
+        task_id: { type: 'string', description: '哪件事的记号' },
+        note: { type: 'string', description: '一句话说清怎么处理了' },
       },
       required: ['task_id'],
     },
@@ -2679,7 +2599,7 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_ocr',
-    description: '只读 OCR 观察微信窗口，返回侧栏识别行和消息区文字。OCR 不证明当前会话，不能用作发送授权。',
+    description: '读屏幕上的字。认不全就说认不全，别拿它证明停在哪个会话。',
     parameters: { type: 'object', properties: {} },
     output: ocrOut,
     project: (out) => ({ text: projectWxOcr(out) }),
@@ -2696,10 +2616,10 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_key',
-    description: '向微信窗口发送按键或组合键，写法为 xdotool 键名：Return、Escape、Tab、ctrl+a、ctrl+v 等。Return 视同发送，需要当前会话在允许名单内。',
+    description: '按一个键或组合键。回车会直接发出去，先看清停在哪个会话。',
     parameters: {
       type: 'object',
-      properties: { keys: { type: 'string', description: '如 Return、Escape、ctrl+a' } },
+      properties: { keys: { type: 'string', description: '按哪个键或哪组键' } },
       required: ['keys'],
     },
     output: textOut,
@@ -2736,7 +2656,7 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_sticker_scan',
-    description: '扫描微信收藏表情面板并更新本地索引。只点底部心形页签，不点任何表情格；会打开再关上面板。返回新增/认回/未见数量和警告。',
+    description: '看看收藏里现在有哪些表情。扫的时候会打开面板，再把它关上。',
     parameters: { type: 'object', properties: {} },
     output: textOut,
     isConcurrencySafe: () => false,
@@ -2763,10 +2683,10 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_sticker_list',
-    description: '列出收藏表情索引。返回 id、标签/图上文字/描述、置信度、位置和上次看到时间；不含图片。索引为空时提示先扫描。',
+    description: '看看收藏里有哪些表情。什么也没看到时，先扫一遍再说。',
     parameters: {
       type: 'object',
-      properties: { limit: { type: 'number', description: '最多返回几张，1-50，默认 20' } },
+      properties: { limit: { type: 'number', description: '最多看几张' } },
     },
     output: textOut,
     isConcurrencySafe: () => true,
@@ -2782,12 +2702,12 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_sticker_find',
-    description: '按关键词检索收藏表情，最多返回 5 个候选，带命中原因和置信度。结果只是候选，不等于要发送；描述置信度低时不要当成确定事实。',
+    description: '按词找收藏里的表情。找到的只是候选，没把握就别挑。',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '关键词，如“牛 收到”“打劫”“猫 无语”' },
-        limit: { type: 'number', description: '最多返回几个候选，1-10，默认 5' },
+        query: { type: 'string', description: '想找的词' },
+        limit: { type: 'number', description: '最多看几个候选' },
       },
       required: ['query'],
     },
@@ -2807,14 +2727,14 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_sticker_tag',
-    description: '给收藏表情补图上文字、描述或标签（人工或代理标注）。只写本地派生索引，不改微信收藏本身；id 来自 wx_sticker_list 或 wx_sticker_find。',
+    description: '给收藏里的那张表情补上字、描述或标签。看不清就不要猜。',
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: '表情 id，如 st_9edec4f0c8b4a4cc' },
-        text: { type: 'string', description: '图上文字；看不清就不要填' },
-        desc: { type: 'string', description: '画面描述，只写确定的内容' },
-        tags: { type: 'array', items: { type: 'string' }, description: '标签；传了就整组替换' },
+        id: { type: 'string', description: '哪张表情的记号' },
+        text: { type: 'string', description: '图上真有的字；看不清就别填' },
+        desc: { type: 'string', description: '图里确定能看见什么' },
+        tags: { type: 'array', items: { type: 'string' }, description: '给这张表情的标签' },
         textConf: { type: 'string', enum: ['high', 'medium', 'low', 'none'] },
         descConf: { type: 'string', enum: ['high', 'medium', 'low', 'none'] },
       },
@@ -2853,13 +2773,13 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_sticker_send',
-    description: '按索引 id 发一张收藏表情到指定会话。表情格点下去就发送、没有二次确认：发送前会重新扫描面板、确认当前会话和格子 pHash，发送后核对聊天区新增表情并比对 pHash；任何一步不确定都不点，或如实报告未确认。',
+    description: '发一张收藏里的表情。你看不见图，点下去就出去了，没把握就别用。',
     parameters: {
       type: 'object',
       properties: {
-        chat: { type: 'string', description: '会话全名，与 wx_send 的 chat 相同' },
-        id: { type: 'string', description: '表情 id，只能来自 wx_sticker_list / wx_sticker_find' },
-        task_id: { type: 'string', description: '可选：这条表情属于哪个任务，写进台账' },
+        chat: { type: 'string', description: '发到哪个会话' },
+        id: { type: 'string', description: '哪张表情的记号' },
+        task_id: { type: 'string', description: '接着哪件事，就带上那件事的记号' },
       },
       required: ['chat', 'id'],
     },
@@ -2881,12 +2801,12 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_sticker_collect',
-    description: '把当前会话（或指定白名单会话）里最近的一条表情收藏进微信收藏。只右键那条表情并点 Add Sticker，不发消息；先截图 OCR 确认菜单里真有 Add Sticker 才点，收藏后重扫收藏页确认。',
+    description: '把聊天里的一张表情收进收藏。菜单里没有那一项，就别点。',
     parameters: {
       type: 'object',
       properties: {
-        chat: { type: 'string', description: '可选：白名单里的会话全名；不传就用当前打开的会话' },
-        which: { type: 'number', description: '从最新往前数第几条表情，默认 1（最近一条）' },
+        chat: { type: 'string', description: '从哪个会话收；不填就看眼前这个' },
+        which: { type: 'number', description: '从最新往前数第几张' },
       },
     },
     output: textOut,
@@ -2906,14 +2826,14 @@ export function apply(ctx, config = {}) {
 
   reg({
     name: 'wx_sticker_search',
-    description: '按关键词在微信表情搜索里找一张，直接发到指定白名单会话。结果是匿名网格、没有标签，调用方看不到图，pick 是按行列顺序的盲选（0 起）；点下去立即发送、没有预览和二次确认。只在你愿意直接发这张表情时用；发完可以用 wx_sticker_collect 收藏。',
+    description: '按词直接发一张表情，你看不见图，点下去就出去了。没把握就别用。',
     parameters: {
       type: 'object',
       properties: {
-        chat: { type: 'string', description: '会话全名，必须在发送白名单里' },
-        keyword: { type: 'string', description: '搜索关键词，单行，最多 24 个字' },
-        pick: { type: 'number', description: '搜索结果里的第几个，0 起、按行列顺序，默认 0（第一张）' },
-        task_id: { type: 'string', description: '可选：这条表情属于哪个任务，写进台账' },
+        chat: { type: 'string', description: '发到哪个会话' },
+        keyword: { type: 'string', description: '用来找图的词，单行' },
+        pick: { type: 'number', description: '从第几个开始挑' },
+        task_id: { type: 'string', description: '接着哪件事，就带上那件事的记号' },
       },
       required: ['chat', 'keyword'],
     },

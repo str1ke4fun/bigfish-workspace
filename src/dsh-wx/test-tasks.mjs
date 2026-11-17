@@ -22,16 +22,19 @@ const seed = (b, over = {}) => b.create({
 console.log('建任务')
 t('新建 → new，摘要里有会话、谁、最后一句', () => {
   const b = make()
-  const r = seed(b)
+  const r = seed(b, { text: '甲: @你 在吗' })
   assert.equal(r.ok, true)
   assert.equal(r.created, true)
   assert.equal(r.task.status, 'new')
   assert.equal(r.task.inboundCount, 1)
   const s = b.summary({ at: T + 5 * 60_000 })
-  assert.match(s, /测试群A/)
-  assert.match(s, /甲（@）/)
-  assert.match(s, /在吗/)
-  assert.match(s, /未回/)
+  assert.equal(s, [
+    '「测试群A」里，甲说：在吗',
+    '还没回。',
+    `〔${r.task.taskId}〕`,
+  ].join('\n'))
+  assert.doesNotMatch(s, /测试群A｜甲|未回（|状态：|已等|（@）/)
+  assert.equal(s.split('\n').at(-1), `〔${r.task.taskId}〕`, '任务记号只在末行')
 })
 t('同一个 dedupeKey → duplicate，不新建', () => {
   const b = make()
@@ -110,7 +113,8 @@ t('blocked 记录原因；unblock 回到 new', () => {
   const { task } = seed(b)
   b.block(task.taskId, { why: '全名没解析', at: at(1) })
   assert.equal(b.get(task.taskId).status, 'blocked')
-  assert.match(b.summary({ at: at(1) }), /卡住/)
+  assert.match(b.summary({ at: at(1) }), /这件事先放着/)
+  assert.doesNotMatch(b.summary({ at: at(1) }), /卡住|全名没解析|状态：/)
   b.unblock(task.taskId, { at: at(2) })
   assert.equal(b.get(task.taskId).status, 'new')
   assert.equal(b.get(task.taskId).blockedWhy, '')
@@ -151,11 +155,11 @@ t('blocked / done 不催；对方又说话会重置提醒计数', () => {
   assert.equal(b.get(a.task.taskId).overdueCount, 0)
   assert.equal(b.get(a.task.taskId).lastRemindedAt, '')
 })
-t('摘要里标出已逾期', () => {
+t('摘要里用世界声说还搁着', () => {
   const b = make()
   seed(b)
-  assert.match(b.summary({ at: T + 16 * 60_000 }), /已逾期/)
-  assert.doesNotMatch(b.summary({ at: T + 5 * 60_000 }), /已逾期/)
+  assert.match(b.summary({ at: T + 16 * 60_000 }), /还搁着/)
+  assert.doesNotMatch(b.summary({ at: T + 5 * 60_000 }), /还搁着/)
 })
 
 console.log('持久化')

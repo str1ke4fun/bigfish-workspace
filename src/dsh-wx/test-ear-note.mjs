@@ -1,7 +1,7 @@
-// 耳朵递话的格式：会话名和内容必须分开，别让她把名字当话回。
+// 耳朵和逾期只把世界里发生的事递给她，不给工单。
 // 跑：node wx/test-ear-note.mjs
 import assert from 'node:assert/strict'
-import { formatEarNote } from './lib/index.js'
+import { formatEarNote, formatOverdueNote } from './lib/index.js'
 
 const note = formatEarNote(
   [
@@ -9,37 +9,72 @@ const note = formatEarNote(
     { chat: '测试群A', unread: 3, preview: '李四: @大肥鱼 看下这个', why: '@' },
   ],
   ['某个猫', '测试群A'],
-)
-
-console.log(note)
-console.log('---')
-
-// 名字单独一行、内容单独一行，且名字后面不能紧跟内容
-assert.match(note, /1\) 会话名：某个猫/)
-assert.match(note, /最后一条内容（侧栏预览，不是全文）：「在吗？」/)
-assert.ok(!/某个猫：/.test(note), '会话名后面不该跟冒号接内容')
-assert.match(note, /2\) 会话名：测试群A/)
-assert.match(note, /类型：群里 @ 你/)
-assert.match(note, /类型：单聊/)
-assert.match(note, /不是你该说出口的话/)
-
-// 没有允许名单时也不能崩
-assert.match(formatEarNote([{ chat: 'x', unread: 0, preview: '', why: 'exempt' }], []), /名单为空/)
-
-// 任务 id 跟着对应会话走；没有任务就不多写一行
-const withTasks = formatEarNote(
-  [
-    { chat: '某个猫', unread: 1, preview: '在吗？', why: 'dm' },
-    { chat: '测试群A', unread: 3, preview: '@大肥鱼 看下这个', why: '@' },
-  ],
-  ['某个猫', '测试群A'],
   new Map([
     ['某个猫', { taskId: 't_dm1', chatName: '某个猫' }],
     ['测试群A', { taskId: 't_g1', chatName: '测试群A' }],
   ]),
+  {
+    requester: new Map([
+      ['某个猫', { name: '阿明', confidence: 'low' }],
+      ['测试群A', { name: '李四', confidence: 'high' }],
+    ]),
+    recent: new Map([
+      ['某个猫', ['台账里不该出现的一行']],
+      ['测试群A', ['台账里也不该出现的一行']],
+    ]),
+  },
 )
-assert.match(withTasks, /1\) 会话名：某个猫[\s\S]*任务：t_dm1（未回）/)
-assert.match(withTasks, /2\) 会话名：测试群A[\s\S]*任务：t_g1（未回）/)
-assert.doesNotMatch(note, /任务：/)
+
+assert.equal(note, [
+  '[有人找你]',
+  '「某个猫」里，有人说：在吗？',
+  '这句是侧栏上的预览，不一定是全文。',
+  '〔t_dm1〕',
+  '',
+  '「测试群A」里，李四说：@大肥鱼 看下这个',
+  '这句是侧栏上的预览，不一定是全文。',
+  '〔t_g1〕',
+].join('\n'))
+
+for (const bad of ['未读', '类型：', '名单', '允许发送', '台账', '任务：', '1)', '置信度', 'exempt', '单聊']) {
+  assert.equal(note.includes(bad), false, `耳朵里不该出现 ${bad}`)
+}
+assert.equal(note.split('\n').filter((line) => line.startsWith('〔t_')).every((line) => line.endsWith('〕')), true)
+
+const withTasks = formatEarNote(
+  [{ chat: '某个猫', unread: 1, preview: '在吗？', why: 'dm' }],
+  ['某个猫', '测试群A'],
+  new Map([['某个猫', { taskId: 't_dm1', chatName: '某个猫' }]]),
+  { requester: new Map([['某个猫', { name: '阿明', confidence: 'high' }]]) },
+)
+assert.equal(withTasks.split('\n').at(-1), '〔t_dm1〕')
+assert.equal(formatEarNote([{ chat: 'x', preview: '在吗', why: 'exempt' }], []).includes('〔'), false)
+
+const overdue = formatOverdueNote({
+  chatName: '测试群A',
+  taskId: 't_overdue',
+  requester: { name: '阿明' },
+  reason: '@',
+  lastText: '阿明: @大肥鱼 晚上来吗',
+}, 2)
+assert.equal(overdue, [
+  '[还没回]',
+  '「测试群A」里，阿明的那句还在：晚上来吗',
+  '搁了有一会儿了。',
+  '〔t_overdue〕',
+].join('\n'))
+for (const bad of ['第 2 次', '已等', '分钟', '小时', 'wx_', '任务：', '@', '台账']) {
+  assert.equal(overdue.includes(bad), false, `逾期里不该出现 ${bad}`)
+}
+
+const third = formatOverdueNote({
+  chatName: '测试群A',
+  taskId: 't_third',
+  requester: { name: '' },
+  lastText: '还在吗',
+}, 3)
+assert.match(third, /^\[这件事先放着\]/)
+assert.match(third, /「测试群A」里，有人/)
+assert.equal(third.split('\n').at(-1), '〔t_third〕')
 
 console.log('formatEarNote: 全部通过')
