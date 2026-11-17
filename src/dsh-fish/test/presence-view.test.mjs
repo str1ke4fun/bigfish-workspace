@@ -10,7 +10,7 @@ test('空数据返回空串，不输出空标题', () => {
   assert.equal(presenceDocText([row('2026-11-13')]), '')
 })
 
-test('按天渲染工作/游戏/氛围，最多 3 天', () => {
+test('按天渲染大致在做什么，不报分钟表，最多 3 天', () => {
   const text = presenceDocText([
     row('2026-11-13', 180, 40, 0),
     row('2026-11-12', 0, 90, 15),
@@ -18,9 +18,10 @@ test('按天渲染工作/游戏/氛围，最多 3 天', () => {
     row('2026-11-10', 10, 0, 0),
   ])
   assert.match(text, /## 他这几天/)
-  assert.match(text, /11-13：工作 3 小时；游戏 40 分钟/)
-  assert.match(text, /11-12：游戏 1 小时 30 分钟；氛围 15 分钟/)
-  assert.match(text, /11-11：工作 1 小时/)
+  assert.match(text, /11-13：大半天在做事；玩了一会儿游戏/)
+  assert.match(text, /11-12：玩了好一阵游戏；在旁边看了一会儿/)
+  assert.match(text, /11-11：有一阵在做事/)
+  assert.doesNotMatch(text, /分钟|小时/)
   assert.ok(!text.includes('11-10'), '最多 3 天')
 })
 

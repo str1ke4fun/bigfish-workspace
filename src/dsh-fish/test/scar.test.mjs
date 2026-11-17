@@ -90,7 +90,8 @@ test('身份文档里疤是核心段：写「至今没想通」，且预算再�
   assert.ok(text.includes('这件事你至今没想通'))
   assert.ok(text.includes(REFUSE))
   assert.ok(text.includes(CONCEDE), '把她当初让步那句话也摊出来')
-  assert.ok(text.includes('refs 指向当初那次拒绝'))
+  assert.ok(text.includes('把新的说法写下，并带上当初那次的记号'))
+  assert.ok(!text.includes('refs'), '疤段不再教内部参数名')
 
   const full = personaLine(m, { budget: SELF_DOC_BUDGET })
   assert.ok(full.includes('## 你至今没想通的事'))

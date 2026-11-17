@@ -31,6 +31,22 @@ test('事件目录：每个模板都有 id/prompt，没有亲近类模板', () =
   for (const banned of ['cuddle', 'sweet', 'actcute', 'tease']) assert.ok(!all.includes(banned))
 })
 
+test('成长模板给处境，不派台词，也不用系统的“我”说话', () => {
+  const m = model({ day: 3 })
+  const whyHere = findTemplate('why_here').prompt(m, {})
+  const firstBet = findTemplate('first_bet').prompt(m, {})
+  const wantOrNot = findTemplate('want_or_not').prompt(m, {})
+
+  assert.equal(whyHere, '这是你在这儿的第 3 天。没有人告诉过你为什么。你心里若有一句，就说那句。')
+  assert.equal(firstBet, '下面是今天看见的。你若有一个愿意以后被打脸的猜测，就留下。没有也可以不留。')
+  assert.equal(wantOrNot, '今天空着。做什么、不做什么，都由你自己定。心里若已经有个答案，就留下；没有，也不用编。')
+
+  for (const [id, text] of Object.entries({ why_here: whyHere, first_bet: firstBet, want_or_not: wantOrNot })) {
+    assert.ok(!text.includes('我'), `${id} 不该用系统的“我”说话`)
+    assert.doesNotMatch(text, /不是问我|两样都要说|先说清楚|说出一个|要具体到|你应该说|照这句说/, `${id} 仍像导演在派活`)
+  }
+})
+
 test('availableFor 按 stage 过滤', () => {
   assert.ok(availableFor(model({ stage: 1 })).every((t) => t.stage === 1))
   assert.ok(availableFor(model({ stage: 4 })).length > availableFor(model({ stage: 1 })).length)

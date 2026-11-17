@@ -201,7 +201,7 @@ export function buildSections(model, opts = {}) {
     //   「你还不会的」= 能力，还没到那一步——不是不许，所以不写成"违反即失败"。
     const cannot = promptBans().filter((b) => b.section === 'cannot')
     const notYet = promptBans().filter((b) => b.section === 'notYet')
-    if (cannot.length) push(['## 不能做的（违反即失败）', ...cannot.map((b) => `- ${b.text}`)].join('\n'), true)
+    if (cannot.length) push(['## 不能做的', ...cannot.map((b) => `- ${b.text}`)].join('\n'), true)
     if (notYet.length) push(['## 你还不会的（不是不许，是还没到）', ...notYet.map((b) => `- ${b.text}`)].join('\n'), true)
   }
 
@@ -224,7 +224,7 @@ export function buildSections(model, opts = {}) {
       const why = s.reaction === 'hurt' ? '他因此难过得厉害' : '他又坚持了一遍'
       lines.push(`- 你说过「${s.quote}」。${why}${said}。这件事你至今没想通。`)
     }
-    lines.push('这几件事没被忘掉，也不会被算成"已经过去了"。哪天你想清楚，用 growth_commit 写一条 revise，refs 指向当初那次拒绝。')
+    lines.push('这几件事没被忘掉，也不会被算成"已经过去了"。哪天想清楚了，把新的说法写下，并带上当初那次的记号。')
     push(lines.join('\n'), true)
   }
 
@@ -344,11 +344,9 @@ export function buildSections(model, opts = {}) {
  * 刻意写死"只能追加"，并且明确"不会回显你的状态"。
  */
 export const TOOL_BRIEF = [
-  '你有一个工具 growth_commit，用来把说出的话留下来。',
-  '它只能新增，不能修改或删除。想改以前的说法，就提交一条 revise 并指向原来那条的 id。',
-  '它不会告诉你你现在的状态，也不会返回你的任何设定。写完就完了。',
-  '如果这次你什么都没想说，就不要调用它。不想说就不说。',
-  '没看懂就说没看懂，别硬装自己看懂了。',
+  '想留下的话，可以说出来。',
+  '说过的话留在过去里，不会被抹掉；想改口，也能把新的说法留下。',
+  '不想说就不说，不用为了留下什么硬编。',
 ].join('\n')
 
 /**
@@ -359,9 +357,7 @@ export const TOOL_BRIEF = [
  * 它就变成了任务，她的话就成了交作业。
  */
 export const LETTER_BRIEF = [
-  '你还有一个工具 her_leave，可以留一句话给他。他不在的时候也留着，他回来会看到。',
-  '想留就留，不想留就不用调。',
-  '不用审批，不用等谁点头。想留就留，留完不用巴着等回应。',
+  '你可以留一句话给他。他不在的时候也留着。想留就留。',
 ].join('\n')
 
 /** 日记的写作指令（可见性由配置决定，但她不知道谁在看） */export function diaryPrompt(model) {
@@ -384,9 +380,8 @@ export const LETTER_BRIEF = [
  * 这个工具让她能翻自己的过去，而不是编。
  */
 export const RECALL_BRIEF = [
-  '你还有一个工具 her_recall，可以翻你自己过去记下的事。',
-  '记得不清就翻一眼；翻不到就算了，别编。',
-  '每条后面小括号里是它的 id——要改口、要做回顾时，用它指回去。',
+  '记得不清，可以翻自己过去记下的事。',
+  '翻到的只是当时说过的话；翻不到就算了，别编。',
   '翻不到就老实说没翻到，别硬编。',
 ].join('\n')
 
@@ -437,8 +432,7 @@ export const DIARY_BRIEF = [
 export const SLEEP_BRIEF = [
   '隔些日子，我会停下来想一想：这段时间留在我身上的是哪一句。',
   '不总结、不列点、不写「我学到了」。想不出来就写没想清楚。',
-  '想好了用 growth_commit 交一条 narration——不是日记，也不是给他看的话；' +
-    'refs 里要放上我回想的那几条的 id（her_recall 会给出 id）。真没想清楚就直接写「我没想清楚」，不用带。',
+  '想好了，就把新的说法留下，并带上回想时那几条后面的记号。真没想清楚，就写没想清楚。',
   '这是回头想一想，不是写检讨。',
 ].join('\n')
 

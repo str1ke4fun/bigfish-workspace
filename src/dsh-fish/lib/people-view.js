@@ -23,13 +23,13 @@ const OWNER_HEADING = '## 关于他'
 const OWNER_INTRO = '他可能从不同的地方找你。下面这些名字都是他：'
 const OWNER_FOOTER = '别的名字不是他。拿不准时先问一句，别把别人当成他。'
 
-/** 渠道的中文说法。未知渠道原样回退——宁可露出原值，也不要猜错。 */
+/** 渠道的中文说法。未知渠道返回空串，渲染时只留别名，不念内部名。 */
 export function channelLabel(channel) {
   const value = String(channel ?? '')
   if (value === 'wx') return '微信私聊'
   if (value === 'web') return '这里'
   if (value === 'core') return '共同'
-  return value
+  return ''
 }
 
 /**
@@ -84,7 +84,8 @@ export function ownerDocText(ownerFacts, { maxFacts = 5, maxChars = 300 } = {}) 
     const key = `${channel}|${label}`
     if (seen.has(key)) continue
     seen.add(key)
-    lines.push(`- ${channelLabel(channel)}：${label}`)
+    const where = channelLabel(channel)
+    lines.push(where ? `- ${where}：${label}` : `- ${label}`)
   }
 
   if (!lines.length) return ''

@@ -2,17 +2,34 @@
  * presence-view.js —— 「他这几天」的纯渲染（presence spec §7.5）。
  *
  * 输入是 derive.presenceRecent（最近 7 天按天聚合）；输出 ≤200 字、最多 3 天。
- * 只写事实（工作/游戏/氛围分钟），不写应用名、窗口标题、屏幕文字。
+ * 只写大致在做什么，不报分钟表，也不写应用名、窗口标题、屏幕文字。
  */
 
-function fmtMinutes(min) {
+function workPhrase(min) {
   const m = Math.max(0, Math.round(Number(min) || 0))
-  if (m >= 60) {
-    const h = Math.floor(m / 60)
-    const r = m % 60
-    return r ? `${h} 小时 ${r} 分钟` : `${h} 小时`
-  }
-  return `${m} 分钟`
+  if (!m) return ''
+  if (m >= 120) return '大半天在做事'
+  if (m >= 60) return '有一阵在做事'
+  if (m >= 30) return '在电脑前忙了一会儿'
+  return '在电脑前坐了一会儿'
+}
+
+function gamePhrase(min) {
+  const m = Math.max(0, Math.round(Number(min) || 0))
+  if (!m) return ''
+  if (m >= 120) return '玩了很久游戏'
+  if (m >= 60) return '玩了好一阵游戏'
+  if (m >= 20) return '玩了一会儿游戏'
+  return '碰了会儿游戏'
+}
+
+function ambientPhrase(min) {
+  const m = Math.max(0, Math.round(Number(min) || 0))
+  if (!m) return ''
+  if (m >= 120) return '在旁边待了很久'
+  if (m >= 60) return '在旁边待了一阵'
+  if (m >= 20) return '在旁边待了一会儿'
+  return '在旁边看了一会儿'
 }
 
 /**
@@ -26,9 +43,12 @@ export function presenceDocText(rows, { maxDays = 3, maxChars = 200 } = {}) {
   const lines = ['## 他这几天']
   for (const r of list) {
     const parts = []
-    if (Number(r?.workMin) > 0) parts.push(`工作 ${fmtMinutes(r.workMin)}`)
-    if (Number(r?.eventMin) > 0) parts.push(`游戏 ${fmtMinutes(r.eventMin)}`)
-    if (Number(r?.ambientMin) > 0) parts.push(`氛围 ${fmtMinutes(r.ambientMin)}`)
+    const work = workPhrase(r?.workMin)
+    const game = gamePhrase(r?.eventMin)
+    const ambient = ambientPhrase(r?.ambientMin)
+    if (work) parts.push(work)
+    if (game) parts.push(game)
+    if (ambient) parts.push(ambient)
     if (!parts.length) continue
     const dk = String(r?.dk ?? '')
     lines.push(`- ${dk.length >= 10 ? dk.slice(5) : dk}：${parts.join('；')}`)

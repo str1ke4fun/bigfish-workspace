@@ -41,6 +41,7 @@ import { legacySelfDocPath, ownerDocPath, presenceDocPath, selfDocPath, writeSel
 import { appendEvent } from '../lib/store.js'
 import { DEFAULTS } from '../lib/settings.js'
 import { BELIEF_SHOWN, SELF_DOC_BUDGET } from '../lib/persona.js'
+import { BILI_HINT, CLOSING_HINT, WAKE_HINT } from '../lib/wakeconst.js'
 
 const INDEX = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
 const CLIENT = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
@@ -315,12 +316,23 @@ test('默认预算 1200 → 1800，且三处（配置、常量、界面）一致
   assert.equal(BELIEF_SHOWN, 3)
 })
 
-test('say.js 不再把身份/工具说明塞进 user 消息（否则用户能在对话里看见）', () => {
+test('say.js 只递他的原话；身份、工具、标题和字数工单都不进 user 消息', () => {
   const say = SAY
   assert.ok(!/from '\.\/persona\.js'/.test(say), 'say.js 不该再 import persona')
   assert.ok(!say.includes('TOOL_BRIEF'), '工具说明由 system prompt 提供')
   assert.ok(!say.includes('personaLine'), '身份由 system prompt 提供')
-  assert.ok(say.includes("const content = ['## 这次', '', ...parts]"))
+  for (const old of ['## 这次', '## 他跟你说话了', 'read_image', 'growth_commit', 'lengthBudget']) {
+    assert.equal(say.includes(old), false, `say.js 不该再拼 ${old}`)
+  }
+})
+
+test('叫醒、出门、收工只说处境，不把世界解释成系统信号', () => {
+  assert.equal(WAKE_HINT, '括号里那句是你自己醒了，不是他开口。不用回这句。')
+  assert.equal(BILI_HINT, '括号里那句是你出门了，不是他开口。不用回这句。')
+  assert.equal(CLOSING_HINT, '今天快过去了。想记一笔就记，不想写也行。')
+  for (const text of [WAKE_HINT, BILI_HINT, CLOSING_HINT]) {
+    assert.doesNotMatch(text, /用户|信号|系统叫我|不是问我/)
+  }
 })
 
 test('他这几天：写盘并只在 web 面的 fish:owner 出现', async () => {
@@ -336,7 +348,8 @@ test('他这几天：写盘并只在 web 面的 fish:owner 出现', async () => 
   assert.equal(r.presenceChanged, true)
   const body = fs.readFileSync(presenceDocPath(root), 'utf8')
   assert.match(body, /他这几天/)
-  assert.match(body, /工作 2 小时/)
+  assert.match(body, /在做事/)
+  assert.doesNotMatch(body, /工作 2 小时|120 分钟/)
   resetIdentityCache()
 
   const readFor = (surface) => {

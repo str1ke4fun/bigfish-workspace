@@ -95,6 +95,25 @@ test('每张卡都有 topic（复读防护要用），且是短词', () => {
   }
 })
 
+test('目录里的成长模板不用系统的“我”、后台口吻或双份任务清单', () => {
+  const rich = model({
+    day: 9,
+    beliefCount: 2,
+    beliefs: [{ id: 'b1', text: '旧判断', since: iso(7 * DAY) }],
+    recentSaw: [{ text: '今天看见的事' }],
+    freshVoice: { text: '别人说的那句话' },
+    selfmodAttempts: [{ text: '另一个样子' }],
+    absenceBack: true,
+    absenceGapDays: 4,
+    absenceBackDays: 0,
+  })
+  for (const t of CATALOG) {
+    const text = t.prompt(rich, {})
+    assert.ok(!text.includes('我'), `${t.id} 不该用系统的“我”说话`)
+    assert.doesNotMatch(text, /用户|信号|系统叫我|不是问我|两样都要说|growth_commit|refs/, `${t.id} 仍有后台口吻`)
+  }
+})
+
 // ---------- 4. 两张新卡 ----------
 
 test('heard_share：他说过话、她还没开口 → 出；她已开口 → 不出', () => {

@@ -517,7 +517,9 @@ test('唤醒消息只剩一句触发语，处境走 system prompt 段不进对�
     assert.ok(doc.includes('## 你是谁'))
     assert.ok(doc.includes('撒娇'), 'N1 禁令要在身份文档里')
     assert.ok(doc.includes('好感度'), 'N2 禁令要在身份文档里')
-    assert.ok(doc.includes('growth_commit'), '工具说明要在身份文档里')
+    assert.ok(doc.includes('## 想留下的话'), '留下话的能力要在身份文档里')
+    assert.ok(doc.includes('想改口，也能把新的说法留下'))
+    assert.ok(!doc.includes('growth_commit'), '身份文档不再背工具名或参数表')
   })
 })
 

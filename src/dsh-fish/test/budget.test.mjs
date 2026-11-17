@@ -52,10 +52,10 @@ test('generator：唤醒消息按配置带上预算', () => {
   assert.ok(src.includes('lengthBudget(ctx.budget)'), 'safePrompt 要自己判断有没有预算')
 })
 
-test('say.js：递话时也带预算，但不许把身份拼回去', () => {
+test('say.js：字数工单也不进递话，身份与长度都留在各自该在的段里', () => {
   const src = SRC('../lib/say.js')
-  assert.ok(src.includes("import { lengthBudget } from './budget.js'"), '从 budget.js 取，不要从 persona.js')
-  assert.ok(src.includes('lengthBudget(config?.chat?.replyChars)'))
+  assert.ok(!src.includes("from './budget.js'"), '递话只放他的原话，不再带字数工单')
+  assert.ok(!src.includes('lengthBudget('))
   assert.ok(!src.includes("from './persona.js'"), 'say.js 不许 import persona（会把身份塞回 user 消息）')
   assert.ok(!src.includes('TOOL_BRIEF'))
 })

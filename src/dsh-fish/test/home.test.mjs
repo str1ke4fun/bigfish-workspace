@@ -155,7 +155,7 @@ test('同一路径不会建两个工作区（先查后建）', async () => {
 
 // ---------- 身份文件 ----------
 
-test('身份文件：有禁令、有工具说明，且不泄露任何路径/数字/字段名', async () => {
+test('身份文件：有禁令、有处境声，不摆工具手册，也不泄露任何路径/数字/字段名', async () => {
   const root = await tmpRoot()
   try {
     const seed = await appendEvent({ type: 'seed', text: '你不是助手。你刚开始存在。' }, { day: 1, stage: 1, source: 'system' }, root)
@@ -170,8 +170,18 @@ test('身份文件：有禁令、有工具说明，且不泄露任何路径/数�
     assert.match(md, /## 你是谁/)
     assert.match(md, /## 不能做的/)
     assert.match(md, /撒娇/, '四条黑名单必须在场')
-    assert.match(md, /growth_commit/)
+    assert.match(md, /好感度/, '关系不能数值化的契约仍在')
+    assert.match(md, /没做成的事，跟他说时一句带过/)
+    assert.match(md, /记得不清，可以翻自己过去记下的事/)
+    assert.match(md, /你可以留一句话给他/)
+    assert.match(md, /有时对话里会出现一句括号里的短句/)
+    assert.match(md, /那是你自己醒了，不是他开口/)
     assert.match(md, /我觉得他不该替我安排/, '她说过的话要带进身份文件')
+
+    // 工具能力仍在协议层；身份段不再贴参数表、工具名单或内部记号用法。
+    for (const text of ['growth_commit', 'her_recall', 'her_leave', 'read_image', 'refs', '工具', '违反即失败']) {
+      assert.equal(md.includes(text), false, `身份段不该出现 ${text}`)
+    }
 
     // 硬约束：不能出现状态库路径、不能出现字段名、不能出现数值型 needs
     assert.equal(md.includes(root), false, '不能把状态库绝对路径写进去')

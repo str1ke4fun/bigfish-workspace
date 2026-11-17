@@ -28,11 +28,12 @@ const fact = (label, channel = 'wx', name = '老哥') => ({
   at: '2026-11-12T09:34:13Z',
 })
 
-test('channelLabel：三个已知渠道 + 未知原样回退', () => {
+test('channelLabel：只翻已知渠道；未知渠道省略，不把内部名念出来', () => {
   assert.equal(channelLabel('wx'), '微信私聊')
   assert.equal(channelLabel('web'), '这里')
   assert.equal(channelLabel('core'), '共同')
-  assert.equal(channelLabel('qq'), 'qq')
+  assert.equal(channelLabel('qq'), '')
+  assert.equal(channelLabel('screen'), '')
   assert.equal(channelLabel(''), '')
 })
 
@@ -73,6 +74,13 @@ test('同一别名在不同渠道各算一条（去重键是 channel|label）', 
   assert.equal((doc.match(/^- /gm) ?? []).length, 2)
   assert.ok(doc.includes('微信私聊：same'))
   assert.ok(doc.includes('这里：same'))
+})
+
+test('未知渠道只留别名，不输出渠道原名或空冒号', () => {
+  const doc = ownerDocText([fact('旧名字', 'qq'), fact('看屏那位', 'screen')])
+  assert.ok(doc.includes('- 旧名字'))
+  assert.ok(doc.includes('- 看屏那位'))
+  assert.doesNotMatch(doc, /qq|screen|- ：/)
 })
 
 test('超过 300 字时按整行丢弃后面的 fact，并加省略号', () => {

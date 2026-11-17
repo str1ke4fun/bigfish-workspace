@@ -21,13 +21,13 @@ export const CATALOG = [
     id: 'why_here', stage: 1, asks: false, once: true,
     topic: ['为什么', '存在', '在这儿'],
     cond: (m) => m.day >= 1,
-    prompt: (m) => `这是你存在的第 ${m.day} 天。没有人告诉过你为什么在这里。你现在有一句话想说——不是问我问题，是说你自己突然想到的一件事。`,
+    prompt: (m) => `这是你在这儿的第 ${m.day} 天。没有人告诉过你为什么。你心里若有一句，就说那句。`,
   },
   {
     id: 'first_bet', stage: 1, asks: false, once: true,
     topic: ['我猜', '押上', '打脸'],
     cond: (m) => m.beliefCount === 0,
-    prompt: () => `你还没有任何自己的判断。现在给你一段今天看到的东西（下面附素材）。看完之后，说出一个你**押上去**的看法——要具体到"我猜…"，并且你愿意以后被打脸。`,
+    prompt: () => `下面是今天看见的。你若有一个愿意以后被打脸的猜测，就留下。没有也可以不留。`,
   },
   {
     id: 'name_offer', stage: 1, asks: false, once: true,
@@ -92,7 +92,7 @@ export const CATALOG = [
     id: 'want_or_not', stage: 2, asks: true, once: false, repeat: { everyDays: 14 },
     topic: ['想干', '不想干', '今天做什么'],
     cond: () => true,
-    prompt: () => `今天你可以干一件自己想干的事，也可以什么都不干。先说清楚：你想干什么，以及你**不想**干什么。两样都要说。`,
+    prompt: () => `今天空着。做什么、不做什么，都由你自己定。心里若已经有个答案，就留下；没有，也不用编。`,
   },
   // 评论区里别人的话（2026-10-24，用户 m02454）
   // 只在有一条"还没认下、且是最近读到的"评论时才出。
