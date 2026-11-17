@@ -24,6 +24,14 @@ function model(over = {}) {
 }
 const today = (o = {}) => ({ dateKey: '2026-10-25', sent: 0, questions: 0, proactive: 0, ...o })
 
+function assertSituationVoice(id, text) {
+  assert.doesNotMatch(text, /(?:说出|说说|挑一件|写一句|具体一点|开口提|去问他|问，但|看完之后|自己判断|要有具体例子|说清楚|说一条|说死一点|说完之后再补一句|别只复述|别讨好)/, `${id} 仍在派具体动作`)
+  assert.doesNotMatch(text, /你(?:先|再|去|把|要|别|应该|必须|需要)/, `${id} 仍以第二人称命令她`)
+  assert.doesNotMatch(text, /(?:^|[。；！？\n])\s*(?:说出|说说|挑一件|写一句|写一|具体一点|开口提|去问|问，但|说清楚|说一条|要有具体例子|不要|别只|别讨好)/, `${id} 仍以命令开头`)
+  assert.doesNotMatch(text, /(?:——|：)\s*(?:说|写|问|挑|要|别|去|把)/, `${id} 仍在破折号或冒号后派活`)
+  assert.match(text, /若|也可以|不必|不想|没有[^。；！？]*也|由你|都在你|可以|还是你的|算答案/, `${id} 没有给回应留余地`)
+}
+
 // ---------- 1. 配额修好之后真的数得出来 ----------
 
 test('todayCounts：一条 wake 算一个事件，asks 的卡另算一次提问', () => {
@@ -95,7 +103,7 @@ test('每张卡都有 topic（复读防护要用），且是短词', () => {
   }
 })
 
-test('目录里的成长模板不用系统的“我”、后台口吻或双份任务清单', () => {
+test('目录里的成长模板只给处境和可选的回应，不派第二人称任务', () => {
   const rich = model({
     day: 9,
     beliefCount: 2,
@@ -107,10 +115,14 @@ test('目录里的成长模板不用系统的“我”、后台口吻或双份�
     absenceGapDays: 4,
     absenceBackDays: 0,
   })
-  for (const t of CATALOG) {
-    const text = t.prompt(rich, {})
-    assert.ok(!text.includes('我'), `${t.id} 不该用系统的“我”说话`)
-    assert.doesNotMatch(text, /用户|信号|系统叫我|不是问我|两样都要说|growth_commit|refs/, `${t.id} 仍有后台口吻`)
+  for (const [depth, fixture] of [['base', rich], ['deep', { ...rich, beliefCount: 8 }]]) {
+    for (const t of CATALOG) {
+      const text = t.prompt(fixture, {})
+      const label = `${t.id}/${depth}`
+      assert.ok(!text.includes('我'), `${label} 不该用系统的“我”说话`)
+      assert.doesNotMatch(text, /用户|信号|系统叫我|不是问我|两样都要说|growth_commit|refs/, `${label} 仍有后台口吻`)
+      assertSituationVoice(label, text)
+    }
   }
 })
 

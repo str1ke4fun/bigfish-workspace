@@ -91,7 +91,8 @@ test('absence_probe 的 cond 跟着成长期走，不写死 2 天', () => {
 test('absence_probe 允许问「去哪了」（2026-10-25 用户改）', () => {
   const tpl = findTemplate('absence_probe')
   const p = tpl.prompt(model({ absenceBack: true, absenceGapDays: 4, absenceBackDays: 0 }))
-  assert.match(p, /问他去哪了/, '应该把「问不问」交给她')
+  assert.match(p, /问不问/, '应该把「问不问」交给她')
+  assert.match(p, /都由你/, '问或说都不是命令')
   assert.doesNotMatch(p, /不是问他去哪了/, '旧写法在替她选反应，不许再出现')
   assert.match(p, /4 天/, '要把天数带进去')
 })

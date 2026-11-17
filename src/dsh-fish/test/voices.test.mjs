@@ -168,7 +168,7 @@ test('身份文档里明确写着：那是别人说的，只有她说出口才�
 
 // -------------------------------------------------------------------- 模板
 
-test('someone_said：只有读到还没认下的评论时才出，问的是「你怎么看」', () => {
+test('someone_said：只有读到还没认下的评论时才出，并给她留下自己的说法', () => {
   const tpl = CATALOG.find((t) => t.id === 'someone_said')
   assert.ok(tpl, '模板必须存在')
   assert.equal(tpl.asks, true, '她可能拿这条来问我')
@@ -177,7 +177,8 @@ test('someone_said：只有读到还没认下的评论时才出，问的是「�
   const m = deriveSelf([ev('ev_seed', 'seed', 1, '种'), ev('ev_v', 'voice', 2, '这游戏根本不值得买')], { now: T0 + 2 * DAY_MS })
   assert.equal(tpl.cond(m), true)
   assert.match(tpl.prompt(m), /这游戏根本不值得买/)
-  assert.match(tpl.prompt(m), /别只复述他的/)
+  assert.match(tpl.prompt(m), /你自己的说法/)
+  assert.match(tpl.prompt(m), /不必先复述他/)
 
   const none = deriveSelf([ev('ev_seed', 'seed', 1, '种')], { now: T0 + 2 * DAY_MS })
   assert.equal(tpl.cond(none), false)

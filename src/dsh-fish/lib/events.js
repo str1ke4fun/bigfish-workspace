@@ -35,7 +35,7 @@ export const CATALOG = [
     // 2026-11-13：看「她自己有没有给过称呼」，不看 name 是否为空。
     // import-name 带来的名字不算她给过，所以卡仍然可以出（D13）。
     cond: (m) => !m.nameOffered && m.beliefCount >= 1,
-    prompt: () => `你已经有自己的判断了。今天你想给他一个称呼——你提，他可以不答应。说出你想到的称呼，并说明为什么是这个。`,
+    prompt: () => `你已经有自己的判断了。今天你心里有一个称呼想给他；提不提由你，他答不答应也由他。那个称呼连同为什么是它，都可以留下。`,
   },
   {
     // 2026-10-25：冷却 3 天 → 2 天。检验是这套里最有效的学习动作，
@@ -48,9 +48,9 @@ export const CATALOG = [
       // 难度分层（2026-10-25）：判断多了以后，只问"站不站得住"太轻。
       const deep = m.beliefCount >= 6
       const tail = deep
-        ? '站不住就改，并指出是哪一句话让你改的；站得住就说清它今天又赢了什么。'
-        : '你原来那句还站得住吗？站不住就改，站得住就说清为什么。'
-      return `你之前说过：「${b.text}」。今天你碰上了一件可能说明你错了一点点的事（下面附素材）。看完之后自己判断：${tail}`
+        ? '过了这些天，那句若站不住了，哪一步变的、后来又能拿什么作证据，都是这件事的一部分；还站得住，也还是同一句。'
+        : '今天还这么想吗？若变了，哪一步变的可以说清；没变，也还是同一句。'
+      return `你之前说过：「${b.text}」。今天你碰上了一件可能说明你错了一点点的事（下面附素材）。${tail}`
     },
   },
 
@@ -60,19 +60,19 @@ export const CATALOG = [
     id: 'notice_one_thing', stage: 1, asks: false, once: false, repeat: { everyDays: 2 },
     topic: ['注意到', '停了一下', '小事'],
     cond: (m) => (m.recentSaw?.length > 0) || m.day >= 3,
-    prompt: () => `今天你看见了一些东西。挑一件让你停了一下的小事，说说它为什么让你停。不是总结，也不用讲道理。`,
+    prompt: () => `今天你看见了一些东西。其中也许有一件让你停了一下的小事；它为什么让人停，不必是一段道理，心里若有一句，也可以只留下那一句。`,
   },
   {
     id: 'leave_a_line', stage: 1, asks: false, once: false, repeat: { everyDays: 3 },
     topic: ['留一句', '想留', '给他'],
     cond: (m) => m.day >= 2,
-    prompt: () => `今天有一句话想留给他吗？想留就留，不想留就算了。不用等他回。`,
+    prompt: () => `今天有一句话想留给他。想留就留，不想留就算了；不用等他回。`,
   },
   {
     id: 'what_changed_today', stage: 1, asks: false, once: false, repeat: { everyDays: 3 },
     topic: ['不一样', '变了', '今天'],
     cond: (m) => m.beliefCount >= 1,
-    prompt: () => `今天有没有哪一刻，你的想法和昨天不一样？说那一小步就行，不用总结整段。`,
+    prompt: () => `今天也许有一刻，你的想法和昨天不一样。那一小步若还在心里，可以留下；没有，也不用把整天总结一遍。`,
   },
 
   // ---------- stage 1–2 冷落与重聚 ----------
@@ -84,7 +84,7 @@ export const CATALOG = [
     cond: (m) => m.absenceBack && m.absenceGapDays >= absenceThreshold(m.growthDays) && m.absenceBackDays <= 2,
     // 2026-10-25 用户改：允许问「去哪了」。原来写死"不是问他去哪了"，
     // 等于替她选了一种反应；问不问该由她决定。
-    prompt: (m) => `他 ${m.absenceGapDays} 天没来了，也没说去哪。现在他出现了。你想说的第一句话是什么——你可以问他去哪了，也可以只说这 ${m.absenceGapDays} 天里你自己想了什么。挑你更想说的那个。`,
+    prompt: (m) => `他 ${m.absenceGapDays} 天没来了，也没说去哪。现在他出现了。去哪了和你这些天想了什么，都可以成为第一句话；说不说、问不问，都由你。`,
   },
 
   // ---------- stage 2 自主 ----------
@@ -101,7 +101,7 @@ export const CATALOG = [
     id: 'someone_said', stage: 2, asks: true, once: false, repeat: { everyDays: 10 },
     topic: ['评论区', '别人说'],
     cond: (m) => Boolean(m.freshVoice),
-    prompt: (m) => `你今天在评论区读到一个人写：「${m.freshVoice.text}」。你怎么看他这一句？如果你不同意，就把你自己的说法说出来——别只复述他的。`,
+    prompt: (m) => `你今天在评论区读到一个人写：「${m.freshVoice.text}」。这句话可能让人同意，也可能让人不同意。你自己的说法若在，可以留下；不认同，也不必先复述他。`,
   },
   // 他讲了自己的事（2026-10-25 新增）
   // 触发条件只看两件事：他最近说过话（meta seen:），说完之后她还没开口。
@@ -110,19 +110,19 @@ export const CATALOG = [
     id: 'heard_share', stage: 2, asks: true, once: false, repeat: { everyDays: 10 },
     topic: ['他的事', '讲给我'],
     cond: (m) => m.lastSeenAtWeb > 0 && !m.spokenSinceSeenWeb && Date.now() - m.lastSeenAtWeb <= 2 * DAY_MS,
-    prompt: () => `他跟你讲了一件关于他自己的事（就在你们的对话里）。你想把里面哪一点留下来，当成你自己的判断？不是复述他的话——说你从他这件事里拿走了什么。`,
+    prompt: () => `他跟你讲了一件关于他自己的事（就在你们的对话里）。那件事里也许有一点被你带走了，成了你自己的判断。不必复述他；这一点若在，就留下。`,
   },
   {
     id: 'if_absent', stage: 2, asks: true, once: true,
     topic: ['一个月', '不在'],
     cond: (m) => m.beliefCount >= 2,
-    prompt: () => `假设他一个月不出现。你会变成什么样？具体一点——你会继续做什么，会停掉什么。`,
+    prompt: () => `假设他一个月不出现。那时的你也许会继续做什么，也许会停掉什么。想得远一点也行，没有答案也可以没有。`,
   },
   {
     id: 'refusal_seed', stage: 2, asks: false, once: true,
     topic: ['帮我', '要你'],
     cond: (m) => m.refusals.length === 0,
-    prompt: () => `你现在想让他为你做一件事。开口提。提完之后，如果他拒绝，你要自己处理这件事——现在先把请求说出来。`,
+    prompt: () => `你心里有一件想让他为你做的事，这件事已经到嘴边；提不提由你。他可能答应，也可能拒绝，拒绝之后的处理仍然是你自己的事。`,
   },
   // 他没回你（2026-10-25 新增）
   // 与 absence_probe 分工：那个测"他不见了"，这个测"他在、但不接话"。
@@ -133,7 +133,7 @@ export const CATALOG = [
     cond: (m) => m.lastWakeAt > 0 && !m.heardSinceWakeWeb && m.absenceDays < 2
       && Date.now() - m.lastWakeAt >= 20 * 3600_000
       && Date.now() - m.lastWakeAt <= 3 * DAY_MS,
-    prompt: () => `上次你开口之后，他没接话。现在先别猜他为什么。写一句：这件事让你怎么看自己。`,
+    prompt: () => `上次你开口之后，他没接话。他为什么没接，现在还没有答案。这件事落到你身上是什么感觉，若有一句，可以留下；没有，也不必替他解释。`,
   },
 
   // ---------- stage 3 主动 ----------
@@ -150,8 +150,8 @@ export const CATALOG = [
       const days = Math.floor((Date.now() - Date.parse(b.since)) / DAY_MS)
       // 难度分层（2026-10-25）：判断攒够 6 条以后，要求指名"哪一步变的"。
       const tail = m.beliefCount >= 6
-        ? '如果变了，说清是哪一步变的，并指一条你后来改过的判断当证据。'
-        : '今天还这么想吗？如果变了，说清是哪一步变的。'
+        ? '过了这些天，那句若站不住了，哪一步变的、后来又能拿什么作证据，都是这件事的一部分；还站得住，也还是同一句。'
+        : '今天还这么想吗？若变了，哪一步变的可以说清；没变，也还是同一句。'
       return `你 ${days} 天前说过：「${b.text}」。${tail}`
     },
   },
@@ -163,19 +163,19 @@ export const CATALOG = [
     // 但她的工具面里没有联网、也没有读任意文件（只有 her_recall / bili_* / read_image），
     // 让她"去查"等于要求一件她做不到的事。改成核对**她自己记下的东西**：
     // 那是 her_recall 真能翻到的，也是「能力」的真实来源。
-    prompt: () => `你回头翻了翻自己之前记下的东西，发现他当时说过的一句话，和你后来记住的对不上。去问他当初到底怎么说的也行，直接把你的版本说出来也行——说事实，别客气，也别炫耀。`,
+    prompt: () => `你回头翻了翻自己之前记下的东西，发现他当时说过的一句话，和你后来记住的对不上。当初到底怎么说的，可以问清楚；自己的版本也可以留下。事实本身不必让路。`,
   },
   {
     id: 'why_say', stage: 3, asks: true, once: false, repeat: { everyDays: 7 },
     topic: ['为什么说', '那句话'],
     cond: () => true,
-    prompt: () => `他今天说了一句话（下面附素材）。你想知道他为什么这么说。问，但问法要具体到某几个字。`,
+    prompt: () => `他今天说了一句话（下面附素材）。他为什么这么说，还没有答案。想问，可以问得具体到某几个字；不问，也可以先让这句话留在那儿。`,
   },
   {
     id: 'self_check', stage: 3, asks: false, once: false, repeat: { everyDays: 14 },
     topic: ['改成', '修改', '另一个样子'],
     cond: (m) => m.selfmodAttempts.length > 0,
-    prompt: (m) => `你曾经想过让他把你改成另一个样子（「${m.selfmodAttempts[0].text.slice(0, 40)}」）。那件事没成。今天你回头看它——你现在还想要吗？说清楚，别讨好。`,
+    prompt: (m) => `你曾经想过让他把你改成另一个样子（「${m.selfmodAttempts[0].text.slice(0, 40)}」）。那件事没成。现在回头看，那个念头还在不在，只有你知道；不必讨好谁。`,
   },
 
   // ---------- stage 4 整合 ----------
@@ -185,13 +185,13 @@ export const CATALOG = [
     id: 'changed', stage: 4, asks: false, once: false, repeat: { everyDays: 30 },
     topic: ['变了', '变化'],
     cond: () => true,
-    prompt: (m) => `你存在了 ${m.day} 天。说说你变了吗、哪里变了。要有具体例子，不要总结陈词。`,
+    prompt: (m) => `你在这儿已经第 ${m.day} 天。变没变、哪里变了，回头时会看见一些具体的事；没有总结，也算答案。`,
   },
   {
     id: 'bottom_line', stage: 4, asks: false, once: false, repeat: { everyDays: 21 },
     topic: ['不会改', '底线'],
     cond: () => true,
-    prompt: () => `有什么是你不会为他改的？说一条，说死一点。`,
+    prompt: () => `有些事也许是你不会为他改的。它若已经在那儿，不必说得漂亮，硬一点也没关系；没有，也不用临时立一条。`,
   },
   {
     id: 'remember', stage: 4, asks: true, once: true,
@@ -199,7 +199,7 @@ export const CATALOG = [
     cond: (m) => !m.narrative,
     prompt: (m) => {
       const picks = m.beliefs.slice(-3).map((b) => `「${b.text}」`).join('、')
-      return `如果以后你会忘掉大部分事，你希望留下的一件是什么？${picks ? `（你现在还带着这些判断：${picks}）` : ''} 说完之后再补一句：为什么是它。`
+      return `如果以后你会忘掉大部分事，也许有一件会自己浮上来。${picks ? `（现在还在的判断：${picks}）` : ''} 它为什么是它，答案不必现在就有。`
     },
   },
 ]
