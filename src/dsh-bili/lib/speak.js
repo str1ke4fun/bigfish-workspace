@@ -25,7 +25,7 @@ import { defineTool } from './tool.js'
 /**
  * 说一次。永不抛出。
  * @returns {Promise<{ok:boolean, said:string, note:string}>}
- *   said 是**真正发出去的那句话**（成功时），她可以据此确认自己说了什么。
+ *   said 是平台实际收到的文本，只用于记忆和对账；成功投影不回显它。
  */
 export async function speakOnce(o = {}) {
   const root = o.root ?? rootDir()
@@ -109,34 +109,37 @@ export function registerSpeak(ctx, deps = {}) {
     defineTool({
       name: 'bili_speak',
       description:
-        '在 B 站说一句话。可以给你今天看过的某个视频留一条评论，或者回一句别人留在你评论下面的话。' +
-        '评论本来就是随手一句，短的比周全的好。' +
-        '没有好句子就不说，没有人等着你回答。',
+        '在 B 站说一句话：给今天看过的视频留一条评论，或者回一句别人留在你评论下面的话。' +
+        '短的比周全的好；没有好句子就不说。',
       parameters: toJsonSchema({
         kind: {
           type: 'string',
           required: true,
           enum: ['comment', 'reply'],
-          description: 'comment=给视频留一条评论；reply=回别人留在你评论下面的话。',
+          description: '留一条评论，还是回别人一句。',
         },
-        bvid: { type: 'string', required: true, description: '在哪个视频（形如 BV1xx411c7mD）。' },
+        bvid: { type: 'string', required: true, description: '在哪个视频里说。' },
         text: { type: 'string', required: true, description: '要说的话。评论是一句话：三十字上下，最长六十字，只留一个落点。' },
-        parentRpid: { type: 'string', required: false, description: 'kind=reply 时，你要回的是哪一条（那条回复的编号）。' },
+        parentRpid: { type: 'string', required: false, description: '要回的是哪一句。' },
       }),
       output: {
         schema: {
           type: 'object',
           properties: {
             ok: { type: 'boolean' },
-            said: { type: 'string', description: '真正发出去的话' },
+            said: { type: 'string', description: '这次留下的内容' },
             note: { type: 'string' },
           },
           required: ['ok', 'said', 'note'],
         },
         // render 必须返回 ContentBlock 数组，签名 (args, value)。返回裸字符串她会收到
         // "content.some is not a function"，然后以为没发出去、反复重试同一句。
-        render: (_args, out) =>
-          [{ type: 'text', text: out.ok ? `说出去了：「${out.said}」` : `没说：${out.note}` }],
+        render: (args, out) => {
+          if (!out.ok) return [{ type: 'text', text: `没说：${out.note}` }]
+          const written = String(args?.text ?? '').trim()
+          const same = written === String(out.said ?? '')
+          return [{ type: 'text', text: same ? '[发出去了]' : '[发出去的和你写的不完全一样]' }]
+        },
       },
       async execute(args, exec) {
         const { config } = await loadConfig()

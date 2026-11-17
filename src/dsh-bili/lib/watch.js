@@ -20,6 +20,24 @@ export function watchedToday(events, dk) {
   return (events ?? []).filter((e) => e?.type === 'meta' && String(e.text ?? '').startsWith(key)).length
 }
 
+/** 画面结果 → 她读到的那段话。路径只放在最后一行记号里。 */
+export function formatWatchSuccess({ title = '', body = '', path = '', recognized = false } = {}) {
+  const name = String(title ?? '').trim()
+  const words = String(body ?? '').trim()
+  const lines = []
+  if (recognized) {
+    lines.push(name
+      ? `[画面] 《${name}》上认出来的字（可能有错字、漏字）：`
+      : '[画面] 认出来的字（可能有错字、漏字）：')
+    lines.push(words || '[只看到画面，没读出字]')
+  } else {
+    lines.push(name ? `[画面] 《${name}》的画面在手边。` : '[画面] 画面在手边。')
+  }
+  const marker = String(path ?? '').trim()
+  if (marker) lines.push(`〔${marker}〕`)
+  return lines.join('\n')
+}
+
 export function registerWatch(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
 
@@ -27,15 +45,13 @@ export function registerWatch(ctx, deps = {}) {
     defineTool({
       name: 'bili_watch',
       description:
-        '看一条视频画面上的字。会从整条视频里取几帧，把字幕、标题、画面里写的字认出来，按时间给你读出来；' +
-        '认字是机器识别的，会有错字漏字。人物、动作、颜色这些它给不了。' +
-        '取帧要花十几秒，所以别每条都看，挑你真的想知道"画面上写了什么"的那条。不用它也可以。',
+        '看看一条视频画面上的字。认出来的内容会有错字、漏字；人物、动作、颜色还是看不见。',
       // 用完整 JSON Schema（不是简写 DSL）：工具参数必须是根级 type:object，
       // 否则 provider 直接拒 "schema must be a JSON Schema of 'type: object'"。
       parameters: {
         type: 'object',
         properties: {
-          bvid: { type: 'string', description: '哪条视频（形如 BV1xx411c7mD）。' },
+          bvid: { type: 'string', description: '要看哪条视频。' },
         },
         required: ['bvid'],
         additionalProperties: false,
@@ -45,7 +61,7 @@ export function registerWatch(ctx, deps = {}) {
           type: 'object',
           properties: {
             ok: { type: 'boolean' },
-            path: { type: 'string', description: '拼好的图在哪（用 read_image 读它）' },
+            path: { type: 'string', description: '画面在哪。' },
             text: { type: 'string' },
             note: { type: 'string' },
           },
@@ -115,23 +131,14 @@ export function registerWatch(ctx, deps = {}) {
           return {
             ok: true,
             path: posix,
-            text: [
-              `《${r.title || bvid}》，从 ${o.frames} 帧里认出的字（机器识别，会有错字漏字，当线索，别当原文）：`,
-              body || '（这几帧里没认出文字。可能是画面里本来没字，也可能是字太花、太小。）',
-              o.total > o.shown ? `（还有 ${o.total - o.shown} 条没列出。）` : '',
-              '画面本身——人物、动作、颜色——这条路读不到。',
-            ].filter(Boolean).join('\n'),
+            text: formatWatchSuccess({ title: r.title, body, path: posix, recognized: true }),
             note: '',
           }
         }
         return {
           ok: true,
           path: posix,
-          text: [
-            `《${r.title || bvid}》的画面，我取了几张拼成一张图放在这儿：`,
-            posix,
-            '用 read_image 读它就能看见。要在回复里贴这张图，路径就照抄上面这一行——用正斜杠。',
-          ].join('\n'),
+          text: formatWatchSuccess({ title: r.title, path: posix, recognized: false }),
           note: '',
         }
       },

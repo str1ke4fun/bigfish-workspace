@@ -150,9 +150,8 @@ export function registerLook(ctx, deps = {}) {
     defineTool({
       name: 'bili_look',
       description:
-        '去看一眼 B 站：首页在推什么、搜一个词、或者看某条视频之后平台又接着推什么。' +
-        '只读，不会留下痕迹。给的是标题、简介、标签、热评、弹幕——没有视频画面。' +
-        '不用它也可以。',
+        '翻一翻 B 站：首页推到你面前的、自己搜一个词，或者从一条视频接着往下看。' +
+        '只读，不会留下痕迹；看得见标题、简介、标签、热评、弹幕，看不见画面。',
       // 注意：必须 toJsonSchema 包一层。简写 DSL 直接发出去会被 provider 拒：
       // "schema must be a JSON Schema of 'type: object', got 'type: null'"
       parameters: toJsonSchema({
@@ -160,10 +159,10 @@ export function registerLook(ctx, deps = {}) {
           type: 'string',
           required: true,
           enum: ['home', 'search', 'related'],
-          description: 'home=首页推给你的；search=你自己搜（要带 keyword）；related=接着某条往下看（要带 bvid）。',
+          description: '想翻哪一种：首页、自己搜一个词，或者接着一条往下看。',
         },
-        keyword: { type: 'string', required: false, description: 'what=search 时搜什么。' },
-        bvid: { type: 'string', required: false, description: 'what=related 时从哪条接着看（形如 BV1xx411c7mD）。' },
+        keyword: { type: 'string', required: false, description: '搜什么。' },
+        bvid: { type: 'string', required: false, description: '从哪条接着往下看。' },
       }),
       output: {
         schema: {

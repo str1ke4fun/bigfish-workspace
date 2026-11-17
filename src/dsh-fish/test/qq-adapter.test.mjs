@@ -17,8 +17,10 @@ test('qq 发送工具去掉 message_id/chatId', () => {
 test('qq_group_history 保留正文，不只是条数', () => {
   const raw = JSON.stringify({ messages: [{ nickname: '阿明', text: '晚上来吗' }, { nickname: '小李', text: '来' }] })
   const blocks = projectQqTool('qq_group_history', raw, [])
+  assert.match(blocks[0].text, /^\[翻到群里刚才的话\]/)
   assert.match(blocks[0].text, /阿明：晚上来吗/)
   assert.match(blocks[0].text, /小李：来/)
+  assert.equal(blocks[0].text.includes('2 条'), false)
 })
 
 test('qq_napcat_api 未知 action 不返回原始 JSON', () => {
@@ -104,7 +106,7 @@ test('qq_group_history 支持 vendor 的数组返回', () => {
     { message_id: '2', user_id: '43', nickname: '小李', text: '在' },
   ]
   const blocks = projectQqTool('qq_group_history', value, [])
-  assert.match(blocks[0].text, /^\[群历史\] 最近 2 条：/)
+  assert.equal(blocks[0].text, '[翻到群里刚才的话]\n阿明：在吗\n小李：在')
   assert.match(blocks[0].text, /阿明：在吗/)
   assert.match(blocks[0].text, /小李：在/)
   assert.equal(blocks[0].text.includes('message_id'), false)
@@ -117,15 +119,31 @@ test('qq_group_history 解析失败保留原文并截断', () => {
   assert.match(blocks[0].text, /已截断/)
 })
 
+test('qq_group_history 失败只说没翻到，不带机器标题和内部编号', () => {
+  const content = [{ type: 'text', text: 'Error: 权限不足 message_id=7 chatId=group_1' }]
+  const blocks = projectQqTool('qq_group_history', undefined, content, { isError: true })
+  assert.equal(blocks[0].text, '[没翻到群里刚才的话：权限不足]')
+  assert.equal(blocks[0].text.includes('群历史'), false)
+  assert.equal(blocks[0].text.includes('message_id'), false)
+  assert.equal(blocks[0].text.includes('chatId'), false)
+})
+
 test('qq_napcat_api 群成员只给名字和角色', () => {
   const value = [
     { user_id: '10001', nickname: '阿明', card: '明明', role: 'admin' },
     { user_id: '10002', nickname: '小李', role: 'member' },
   ]
   const blocks = projectQqTool('qq_napcat_api', value, [], { args: { action: 'get_group_member_list' } })
-  assert.match(blocks[0].text, /^\[群成员\] 2 人：/)
+  assert.equal(blocks[0].text, '[群里有这些人]\n明明（管理员）\n小李（群员）')
   assert.match(blocks[0].text, /明明（管理员）/)
   assert.match(blocks[0].text, /小李（群员）/)
+  assert.equal(blocks[0].text.includes('10001'), false)
+})
+
+test('qq_napcat_api 单个群成员只报是谁和角色', () => {
+  const value = { user_id: '10001', nickname: '阿明', card: '明明', role: 'admin' }
+  const blocks = projectQqTool('qq_napcat_api', value, [], { args: { action: 'get_group_member_info' } })
+  assert.equal(blocks[0].text, '[群里有这个人] 明明（管理员）')
   assert.equal(blocks[0].text.includes('10001'), false)
 })
 

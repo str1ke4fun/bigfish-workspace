@@ -203,22 +203,12 @@ export async function absorb(client, v, cfg) {
 export function renderItem(p, i) {
   const v = p.video
   const lines = []
-  const dur = v.duration
-    ? `${Math.floor(Number(v.duration) / 60)}分${String(Number(v.duration) % 60).padStart(2, '0')}秒`
-    : ''
-  const meta = [
-    dur,
-    v.up ? `UP：${v.up}` : '',
-    v.view ? `${fmtCount(v.view)}播放` : '',
-    v.like ? `${fmtCount(v.like)}赞` : '',
-    p.pubdate ? `发布于 ${String(p.pubdate).slice(0, 10)}` : '',
-  ].filter(Boolean)
-  lines.push(`〔${i + 1}〕${v.bvid}  ${v.title}`)
-  if (meta.length) lines.push(`     ${meta.join(' · ')}`)
-  if (p.tags.length) lines.push(`     标签：${p.tags.join(' / ')}`)
+  lines.push(`〔${i + 1}〕《${v.title || '一条视频'}》`)
+  if (v.up) lines.push(`     传的人：${v.up}`)
+  if (p.tags?.length) lines.push(`     标签：${p.tags.join(' / ')}`)
   if (p.desc) lines.push(`     简介：${p.desc}`)
-  for (const c of p.comments) lines.push(`     [热评 ${c.like}] ${c.text}`)
-  if (p.danmaku.length) {
+  for (const c of p.comments ?? []) lines.push(`     [热评] ${c.text}`)
+  if (p.danmaku?.length) {
     const parts = p.danmaku.slice(0, 8).map((d) => {
       const m = Math.floor(d.t / 60)
       const s = String(Math.floor(d.t % 60)).padStart(2, '0')
@@ -293,13 +283,19 @@ export async function recordSaw(root, packs, model, { max = 6, memory = null } =
 export function renderMaterial(packs) {
   if (!packs.length) return ''
   const body = packs.map((p, i) => renderItem(p, i)).join('\n\n')
-  const head = `${packs.length} 条。平台按它的算法推的，没有经过你的同意。`
+  const head = '[翻到几条]\n这些是平台推到你面前的，没有先问过你。'
   const text = debrief(body, 'B站')
+  const markers = packs
+    .map((p, i) => p?.video?.bvid ? `〔${i + 1} ${p.video.bvid}〕` : '')
+    .filter(Boolean)
+    .join('')
+  const suffix = markers ? `\n${markers}` : ''
+  const room = Math.max(0, MAX_MATERIAL_CHARS - suffix.length)
   let out = `${head}\n\n${text}`
-  if (out.length > MAX_MATERIAL_CHARS) {
-    out = out.slice(0, MAX_MATERIAL_CHARS) + '\n\n（后面的内容太长，没加载完。）'
+  if (out.length > room) {
+    out = out.slice(0, Math.max(0, room - 20)) + '\n\n（后面的内容太长，没加载完。）'
   }
-  return out
+  return out + suffix
 }
 
 /** 已经看过的 bvid（来自 meta `looked:<bvid>`；只增不减） */

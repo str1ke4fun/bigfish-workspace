@@ -170,7 +170,7 @@ function messageText(message) {
 }
 
 function projectHistory(raw, content, isError) {
-  if (isError) return textBlock(`[群历史] 没拿到：${sanitizeReason(contentText(content) || raw)}`)
+  if (isError) return textBlock(`[没翻到群里刚才的话：${sanitizeReason(contentText(content) || raw)}]`)
 
   let parsed
   try {
@@ -186,7 +186,7 @@ function projectHistory(raw, content, isError) {
     : parsed && typeof parsed === 'object' && Array.isArray(parsed.messages)
       ? parsed.messages
       : null
-  if (!messages) return textBlock('[群历史] 最近 0 条：\n（没有可读的消息）')
+  if (!messages) return textBlock('[翻到群里刚才的话]\n（没有能读的话）')
 
   const lines = []
   for (const message of messages) {
@@ -194,8 +194,8 @@ function projectHistory(raw, content, isError) {
     const text = messageText(message)
     lines.push(`${nicknameOf(message)}：${text || '（非文字消息）'}`)
   }
-  if (lines.length === 0) return textBlock('[群历史] 最近 0 条：\n（没有可读的消息）')
-  return textBlock(`[群历史] 最近 ${lines.length} 条：\n${lines.join('\n')}`)
+  if (lines.length === 0) return textBlock('[翻到群里刚才的话]\n（没有能读的话）')
+  return textBlock(`[翻到群里刚才的话]\n${lines.join('\n')}`)
 }
 
 function actionOf(value, args) {
@@ -284,7 +284,7 @@ function projectNapcat(value, raw, content, args, isError) {
         const role = roleLabel(member?.role)
         return role ? `${name}（${role}）` : name
       })
-      return textBlock(`[群成员] ${lines.length} 人：\n${lines.join('\n')}`)
+      return textBlock(`[群里有这些人]\n${lines.join('\n')}`)
     }
   }
 
@@ -293,7 +293,7 @@ function projectNapcat(value, raw, content, args, isError) {
       const name = memberName(data)
       if (name !== '某成员') {
         const role = roleLabel(data.role)
-        return textBlock(`[群成员] ${name}${role ? `（${role}）` : ''}`)
+        return textBlock(`[群里有这个人] ${name}${role ? `（${role}）` : ''}`)
       }
     }
   }

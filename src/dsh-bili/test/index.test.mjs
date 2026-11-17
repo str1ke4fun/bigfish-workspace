@@ -11,7 +11,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { apply } from '../lib/index.js'
+import { renderMaterial } from '../lib/browse.js'
+import * as watchModule from '../lib/watch.js'
 import { fakeCore, fakeHost, fakeSessions, fakeWorkspaces } from './helpers.mjs'
+
+const BV_ONE = 'BV1xx411c7mD'
+const BV_TWO = 'BV1yy411c7mE'
 
 async function boot({ config = { browse: { enabled: true }, comment: { enabled: false } }, events = [] } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'bili-index-'))
@@ -30,6 +35,10 @@ async function boot({ config = { browse: { enabled: true }, comment: { enabled: 
     await new Promise((r) => setTimeout(r, 10))
   }
   return { root, core, calls, ctx, handle }
+}
+
+function registered(ctx, name) {
+  return ctx.registered.find((tool) => tool.name === name)
 }
 
 test('注册 3 个 B 站工具，并只为自己担保贡献策略表', async () => {
@@ -63,11 +72,158 @@ test('提示段只挂 bili 面，内容随配置与最近刷到的变化', async
     assert.equal(sec.surface, 'bili')
     const text = sec.render()
     assert.match(text, /## 上网/)
-    assert.match(text, /bili_look/)
+    assert.match(text, /在外面可以自己翻/)
     assert.match(text, /## 我最近刷到的/)
     assert.match(text, /看到一条测试视频/)
     assert.doesNotMatch(text, /## 在网上说话/, '评论关着时不该出现说话段')
   } finally { handle.dispose() }
+})
+
+test('Bili 面不再自我介绍成 AI，也不教参数', async () => {
+  const { calls, handle } = await boot({
+    config: { browse: { enabled: true }, comment: { enabled: true } },
+    events: [{ type: 'saw', ts: '2026-11-12T10:00:00Z', text: '看到一条测试视频' }],
+  })
+  try {
+    const text = calls.sections[0].render()
+    assert.doesNotMatch(text, /你是\s*ai/i)
+    assert.doesNotMatch(text, /bili_look|bili_speak|her_recall|what=|keyword=|bvid=|kind=|parentRpid|growth_commit|subagent|shell/)
+    assert.match(text, /画面要是在玩生成图、假人说话的梗，可以眨一下/)
+  } finally { handle.dispose() }
+})
+
+test('Bili 工具说明只留能力和边界，参数结构不变', async () => {
+  const { ctx, handle } = await boot()
+  try {
+    const look = registered(ctx, 'bili_look')
+    const watch = registered(ctx, 'bili_watch')
+    const speak = registered(ctx, 'bili_speak')
+
+    for (const text of [
+      look.description,
+      watch.description,
+      speak.description,
+      look.output.schema.properties.text.description,
+      watch.output.schema.properties.path.description,
+      ...Object.values(look.parameters.properties).map((x) => x.description),
+      ...Object.values(watch.parameters.properties).map((x) => x.description),
+      ...Object.values(speak.parameters.properties).map((x) => x.description),
+    ]) {
+      assert.doesNotMatch(text, /what=|kind=|bvid=|parentRpid|read_image|拼好的图|形如|帧数|取帧|工具手册|参数教程/)
+    }
+
+    assert.deepEqual(Object.keys(look.parameters.properties), ['what', 'keyword', 'bvid'])
+    assert.deepEqual(look.parameters.required, ['what'])
+    assert.deepEqual(look.parameters.properties.what.enum, ['home', 'search', 'related'])
+    assert.deepEqual(Object.keys(watch.parameters.properties), ['bvid'])
+    assert.deepEqual(watch.parameters.required, ['bvid'])
+    assert.deepEqual(Object.keys(speak.parameters.properties), ['kind', 'bvid', 'text', 'parentRpid'])
+    assert.deepEqual(speak.parameters.required, ['kind', 'bvid', 'text'])
+    assert.deepEqual(speak.parameters.properties.kind.enum, ['comment', 'reply'])
+  } finally { handle.dispose() }
+})
+
+test('bili_speak 成功只报发出去了，不回显原话', async () => {
+  const { ctx, handle } = await boot()
+  try {
+    const speak = registered(ctx, 'bili_speak')
+    const written = '这条视频里的钟声挺有意思'
+    const blocks = speak.output.render({ text: written }, { ok: true, said: written, note: '说出去了。' })
+    assert.equal(blocks[0].text, '[发出去了]')
+    assert.equal(blocks[0].text.includes(written), false)
+  } finally { handle.dispose() }
+})
+
+test('bili_speak 文本不一致只说不一样，不复述实际文本', async () => {
+  const { ctx, handle } = await boot()
+  try {
+    const speak = registered(ctx, 'bili_speak')
+    const written = '这条视频里的钟声挺有意思'
+    const actual = '@测试 这条视频里的钟声挺有意思'
+    const blocks = speak.output.render({ text: written }, { ok: true, said: actual, note: '说出去了。' })
+    assert.equal(blocks[0].text, '[发出去的和你写的不完全一样]')
+    assert.equal(blocks[0].text.includes(written), false)
+    assert.equal(blocks[0].text.includes(actual), false)
+  } finally { handle.dispose() }
+})
+
+test('bili_look 保留素材，BV 只放在末行记号', () => {
+  const packs = [
+    {
+      video: { bvid: BV_ONE, title: '夜里修好的钟', up: '阿明', duration: 183, view: 120000 },
+      desc: '一双手把停了很多年的钟重新拨动。',
+      pubdate: 1760000000,
+      tags: ['手作', '修复'],
+      comments: [{ text: '最后那一下真好听。', like: 88 }],
+      danmaku: [{ t: 65, text: '听见了' }],
+    },
+    {
+      video: { bvid: BV_TWO, title: '雨天煮面', up: '小李', duration: 420, view: 3000 },
+      desc: '窗外下雨，锅里一直冒热气。',
+      pubdate: 1760100000,
+      tags: ['做饭'],
+      comments: [{ text: '看饿了。', like: 12 }],
+      danmaku: [{ t: 30, text: '热乎' }],
+    },
+  ]
+  const text = renderMaterial(packs)
+  const lines = text.trimEnd().split('\n')
+  assert.equal(lines.at(-1), `〔1 ${BV_ONE}〕〔2 ${BV_TWO}〕`)
+  const body = lines.slice(0, -1).join('\n')
+  assert.match(body, /夜里修好的钟/)
+  assert.match(body, /传的人：阿明/)
+  assert.match(body, /一双手把停了很多年的钟重新拨动/)
+  assert.match(body, /最后那一下真好听/)
+  assert.match(body, /听见了/)
+  assert.doesNotMatch(body, /https?:\/\//)
+  assert.doesNotMatch(body, /播放/)
+  assert.equal(body.includes('12.0万'), false)
+  assert.equal(body.includes('[热评 88]'), false)
+  assert.equal(body.includes(BV_ONE), false)
+  assert.equal(body.includes(BV_TWO), false)
+})
+
+test('bili_watch 保留画面文字，不报帧数、URL、播放量或 BV 正文', () => {
+  const text = watchModule.formatWatchSuccess({
+    title: '夜里修好的钟',
+    body: '先把门关上\n十二点以后再拨',
+    path: '/tmp/bili-sheet.png',
+    recognized: true,
+  })
+  const lines = text.trimEnd().split('\n')
+  assert.equal(lines.at(-1), '〔/tmp/bili-sheet.png〕')
+  const body = lines.slice(0, -1).join('\n')
+  assert.match(body, /^\[画面\]/)
+  assert.match(body, /先把门关上/)
+  assert.match(body, /十二点以后再拨/)
+  assert.doesNotMatch(body, /帧|播放|https?:|BV/)
+  assert.equal(body.includes('/tmp/bili-sheet.png'), false)
+})
+
+test('bili_watch 只能看画面时把路径放末行记号', () => {
+  const text = watchModule.formatWatchSuccess({
+    title: '夜里修好的钟',
+    path: '/tmp/bili-sheet.png',
+    recognized: false,
+  })
+  const lines = text.trimEnd().split('\n')
+  assert.equal(lines.at(-1), '〔/tmp/bili-sheet.png〕')
+  const body = lines.slice(0, -1).join('\n')
+  assert.match(body, /^\[画面\]/)
+  assert.match(body, /画面在手边/)
+  assert.doesNotMatch(body, /帧|播放|https?:|BV|取帧/)
+  assert.equal(body.includes('/tmp/bili-sheet.png'), false)
+})
+
+test('bili_watch 认不出字时只说没读出字', () => {
+  const text = watchModule.formatWatchSuccess({
+    title: '夜里修好的钟',
+    body: '',
+    path: '/tmp/bili-sheet.png',
+    recognized: true,
+  })
+  assert.match(text, /\[只看到画面，没读出字\]/)
+  assert.doesNotMatch(text, /帧/)
 })
 
 test('provide bili 服务并注册 /dsh-bili 前缀路由', async () => {
