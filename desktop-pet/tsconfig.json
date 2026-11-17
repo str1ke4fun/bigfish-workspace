@@ -14,5 +14,5 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true
   },
-  "include": ["electron", "renderer", "test", "vite.config.ts"]
+  "include": ["electron", "renderer", "shared", "test", "vite.config.ts"]
 }

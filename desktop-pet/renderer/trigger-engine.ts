@@ -5,13 +5,18 @@
  * 同一状态序列可以稳定重放。`seen` 是触发器自己的游标，不与手动动作目录混用。
  */
 
-import type { TriggerDefinition } from '../electron/triggers.ts'
+import {
+  pickTriggerAction,
+  type TriggerDefinition,
+} from '../shared/trigger-model.ts'
 import {
   isPetMotion,
   type PetState,
   type PetMotion,
   type PlaybackAction,
 } from './controller.ts'
+
+export type { TriggerDefinition } from '../shared/trigger-model.ts'
 
 export const TRIGGER_SEEN_LIMIT = 64
 
@@ -49,6 +54,8 @@ export interface ReduceTriggersInput {
   now: number
   /** 用户手动动作正在播放时为 true；它压住所有自动触发。 */
   manualBusy: boolean
+  /** 自动触发的一次性动作尚未完成；true 时不恢复 loop、不消费后续事件。 */
+  actionBusy?: boolean
   rng?: () => number
 }
 
@@ -92,27 +99,6 @@ function rememberCue(seen: TriggerSeen, id: string): void {
   seen.cueIds = boundedSeen([...seen.cueIds, id])
 }
 
-function pickWeighted(trigger: TriggerDefinition, rng: () => number): string | null {
-  if (trigger.pool.length === 0 || trigger.pool.length !== trigger.w.length) return null
-  if (trigger.w.some((weight) => !Number.isFinite(weight) || weight < 0)) return null
-  const total = trigger.w.reduce((sum, weight) => sum + weight, 0)
-  if (!(total > 0)) return null
-
-  const sample = rng()
-  if (typeof sample !== 'number' || !Number.isFinite(sample)) return null
-  const target = Math.min(1, Math.max(0, sample)) * total
-  let cumulative = 0
-  let lastPositive: string | null = null
-  for (let index = 0; index < trigger.pool.length; index += 1) {
-    const weight = trigger.w[index]
-    if (weight <= 0) continue
-    lastPositive = trigger.pool[index]
-    cumulative += weight
-    if (target < cumulative) return trigger.pool[index]
-  }
-  return lastPositive
-}
-
 function selectAction(
   when: string,
   triggers: readonly TriggerDefinition[],
@@ -121,7 +107,7 @@ function selectAction(
 ): PlaybackAction | null {
   const trigger = triggers.find((entry) => entry?.when === when)
   if (!trigger) return null
-  const actionId = pickWeighted(trigger, rng)
+  const actionId = pickTriggerAction(trigger, rng)
   if (actionId === null) return null
   return actions.find((entry) => entry?.id === actionId) ?? null
 }
@@ -140,17 +126,33 @@ function steadyMotion(state: PetState | null): PetMotion {
   return state?.presence?.on === true ? 'thinking' : 'idle'
 }
 
+function isAmbientState(state: PetState | null): boolean {
+  if (state === null) return true
+  return state.scene === null
+    && state.activity === null
+    && state.presence?.on !== true
+}
+
 /** 归约一拍：高优先级事件先消费，低优先级状态留到后续拍继续处理。 */
 export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
   const seen = cloneSeen(input.seen)
   const steady = steadyMotion(input.state)
   const rng = input.rng ?? Math.random
   const now = Number.isFinite(input.now) ? input.now : 0
+  const ambientEligible = isAmbientState(input.state)
+
+  // 任何非 ambient 状态都算一次离开空闲；提前返回也要重新武装下一次 ambient。
+  if (!ambientEligible) seen.ambientConsumed = false
 
   if (input.manualBusy) {
     // 用户手动动作先占据播放器；只暂时卸下 scene loop，事件游标保持待消费。
     if (seen.sceneLoopActive) seen.sceneLoopActive = false
     seen.ambientConsumed = false
+    return { steady, seen }
+  }
+
+  if (input.actionBusy) {
+    // 一次性动作完成前，后续 cue/transition 与 scene loop 都继续排队。
     return { steady, seen }
   }
 
@@ -276,13 +278,7 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     }
   }
 
-  const ambientEligible = sceneKind === null
-    && activityState === null
-    && input.state?.presence?.on !== true
-  if (!ambientEligible) {
-    seen.ambientConsumed = false
-    return { steady, seen }
-  }
+  if (!ambientEligible) return { steady, seen }
   if (!seen.ambientConsumed) {
     seen.ambientConsumed = true
     const action = selectAction('ambient', input.triggers, input.actions, rng)

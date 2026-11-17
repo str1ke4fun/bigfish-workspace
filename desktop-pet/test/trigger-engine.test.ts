@@ -104,7 +104,7 @@ test('scene transition 优先于其他 activity，scene enter 可保持 loop', (
   assert.equal(second.action, undefined)
 })
 
-test('waiting 临时压住 scene loop，解除后恢复同一 loop 动作', () => {
+test('waiting 动作完成后才恢复 scene loop', () => {
   const sceneOnly = state({ scene: { kind: 'rest', at: 30 } })
   const input = {
     triggers: [
@@ -131,7 +131,21 @@ test('waiting 临时压住 scene loop，解除后恢复同一 loop 动作', () =
   assert.equal(waiting.seen.sceneLoopActive, false)
   assert.equal(waiting.seen.sceneLoopActionId, 'rest-loop')
 
-  const resumed = reduceTriggers({ ...input, state: sceneOnly, seen: waiting.seen })
+  const busy = reduceTriggers({
+    ...input,
+    state: sceneOnly,
+    seen: waiting.seen,
+    actionBusy: true,
+  })
+  assert.equal(busy.action, undefined)
+  assert.equal(busy.seen.sceneLoopActive, false)
+
+  const resumed = reduceTriggers({
+    ...input,
+    state: sceneOnly,
+    seen: busy.seen,
+    actionBusy: false,
+  })
   assert.deepEqual(resumed.action, { type: 'startAction', actionId: 'rest-loop', loop: true })
   assert.equal(resumed.steady, 'idle')
   assert.equal(resumed.seen.sceneLoopActive, true)
@@ -167,9 +181,93 @@ test('rest 中 cue 只覆盖一次性动作，不改变 scene，完成后恢复 
   assert.equal(overlaid.seen.sceneLoopActionId, 'rest-loop')
   assert.equal(overlaid.seen.sceneLoopActive, false)
 
-  const resumed = reduceTriggers({ ...input, state: resting, seen: overlaid.seen })
+  const busy = reduceTriggers({
+    ...input,
+    state: resting,
+    seen: overlaid.seen,
+    actionBusy: true,
+  })
+  assert.equal(busy.action, undefined)
+  assert.equal(busy.bubble, undefined)
+  assert.equal(busy.seen.sceneLoopActive, false)
+
+  const resumed = reduceTriggers({
+    ...input,
+    state: resting,
+    seen: busy.seen,
+    actionBusy: false,
+  })
   assert.deepEqual(resumed.action, { type: 'startAction', actionId: 'rest-loop', loop: true })
   assert.equal(resumed.steady, 'idle')
+})
+
+test('manual/cue 高于 activity 和 presence', () => {
+  const presence = {
+    on: true,
+    mode: 'event',
+    busy: false,
+    snapshot: null,
+    recent: [],
+  }
+  const current = state({
+    activity: { state: 'working', at: 10, sessionId: 's' },
+    presence,
+    cues: [{ id: 'cue-priority', kind: 'speak', text: '先说这句', at: 20, ttlMs: 15_000 }],
+  })
+  const input = {
+    state: current,
+    triggers: [
+      trigger('activity:working', ['activity-once']),
+      trigger('speak', ['cue-once']),
+      trigger('ambient', ['ambient-once']),
+    ],
+    actions: [action('activity-once'), action('cue-once'), action('ambient-once')],
+    now: 30,
+    actionBusy: false,
+    rng: () => 0,
+  }
+
+  const manual = reduceTriggers({
+    ...input,
+    seen: emptyTriggerSeen(),
+    manualBusy: true,
+  })
+  assert.equal(manual.action, undefined)
+  assert.equal(manual.bubble, undefined)
+  assert.equal(manual.steady, 'working')
+  assert.equal(manual.seen.cueIds.includes('cue-priority'), false)
+
+  const cued = reduceTriggers({
+    ...input,
+    seen: manual.seen,
+    manualBusy: false,
+  })
+  assert.deepEqual(cued.action, { type: 'startAction', actionId: 'cue-once', loop: false })
+  assert.deepEqual(cued.bubble, { id: 'cue-priority', text: '先说这句' })
+  assert.equal(cued.steady, 'working')
+})
+
+test('同一 cue id 不会产生第二次动作或气泡', () => {
+  const current = state({
+    cues: [{ id: 'cue-duplicate', kind: 'speak', text: '只说一次', at: 20, ttlMs: 15_000 }],
+  })
+  const input = {
+    state: current,
+    triggers: [trigger('speak', ['cue-once'])],
+    actions: [action('cue-once')],
+    now: 30,
+    manualBusy: false,
+    actionBusy: false,
+    rng: () => 0,
+  }
+
+  const first = reduceTriggers({ ...input, seen: emptyTriggerSeen() })
+  assert.deepEqual(first.action, { type: 'startAction', actionId: 'cue-once', loop: false })
+  assert.deepEqual(first.bubble, { id: 'cue-duplicate', text: '只说一次' })
+
+  const second = reduceTriggers({ ...input, seen: first.seen })
+  assert.equal(second.action, undefined)
+  assert.equal(second.bubble, undefined)
 })
 
 test('scene exit 只唤醒一次，循环定义也按一次性退出动作播放', () => {
@@ -314,6 +412,39 @@ test('presence 高于 idle/ambient；ambient 只在进入空闲后按权重播�
     rng: () => 0.75,
   })
   assert.deepEqual(idleAgain.action, { type: 'startAction', actionId: 'ambient-b', loop: false })
+})
+
+test('ambient 被 activity 打断后重新武装，且 activity 高于 ambient', () => {
+  const idle = state()
+  const working = state({ activity: { state: 'working', at: 10, sessionId: 's' } })
+  const input = {
+    triggers: [
+      trigger('activity:working', ['activity-once']),
+      trigger('ambient', ['ambient-once']),
+    ],
+    actions: [action('activity-once'), action('ambient-once')],
+    now: 40,
+    manualBusy: false,
+    actionBusy: false,
+    rng: () => 0,
+  }
+
+  const firstAmbient = reduceTriggers({ ...input, state: idle, seen: emptyTriggerSeen() })
+  assert.deepEqual(firstAmbient.action, {
+    type: 'startAction', actionId: 'ambient-once', loop: false,
+  })
+  assert.equal(firstAmbient.seen.ambientConsumed, true)
+
+  const activity = reduceTriggers({ ...input, state: working, seen: firstAmbient.seen })
+  assert.deepEqual(activity.action, {
+    type: 'startAction', actionId: 'activity-once', loop: false,
+  })
+  assert.equal(activity.seen.ambientConsumed, false)
+
+  const secondAmbient = reduceTriggers({ ...input, state: idle, seen: activity.seen })
+  assert.deepEqual(secondAmbient.action, {
+    type: 'startAction', actionId: 'ambient-once', loop: false,
+  })
 })
 
 test('过期 cue 不播放、不阻塞 ambient，并记入有界已消费游标', () => {
