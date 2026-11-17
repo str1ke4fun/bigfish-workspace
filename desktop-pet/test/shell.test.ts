@@ -257,6 +257,18 @@ function registered(id: string, label: string, group: string): ActionDefinition 
   return { id, label, anim: `${id}-anim`, loop: false, group }
 }
 
+function assertTriggerPoolsSubset(
+  actions: readonly { id: string }[],
+  triggers: readonly TriggerDefinition[],
+): void {
+  const actionIds = new Set(actions.map((action) => action.id))
+  for (const trigger of triggers) {
+    for (const actionId of trigger.pool) {
+      assert.ok(actionIds.has(actionId), `${trigger.when} 的池包含当前目录不存在的动作 ${actionId}`)
+    }
+  }
+}
+
 const baseState: MenuState = {
   size: 400,
   opacity: 90,
@@ -580,7 +592,7 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
   ])
 })
 
-test('触发表加载失败时保留上一份 trigger，手动动作目录仍正常重载', async (t) => {
+test('触发表加载失败：回退池按新动作目录过滤，手动动作目录仍正常重载', async (t) => {
   const main = await loadMainModule()
   const { root, assets } = await actionFixture()
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -592,10 +604,13 @@ test('触发表加载失败时保留上一份 trigger，手动动作目录仍正
   await writeFile(join(assets, 'webm', 'new.webm'), '')
   await writeFile(join(assets, 'config.json'), '{}')
   await writeFile(join(assets, 'actions.json'), JSON.stringify({
-    actions: [{ id: 'wave', label: '旧挥手', anim: 'wave', group: '回应' }],
+    actions: [
+      { id: 'wave', label: '旧挥手', anim: 'wave', group: '回应' },
+      { id: 'new', label: '保留动作', anim: 'new', group: '回应' },
+    ],
   }))
   await writeFile(join(assets, 'triggers.json'), JSON.stringify({
-    triggers: [{ when: 'speak', pool: ['wave'] }],
+    triggers: [{ when: 'speak', pool: ['wave', 'new'], w: [3, 1] }],
   }))
 
   const { win, sent } = fakeWindow()
@@ -603,7 +618,7 @@ test('触发表加载失败时保留上一份 trigger，手动动作目录仍正
   const getTriggers = electronMock.ipcHandled.get('pet:get-trigger-catalog')
   assert.ok(getTriggers)
   assert.deepEqual(await getTriggers(), [{
-    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+    when: 'speak', pool: ['wave', 'new'], w: [3, 1], once: false, minGapSec: 0, inAmbient: false,
   }])
 
   await writeFile(join(assets, 'actions.json'), JSON.stringify({
@@ -623,9 +638,112 @@ test('触发表加载失败时保留上一份 trigger，手动动作目录仍正
     mediaUri: 'pet-asset://local/webm',
   }])
   assert.deepEqual(await getTriggers(), [{
-    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+    when: 'speak', pool: ['new'], w: [1], once: false, minGapSec: 0, inAmbient: false,
   }])
+  assertTriggerPoolsSubset(
+    await getActions() as Array<{ id: string }>,
+    await getTriggers() as TriggerDefinition[],
+  )
   assert.match(warnings.join('\n'), /触发表/)
+})
+
+test('皮肤切换：新皮肤触发表损坏时只回退默认 trigger，不复用旧皮肤覆盖', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  captureHello(t)
+  const warnings = captureWarnings(t)
+
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeValidSkin(assets, 'old', '旧皮肤')
+  await writeValidSkin(assets, 'next', '新皮肤')
+  await writeFile(join(assets, 'triggers.json'), JSON.stringify({
+    triggers: [{ when: 'ambient', pool: ['shared-wave'] }],
+  }))
+  await writeFile(join(assets, 'skins', 'old', 'triggers.json'), JSON.stringify({
+    triggers: [{ when: 'scene:rest:enter', pool: ['shared-wave'] }],
+  }))
+  await writeFile(join(assets, 'skins', 'next', 'triggers.json'), '{ nope')
+
+  const { win, sent } = fakeWindow()
+  const actions = [registered('shared-wave', '共同动作', '回应')]
+  assert.equal(await main.applySkin('old', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => actions,
+  }), true)
+
+  const getTriggers = electronMock.ipcHandled.get('pet:get-trigger-catalog')
+  assert.ok(getTriggers)
+  assert.deepEqual(await getTriggers(), [
+    {
+      when: 'ambient', pool: ['shared-wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+    },
+    {
+      when: 'scene:rest:enter', pool: ['shared-wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+    },
+  ])
+  sent.length = 0
+
+  assert.equal(await main.applySkin('next', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => actions,
+  }), true)
+
+  const getActions = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getActions)
+  assert.deepEqual(await getTriggers(), [{
+    when: 'ambient', pool: ['shared-wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
+  assertTriggerPoolsSubset(
+    await getActions() as Array<{ id: string }>,
+    await getTriggers() as TriggerDefinition[],
+  )
+  assert.match(warnings.join('\n'), /触发表/)
+})
+
+test('getTriggerCatalog：动作移除后的池始终是 getActionCatalog 子集', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  captureHello(t)
+  captureWarnings(t)
+
+  await writeFile(join(assets, 'webm', 'wave.webm'), '')
+  await writeFile(join(assets, 'webm', 'new.webm'), '')
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [
+      { id: 'wave', label: '旧挥手', anim: 'wave', group: '回应' },
+      { id: 'new', label: '保留动作', anim: 'new', group: '回应' },
+    ],
+  }))
+  await writeFile(join(assets, 'triggers.json'), JSON.stringify({
+    triggers: [{ when: 'speak', pool: ['wave', 'new'], w: [1, 2] }],
+  }))
+
+  const { win } = fakeWindow()
+  assert.equal(await main.applySkin('', { win, assetsRoot: assets }), true)
+
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'new', label: '新动作', anim: 'new', group: '回应' }],
+  }))
+  await writeFile(join(assets, 'triggers.json'), '{ nope')
+  assert.equal((await main.reloadRegisteredActions(win, assets)).ok, true)
+
+  const getActions = electronMock.ipcHandled.get('pet:get-action-catalog')
+  const getTriggers = electronMock.ipcHandled.get('pet:get-trigger-catalog')
+  assert.ok(getActions)
+  assert.ok(getTriggers)
+  const actions = await getActions() as Array<{ id: string }>
+  const triggers = await getTriggers() as TriggerDefinition[]
+  assertTriggerPoolsSubset(actions, triggers)
+  assert.deepEqual(triggers, [{
+    when: 'speak', pool: ['new'], w: [2], once: false, minGapSec: 0, inAmbient: false,
+  }])
 })
 
 test('动作重载：hello 未确认成功时不报成功并恢复旧 catalog', async (t) => {

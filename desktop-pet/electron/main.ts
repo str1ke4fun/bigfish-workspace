@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path'
 import { mergeActionCatalogs, parseActions, type ActionDefinition } from './actions'
 import { createPoller, createStateForwarder, type Poller } from './poller'
 import {
+  filterTriggerCatalog,
   mergeTriggers,
   readTriggerCatalog,
   type ReadTriggerCatalog,
@@ -90,8 +91,13 @@ let actionCatalog: ActionDefinition[] = []
 let lastActionError: string | null = null
 /** 每次 reload 争用所有权、每次皮肤提交完成时递增；旧异步任务不得再提交。 */
 let actionCatalogGeneration = 0
-/** 与动作目录分开保存；触发表损坏不能清空或阻塞手动动作。 */
-let triggerCatalog: TriggerDefinition[] = []
+interface TriggerCatalogState {
+  triggers: TriggerDefinition[]
+  ownerSkinId: string
+  ownerRevision: number
+}
+/** 与动作目录分开保存，并记录归属皮肤/加载序号；触发表损坏不能阻塞手动动作。 */
+let triggerCatalog: TriggerCatalogState = { triggers: [], ownerSkinId: '', ownerRevision: -1 }
 
 /**
  * 皮肤推送缓存：首推可能早于渲染进程注册 `onSkin`（和 `pet:state` 同样的竞态）。
@@ -460,11 +466,15 @@ function sameTriggerCatalog(left: readonly TriggerDefinition[], right: readonly 
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-function setTriggerCatalog(triggers: readonly TriggerDefinition[], win: BrowserWindow | null = petWindow): void {
-  const next = mergeTriggers(triggers, [])
-  const changed = !sameTriggerCatalog(triggerCatalog, next)
-  triggerCatalog = next
-  if (changed) sendTriggerCatalog(win, triggerCatalog)
+function setTriggerCatalog(catalog: TriggerCatalogState, win: BrowserWindow | null = petWindow): void {
+  const next = filterTriggerCatalog(catalog.triggers, triggerActionIds(actionCatalog))
+  const changed = !sameTriggerCatalog(triggerCatalog.triggers, next)
+  triggerCatalog = {
+    triggers: next,
+    ownerSkinId: catalog.ownerSkinId,
+    ownerRevision: catalog.ownerRevision,
+  }
+  if (changed) sendTriggerCatalog(win, next)
 }
 
 function triggerActionIds(actions: readonly ActionDefinition[]): Set<string> {
@@ -472,21 +482,47 @@ function triggerActionIds(actions: readonly ActionDefinition[]): Set<string> {
 }
 
 /**
- * 读取候选触发表；整份文件损坏时只记日志并回退上一份。
+ * 读取候选触发表；整份文件损坏时只回退同一皮肤/序号下的上一份，
+ * 跨皮肤或新序号只重读默认表，避免复用旧皮肤的覆盖项。
  * 触发表错误绝不能冒泡到动作/皮肤提交路径。
  */
 async function loadTriggerCandidate(
   assetsRoot: string,
   skinId: string,
+  revision: number,
   actions: readonly ActionDefinition[],
   readTriggers: ReadTriggerCatalog = readTriggerCatalog,
-): Promise<TriggerDefinition[]> {
-  const fallback = mergeTriggers(triggerCatalog, [])
+): Promise<TriggerCatalogState> {
+  const actionIds = triggerActionIds(actions)
   try {
-    return await readTriggers(assetsRoot, skinId, triggerActionIds(actions))
+    return {
+      triggers: filterTriggerCatalog(await readTriggers(assetsRoot, skinId, actionIds), actionIds),
+      ownerSkinId: skinId,
+      ownerRevision: revision,
+    }
   } catch (error) {
-    console.warn(`[desktop-pet] 触发表没载入，继续用上一份：${errorText(error)}`)
-    return fallback
+    console.warn(`[desktop-pet] 触发表没载入，按当前动作目录回退：${errorText(error)}`)
+    if (triggerCatalog.ownerSkinId === skinId && triggerCatalog.ownerRevision === revision) {
+      return {
+        triggers: filterTriggerCatalog(triggerCatalog.triggers, actionIds),
+        ownerSkinId: skinId,
+        ownerRevision: revision,
+      }
+    }
+
+    let defaults: TriggerDefinition[] = []
+    if (skinId !== '') {
+      try {
+        defaults = await readTriggers(assetsRoot, '', actionIds)
+      } catch (fallbackError) {
+        console.warn(`[desktop-pet] 默认触发表回退也没载入：${errorText(fallbackError)}`)
+      }
+    }
+    return {
+      triggers: filterTriggerCatalog(defaults, actionIds),
+      ownerSkinId: skinId,
+      ownerRevision: revision,
+    }
   }
 }
 
@@ -501,6 +537,7 @@ export async function reloadRegisteredActions(
   readTriggers: ReadTriggerCatalog = readTriggerCatalog,
 ): Promise<PetActionReloadResult> {
   const skinId = activeSkinId
+  const triggerRevision = triggerCatalog.ownerSkinId === skinId ? triggerCatalog.ownerRevision : -1
   const generation = ++actionCatalogGeneration
   const previousCatalog = actionCatalog
   sendActionStop(win)
@@ -514,7 +551,7 @@ export async function reloadRegisteredActions(
         error: '动作目录已被更新的重载或皮肤切换替代，未提交旧结果。',
       }
     }
-    const nextTriggers = await loadTriggerCandidate(assetsRoot, skinId, next, readTriggers)
+    const nextTriggers = await loadTriggerCandidate(assetsRoot, skinId, triggerRevision, next, readTriggers)
     if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
       return {
         ok: false,
@@ -607,7 +644,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
       throw new Error(`动作注册表没载入：${errorText(error)}`)
     }
     if (revision !== skinRevision) return false
-    const nextTriggers = await loadTriggerCandidate(assetsRoot, id, nextActions, loadTriggers)
+    const nextTriggers = await loadTriggerCandidate(assetsRoot, id, revision, nextActions, loadTriggers)
     if (revision !== skinRevision) return false
 
     // 新皮肤会替换全部动画映射；先让播放器结束旧 generation 的借用槽。
@@ -817,7 +854,7 @@ ipcMain.on('pet:ready', () => {
   // 皮肤可能早于渲染进程订阅就绪：就绪后补发最近一份。
   skinForwarder.ready()
   sendActionCatalog(petWindow, actionCatalog)
-  sendTriggerCatalog(petWindow, triggerCatalog)
+  sendTriggerCatalog(petWindow, triggerCatalog.triggers)
   if (lastSkinError && petWindow && !petWindow.isDestroyed()) {
     petWindow.webContents.send('pet:skin-error', lastSkinError)
   }
@@ -827,7 +864,9 @@ ipcMain.on('pet:ready', () => {
 ipcMain.handle('pet:get-size', () => petSize)
 ipcMain.handle('pet:get-look', () => petLook)
 ipcMain.handle('pet:get-action-catalog', () => mergeActionCatalogs(actionCatalog, []))
-ipcMain.handle('pet:get-trigger-catalog', () => mergeTriggers(triggerCatalog, []))
+ipcMain.handle('pet:get-trigger-catalog', () => (
+  mergeTriggers(filterTriggerCatalog(triggerCatalog.triggers, triggerActionIds(actionCatalog)), [])
+))
 ipcMain.handle('pet:actions-reload', () => reloadRegisteredActions())
 
 /** 渲染进程挂载时主动拉取最近皮肤，避免首推丢失后一直停在默认皮肤。 */
@@ -975,6 +1014,7 @@ if (gotInstanceLock) app
     triggerCatalog = await loadTriggerCandidate(
       appFile('assets'),
       activeSkinId,
+      0,
       actionCatalog,
       readTriggerCatalog,
     )

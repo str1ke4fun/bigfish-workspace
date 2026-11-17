@@ -224,6 +224,35 @@ export function mergeTriggers(
   return [...byWhen.values()]
 }
 
+/** 用当前动作目录裁剪 fallback 池；保留仍存在动作的对应权重，空池/零权重池整条丢弃。 */
+export function filterTriggerCatalog(
+  triggers: readonly TriggerDefinition[],
+  actionIds: ReadonlySet<string> | readonly string[],
+): TriggerDefinition[] {
+  const available = normalizeActionIds(actionIds)
+  const filtered: TriggerDefinition[] = []
+
+  for (const trigger of triggers) {
+    if (trigger.pool.length !== trigger.w.length) continue
+
+    const pool: string[] = []
+    const w: number[] = []
+    for (let index = 0; index < trigger.pool.length; index += 1) {
+      const actionId = trigger.pool[index]
+      if (!available.has(actionId)) continue
+      pool.push(actionId)
+      w.push(trigger.w[index])
+    }
+
+    if (pool.length === 0) continue
+    if (w.some((weight) => !Number.isFinite(weight) || weight < 0)) continue
+    if (w.reduce((sum, weight) => sum + weight, 0) <= 0) continue
+    filtered.push({ ...cloneTrigger(trigger), pool, w })
+  }
+
+  return filtered
+}
+
 /** 池内按权重选动作；随机源可注入，越界或非法输入返回 null。 */
 export function pickTriggerAction(
   trigger: Pick<TriggerDefinition, 'pool' | 'w'>,
