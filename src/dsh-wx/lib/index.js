@@ -33,7 +33,16 @@ import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMent
 import { consume as consumeProactive, decideProactive, loadState, normalizeProactive, saveState } from './proactive.js'
 import { dropRecentContent, freshHits, forgetReadChats, noteContent, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { openChatHit } from './ear-open.js'
-import { canSendWithPolicy, createPermitStore, findInputBox, provideWxService } from './reminder.js'
+import {
+  canSendWithPolicy,
+  createPermitStore,
+  createReminderDeliveryWorker,
+  createReminderJobStore,
+  findInputBox,
+  mechanicalReminderDeliveryEnabled,
+  pressReturnThenMark,
+  provideWxService,
+} from './reminder.js'
 import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, pauseReason, previewSig, shouldEnqueue } from './capture.js'
 import { createCaptureQueue } from './capture-queue.js'
 import { captureEvidenceKey, runCapture } from './capture-run.js'
@@ -155,6 +164,7 @@ function policy() {
       // 旧调用仍可显式带 task_id；显式 false 时不再按会话名自动绑定。
       implicitTaskBinding: raw.implicitTaskBinding !== false,
       overdueVisibility: overdueVisibilityEnabled(raw),
+      mechanicalReminderDelivery: mechanicalReminderDeliveryEnabled(raw),
     }
   } catch {
     return {
@@ -165,6 +175,7 @@ function policy() {
       stickerSearch: false,
       implicitTaskBinding: true,
       overdueVisibility: true,
+      mechanicalReminderDelivery: true,
     }
   }
 }
@@ -517,6 +528,9 @@ export function apply(ctx, config = {}) {
   // 许可只管「到点时允许往这一个会话发一次」；它不放宽允许名单，也不改频率。
   const permitStore = createPermitStore({
     log: (m) => console.log('[dsh-wx] 提醒许可：' + m),
+  })
+  const reminderJobs = createReminderJobStore({
+    log: (m) => console.log('[dsh-wx] 机械提醒：' + m),
   })
 
   // ---- 会话目录 / 多会话 ----
@@ -1061,7 +1075,7 @@ export function apply(ctx, config = {}) {
    * permit 存在时只绕过 @ / 主机闸；允许名单、说话频率、当前会话核对都照走。
    */
   async function sendToChat({
-    chat, targetChat = '', targetChatId = '', text, permit = '', taskId = '', replyTask = null,
+    chat, targetChat = '', targetChatId = '', text, permit = '', taskId = '', replyTask = null, onReturn = null,
   } = {}) {
     const p = policy()
     if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]', '微信通道已关闭。')
@@ -1191,7 +1205,11 @@ export function apply(ctx, config = {}) {
       }
     }
 
-    await run(['key', 'Return'])
+    await pressReturnThenMark({
+      pressReturn: () => run(['key', 'Return']),
+      onReturn,
+      log: (m) => console.log('[dsh-wx] ' + m),
+    })
     await sleep(900)
 
     if (token) {
@@ -1782,6 +1800,15 @@ export function apply(ctx, config = {}) {
     return sessions.list().find((w) => w.sessionId === sid)?.chatName || ''
   }
   const canSend = (chat) => canSendWithPolicy(policy(), chat)
+  const reminderDelivery = createReminderDeliveryWorker({
+    jobs: reminderJobs,
+    permits: permitStore,
+    getEnabled: () => policy().mechanicalReminderDelivery,
+    now: Date.now,
+    log: (m) => console.log('[dsh-wx] 机械提醒：' + String(m ?? '').slice(0, 300)),
+    sendReminder: (req) => withSendLock(() => sendToChat(req)),
+  })
+  reminderDelivery.recover()
   const wxService = {
     policy,
     canSend,
@@ -1811,6 +1838,27 @@ export function apply(ctx, config = {}) {
     },
     revokeReminder: (id) => permitStore.revoke(id),
     sendReminder: (req) => withSendLock(() => sendToChat(req)),
+    reminderDelivery: {
+      enabled: reminderDelivery.enabled,
+      create: (req = {}) => {
+        const sessionId = String(req.sessionId ?? '').trim()
+        if (!isWxSession(sessionId)) return { ok: false, why: '定时提醒只能在微信这条会话里定。' }
+        const c = canSend(req.chat)
+        if (!c.ok) return c
+        if (!isRecentChat(c.chat)) {
+          return { ok: false, why: `最近把你叫醒的会话里没有「${c.chat}」，不能往那里定提醒。` }
+        }
+        return reminderDelivery.create({ ...req, sessionId, chat: c.chat })
+      },
+      list: ({ sessionId = '' } = {}) => (isWxSession(sessionId)
+        ? reminderDelivery.list({ sessionId })
+        : []),
+      cancel: (req = {}) => (isWxSession(req.sessionId)
+        ? reminderDelivery.cancel(req.id, { sessionId: req.sessionId })
+        : { ok: false, why: '定时提醒只能在微信这条会话里取消。' }),
+      deliverDue: (req) => reminderDelivery.deliverDue(req),
+      takeNotices: (req) => reminderDelivery.takeNotices(req),
+    },
   }
   const wxProvided = provideWxService(ctx, wxService)
   if (wxProvided.ok) console.log('[dsh-wx] 已向 dsh-fish 暴露 wx 服务')

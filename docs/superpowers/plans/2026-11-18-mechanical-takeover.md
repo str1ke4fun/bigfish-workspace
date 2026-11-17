@@ -55,10 +55,12 @@
 
 **Interfaces:** durable due record links id/chat/text/permit/dueAt/attempt/result; core schedule tick drives due jobs; at-most-once after pressed Return; failure/unknown surfaced next turn.
 
-- [ ] 写失败测试：due time, restart recovery, duplicate tick, unconfirmed send, revoke, feature switch.
-- [ ] 实现 plugin-owned delivery worker using schedule-hooks/core tick; no host prompt for new mechanical jobs.
-- [ ] 迁移 old schedule path behind feature switch, keep old records.
-- [ ] 跑 fish/wx/host-shaped tests，提交。
+- [x] 写失败测试：due time, restart recovery, duplicate tick, unconfirmed send, revoke, feature switch.
+- [x] 实现 plugin-owned delivery worker using schedule-hooks/core tick; no host prompt for new mechanical jobs.
+- [x] 迁移 old schedule path behind feature switch, keep old records.
+- [x] 跑 fish/wx/host-shaped tests，提交。
+
+**Evidence (2026-11-18):** 新增只追加的 `~/.dsh-wx/reminder-jobs.jsonl` 与核心 tick worker；新任务不再创建宿主 prompt，Return 后确认/未确认/异常均终态，重启中的半截 attempted 记 unknown 且不再发。`mechanicalReminderDelivery:false` 回滚到旧 schedule 路径，旧记录与旧许可保留。`src/dsh-fish`: `node --test` → 1150 pass / 0 fail；`src/dsh-wx`: `node --test` → 137 pass / 0 fail；`workbench`: `node --test` → 124 pass / 0 fail。未部署、未重启服务、未做真机微信发送。
 
 ### Task 4: Quota tiering
 

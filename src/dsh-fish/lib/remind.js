@@ -40,7 +40,7 @@ export const REMIND_PROMPT = [
   '',
   '有人在微信里让你过一会儿提醒，你做得到。先定上，别说自己没有闹钟。',
   '只能定「过多少分钟」，最短一会儿，最长七天。会话只能是刚把你叫醒的那个。',
-  '到点时把你当时写的那句发出去，一个字不改。发不出去就说没发出去。',
+  '到点时那句话会自己发出去；你下次醒来只会知道有没有发成。',
   '没人让你提醒的事，不要自己定。',
 ].join('\n')
 
@@ -184,8 +184,44 @@ export async function createReminder({
   }
   const targetChat = String(can.chat ?? target)
 
-  const permit = randomUUID()
   const dueAt = Date.now() + mins.minutes * MINUTE_MS
+  const delivery = wxSvc.reminderDelivery
+  let mechanical = false
+  try {
+    mechanical = typeof delivery?.enabled === 'function'
+      && delivery.enabled() === true
+      && typeof delivery.create === 'function'
+  } catch (err) {
+    log?.('remind delivery switch failed', err?.message ?? err)
+  }
+  if (mechanical) {
+    try {
+      const made = await delivery.create({
+        sessionId: session,
+        chat: targetChat,
+        text: clean.text,
+        dueAt,
+      })
+      if (made?.ok && made.job) {
+        return {
+          ok: true,
+          id: String(made.job.id ?? ''),
+          chat: String(made.job.chat ?? targetChat),
+          dueAt: new Date(Number(made.job.dueAt) || dueAt).toISOString(),
+          note: `到点会发到「${targetChat}」。`,
+        }
+      }
+      if (!made?.disabled) {
+        log?.('remind mechanical create failed', made?.why)
+        return { ok: false, note: '这会儿没定上。' }
+      }
+    } catch (err) {
+      log?.('remind mechanical create failed', err?.message ?? err)
+      return { ok: false, note: '这会儿没定上。' }
+    }
+  }
+
+  const permit = randomUUID()
   const granted = wxSvc.grantReminder({
     id: permit,
     chat: targetChat,
@@ -247,21 +283,59 @@ export async function createReminder({
 export async function listReminders({ ctx, schedule, sessionId, signal, log } = {}) {
   const session = String(sessionId ?? '').trim()
   if (!session) return { ok: false, note: '这会儿不知道要翻哪条会话。', rows: [] }
+  const rows = []
+  let sawSource = false
+  let sourceFailed = false
+
+  const delivery = service(ctx, 'wx')?.reminderDelivery
+  if (typeof delivery?.list === 'function') {
+    sawSource = true
+    try {
+      const jobs = await delivery.list({ sessionId: session })
+      for (const job of jobs ?? []) {
+        if (!['pending', 'attempting'].includes(String(job?.result ?? ''))) continue
+        const due = Number(job?.dueAt)
+        rows.push({
+          id: String(job?.id ?? ''),
+          chat: String(job?.chat ?? ''),
+          dueAt: Number.isFinite(due) ? new Date(due).toISOString() : String(job?.dueAt ?? ''),
+        })
+      }
+    } catch (err) {
+      sourceFailed = true
+      log?.('remind mechanical list failed', err?.message ?? err)
+    }
+  }
+
   const sch = schedule ?? service(ctx, 'schedule')
-  if (!sch || typeof sch.list !== 'function') return { ok: false, note: '这会儿看不到有哪些提醒。', rows: [] }
-  try {
-    const all = await sch.list({ sessionId: session }, signal)
-    const rows = (all ?? [])
-      .filter((r) => String(r?.title ?? '').startsWith(REMIND_TITLE_PREFIX))
-      .map((r) => ({
-        id: String(r.id ?? ''),
-        chat: String(r.title ?? '').slice(REMIND_TITLE_PREFIX.length),
-        dueAt: String(r.scheduledAt ?? ''),
-      }))
-    return { ok: true, note: '', rows }
-  } catch (err) {
-    log?.('remind list failed', err?.message ?? err)
+  if (sch && typeof sch.list === 'function') {
+    sawSource = true
+    try {
+      const all = await sch.list({ sessionId: session }, signal)
+      for (const r of all ?? []) {
+        if (!String(r?.title ?? '').startsWith(REMIND_TITLE_PREFIX)) continue
+        rows.push({
+          id: String(r.id ?? ''),
+          chat: String(r.title ?? '').slice(REMIND_TITLE_PREFIX.length),
+          dueAt: String(r.scheduledAt ?? ''),
+        })
+      }
+    } catch (err) {
+      sourceFailed = true
+      log?.('remind list failed', err?.message ?? err)
+    }
+  }
+
+  if (!sawSource || (sourceFailed && rows.length === 0)) {
     return { ok: false, note: '这会儿看不到有哪些提醒。', rows: [] }
+  }
+  const seen = new Set()
+  return {
+    ok: true,
+    note: '',
+    rows: rows
+      .filter((row) => row.id && !seen.has(row.id) && seen.add(row.id))
+      .sort((a, b) => (Date.parse(a.dueAt) || 0) - (Date.parse(b.dueAt) || 0)),
   }
 }
 
@@ -271,9 +345,26 @@ export async function cancelReminder({ ctx, schedule, sessionId, id, signal, log
   const want = String(id ?? '').trim()
   if (!session) return { ok: false, note: '这会儿不知道是哪条会话。' }
   if (!want) return { ok: false, note: '还没说要放下哪一条。' }
+
+  const delivery = service(ctx, 'wx')?.reminderDelivery
+  if (typeof delivery?.list === 'function' && typeof delivery?.cancel === 'function') {
+    try {
+      const jobs = await delivery.list({ sessionId: session })
+      const hit = (jobs ?? []).find((job) => String(job?.id ?? '') === want)
+      if (hit) {
+        const r = await delivery.cancel({ id: want, sessionId: session })
+        return r?.ok
+          ? { ok: true, note: '取消了。' }
+          : { ok: false, note: '这会儿取消不了。' }
+      }
+    } catch (err) {
+      log?.('remind mechanical cancel failed', err?.message ?? err)
+    }
+  }
+
   const sch = schedule ?? service(ctx, 'schedule')
   if (!sch || typeof sch.list !== 'function' || typeof sch.delete !== 'function') {
-    return { ok: false, note: '这会儿取消不了。' }
+    return { ok: false, note: '没找到这条提醒。' }
   }
   try {
     const all = await sch.list({ sessionId: session }, signal)
@@ -294,6 +385,38 @@ export async function cancelReminder({ ctx, schedule, sessionId, id, signal, log
 export function registerRemind(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
   const regs = []
+  const hookOffs = []
+
+  const deliveryService = () => (deps.wx ?? service(ctx, 'wx'))?.reminderDelivery
+  const hookSchedule = deps.core?.schedule
+  if (typeof hookSchedule?.onTick === 'function') {
+    hookOffs.push(hookSchedule.onTick({
+      id: 'reminder-delivery',
+      everyMs: 0,
+      order: 20,
+      async fn(hookCtx = {}) {
+        const delivery = deliveryService()
+        if (typeof delivery?.deliverDue !== 'function') return { changed: false }
+        const at = hookCtx.now instanceof Date ? hookCtx.now.getTime() : Number(hookCtx.now)
+        await delivery.deliverDue({ now: Number.isFinite(at) ? at : Date.now() })
+        return { changed: false }
+      },
+    }))
+  }
+  if (typeof hookSchedule?.onWake === 'function') {
+    hookOffs.push(hookSchedule.onWake({
+      id: 'reminder-delivery-notices',
+      order: 20,
+      async fn(hookCtx = {}) {
+        const delivery = deliveryService()
+        if (typeof delivery?.takeNotices !== 'function') return { text: '' }
+        const at = hookCtx.now instanceof Date ? hookCtx.now.getTime() : Number(hookCtx.now)
+        const notices = await delivery.takeNotices({ at: Number.isFinite(at) ? at : Date.now() })
+        const text = (notices ?? []).map((row) => String(row?.text ?? '').trim()).filter(Boolean).join('\n')
+        return { text }
+      },
+    }))
+  }
 
   regs.push(registerTool(
     ctx,
@@ -420,6 +543,9 @@ export function registerRemind(ctx, deps = {}) {
   ))
 
   return () => {
+    for (const off of hookOffs) {
+      try { off?.() } catch { /* ignore */ }
+    }
     for (const d of regs) {
       try { d?.() } catch { /* ignore */ }
     }

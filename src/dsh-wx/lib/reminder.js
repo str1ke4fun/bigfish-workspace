@@ -15,12 +15,14 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { sameName } from './tree.js'
 
 /** 许可文件。和 policy.json / session.json 放在一起，便于运维时一起看。 */
 export const PERMIT_FILE = '/home/str1k3/.dsh-wx/reminder-permits.json'
+/** 机械投递的提醒任务日志。只追加，重放得到当前状态。 */
+export const REMINDER_JOBS_FILE = '/home/str1k3/.dsh-wx/reminder-jobs.jsonl'
 /** 到点之后再给多久的宽限。超过这个时间没发，许可作废，需要重新定。 */
 export const PERMIT_TTL_MS = 12 * 60 * 60_000
 /** 同时最多保留多少张。许可很小，但别让文件无限长。 */
@@ -29,6 +31,354 @@ export const PERMIT_MAX = 500
 export const PERMIT_KEEP_USED_MS = 24 * 60 * 60_000
 /** 许可 id 形如 UUID；也允许测试传短一点的合法 id。 */
 export const PERMIT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{7,79}$/
+
+/** 机械提醒投递的运行期开关；缺省开启，显式 false 回滚到旧宿主调度。 */
+export function mechanicalReminderDeliveryEnabled(raw) {
+  return raw?.mechanicalReminderDelivery !== false
+}
+
+/** 先按 Return，再记“已回车”；记账失败只留日志，不能诱发一次重发。 */
+export async function pressReturnThenMark({ pressReturn, onReturn, log = () => {} } = {}) {
+  await pressReturn()
+  try {
+    await onReturn?.()
+    return { returned: true, marked: true }
+  } catch (err) {
+    log(`提醒 Return 标记没写下来：${String(err?.message ?? err).slice(0, 160)}`)
+    return { returned: true, marked: false }
+  }
+}
+
+function blankReminderJob(id) {
+  return {
+    id,
+    sessionId: '',
+    chat: '',
+    text: '',
+    permit: '',
+    dueAt: 0,
+    createdAt: '',
+    attempt: 0,
+    result: 'pending',
+    returnedAt: '',
+    resultAt: '',
+    error: '',
+    noticeAcked: false,
+  }
+}
+
+function applyReminderJob(state, rec) {
+  const id = String(rec?.id ?? '').trim()
+  if (!id) return
+  const type = String(rec?.type ?? '')
+  if (type === 'created') {
+    if (state.has(id)) return
+    const job = blankReminderJob(id)
+    job.sessionId = String(rec.sessionId ?? '')
+    job.chat = String(rec.chat ?? '')
+    job.text = String(rec.text ?? '')
+    job.permit = String(rec.permit ?? '')
+    job.dueAt = Number(rec.dueAt) || 0
+    job.createdAt = String(rec.at ?? '')
+    state.set(id, job)
+    return
+  }
+  const job = state.get(id)
+  if (!job) return
+  if (type === 'attempt') {
+    if (job.result !== 'pending') return
+    job.attempt = Math.max(0, Number(job.attempt) || 0) + 1
+    job.result = 'attempting'
+    return
+  }
+  if (type === 'returned') {
+    if (job.result !== 'attempting' || job.returnedAt) return
+    job.returnedAt = String(rec.at ?? '')
+    return
+  }
+  if (type === 'result') {
+    if (job.result !== 'attempting') return
+    const result = String(rec.result ?? '')
+    if (!['confirmed', 'unconfirmed', 'failed', 'unknown'].includes(result)) return
+    job.result = result
+    job.resultAt = String(rec.at ?? '')
+    job.error = String(rec.error ?? '').slice(0, 160)
+    return
+  }
+  if (type === 'notice-ack') {
+    job.noticeAcked = true
+    return
+  }
+  if (type === 'revoked') {
+    if (job.result !== 'pending') return
+    job.result = 'revoked'
+    job.resultAt = String(rec.at ?? '')
+  }
+}
+
+function readReminderJournal(file, log) {
+  let raw = ''
+  try {
+    raw = readFileSync(file, 'utf8')
+  } catch (err) {
+    if (err?.code !== 'ENOENT') log?.(`提醒任务日志读不出来：${String(err?.message ?? err).slice(0, 160)}`)
+    return []
+  }
+  const rows = []
+  for (const line of raw.split('\n')) {
+    const text = line.trim()
+    if (!text) continue
+    try {
+      const rec = JSON.parse(text)
+      if (rec && typeof rec === 'object') rows.push(rec)
+      else log?.(`提醒任务日志跳过非对象行：${file}`)
+    } catch {
+      log?.(`提醒任务日志跳过坏行：${file}`)
+    }
+  }
+  return rows
+}
+
+/** 提醒任务日志：一行一次状态迁移，只追加，不重写旧记录。 */
+export function createReminderJobStore({ file = REMINDER_JOBS_FILE, now = Date.now, log = () => {}, append = appendFileSync } = {}) {
+  const clock = () => Number(now()) || Date.now()
+  const states = new Map()
+
+  function rebuild() {
+    states.clear()
+    for (const rec of readReminderJournal(file, log)) applyReminderJob(states, rec)
+  }
+
+  function snapshot(job) {
+    return job ? { ...job } : null
+  }
+
+  function commit(rec) {
+    try {
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+      append(file, JSON.stringify({ v: 1, ...rec }) + '\n', { mode: 0o600 })
+    } catch (err) {
+      log?.(`提醒任务日志写入失败：${String(err?.message ?? err).slice(0, 160)}`)
+      return { ok: false, why: '提醒任务没存下来。' }
+    }
+    applyReminderJob(states, rec)
+    return { ok: true }
+  }
+
+  rebuild()
+
+  function create({ id, permit, sessionId = '', chat, text, dueAt, at = new Date(clock()).toISOString() } = {}) {
+    const jobId = String(id ?? '').trim()
+    const permitId = String(permit ?? '').trim()
+    const target = String(chat ?? '').trim()
+    const body = String(text ?? '')
+    const due = Number(dueAt)
+    if (!jobId) return { ok: false, why: '提醒任务 id 不能为空。' }
+    if (states.has(jobId)) return { ok: false, why: '提醒任务 id 重复。' }
+    if (!permitId) return { ok: false, why: '提醒许可不能为空。' }
+    if (!target) return { ok: false, why: '提醒会话不能为空。' }
+    if (!body) return { ok: false, why: '提醒正文不能为空。' }
+    if (!Number.isFinite(due)) return { ok: false, why: '提醒到点时间不合法。' }
+    const r = commit({
+      type: 'created', id: jobId, permit: permitId, sessionId: String(sessionId ?? ''),
+      chat: target, text: body, dueAt: due, at: String(at),
+    })
+    return r.ok ? { ok: true, job: snapshot(states.get(jobId)) } : r
+  }
+
+  function list({ sessionId = '' } = {}) {
+    const sid = String(sessionId ?? '')
+    return [...states.values()]
+      .filter((job) => !sid || job.sessionId === sid)
+      .map(snapshot)
+      .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id))
+  }
+
+  function claimDue({ now: at = clock(), limit = 20 } = {}) {
+    const t = Number(at)
+    const max = Math.max(1, Math.min(100, Number(limit) || 20))
+    const due = [...states.values()]
+      .filter((job) => job.result === 'pending' && job.dueAt <= t)
+      .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id))
+      .slice(0, max)
+    const claimed = []
+    for (const job of due) {
+      const r = commit({ type: 'attempt', id: job.id, at: new Date(t).toISOString() })
+      if (r.ok) claimed.push(snapshot(states.get(job.id)))
+    }
+    return claimed
+  }
+
+  function get(id) {
+    return snapshot(states.get(String(id ?? '').trim()))
+  }
+
+  function markReturned(id, { at = new Date(clock()).toISOString() } = {}) {
+    const job = states.get(String(id ?? '').trim())
+    if (!job || job.result !== 'attempting') return { ok: false, why: '这条提醒现在不在投递中。' }
+    return commit({ type: 'returned', id: job.id, at: String(at) })
+  }
+
+  function settle(id, result, { at = new Date(clock()).toISOString(), error = '' } = {}) {
+    const job = states.get(String(id ?? '').trim())
+    if (!job) return { ok: false, why: '没有这条提醒。' }
+    if (job.result !== 'attempting') return { ok: false, why: '这条提醒已经结束。' }
+    return commit({ type: 'result', id: job.id, result: String(result), error: String(error ?? ''), at: String(at) })
+  }
+
+  function cancel(id, { sessionId = '', at = new Date(clock()).toISOString() } = {}) {
+    const job = states.get(String(id ?? '').trim())
+    if (!job) return { ok: false, why: '没有这条提醒。' }
+    const sid = String(sessionId ?? '')
+    if (sid && job.sessionId !== sid) return { ok: false, why: '这条提醒不在当前会话里。' }
+    if (job.result !== 'pending') return { ok: false, why: '这条提醒已经开始了，不能取消。' }
+    const r = commit({ type: 'revoked', id: job.id, at: String(at) })
+    return r.ok ? { ok: true, job: snapshot(states.get(job.id)) } : r
+  }
+
+  function recoverInterrupted({ at = new Date(clock()).toISOString() } = {}) {
+    const recovered = []
+    for (const job of [...states.values()]) {
+      if (job.result !== 'attempting') continue
+      job.returnedAt = ''
+      const r = commit({ type: 'result', id: job.id, result: 'unknown', error: 'restart-during-delivery', at: String(at) })
+      if (r.ok) recovered.push(snapshot(states.get(job.id)))
+    }
+    return recovered
+  }
+
+  function pendingNotices() {
+    return [...states.values()]
+      .filter((job) => ['confirmed', 'unconfirmed', 'failed', 'unknown'].includes(job.result) && !job.noticeAcked)
+      .sort((a, b) => Date.parse(a.resultAt) - Date.parse(b.resultAt) || a.id.localeCompare(b.id))
+      .map(snapshot)
+  }
+
+  function takeNotices({ at = new Date(clock()).toISOString() } = {}) {
+    const delivered = []
+    for (const job of pendingNotices()) {
+      const r = commit({ type: 'notice-ack', id: job.id, at: String(at) })
+      if (r.ok) delivered.push({ id: job.id, result: job.result })
+    }
+    return delivered
+  }
+
+  return {
+    create, list, get, claimDue, markReturned, settle, cancel, recoverInterrupted,
+    pendingNotices, takeNotices,
+  }
+}
+
+/** 失败 / 未知的世界声只描述结果，不带会话名、原文或内部记号。 */
+export function reminderNoticeText(result) {
+  if (result === 'confirmed') return '刚才定的提醒已经发了。'
+  if (result === 'unconfirmed') return '刚才定的提醒按了发送，但没看清有没有发出去；别再补发。'
+  if (result === 'unknown') return '刚才定的提醒可能发出去了，也可能没有；别再补发。'
+  if (result === 'failed') return '刚才定的提醒没发出去。'
+  return ''
+}
+
+/**
+ * 机械投递 worker：领取已到点的持久任务，直接走 wx 的高层发送，不经过模型。
+ * 一旦按下 Return，任何未确认或异常都按终态处理，绝不重发。
+ */
+export function createReminderDeliveryWorker({
+  jobs = createReminderJobStore(),
+  permits,
+  sendReminder,
+  getEnabled = () => true,
+  now = Date.now,
+  log = () => {},
+} = {}) {
+  const clock = () => Number(now()) || Date.now()
+
+  function enabled() {
+    try { return getEnabled() !== false } catch { return false }
+  }
+
+  function create({ sessionId, chat, text, dueAt } = {}) {
+    if (!enabled()) return { ok: false, disabled: true, why: '机械提醒投递没开。' }
+    if (!permits || typeof permits.grant !== 'function') return { ok: false, why: '提醒许可不能用。' }
+    const at = clock()
+    const permit = newPermitId()
+    const granted = permits.grant({ id: permit, sessionId, chat, text, dueAt })
+    if (!granted.ok) return granted
+    const id = 'rem-' + randomUUID()
+    const saved = jobs.create({ id, permit, sessionId, chat, text, dueAt, at: new Date(at).toISOString() })
+    if (!saved.ok) {
+      try { permits.revoke?.(permit) } catch { /* ignore */ }
+      return saved
+    }
+    return { ok: true, job: saved.job }
+  }
+
+  function list({ sessionId = '' } = {}) {
+    return jobs.list({ sessionId })
+  }
+
+  function cancel(id, { sessionId = '' } = {}) {
+    const cancelled = jobs.cancel(id, { sessionId, at: new Date(clock()).toISOString() })
+    if (!cancelled.ok) return cancelled
+    const retired = permits?.retire?.(cancelled.job.permit) ?? permits?.revoke?.(cancelled.job.permit)
+    if (retired && retired.ok === false) log(`提醒许可撤销失败：${retired.why || 'unknown'}`)
+    return cancelled
+  }
+
+  function recover() {
+    const recovered = jobs.recoverInterrupted({ at: new Date(clock()).toISOString() })
+    for (const job of recovered) permits?.retire?.(job.permit)
+    return recovered
+  }
+
+  async function deliverDue({ now: at = clock(), limit = 20 } = {}) {
+    if (!enabled()) return { ok: true, disabled: true, processed: 0 }
+    const claimed = jobs.claimDue({ now: at, limit })
+    const finish = (job, result, error) => {
+      const settled = jobs.settle(job.id, result, { at: new Date(at).toISOString(), error })
+      if (settled.ok) permits?.retire?.(job.permit)
+      return settled
+    }
+    let processed = 0
+    for (const job of claimed) {
+      const permit = permits?.check?.({ id: job.permit, chat: job.chat, text: job.text })
+      if (!permit?.ok) {
+        finish(job, 'failed', permit?.why || 'permit-invalid')
+        processed += 1
+        continue
+      }
+
+      let returned = false
+      try {
+        const sent = await sendReminder({
+          chat: job.chat,
+          text: job.text,
+          permit: job.permit,
+          reminderId: job.id,
+          onReturn: async () => {
+            returned = true
+            jobs.markReturned(job.id, { at: new Date(clock()).toISOString() })
+          },
+        })
+        const result = sent?.sent === 'confirmed' ? 'confirmed' : 'unconfirmed'
+        finish(job, result, sent?.sent ? `send:${sent.sent}` : 'send:unknown')
+      } catch (err) {
+        const current = jobs.get(job.id)
+        const afterReturn = returned || !!current?.returnedAt
+        finish(job, afterReturn ? 'unknown' : 'failed', String(err?.code || err?.message || err || 'send-failed'))
+      }
+      processed += 1
+    }
+    return { ok: true, processed }
+  }
+
+  function takeNotices({ at = new Date(clock()).toISOString() } = {}) {
+    return jobs.takeNotices({ at })
+      .map((row) => ({ ...row, text: reminderNoticeText(row.result) }))
+      .filter((row) => row.text)
+  }
+
+  return { enabled, create, list, cancel, recover, deliverDue, takeNotices }
+}
 
 /** 生成一个新许可 id。 */
 export function newPermitId() {
@@ -124,9 +474,11 @@ export function createPermitStore({ file = PERMIT_FILE, now = Date.now, log = ()
     for (const [id, p] of Object.entries(data.permits ?? {})) {
       if (!p || typeof p !== 'object') continue
       const used = Number(p.usedAt) || 0
+      const revoked = Number(p.revokedAt) || 0
       const expires = Number(p.expiresAt) || 0
       if (used && t - used > PERMIT_KEEP_USED_MS) continue
-      if (!used && expires <= t) continue
+      if (revoked && t - revoked > PERMIT_KEEP_USED_MS) continue
+      if (!used && !revoked && expires <= t) continue
       keep[id] = p
     }
     const ids = Object.keys(keep)
@@ -166,6 +518,7 @@ export function createPermitStore({ file = PERMIT_FILE, now = Date.now, log = ()
       dueAt: due,
       expiresAt,
       usedAt: 0,
+      revokedAt: 0,
     }
     if (!save(data)) return { ok: false, why: '许可没存下来，不能保证到点能发。' }
     return { ok: true, id: pid, chat: target, expiresAt }
@@ -183,6 +536,7 @@ export function createPermitStore({ file = PERMIT_FILE, now = Date.now, log = ()
     if (!p) return { ok: false, why: '没有这条提醒许可（可能已经用过、过期，或没存下来）。' }
     const t = clock()
     if (Number(p.usedAt) > 0) return { ok: false, why: '这条提醒许可已经用过了。' }
+    if (Number(p.revokedAt) > 0) return { ok: false, why: '这条提醒许可已经撤销了。' }
     if (Number(p.expiresAt) <= t) return { ok: false, why: '这条提醒许可已经过期了。' }
     const target = String(chat ?? '').trim()
     if (target && !sameName(target, p.chat)) return { ok: false, why: `许可只允许发到「${p.chat}」，不是「${target}」。` }
@@ -215,12 +569,23 @@ export function createPermitStore({ file = PERMIT_FILE, now = Date.now, log = ()
     return save(data) ? { ok: true } : { ok: false, why: '许可没删掉。' }
   }
 
+  /** 撤销但保留记录，供机械提醒任务和排查使用。 */
+  function retire(id) {
+    const pid = String(id ?? '').trim()
+    if (!pid) return { ok: false, why: '没有许可 id。' }
+    const data = prune(load())
+    const p = data.permits[pid]
+    if (!p) return { ok: true }
+    p.revokedAt = clock()
+    return save(data) ? { ok: true } : { ok: false, why: '许可撤销没写进盘。' }
+  }
+
   /** 测试 / 排查用：看现在账上还有什么。 */
   function list() {
     return Object.values(prune(load()).permits)
   }
 
-  return { grant, check, consume, revoke, list }
+  return { grant, check, consume, revoke, retire, list }
 }
 
 /**

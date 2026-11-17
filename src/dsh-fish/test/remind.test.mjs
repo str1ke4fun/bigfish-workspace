@@ -65,6 +65,33 @@ function fakeWx(over = {}) {
   }
 }
 
+function fakeMechanicalWx() {
+  const wx = fakeWx()
+  const calls = { create: [], list: [], cancel: [], deliver: [] }
+  wx.reminderDelivery = {
+    enabled: () => true,
+    create(req) {
+      calls.create.push(req)
+      return { ok: true, job: { id: 'rem-1', chat: req.chat, dueAt: req.dueAt, result: 'pending' } }
+    },
+    list(req) {
+      calls.list.push(req)
+      return []
+    },
+    cancel(req) {
+      calls.cancel.push(req)
+      return { ok: true }
+    },
+    async deliverDue(req) {
+      calls.deliver.push(req)
+      return { processed: 0 }
+    },
+    takeNotices() { return [] },
+  }
+  wx.mechanicalCalls = calls
+  return wx
+}
+
 function fakeCtx({ wx, schedule } = {}) {
   const defs = []
   return {
@@ -76,6 +103,21 @@ function fakeCtx({ wx, schedule } = {}) {
       },
     },
     get: (n) => (n === 'wx' ? wx : n === 'schedule' ? schedule : undefined),
+  }
+}
+
+function fakeCoreSchedule() {
+  const ticks = []
+  const wakes = []
+  return {
+    ticks,
+    wakes,
+    core: {
+      schedule: {
+        onTick(spec) { ticks.push(spec); return () => { spec.off = true } },
+        onWake(spec) { wakes.push(spec); return () => { spec.off = true } },
+      },
+    },
   }
 }
 
@@ -235,6 +277,88 @@ test('成功定提醒：绑会话、绑原文、after_seconds 用分钟换算、
   assert.equal(marks[0].text, '到点了，喝水')
 })
 
+test('机械提醒：直接落 durable job，不建宿主定时任务，也不把 permit 交给她', async () => {
+  const root = tmp()
+  const wx = fakeMechanicalWx()
+  const schedule = fakeSchedule()
+  const started = Date.now()
+  const r = await createReminder({
+    ctx: fakeCtx({ wx, schedule }),
+    root,
+    sessionId: 'session-wx',
+    chat: '测试群A',
+    text: '到点了，喝水',
+    afterMinutes: 30,
+    title: '喝水',
+  })
+
+  assert.equal(r.ok, true)
+  assert.equal(r.id, 'rem-1')
+  assert.equal(schedule.calls.create.length, 0, '机械提醒不能再唤一轮模型')
+  assert.equal(wx.calls.grant.length, 0, '许可由机械投递层自己管，不交给模型')
+  assert.equal(wx.mechanicalCalls.create.length, 1)
+  const req = wx.mechanicalCalls.create[0]
+  assert.equal(req.sessionId, 'session-wx')
+  assert.equal(req.chat, '测试群A')
+  assert.equal(req.text, '到点了，喝水')
+  assert.ok(req.dueAt >= started + 30 * 60_000)
+  assert.equal('permit' in req, false)
+  assert.equal('permit' in r, false)
+  const { events } = await readEvents(root)
+  assert.equal(reminderMarks(events).length, 0, '机械任务日志不能改写或污染用户事件流')
+})
+
+test('机械提醒：列表只显示未结束任务，取消直接撤销 durable job，不依赖宿主 schedule', async () => {
+  const wx = fakeMechanicalWx()
+  wx.reminderDelivery.list = (req) => {
+    wx.mechanicalCalls.list.push(req)
+    return [
+      { id: 'rem-1', sessionId: 's', chat: '测试群A', dueAt: Date.UTC(2026, 10, 18, 5), result: 'pending' },
+      { id: 'rem-old', sessionId: 's', chat: '测试群B', dueAt: Date.UTC(2026, 10, 18, 4), result: 'confirmed' },
+    ]
+  }
+  wx.reminderDelivery.cancel = (req) => {
+    wx.mechanicalCalls.cancel.push(req)
+    return { ok: true }
+  }
+  const ctx = fakeCtx({ wx })
+
+  const listed = await listReminders({ ctx, sessionId: 's' })
+  assert.equal(listed.ok, true)
+  assert.deepEqual(listed.rows, [{
+    id: 'rem-1',
+    chat: '测试群A',
+    dueAt: new Date(Date.UTC(2026, 10, 18, 5)).toISOString(),
+  }])
+  assert.deepEqual(wx.mechanicalCalls.list[0], { sessionId: 's' })
+
+  const cancelled = await cancelReminder({ ctx, sessionId: 's', id: 'rem-1' })
+  assert.equal(cancelled.ok, true)
+  assert.deepEqual(wx.mechanicalCalls.cancel[0], { id: 'rem-1', sessionId: 's' })
+})
+
+test('核心 tick 驱动到期任务，下一次唤醒只取一次机械提醒世界声', async () => {
+  const wx = fakeMechanicalWx()
+  wx.reminderDelivery.takeNotices = () => [{ id: 'rem-1', result: 'failed', text: '刚才定的提醒没发出去。' }]
+  const ctx = fakeCtx({ wx })
+  const hookTable = fakeCoreSchedule()
+  const dispose = registerRemind(ctx, { root: tmp(), core: hookTable.core })
+
+  assert.equal(hookTable.ticks.length, 1)
+  assert.equal(hookTable.ticks[0].id, 'reminder-delivery')
+  await hookTable.ticks[0].fn({ now: new Date(Date.UTC(2026, 10, 18, 5)) })
+  assert.deepEqual(wx.mechanicalCalls.deliver, [{ now: Date.UTC(2026, 10, 18, 5) }])
+
+  assert.equal(hookTable.wakes.length, 1)
+  assert.deepEqual(await hookTable.wakes[0].fn({ now: new Date(Date.UTC(2026, 10, 18, 5)) }), {
+    text: '刚才定的提醒没发出去。',
+  })
+
+  dispose()
+  assert.equal(hookTable.ticks[0].off, true)
+  assert.equal(hookTable.wakes[0].off, true)
+})
+
 test('微信通道不支持 / 名单不认 / 定时任务没开：都只回 note，不抛', async () => {
   const root = tmp()
   const noWx = await createReminder({ ctx: fakeCtx(), root, sessionId: 's', chat: '测试群A', text: 'x', afterMinutes: 1 })
@@ -386,7 +510,7 @@ test('提醒说明先说做得到，不给她「我没闹钟」的回绝台阶',
     '',
     '有人在微信里让你过一会儿提醒，你做得到。先定上，别说自己没有闹钟。',
     '只能定「过多少分钟」，最短一会儿，最长七天。会话只能是刚把你叫醒的那个。',
-    '到点时把你当时写的那句发出去，一个字不改。发不出去就说没发出去。',
+    '到点时那句话会自己发出去；你下次醒来只会知道有没有发成。',
     '没人让你提醒的事，不要自己定。',
   ].join('\n'))
   assert.doesNotMatch(REMIND_PROMPT, /her_remind|wx_send|permit|宿主|工具/)

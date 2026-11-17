@@ -22,6 +22,7 @@ node --test
   "proactiveChats": { "测试群A": 5 },
   "implicitTaskBinding": true,
   "overdueVisibility": true,
+  "mechanicalReminderDelivery": true,
   "ignoreChats": ["Tencent News", "File Transfer"],
   "capture": {
     "preview": true,
@@ -43,6 +44,7 @@ node --test
 - `proactivePerDay` / `proactiveChats`：主动额度。没被 @ 时，`allowChats` 里的群每天还能自己接几句；生效额度 = `proactiveChats[群名] ?? proactivePerDay`，范围 0–50，0 表示不主动。只对 `allowChats` 生效；被 @ 的窗口内和 `noMentionChats` 不消耗额度。当天已用条数记在 `~/.dsh-wx/proactive.json`，跨天清空，坏文件按 0 条处理。
 - `implicitTaskBinding`：默认开。`wx_send` 只在会话名能唯一解析到目录里的 exact / resolved 目标时，自动挂到该会话的唯一活动任务；显式 `task_id` 仍优先，设为 `false` 可只走旧调用。
 - `overdueVisibility`：默认开。第三次逾期提醒在任务板里与最终 block 一起落盘，并让工作台显示只读的待回/逾期/人工处理摘要；设为 `false` 会隐藏摘要接口、状态和卡片，并回到旧的“提醒后由调用方 block”路径。改完立即生效，不需要重启。
+- `mechanicalReminderDelivery`：默认开。新提醒写进只追加的 `~/.dsh-wx/reminder-jobs.jsonl`，由核心 schedule tick 领取并直接走一次性许可发送，不再起一轮模型对话；按下 Return 后无论确认、未确认还是异常都不重发。失败和未知只在下一次唤醒给一句不含会话、原文或 permit 的世界声。设为 `false` 会回到旧宿主 schedule 路径，已有机械任务留在盘上暂停领取。
 - 说话频率在 `~/dsh-plugins/speech/speech.json`：顶层 `minGapSeconds` / `maxPerMinute` / `maxPerHour` 是 QQ/base；`wx` 是微信覆盖层，缺省 8 秒 / 4 条每分钟 / 40 条每小时。改完立即生效，不用重启。
 
 ## 查询：`wx_history`
