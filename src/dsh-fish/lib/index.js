@@ -11,7 +11,7 @@
  */
 
 import { rootDir, readEvents, appendEvent, readJson, paths, writeAtomic, ensureHer } from './store.js'
-import { loadConfig } from './settings.js'
+import { loadConfig, inWindow } from './settings.js'
 import { deriveSelf } from './derive.js'
 import { registerCapture } from './capture.js'
 import { registerRecall } from './recall.js'
@@ -45,6 +45,7 @@ import { createToolLedger } from './tool-ledger.js'
 // 停用时不清的话下次启用会带着上一次的残留（2026-10-25）。
 import { clearWakeSection, registerIdentity, identityText } from './identity.js'
 import { looksLikeRewriting, looksLikeSecret, sanitizeForeign, screenOutgoing } from './guard.js'
+import { assistantSpeechCue } from './turnend.js'
 
 import { logBoot, makeLogger } from './log.js'
 
@@ -52,6 +53,130 @@ export const name = 'dsh-fish'
 
 /** 版本号：只用于日志导出（排查时第一件事是确认跑的是哪一版）。 */
 export const VERSION = '0.9.0'
+
+/**
+ * 桌宠二期的事实源接线。抽成显式边界，便于用假的 bus/petView 验证
+ * “事实只读、状态易失、观察器失败不影响事件写入”。
+ */
+export function wirePetEventSources({
+  ctx,
+  memory,
+  petView,
+  surfaceOf = () => '',
+  isHerSession = () => true,
+  scheduleHooks = null,
+} = {}) {
+  const disposers = []
+  const activeTurns = new Map()
+  const activeBiliTurns = new Set()
+  let speechSeq = 0
+
+  function latestTurnForSurface(surface) {
+    let found = null
+    for (const turn of activeTurns.values()) {
+      if (turn.surface === surface) found = turn
+    }
+    return found
+  }
+
+  function noteSpeak({ id, text, turn = null }) {
+    if (turn?.spoke) return false
+    const cueId = typeof id === 'string' && id.trim()
+      ? id
+      : `speak:persisted:${++speechSeq}`
+    const noted = petView?.noteCue?.({ id: cueId, kind: 'speak', text }) === true
+    if (noted && turn) turn.spoke = true
+    return noted
+  }
+
+  const onSessionEvent = (session, event) => {
+    try {
+      const sessionId = String(session?.header?.id ?? session?.id ?? '')
+      const surface = String(surfaceOf(session) ?? '')
+      const type = event?.type
+      if (!sessionId || !surface) return
+      if (!isHerSession(session)) return
+
+      if (petSurfaceAllowed(surface)) {
+        petView?.noteSessionEvent?.({ sessionId, surface }, event)
+      }
+
+      if (surface === 'bili' && type === 'turn/start') {
+        activeBiliTurns.add(sessionId)
+        petView?.setOuting?.({ active: true })
+      } else if (surface === 'bili' && type === 'turn/end') {
+        activeBiliTurns.delete(sessionId)
+        petView?.setOuting?.({ active: activeBiliTurns.size > 0 })
+      }
+
+      if (type === 'turn/start') {
+        activeTurns.delete(sessionId)
+        activeTurns.set(sessionId, { sessionId, surface, spoke: false })
+        return
+      }
+
+      if (type === 'assistant/message') {
+        let turn = activeTurns.get(sessionId)
+        if (!turn || turn.surface !== surface) {
+          turn = { sessionId, surface, spoke: false }
+          activeTurns.set(sessionId, turn)
+        }
+        // 无 event id 时序号必须跨 turn 单调；否则同一会话快速连开两轮
+        // 会复用一个 cue id，被 petView 的环形去重误吞。
+        const speech = assistantSpeechCue(event, { sessionId, seq: ++speechSeq })
+        if (speech) noteSpeak({ ...speech, turn })
+        return
+      }
+
+      if (type === 'turn/end') activeTurns.delete(sessionId)
+    } catch { /* 一条会话事件不能拖垮总线 */ }
+  }
+
+  try {
+    const offSession = ctx?.on?.('session/event', onSessionEvent)
+    if (typeof offSession === 'function') disposers.push(offSession)
+  } catch { /* 会话总线不可用时其余事实源仍然可用 */ }
+
+  try {
+    const offAppend = memory?.onAppend?.((event) => {
+      try {
+        if (event?.type === 'bili_reply') {
+          petView?.noteCue?.({ id: event.id, kind: 'replied', text: event.text })
+          return
+        }
+        if (event?.type !== 'utterance') return
+        const turn = latestTurnForSurface(event.surface)
+        noteSpeak({ id: event.id, text: event.text, turn })
+      } catch { /* 观察器不能影响已经成功写入的事件 */ }
+    })
+    if (typeof offAppend === 'function') disposers.push(offAppend)
+  } catch { /* 没有人观察 append 不影响事件流本身 */ }
+
+  try {
+    const offRest = scheduleHooks?.onTick?.({
+      id: 'pet-rest',
+      everyMs: 60_000,
+      order: 100,
+      fn: ({ now, config } = {}) => {
+        const at = now instanceof Date ? now : new Date(now ?? Date.now())
+        if (!Number.isFinite(at.getTime()) || !config?.window) return
+        petView?.setScheduleRest?.({ rest: !inWindow(config, at), at: at.getTime() })
+      },
+    })
+    if (typeof offRest === 'function') disposers.push(offRest)
+  } catch { /* 调度表不可用时只是没有日程休息源 */ }
+
+  let disposed = false
+  return {
+    dispose() {
+      if (disposed) return
+      disposed = true
+      for (const dispose of disposers) {
+        try { dispose() } catch { /* ignore */ }
+      }
+    },
+  }
+}
 
 // ⚠️ 一个数组写全，不要拆成对象
 // sessionController 只有有人打开工作区界面时才出现；写进 inject 会让整条插件在开机后一直挂着不挂载，
@@ -349,22 +474,23 @@ export function apply(ctx, baseConfig = {}) {
     if (screen?.dispose) disposers.push(() => screen.dispose())
 
     // ---- 桌宠：她自己的会话事件 → 易失活动状态 ----
-    // 纯内存接线：不落盘、不写台账、不调模型；dispose 时随 disposers 摘掉监听。
+    // 纯内存接线：活动、发言、被回复、出门与日程休息都只写 petView；
+    // 不落盘、不写台账、不调模型，dispose 时统一摘掉观察器。
     const petView = createPetView({ log: (...a) => logger.warn(...a) })
     try {
-      const offPet = ctx.on?.('session/event', (session, event) => {
-        try {
-          if (!isHerAgent({ session }, herDir)) return
-          const surface = String(fishCore?.surface?.current?.({ session }) ?? '')
-          if (!petSurfaceAllowed(surface)) return
-          const sessionId = session?.header?.id ?? session?.id
-          if (!sessionId) return
-          petView.noteSessionEvent({ sessionId, surface }, event)
-        } catch { /* 一条事件不能拖垮总线 */ }
+      const petSources = wirePetEventSources({
+        ctx,
+        memory: fishCore?.memory,
+        petView,
+        surfaceOf: (session) => {
+          try { return fishCore?.surface?.current?.({ session }) ?? '' } catch { return '' }
+        },
+        isHerSession: (session) => isHerAgent({ session }, herDir),
+        scheduleHooks: fishCore?.schedule,
       })
-      if (typeof offPet === 'function') disposers.push(offPet)
+      disposers.push(() => petSources.dispose())
     } catch (err) {
-      logger.warn('[dsh-fish] 桌宠活动监听没挂上', err?.message ?? err)
+      logger.warn('[dsh-fish] 桌宠事实源没挂上', err?.message ?? err)
     }
 
     if (bootAbort.signal.aborted) return

@@ -36,6 +36,15 @@ function whyOf(err) {
   return msg.slice(0, 240)
 }
 
+/** 观察器拿独立快照：它可以随便改自己的副本，不能污染 append 的返回值。 */
+function snapshotEvent(event) {
+  try {
+    return structuredClone(event)
+  } catch {
+    return JSON.parse(JSON.stringify(event))
+  }
+}
+
 /** ISO 字符串 / Date / epoch 数字 → 毫秒；无法解析返回 null（调用方忽略）。 */
 function toMs(value) {
   if (value instanceof Date) {
@@ -150,6 +159,7 @@ async function loadKnownIds(root, type) {
  */
 export function createMemoryService({ root, core, refreshSelfDoc: injectedRefresh } = {}) {
   const baseRoot = root || paths().root
+  const appendObservers = new Set()
 
   async function refresh() {
     if (typeof injectedRefresh !== 'function') return { ok: false, why: 'NO_REFRESH' }
@@ -173,9 +183,31 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
       return { ok: false, why: whyOf(err) }
     }
 
+    // 只有 appendEvent 已经成功才通知。每个观察器都拿独立快照；同步异常和
+    // 异步拒绝都在这里止损，既不改事件，也不能把一个已经成功的写入变成失败。
+    const pendingObservers = []
+    for (const observer of [...appendObservers]) {
+      try {
+        pendingObservers.push(Promise.resolve(observer(snapshotEvent(event))))
+      } catch { /* 观察器失败与原事件写入无关 */ }
+    }
+    if (pendingObservers.length) await Promise.allSettled(pendingObservers)
+
     // 写入是既成事实。刷新失败只影响身份文档是否最新，不能反悔这条事件。
     if (REFRESH_TYPES.has(event.type)) await refresh().catch(() => {})
     return { ok: true, event }
+  }
+
+  /** 订阅成功 append；返回幂等卸载函数。 */
+  function onAppend(fn) {
+    if (typeof fn !== 'function') return () => {}
+    appendObservers.add(fn)
+    let off = false
+    return () => {
+      if (off) return
+      off = true
+      appendObservers.delete(fn)
+    }
   }
 
   async function validate(raw, opts = {}) {
@@ -330,6 +362,7 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
 
   return {
     append,
+    onAppend,
     commit,
     appendSystem,
     validate,

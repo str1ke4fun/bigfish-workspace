@@ -28,6 +28,30 @@ export function assistantTextOf(event) {
 }
 
 /**
+ * 把一条 live assistant/message 变成桌宠 cue。宿主不保证每条事件都有 id，
+ * 所以优先使用事件/消息 id；否则用「会话 + 本轮消息序号」兜底。
+ *
+ * @param {object} event
+ * @param {{ sessionId?: string, seq?: number }} [opts]
+ * @returns {{ id: string, text: string } | null}
+ */
+export function assistantSpeechCue(event, { sessionId = '', seq = 0 } = {}) {
+  const text = assistantTextOf(event)
+  if (!text) return null
+
+  const direct = event?.id ?? event?.data?.eventId ?? event?.data?.id ?? event?.data?.message?.id
+  const directKey = direct === undefined || direct === null ? '' : String(direct).trim()
+  const turn = event?.data?.turnId ?? event?.data?.turn?.id ?? event?.turnId
+  const turnKey = turn === undefined || turn === null ? '' : String(turn).trim()
+  const n = Number(seq)
+  const ordinal = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0
+  const key = directKey
+    ? `event:${directKey}`
+    : `turn:${turnKey || 'unknown'}:${ordinal}`
+  return { id: `speak:${sessionId || 'session'}:${key}`, text }
+}
+
+/**
  * 等这一轮结束，同时收下她自然说出口的话。
  *
  * 和 `watchTurnEnd` 的区别只有一个：这里不要求她调用任何工具。陪玩/对话里她
