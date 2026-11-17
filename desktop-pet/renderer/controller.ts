@@ -98,6 +98,91 @@ export interface PerformedMotion {
   replay: true
 }
 
+/** 手动动作在播放器里的五个状态；只能有一个借用槽。 */
+export type PlaybackStatus = 'idle' | 'playing-once' | 'playing-seq' | 'holding-loop' | 'restoring'
+export type PlaybackSlot = 'waving'
+
+/** 固定借用 `waving`，不额外扩展组件的 14 个动作名。 */
+export const PLAYBACK_SLOT: PlaybackSlot = 'waving'
+
+/** 与 Task 2 的 ActionDefinition 结构兼容；避免 renderer 依赖 electron/node:path。 */
+export interface PlaybackAction {
+  id: string
+  label: string
+  anim?: string
+  seq?: string[]
+  loop: boolean
+  group: string
+}
+
+export interface PlaybackState {
+  status: PlaybackStatus
+  /** 同一动作的完成回调共享 generation；新动作/显式停止会递增它。 */
+  generation: number
+  /** 动作播放期间收到的最新声明式稳态，恢复时使用它而不是启动时快照。 */
+  steady: PetMotion
+  actionId: string | null
+  animations: string[]
+  index: number
+  loop: boolean
+  expectedAnimation: string | null
+  targetSeen: boolean
+  startedAt: number
+}
+
+export interface PlaybackAnimation {
+  name: string
+  once: boolean
+  src?: string | null
+  row?: number
+  column?: number
+}
+
+export type PlaybackEvent =
+  | { type: 'startAction'; action?: string | PlaybackAction; actionId?: string }
+  | { type: 'stopAction' }
+  | { type: 'motionChanged'; motion: PetMotion | 'dragging'; generation?: number }
+  | { type: 'animationChanged'; animation: PlaybackAnimation | null; generation?: number }
+  | { type: 'steadyChanged'; steady?: PetMotion }
+  | { type: 'dragStarted' }
+  | { type: 'skinChanged' }
+
+export interface PlaybackContext {
+  actions: readonly PlaybackAction[]
+  steady: PetMotion
+  now: number
+}
+
+export interface BindSlotEffect {
+  type: 'bind-slot'
+  slot: PlaybackSlot
+  animation: string
+}
+
+export interface PlayMotionEffect {
+  type: 'play-motion'
+  motion: PlaybackSlot
+  loop: boolean
+  replay: true
+}
+
+export interface ClearMotionEffect {
+  type: 'clear-motion'
+}
+
+export interface RestoreSlotEffect {
+  type: 'restore-slot'
+  slot: PlaybackSlot
+  steady: PetMotion
+}
+
+export type PlaybackEffect = BindSlotEffect | PlayMotionEffect | ClearMotionEffect | RestoreSlotEffect
+
+export interface PlaybackResult {
+  state: PlaybackState
+  effects: PlaybackEffect[]
+}
+
 /** 气泡的稳定 key：同一条评论/动作原地更新，不叠一摞气泡。 */
 export const BUBBLE_ID = 'bigfish'
 
@@ -199,4 +284,219 @@ export function decideEffects(prev: Seen, state: PetState | null, now: number): 
 
   seen.lastActionId = ''
   return effects
+}
+
+/** 新播放器的初始值；`null` 也可以直接交给 `reducePlayback`。 */
+export function initialPlaybackState(steady: PetMotion = 'idle', now = 0): PlaybackState {
+  return {
+    status: 'idle',
+    generation: 0,
+    steady,
+    actionId: null,
+    animations: [],
+    index: 0,
+    loop: false,
+    expectedAnimation: null,
+    targetSeen: false,
+    startedAt: now,
+  }
+}
+
+function playbackActionAnimations(action: PlaybackAction): string[] {
+  const values = action.anim !== undefined ? [action.anim] : action.seq
+  if (!Array.isArray(values) || values.length === 0) return []
+  const names: string[] = []
+  for (const value of values) {
+    const name = typeof value === 'string' ? value.trim() : ''
+    if (name === '') return []
+    names.push(name)
+  }
+  return names
+}
+
+function resolvePlaybackAction(
+  event: Extract<PlaybackEvent, { type: 'startAction' }>,
+  actions: readonly PlaybackAction[],
+): PlaybackAction | null {
+  const requested = event.actionId ?? (typeof event.action === 'string' ? event.action : undefined)
+  if (requested !== undefined) return actions.find((action) => action.id === requested) ?? null
+
+  if (typeof event.action !== 'object' || event.action === null) return null
+  const action = event.action
+  if (playbackActionAnimations(action).length === 0) return null
+  return {
+    id: action.id,
+    label: action.label,
+    ...(action.anim === undefined ? {} : { anim: action.anim }),
+    ...(action.seq === undefined ? {} : { seq: [...action.seq] }),
+    loop: action.loop === true,
+    group: action.group,
+  }
+}
+
+function beginRestore(state: PlaybackState, steady: PetMotion, now: number): PlaybackResult {
+  return {
+    state: {
+      ...state,
+      status: 'restoring',
+      steady,
+      expectedAnimation: null,
+      targetSeen: false,
+      startedAt: now,
+    },
+    effects: [
+      { type: 'clear-motion' },
+      { type: 'restore-slot', slot: PLAYBACK_SLOT, steady },
+    ],
+  }
+}
+
+function stopPlayback(state: PlaybackState, steady: PetMotion, now: number): PlaybackResult {
+  if (state.status === 'idle' || state.status === 'restoring') {
+    return { state, effects: [] }
+  }
+  return beginRestore(
+    { ...state, generation: state.generation + 1 },
+    steady,
+    now,
+  )
+}
+
+function advancePlayback(state: PlaybackState, steady: PetMotion, now: number): PlaybackResult {
+  const nextIndex = state.index + 1
+  if (nextIndex >= state.animations.length) return beginRestore(state, steady, now)
+
+  const animation = state.animations[nextIndex]
+  const holdsLoop = state.loop && nextIndex === state.animations.length - 1
+  return {
+    state: {
+      ...state,
+      status: holdsLoop ? 'holding-loop' : 'playing-seq',
+      steady,
+      index: nextIndex,
+      expectedAnimation: animation,
+      targetSeen: false,
+      startedAt: now,
+    },
+    effects: [
+      { type: 'bind-slot', slot: PLAYBACK_SLOT, animation },
+      { type: 'play-motion', motion: PLAYBACK_SLOT, loop: holdsLoop, replay: true },
+    ],
+  }
+}
+
+/**
+ * 纯播放状态机。调用方负责执行 effects：只改 `config.motions.waving`、
+ * 调用 `pet.motion({ type: 'waving', loop, replay: true })`，结束后 `pet.clear()`。
+ */
+export function reducePlayback(
+  state: PlaybackState | null | undefined,
+  event: PlaybackEvent,
+  context: PlaybackContext,
+): PlaybackResult {
+  const steady = asMotion(event.type === 'steadyChanged' ? event.steady : undefined)
+    ?? asMotion(context.steady)
+    ?? state?.steady
+    ?? 'idle'
+  const current = state === null || state === undefined
+    ? initialPlaybackState(steady, context.now)
+    : { ...state, steady }
+
+  if (event.type === 'steadyChanged') {
+    return { state: current, effects: [] }
+  }
+
+  if (event.type === 'startAction') {
+    const action = resolvePlaybackAction(event, context.actions)
+    if (action === null) return { state: current, effects: [] }
+    const animations = playbackActionAnimations(action)
+    if (animations.length === 0) return { state: current, effects: [] }
+
+    const generation = current.generation + 1
+    const holdsLoop = action.loop === true && animations.length === 1
+    const status: PlaybackStatus = holdsLoop
+      ? 'holding-loop'
+      : animations.length > 1
+        ? 'playing-seq'
+        : 'playing-once'
+    const effects: PlaybackEffect[] = []
+    if (current.status !== 'idle') effects.push({ type: 'clear-motion' })
+    effects.push(
+      { type: 'bind-slot', slot: PLAYBACK_SLOT, animation: animations[0] },
+      { type: 'play-motion', motion: PLAYBACK_SLOT, loop: holdsLoop, replay: true },
+    )
+    return {
+      state: {
+        status,
+        generation,
+        steady,
+        actionId: action.id,
+        animations,
+        index: 0,
+        loop: action.loop === true,
+        expectedAnimation: animations[0],
+        targetSeen: false,
+        startedAt: context.now,
+      },
+      effects,
+    }
+  }
+
+  if (event.type === 'stopAction' || event.type === 'dragStarted' || event.type === 'skinChanged') {
+    return stopPlayback(current, steady, context.now)
+  }
+
+  if (event.type === 'motionChanged') {
+    if (event.generation !== undefined && event.generation !== current.generation) {
+      return { state: current, effects: [] }
+    }
+    if (current.status === 'restoring') {
+      return {
+        state: event.motion === PLAYBACK_SLOT
+          ? current
+          : { ...current, status: 'idle', startedAt: context.now },
+        effects: [],
+      }
+    }
+    if (
+      (current.status === 'playing-once' || current.status === 'playing-seq')
+      && current.targetSeen
+      && event.motion !== PLAYBACK_SLOT
+    ) {
+      return advancePlayback(current, steady, context.now)
+    }
+    return { state: current, effects: [] }
+  }
+
+  if (event.type === 'animationChanged') {
+    if (event.generation !== undefined && event.generation !== current.generation) {
+      return { state: current, effects: [] }
+    }
+    if (current.status === 'restoring') {
+      return {
+        state: { ...current, status: 'idle', startedAt: context.now },
+        effects: [],
+      }
+    }
+    if (current.status !== 'playing-once' && current.status !== 'playing-seq') {
+      return { state: current, effects: [] }
+    }
+
+    const animation = event.animation
+    if (
+      animation !== null
+      && animation.name === current.expectedAnimation
+      && animation.once === true
+    ) {
+      return {
+        state: current.targetSeen ? current : { ...current, targetSeen: true },
+        effects: [],
+      }
+    }
+    if (current.targetSeen && (animation === null || animation.name !== current.expectedAnimation)) {
+      return advancePlayback(current, steady, context.now)
+    }
+  }
+
+  return { state: current, effects: [] }
 }
