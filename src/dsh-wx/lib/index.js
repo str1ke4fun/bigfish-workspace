@@ -1733,9 +1733,6 @@ export function apply(ctx, config = {}) {
         noteRecent([chat])
         const next = new Date(Date.now() + (REMIND_NEXT_MS[level] ?? REMIND_NEXT_MS[3])).toISOString()
         contextStore.board.markReminded(t.taskId, { level, nextCheckAt: next, note: `第 ${level} 次逾期提醒` })
-        if (level >= 3) {
-          contextStore.board.block(t.taskId, { why: '连续多次逾期提醒后仍未处理', uncertain: true })
-        }
         console.log(`[dsh-wx] 逾期提醒 ${level}/3 → ${chat}（${t.taskId}）`)
         logInbound({ type: 'overdue-reminded', taskId: t.taskId, chatId: t.chatId, chat, level })
       }

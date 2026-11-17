@@ -2,7 +2,7 @@ import test, { before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { once } from 'node:events'
-import { mkdtempSync, readFileSync, statSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, statSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -347,4 +347,41 @@ test('跨站写请求 403，同源写请求可用', async () => {
     body: '{}',
   })
   assert.equal(same.status, 200)
+})
+
+test('GET /api/wx/task-summary 只返回待回、逾期和 blocked 计数', async () => {
+  const now = Date.now()
+  const overdueAt = new Date(now - 2 * 3600_000).toISOString()
+  const futureAt = new Date(now + 3600_000).toISOString()
+  const records = [
+    { v: 1, type: 'create', taskId: 't_secret_overdue', chatId: 'c_secret_overdue', chatName: 'SECRET_CHAT_OVERDUE', inboundMsgId: 'm1', text: 'SECRET_TASK_BODY_OVERDUE', at: overdueAt, nextCheckAt: overdueAt },
+    { v: 1, type: 'create', taskId: 't_secret_blocked', chatId: 'c_secret_blocked', chatName: 'SECRET_CHAT_BLOCKED', inboundMsgId: 'm2', text: 'SECRET_TASK_BODY_BLOCKED', at: overdueAt, nextCheckAt: overdueAt },
+    { v: 1, type: 'block', taskId: 't_secret_blocked', why: 'SECRET_BLOCK_REASON', at: overdueAt },
+    { v: 1, type: 'create', taskId: 't_secret_waiting', chatId: 'c_secret_waiting', chatName: 'SECRET_CHAT_WAITING', inboundMsgId: 'm3', text: 'SECRET_TASK_BODY_WAITING', at: overdueAt, nextCheckAt: futureAt },
+    { v: 1, type: 'create', taskId: 't_secret_done', chatId: 'c_secret_done', chatName: 'SECRET_CHAT_DONE', inboundMsgId: 'm4', text: 'SECRET_TASK_BODY_DONE', at: overdueAt, nextCheckAt: overdueAt },
+    { v: 1, type: 'done', taskId: 't_secret_done', at: overdueAt },
+  ]
+  mkdirSync(join(home, '.dsh-wx'), { recursive: true })
+  writeFileSync(join(home, '.dsh-wx', 'tasks.jsonl'), records.map((r) => JSON.stringify(r)).join('\n') + '\n')
+
+  const r = await fetch(`http://127.0.0.1:${port}/api/wx/task-summary`)
+  assert.equal(r.status, 200)
+  const raw = await r.text()
+  assert.deepEqual(JSON.parse(raw), { ok: true, active: 3, overdue: 1, blocked: 1 })
+  for (const secret of [
+    't_secret', 'SECRET_CHAT', 'SECRET_TASK_BODY', 'SECRET_BLOCK_REASON', 'c_secret',
+  ]) assert.equal(raw.includes(secret), false, secret)
+})
+
+test('/api/wx/task-summary 是只读接口', async () => {
+  const r = await fetch(`http://127.0.0.1:${port}/api/wx/task-summary`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      origin: `http://127.0.0.1:${port}`,
+      'sec-fetch-site': 'same-origin',
+    },
+    body: '{}',
+  })
+  assert.equal(r.status, 405)
 })

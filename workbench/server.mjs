@@ -3,12 +3,13 @@
 // 平台层只剩 Linux/WSL：host/linux.mjs 本机直跑；Windows 桌面交付已退役。
 import { createServer } from 'node:http'
 import { readFile, writeFile, mkdir, readdir, unlink, stat } from 'node:fs/promises'
-import { readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { qqState, tailLines } from './qq-watch.mjs'
 import { createHost } from './host/index.mjs'
 import { createFishBff } from './fish/bff.mjs'
+import { createTaskBoard } from '../src/dsh-wx/lib/tasks.js'
 
 const PORT = Number(process.env.WORKBENCH_PORT || 8788)
 const VERSION = process.env.WORKBENCH_VERSION || '0.1.0'
@@ -27,6 +28,36 @@ const setHold = (sec) => asHer(`mkdir -p ${H}/.dsh-wx && printf '{"until":%s,"re
 // 微信"眼睛和手"。关多余界面复用耳朵自己的 clean（浮层、弹出的会话窗、黑框一套判断），
 // 免得工作台和耳朵各写一份、还各漏一种。
 const WX_SH = process.env.WX_SH || `${H}/dsh-plugins/dsh-wx/lib/wx.sh`
+
+// 工作台只读任务摘要。任务文件仍是 dsh-wx 的追加式事实源；这里只投影计数，
+// 不把 taskId、会话名、正文或 blockedWhy 带出进程。按 mtime/size 复用重放结果，
+// 但每次调用都按当前时间重算逾期，避免文件不变时逾期数固定不变。
+const WX_TASKS = join(H, '.dsh-wx', 'tasks.jsonl')
+let wxTaskBoardCache = { file: '', key: '', board: null }
+
+function wxTaskBoard(file = WX_TASKS) {
+  let key = 'missing'
+  try {
+    const st = statSync(file)
+    key = `${st.mtimeMs}:${st.size}`
+  } catch { /* 没有任务文件就是空摘要 */ }
+  if (wxTaskBoardCache.file !== file || wxTaskBoardCache.key !== key) {
+    wxTaskBoardCache = {
+      file,
+      key,
+      board: createTaskBoard({ file, log: () => {} }),
+    }
+  }
+  return wxTaskBoardCache.board
+}
+
+export function wxTaskSummary({ file = WX_TASKS, at = Date.now() } = {}) {
+  const board = wxTaskBoard(file)
+  const active = board.active()
+  const blocked = active.filter((t) => t.status === 'blocked').length
+  const overdue = board.overdue(at).filter((t) => t.status !== 'blocked').length
+  return { ok: true, active: active.length, overdue, blocked }
+}
 
 const log = []
 function note(who, text, ok = true, extra = null) {
@@ -543,6 +574,7 @@ async function wxStatus() {
     extra,
     geom: { x: Number(v.x) || 0, y: Number(v.y) || 0, w: Number(v.w) || 0, h: Number(v.h) || 0 },
     health: { at: health.at || '', stale: health.stale || null, tree: health.tree || null },
+    tasks: wxTaskSummary(),
     // 微信窗口本来就没有标题（xdotool 读到的名字是空的），所以按「有没有窗口」判，别按名字判，
     // 否则界面会一直显示「进程在，没窗口」，看着像微信挂了
     label: running ? (count > 0 ? '在线' + (v.win ? `（${v.win}）` : '') : '进程在，没窗口') : '没在跑',
@@ -977,6 +1009,11 @@ export const server = createServer(async (req, res) => {
       const n = `${r.policy.allowFrom.length} 人 / ${r.policy.groupAllowFrom.length} 群`
       note('qq', `说话范围已存：${n}${r.policy.requireMention ? ' · 群里要 @' : ''}`, r.ok)
       return send(res, r.ok ? 200 : 500, r)
+    }
+
+    if (p === '/api/wx/task-summary') {
+      if (req.method !== 'GET') return send(res, 405, { error: '只读摘要不接受写请求' })
+      return send(res, 200, wxTaskSummary())
     }
 
     if (p === '/api/wx/scope' && req.method !== 'POST') {

@@ -30,11 +30,22 @@ test('微信适配器保留画面与人工代操作', () => {
   assert.equal(wx.order, 20)
   for (const p of ['/api/wx/frame.jpg', '/api/wx/click', '/api/wx/type', '/api/wx/key',
     '/api/wx/scope', '/api/wx/save', '/api/wx/peek', '/api/wx/close-extra',
-    '/api/fish/wx/scan', '/api/gc']) assert.ok(s.includes(p), p)
+    '/api/wx/task-summary', '/api/fish/wx/scan', '/api/gc']) assert.ok(s.includes(p), p)
   assert.match(s, /confirmHuman\(/)
   assert.match(s, /humanActions:\s*\['type',\s*'key'\]/)
   assert.match(s, /clearInterval/)
   assert.doesNotMatch(s, /innerHTML/)
+})
+
+test('微信摘要显示待回、逾期和需人工处理的计数', () => {
+  const out = wx.summary({
+    running: true,
+    label: '在线',
+    tasks: { active: 3, overdue: 2, blocked: 1 },
+  }, {})
+  assert.ok(out.lines.includes('3 件还没收尾'))
+  assert.ok(out.lines.includes('2 件逾期'))
+  assert.ok(out.lines.includes('1 件需要人工处理'))
 })
 
 import { CHANNELS } from '../assets/channels/registry.js'

@@ -160,15 +160,48 @@ t('到点才提醒；提醒后 overdueCount+1、下次检查时间推后', () =>
   assert.equal(b.overdueReminders({ at: T + 30 * 60_000 }).length, 0, '推迟后不再催')
   assert.equal(b.overdueReminders({ at: T + 62 * 60_000 }).length, 1)
 })
-t('提醒满 3 次后不再返回（由调用方 block，不在板里偷偷结束）', () => {
+t('第三次提醒后直接 block，不再返回第四次', () => {
   const b = make()
   const { task } = seed(b)
   b.markReminded(task.taskId, { level: 1, nextCheckAt: at(30) })
   b.markReminded(task.taskId, { level: 2, nextCheckAt: at(60) })
-  b.markReminded(task.taskId, { level: 3, nextCheckAt: at(90) })
+  const third = b.markReminded(task.taskId, { level: 3, nextCheckAt: at(90) })
+  assert.equal(third.ok, true)
   assert.equal(b.get(task.taskId).overdueCount, 3)
-  assert.equal(b.get(task.taskId).status, 'new')
+  assert.equal(b.get(task.taskId).status, 'blocked')
+  assert.match(b.get(task.taskId).blockedWhy, /连续多次逾期/)
   assert.equal(b.overdueReminders({ at: T + 200 * 60_000 }).length, 0)
+
+  const fourth = b.markReminded(task.taskId, { level: 4, nextCheckAt: at(120) })
+  assert.equal(fourth.ok, false)
+  assert.match(fourth.why, /不再自动提醒/)
+  assert.equal(b.get(task.taskId).overdueCount, 3)
+  assert.equal(b.get(task.taskId).lastRemindedAt, new Date(T).toISOString())
+})
+t('blocked 任务收到新入站：保留 blocked、记下新消息，但不重开催办', () => {
+  const b = make()
+  const { task } = seed(b)
+  b.markReminded(task.taskId, { level: 1, nextCheckAt: at(30) })
+  b.block(task.taskId, { why: '等人工处理', at: at(31) })
+  const r = b.create({
+    chatId: 'c1', chatName: '测试群A', inboundMsgId: 'm_blocked_new',
+    text: '补充一句', at: at(40),
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.added, true)
+  const now = b.get(task.taskId)
+  assert.equal(now.status, 'blocked')
+  assert.equal(now.inboundCount, 2)
+  assert.equal(now.lastText, '补充一句')
+  assert.equal(now.overdueCount, 0)
+  assert.equal(now.lastRemindedAt, '')
+  assert.equal(b.overdueReminders({ at: T + 60 * 60_000 }).length, 0)
+
+  const reopened = b.unblock(task.taskId, { at: at(61) })
+  assert.equal(reopened.ok, true)
+  assert.equal(b.get(task.taskId).status, 'new')
+  assert.equal(b.get(task.taskId).lastText, '补充一句')
+  assert.equal(b.get(task.taskId).nextCheckAt, at(76))
 })
 t('blocked / done 不催；对方又说话会重置提醒计数', () => {
   const b = make()

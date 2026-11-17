@@ -7,6 +7,7 @@ import { confirmHuman, scopeChip, picked } from './shared.js'
 
 const SECTIONS = [
   { id: 'live', label: '实时画面' },
+  { id: 'tasks', label: '待回摘要' },
   { id: 'scope', label: '允许说话' },
   { id: 'maint', label: '维护' },
 ]
@@ -48,6 +49,18 @@ function build(root, ctx) {
   SPEC.text.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') { e.preventDefault(); if (await typeText(SPEC.text.value)) SPEC.text.value = '' }
   })
+
+  // 待回摘要：只读计数，不展示任务记号、会话名或消息正文。
+  SPEC.tasks = card('待回摘要', { note: '只读汇总；不显示任务记号、会话名或消息正文。' })
+  SPEC.taskCounts = el('div', { class: 'meta', text: '读取中…' })
+  SPEC.tasksMsg = el('span', { class: 'meta' })
+  SPEC.tasks.body.append(
+    SPEC.taskCounts,
+    el('div', { class: 'row' },
+      el('button', { class: 'small', type: 'button', text: '刷新摘要', onclick: () => loadTaskSummary() }),
+      SPEC.tasksMsg,
+    ),
+  )
 
   // 允许说话
   SPEC.scope = card('允许说话', { note: '名单是发消息前的闸：当前窗口得是名单里的会话，她才开口。' })
@@ -96,7 +109,7 @@ function build(root, ctx) {
     SPEC.thumbs,
   )
 
-  SPEC.sections = { live: SPEC.live.root, scope: SPEC.scope.root, maint: SPEC.maint.root }
+  SPEC.sections = { live: SPEC.live.root, tasks: SPEC.tasks.root, scope: SPEC.scope.root, maint: SPEC.maint.root }
   root.append(SPEC.seg.root, ...Object.values(SPEC.sections))
   show(SPEC.section)
 
@@ -114,7 +127,8 @@ function show(id) {
   SPEC.seg.set(id)
   if (id === 'live') startFrames()
   else stopFrames()
-  if (id === 'scope') loadScope()
+  if (id === 'tasks') loadTaskSummary()
+  else if (id === 'scope') loadScope()
   else if (id === 'maint') loadFrames()
 }
 
@@ -135,6 +149,7 @@ function applyStatus(status) {
   const tree = x.health?.tree
   if (tree && tree.status !== 'ok') bits.push(`无障碍树 ${tree.status}（元素 ${tree.elements ?? '—'}、会话 ${tree.chats ?? '—'}）`)
   SPEC.liveMeta.textContent = bits.join(' · ')
+  if (x.tasks) renderTaskSummary(x.tasks)
   SPEC.extraBtn.hidden = !(x.extra > 0)
   if (!x.running) {
     stopFrames()
@@ -217,6 +232,35 @@ async function pressKey(key) {
   })
   const d = r.data || {}
   SPEC.liveMsg.textContent = d.err ? `人工按键失败：${d.err}` : `按了 ${key}`
+}
+
+// ---------- 待回摘要 ----------
+
+function renderTaskSummary(d) {
+  const count = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0
+  }
+  const active = count(d?.active)
+  const overdue = count(d?.overdue)
+  const blocked = count(d?.blocked)
+  const bits = []
+  if (active) bits.push(`${active} 件还没收尾`)
+  if (overdue) bits.push(`${overdue} 件逾期`)
+  if (blocked) bits.push(`${blocked} 件需要人工处理`)
+  SPEC.taskCounts.textContent = bits.length ? bits.join(' · ') : '现在没有待回'
+  SPEC.taskCounts.className = 'meta ' + (blocked ? 'bad' : overdue ? 'warn' : '')
+  SPEC.tasksMsg.textContent = ''
+}
+
+async function loadTaskSummary() {
+  SPEC.tasksMsg.textContent = '读摘要中…'
+  const r = await local('/api/wx/task-summary')
+  if (!r.ok) {
+    SPEC.tasksMsg.textContent = errorText(r)
+    return
+  }
+  renderTaskSummary(r.data || {})
 }
 
 // ---------- 允许说话 ----------
@@ -413,6 +457,12 @@ export const wx = {
       const tree = status.health?.tree
       if (tree && tree.status !== 'ok') lines.push(`无障碍树 ${tree.status}（元素 ${tree.elements ?? '—'}）`)
       if (status.extra > 0) lines.push(`${status.extra} 个多余界面`)
+      const active = Math.max(0, Math.round(Number(status.tasks?.active) || 0))
+      const overdue = Math.max(0, Math.round(Number(status.tasks?.overdue) || 0))
+      const blocked = Math.max(0, Math.round(Number(status.tasks?.blocked) || 0))
+      if (active > 0) lines.push(`${active} 件还没收尾`)
+      if (overdue > 0) lines.push(`${overdue} 件逾期`)
+      if (blocked > 0) lines.push(`${blocked} 件需要人工处理`)
     }
     return {
       lines,
@@ -426,6 +476,7 @@ export const wx = {
       // 离开页面时退订了；重进要接回 3 秒一次的状态。
       subscribe(ctx)
       if (SPEC.section === 'live') startFrames()
+      else if (SPEC.section === 'tasks') loadTaskSummary()
       return
     }
     SPEC.built = false
@@ -435,7 +486,8 @@ export const wx = {
   async refresh(ctx) {
     SPEC.ctx = ctx
     applyStatus(ctx?.status)
-    if (SPEC.section === 'scope') await loadScope()
+    if (SPEC.section === 'tasks') await loadTaskSummary()
+    else if (SPEC.section === 'scope') await loadScope()
     else if (SPEC.section === 'maint') await loadFrames()
   },
 

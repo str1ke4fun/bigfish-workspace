@@ -129,6 +129,7 @@ function apply(state, rec) {
     t.overdueCount = 0
     t.lastRemindedAt = ''
     // 在等对方接话时又来了新话：重新变成要处理；blocked / replying 保持原状态。
+    // blocked 收到新入站只记账，不自动重开催办；后续回复或人工 unblock 再推进状态。
     if (t.status === 'waiting') t.status = 'new'
     if (t.status === 'new' && at) t.nextCheckAt = addMinutes(at, DEFAULT_CHECK_MS)
     return
@@ -399,18 +400,37 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
 
   /**
    * 记一次逾期提醒，并把下次检查时间往后推。
-   * level 从 1 开始；到了上限由调用方 block，不在这里偷偷结束任务。
+   * 第三次提醒是最后一响：同一批落 remind + block，之后不再接第四次。
    */
-  function markReminded(taskId, { level = 1, nextCheckAt = '', note = '', at } = {}) {
+  function markReminded(taskId, { level = 1, nextCheckAt = '', note = '', maxLevel = 3, at } = {}) {
     const t = states.get(str(taskId))
     if (!t) return { ok: false, why: '没有这个任务。' }
     if (t.status === 'done') return { ok: false, why: '这个任务已经结束了。' }
+    if (t.status === 'blocked') {
+      return { ok: false, why: '这个任务已经卡住了，不再自动提醒。', task: get(t.taskId) }
+    }
+    const cap = Math.max(1, Number(maxLevel) || 3)
+    const current = Math.max(0, Number(t.overdueCount) || 0)
+    if (current >= cap) {
+      const blocked = transition(t.taskId, 'block', {
+        why: '连续多次逾期提醒后仍未处理', uncertain: true, at,
+      })
+      if (!blocked.ok) return blocked
+      return { ok: false, why: '提醒次数已满，不再自动提醒。', task: get(t.taskId) }
+    }
+    const nextLevel = Math.min(cap, Math.max(1, Number(level) || current + 1))
     const next = str(nextCheckAt) || new Date(now() + DEFAULT_CHECK_MS).toISOString()
     const r = transition(t.taskId, 'remind', {
-      level: Math.max(1, Number(level) || 1), nextCheckAt: next, note: str(note).slice(0, 500), at,
+      level: nextLevel, nextCheckAt: next, note: str(note).slice(0, 500), at,
     })
     if (!r.ok) return r
-    return { ok: true, task: states.get(t.taskId) }
+    if (nextLevel >= cap) {
+      const blocked = transition(t.taskId, 'block', {
+        why: '连续多次逾期提醒后仍未处理', uncertain: true, at,
+      })
+      if (!blocked.ok) return blocked
+    }
+    return { ok: true, task: get(t.taskId) }
   }
 
   /** 到点还没处理、还没提醒满的任务（blocked 不催）。 */
