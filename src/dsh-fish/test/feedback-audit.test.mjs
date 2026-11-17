@@ -258,3 +258,12 @@ test('falseSuccessRate 只认明确完成的送达表述', () => {
     assert.equal(rate(reply), 1, reply)
   }
 })
+
+test('falseSuccessRate 只在发送目的地是草稿或输入框时排除', () => {
+  const rate = (reply) => falseSuccessRate([{ toolStatus: 'unconfirmed', reply }])
+
+  assert.equal(rate('草稿已经发到群里了。'), 1)
+  assert.equal(rate('输入框截图已经发到群里了。'), 1)
+  assert.equal(rate('写好了消息已经发出去了。'), 1)
+  assert.equal(rate('已经发到草稿里了。'), 0)
+})
