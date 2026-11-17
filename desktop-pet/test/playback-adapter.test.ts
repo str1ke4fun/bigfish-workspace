@@ -4,7 +4,11 @@ import type { DshPetConfig } from 'dsh-pet-component'
 import { reducePlayback, PLAYBACK_SLOT, type PlaybackAction } from '../renderer/controller.ts'
 import {
   borrowActionConfig,
+  chatReplyPlaybackDecision,
   chatThinkingPlan,
+  createPlaybackCallbackArbiter,
+  pendingServerActionAfterPlaybackEvent,
+  petErrorTarget,
   restoreCompletedEvent,
   petUriProp,
   petMotionProp,
@@ -225,4 +229,127 @@ test('聊天 thinking 遇到借用播放时先显式停止，不再用 bubble mo
   })
   assert.equal(settled.state.status, 'idle')
   assert.equal(settled.state.steady, 'working')
+})
+
+test('临近结束的旧一次性动作被抢占后，旧结束回调不能完成新动作', () => {
+  const first: PlaybackAction = {
+    id: 'first',
+    label: '第一段',
+    anim: 'first-file',
+    loop: false,
+    group: '测试',
+  }
+  const second: PlaybackAction = {
+    id: 'second',
+    label: '第二段',
+    anim: 'second-file',
+    loop: false,
+    group: '测试',
+  }
+  const options = { actions: [first, second], steady: 'idle' as const, now: 10 }
+  const mediaUri = 'pet-asset://local/webm'
+  const callbacks = createPlaybackCallbackArbiter()
+
+  const started = reducePlayback(null, { type: 'startAction', actionId: first.id }, options)
+  callbacks.arm(started.state.generation, started.state.expectedAnimation!, mediaUri)
+  const firstTarget = callbacks.animationChanged({
+    name: 'first-file', once: true, src: `${mediaUri}/first-file.webm`,
+  })
+  assert.ok(firstTarget)
+  const nearEnd = reducePlayback(started.state, firstTarget!, { ...options, now: 20 }).state
+  assert.equal(nearEnd.targetSeen, true)
+
+  const preempted = reducePlayback(nearEnd, { type: 'startAction', actionId: second.id }, {
+    ...options,
+    now: 30,
+  })
+  callbacks.arm(preempted.state.generation, preempted.state.expectedAnimation!, mediaUri)
+
+  // 旧视频的 idle 回调会在新视频尚未 loadeddata 时晚到；不能借新 generation 完成第二段。
+  assert.equal(callbacks.motionChanged('idle'), null)
+  const staleEnd = callbacks.animationChanged({
+    name: 'idle', once: false, src: `${mediaUri}/idle.webm`,
+  })
+  assert.equal(staleEnd, null)
+  assert.equal(preempted.state.actionId, second.id)
+  assert.equal(preempted.state.targetSeen, false)
+
+  const secondTarget = callbacks.animationChanged({
+    name: 'second-file', once: true, src: `${mediaUri}/second-file.webm`,
+  })
+  assert.ok(secondTarget)
+  const secondNearEnd = reducePlayback(preempted.state, secondTarget!, { ...options, now: 40 }).state
+  assert.equal(secondNearEnd.targetSeen, true)
+
+  const secondEnd = callbacks.animationChanged({
+    name: 'idle', once: false, src: `${mediaUri}/idle.webm`,
+  })
+  assert.ok(secondEnd)
+  const restored = reducePlayback(secondNearEnd, secondEnd!, { ...options, now: 50 })
+  assert.equal(restored.state.status, 'restoring')
+})
+
+test('自定义动作素材错误只停止动作，不按皮肤错误处理', () => {
+  const action: PlaybackAction = {
+    id: 'bad-media',
+    label: '坏素材',
+    anim: 'bad-media-file',
+    loop: true,
+    group: '测试',
+    mediaUri: 'pet-asset://local/webm',
+  }
+  const options = { actions: [action], steady: 'idle' as const, now: 10 }
+  const started = reducePlayback(null, { type: 'startAction', actionId: action.id }, options)
+  assert.equal(petErrorTarget(started.state), 'action')
+
+  const stopped = reducePlayback(started.state, { type: 'stopAction' }, options)
+  assert.equal(petErrorTarget(stopped.state), 'skin')
+  assert.equal(petErrorTarget(null), 'skin')
+})
+
+test('停止、拖动、换皮肤和更新动作都会清掉待补目录的服务端动作', () => {
+  const pending = 'asset-042'
+  for (const event of [
+    { type: 'startAction' as const, actionId: 'asset-043' },
+    { type: 'stopAction' as const },
+    { type: 'dragStarted' as const },
+    { type: 'skinChanged' as const },
+  ]) {
+    assert.equal(pendingServerActionAfterPlaybackEvent(pending, event), null)
+  }
+  assert.equal(
+    pendingServerActionAfterPlaybackEvent(pending, { type: 'steadyChanged', steady: 'working' }),
+    pending,
+  )
+})
+
+test('延迟回复只在自己仍是当前请求且动作代次未变时才播放 waving', () => {
+  const action: PlaybackAction = {
+    id: 'loop',
+    label: '循环',
+    anim: 'loop-file',
+    loop: true,
+    group: '测试',
+  }
+  const options = { actions: [action], steady: 'idle' as const, now: 10 }
+  const newerLoop = reducePlayback(null, { type: 'startAction', actionId: action.id }, options).state
+
+  assert.deepEqual(chatReplyPlaybackDecision({
+    requestGeneration: 1,
+    latestRequestGeneration: 1,
+    playbackGeneration: 0,
+    playback: newerLoop,
+  }), { current: true })
+  assert.deepEqual(chatReplyPlaybackDecision({
+    requestGeneration: 1,
+    latestRequestGeneration: 2,
+    playbackGeneration: 0,
+    playback: newerLoop,
+  }), { current: false })
+  assert.deepEqual(chatReplyPlaybackDecision({
+    requestGeneration: 2,
+    latestRequestGeneration: 2,
+    playbackGeneration: newerLoop.generation,
+    playback: newerLoop,
+  }), { current: true, motion: 'waving' })
 })

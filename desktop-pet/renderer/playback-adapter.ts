@@ -1,5 +1,12 @@
 import type { AnimationSlot, DshPetConfig } from 'dsh-pet-component'
-import type { PlaybackAction, PlaybackEvent, PlaybackSlot, PlaybackState, PetMotion } from './controller'
+import type {
+  PlaybackAction,
+  PlaybackAnimation,
+  PlaybackEvent,
+  PlaybackSlot,
+  PlaybackState,
+  PetMotion,
+} from './controller'
 
 type BorrowAction = string | Pick<PlaybackAction, 'anim' | 'seq'>
 
@@ -101,6 +108,101 @@ export function petUriProp(
 export function restoreCompletedEvent(playback: PlaybackState | null | undefined): PlaybackEvent | null {
   if (playback?.status !== 'restoring') return null
   return { type: 'restoreCompleted', generation: playback.generation }
+}
+
+/** 主进程写入 config 的动画名最终会被组件解码成这个目录式资源地址。 */
+export function playbackAnimationSource(mediaUri: string, animation: string): string {
+  const base = mediaUri.trim().replace(/[\\/]+$/, '')
+  return `${base}/${encodeURIComponent(animation)}.webm`
+}
+
+export interface PlaybackCallbackArbiter {
+  /** 新命令下发后只接受对应 generation 的目标素材；旧素材回调在目标出现前全部作废。 */
+  arm(generation: number, animation: string, mediaUri: string): void
+  disarm(): void
+  motionChanged(motion: PetMotion | 'dragging'): PlaybackEvent | null
+  animationChanged(animation: PlaybackAnimation | null): PlaybackEvent | null
+}
+
+/**
+ * 组件的动作回调没有命令 id，只带当前动作/动画。新命令发出后先等待它的目标素材出现，
+ * 再将后续结束回调绑定到该 generation；这样临近结束的旧视频晚到的 idle 不会完成新动作。
+ */
+export function createPlaybackCallbackArbiter(): PlaybackCallbackArbiter {
+  let armed: { generation: number; animation: string; source: string; sourceSeen: boolean } | null = null
+
+  return {
+    arm(generation: number, animation: string, mediaUri: string): void {
+      armed = {
+        generation,
+        animation,
+        source: playbackAnimationSource(mediaUri, animation),
+        sourceSeen: false,
+      }
+    },
+    disarm(): void {
+      armed = null
+    },
+    motionChanged(motion: PetMotion | 'dragging'): PlaybackEvent | null {
+      if (armed === null || !armed.sourceSeen) return null
+      return { type: 'motionChanged', motion, generation: armed.generation }
+    },
+    animationChanged(animation: PlaybackAnimation | null): PlaybackEvent | null {
+      if (armed === null) return null
+      if (
+        animation !== null
+        && animation.name === armed.animation
+        && animation.src === armed.source
+      ) {
+        armed.sourceSeen = true
+      }
+      if (!armed.sourceSeen) return null
+      return { type: 'animationChanged', animation, generation: armed.generation }
+    },
+  }
+}
+
+/** 借用槽正在播放注册表动作时，运行期媒体错误属于动作；其余才回退皮肤。 */
+export function petErrorTarget(playback: PlaybackState | null | undefined): 'action' | 'skin' {
+  if (playback === null || playback === undefined || playback.actionId === null) return 'skin'
+  return playback.status === 'playing-once'
+    || playback.status === 'playing-seq'
+    || playback.status === 'holding-loop'
+    ? 'action'
+    : 'skin'
+}
+
+/** 任何新动作或抢占都让「等待目录补上的旧服务端动作」失效。 */
+export function pendingServerActionAfterPlaybackEvent(
+  pending: string | null,
+  event: PlaybackEvent,
+): string | null {
+  if (pending === null) return null
+  return event.type === 'startAction'
+    || event.type === 'stopAction'
+    || event.type === 'dragStarted'
+    || event.type === 'skinChanged'
+    ? null
+    : pending
+}
+
+export interface ChatReplyPlaybackDecision {
+  current: boolean
+  motion?: 'waving'
+}
+
+/** 旧对话请求直接忽略；当前请求若期间换过动作，只显示回复文字，不再抢占新循环。 */
+export function chatReplyPlaybackDecision(input: {
+  requestGeneration: number
+  latestRequestGeneration: number
+  playbackGeneration: number
+  playback: PlaybackState | null | undefined
+}): ChatReplyPlaybackDecision {
+  if (input.requestGeneration !== input.latestRequestGeneration) return { current: false }
+  const currentPlaybackGeneration = input.playback?.generation ?? 0
+  return currentPlaybackGeneration === input.playbackGeneration
+    ? { current: true, motion: 'waving' }
+    : { current: true }
 }
 
 export interface ChatThinkingPlan {

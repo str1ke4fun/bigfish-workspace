@@ -65,6 +65,8 @@ let activeSkinId = ''
 /** 启动时扫描到的本地皮肤；只用于 hello 上报，实际加载按需读盘复核。 */
 let skinCatalog: ScannedSkin[] = [{ id: '', name: '默认', config: null }]
 let helloTimer: ReturnType<typeof setInterval> | null = null
+/** hello 串行队列：catalog/skin 发布和心跳共用，后发请求不能越过前一个写入服务端。 */
+let helloPublicationTail: Promise<void> = Promise.resolve()
 /** 皮肤加载的单调序号：慢的旧请求不能覆盖后来的新请求。 */
 let skinRevision = 0
 /** 本地尺寸覆盖：服务端回声前不让旧值把窗口拉回去。 */
@@ -305,19 +307,34 @@ function changePetLook(
   if (sync) void syncPetConfig({ bubbleOpacity: look.opacity, bubbleWidth: look.width })
 }
 
-/** 心跳：窗口真的起来了才让服务端判 online。失败静默，不刷屏。 */
-async function sendHello(): Promise<void> {
+/** one POST；只有 HTTP 成功且响应体明确 `ok:true` 才算服务端接受了这份 catalog。 */
+async function postHello(payload: ReturnType<typeof toHelloPayload>): Promise<boolean> {
   try {
     const response = await fetch(PET_HELLO_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(toHelloPayload(app.getVersion(), skinCatalog, actionCatalog)),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
     })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) return false
+    const body: unknown = await response.json().catch(() => null)
+    return isRecord(body) && body.ok === true
   } catch {
-    // 心跳失败不影响桌宠本身；下一拍再试。
+    return false
   }
+}
+
+/** 所有 hello 都经过同一条 promise 链；队列项在轮到它时才读取最新状态。 */
+function enqueueHello<T>(work: () => Promise<T>): Promise<T> {
+  const result = helloPublicationTail.then(work)
+  helloPublicationTail = result.then(() => undefined, () => undefined)
+  return result
+}
+
+/** 心跳：窗口真的起来了才让服务端判 online。失败静默，不刷屏。 */
+export async function sendHello(): Promise<boolean> {
+  return enqueueHello(() => postHello(toHelloPayload(app.getVersion(), skinCatalog, actionCatalog)))
+    .catch(() => false)
 }
 
 function startPetHeartbeat(): void {
@@ -436,6 +453,7 @@ export async function reloadRegisteredActions(
 ): Promise<PetActionReloadResult> {
   const skinId = activeSkinId
   const generation = ++actionCatalogGeneration
+  const previousCatalog = actionCatalog
   sendActionStop(win)
   try {
     const next = await readCatalog(assetsRoot, skinId)
@@ -447,9 +465,29 @@ export async function reloadRegisteredActions(
         error: '动作目录已被更新的重载或皮肤切换替代，未提交旧结果。',
       }
     }
-    setActionCatalog(next, win)
+    const nextCatalog = mergeActionCatalogs(next, [])
+    setActionCatalog(nextCatalog, win)
     lastActionError = null
-    void sendHello()
+    const published = await enqueueHello(async () => {
+      const ok = await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog))
+      if (!ok && generation === actionCatalogGeneration && skinId === activeSkinId) {
+        setActionCatalog(previousCatalog, win)
+      }
+      return ok
+    })
+    if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
+      return {
+        ok: false,
+        stale: true,
+        actions: actionCatalogEntries(actionCatalog),
+        error: '动作目录已被更新的重载或皮肤切换替代，未提交旧结果。',
+      }
+    }
+    if (!published) {
+      const why = '动作没重新载入：hello 没确认服务端已接受新目录。'
+      reportActionError(why, win)
+      return { ok: false, actions: actionCatalogEntries(actionCatalog), error: why }
+    }
     return { ok: true, actions: actionCatalogEntries(actionCatalog) }
   } catch (error) {
     if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
@@ -491,33 +529,53 @@ export interface ApplySkinOptions {
   readCatalog?: ReadActionCatalog
 }
 
-export async function applySkin(id: string, options: ApplySkinOptions = {}): Promise<void> {
+export async function applySkin(id: string, options: ApplySkinOptions = {}): Promise<boolean> {
   const revision = ++skinRevision
   petSettings = { ...petSettings, skin: id }
   const win = options.win === undefined ? petWindow : options.win
   const assetsRoot = options.assetsRoot ?? appFile('assets')
   const loadCatalog = options.readCatalog ?? readActionCatalog
 
-  async function applyValidatedSkin(config: unknown, uri: string): Promise<void> {
+  async function applyValidatedSkin(config: unknown, uri: string): Promise<boolean> {
     let nextActions: ActionDefinition[]
     try {
       nextActions = await loadCatalog(assetsRoot, id)
     } catch (error) {
       throw new Error(`动作注册表没载入：${errorText(error)}`)
     }
-    if (revision !== skinRevision) return
+    if (revision !== skinRevision) return false
 
     // 新皮肤会替换全部动画映射；先让播放器结束旧 generation 的借用槽。
     sendActionStop(win)
     lastSkinError = null
     lastActionError = null
+    const previousCatalog = actionCatalog
+    const previousSkin = skinForwarder.get()
+    const previousSkinId = activeSkinId
+    const nextCatalog = mergeActionCatalogs(nextActions, [])
     skinForwarder.onSkin({ id, revision, config, uri })
-    setActionCatalog(nextActions, win)
-    // skin forwarder 与动作 catalog 都成功后，这个 id 才成为 reload 可信的已提交皮肤。
+    setActionCatalog(nextCatalog, win)
+    // 候选皮肤和 catalog 已推到 renderer；hello 失败会在队列释放前回退。
     activeSkinId = id
     actionCatalogGeneration += 1
-    // 皮肤与动作目录都在同一成功点生效，随后马上刷新服务端可接受的 action id。
-    void sendHello()
+    const catalogGeneration = actionCatalogGeneration
+    // 本地面板已切到候选皮肤；hello 失败必须回退，且回退要发生在队列释放前。
+    const published = await enqueueHello(async () => {
+      const ok = await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog))
+      if (!ok && revision === skinRevision && catalogGeneration === actionCatalogGeneration) {
+        if (previousSkin !== null) skinForwarder.onSkin(previousSkin)
+        setActionCatalog(previousCatalog, win)
+        activeSkinId = previousSkinId
+        actionCatalogGeneration += 1
+      }
+      return ok
+    })
+    if (revision !== skinRevision) return false
+    if (!published) {
+      reportSkinError(id, '皮肤没载入：hello 没确认服务端已接受新目录。', win)
+      return false
+    }
+    return true
   }
 
   if (id === '') {
@@ -528,42 +586,43 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
       if (revision === skinRevision) {
         reportSkinError('', `默认皮肤配置没载入：${errorText(error)}`, win)
       }
-      return
+      return false
     }
     try {
-      await applyValidatedSkin(config, DEFAULT_SKIN_URI)
+      return await applyValidatedSkin(config, DEFAULT_SKIN_URI)
     } catch (error) {
       if (revision === skinRevision) reportSkinError('', errorText(error), win)
+      return false
     }
-    return
   }
 
   if (!SIMPLE_SKIN_ID.test(id)) {
     reportSkinError(id, '皮肤 id 不合法。', win)
-    return
+    return false
   }
 
   const skinDir = join(assetsRoot, 'skins', id)
   const file = normalize(join(skinDir, 'skin.json'))
   if (!isInside(assetsRoot, file)) {
     reportSkinError(id, '皮肤路径越界。', win)
-    return
+    return false
   }
 
   try {
     const parsed: unknown = JSON.parse(await readFile(file, 'utf8'))
-    if (revision !== skinRevision) return
+    if (revision !== skinRevision) return false
     const decision = decideSkinLoad(parsed, skinDir)
     if (!decision.ok) {
       reportSkinError(id, decision.why, win)
-      return
+      return false
     }
-    await applyValidatedSkin(decision.config, skinMediaUri(id))
+    return await applyValidatedSkin(decision.config, skinMediaUri(id))
   } catch (error) {
     if (revision === skinRevision) {
       const why = errorText(error)
       reportSkinError(id, why.startsWith('动作注册表') ? why : `读不了 skin.json：${why}`, win)
     }
+    return false
   }
 }
 

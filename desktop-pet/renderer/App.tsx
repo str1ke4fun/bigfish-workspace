@@ -23,7 +23,11 @@ import {
 } from './controller'
 import {
   borrowActionConfig,
+  chatReplyPlaybackDecision,
   chatThinkingPlan,
+  createPlaybackCallbackArbiter,
+  pendingServerActionAfterPlaybackEvent,
+  petErrorTarget,
   petMotionProp,
   petUriProp,
   restoreCompletedEvent,
@@ -138,7 +142,15 @@ interface WirePetState extends Omit<PetState, 'action'> {
 
 type PlaybackCommand =
   | { type: 'clear' }
-  | { type: 'play'; motion: PlaybackSlot; loop: boolean; replay: true; generation: number }
+  | {
+      type: 'play'
+      motion: PlaybackSlot
+      loop: boolean
+      replay: true
+      generation: number
+      animation: string
+      mediaUri: string
+    }
   | { type: 'motion'; options: PerformedMotion }
 
 interface PendingPlaybackBatch {
@@ -268,11 +280,13 @@ export function App() {
   playbackConfigRef.current = playbackConfig
   const latestSteadyRef = useRef<PetMotion>(steady)
   latestSteadyRef.current = steady
-  /** 当前命令面对应的 generation；配置提交/clear 期间不接受无主回调。 */
-  const callbackGenerationRef = useRef<number | null>(null)
+  /** 新命令先等待对应素材出现，再把后续动作回调绑定到它的 generation。 */
+  const playbackCallbacks = useRef(createPlaybackCallbackArbiter()).current
   const playLegacyMotionRef = useRef<(value: string) => void>(() => {})
   /** state 可能早于 catalog 到达；等目录补上同一 id 后再启动，不丢 `/pet/act` 动作。 */
   const pendingServerActionRef = useRef<string | null>(null)
+  /** 迟到的对话请求不得关闭/抢占更新请求的气泡与动作。 */
+  const chatRequestGenerationRef = useRef(0)
   const batchIdRef = useRef(0)
   const executedBatchRef = useRef(0)
   const [look, setLook] = useState({ opacity: BUBBLE_OPACITY_DEFAULT, width: 0 })
@@ -309,6 +323,10 @@ export function App() {
       event: PlaybackEvent,
       options: { forceBase?: boolean; extraCommands?: PlaybackCommand[] } = {},
     ): void => {
+      pendingServerActionRef.current = pendingServerActionAfterPlaybackEvent(
+        pendingServerActionRef.current,
+        event,
+      )
       const result = reducePlayback(playbackRef.current, event, {
         actions: actionCatalogRef.current,
         steady: latestSteadyRef.current,
@@ -326,12 +344,19 @@ export function App() {
           continue
         }
         if (effect.type === 'play-motion') {
+          const expectedAnimation = result.state.expectedAnimation
+          if (expectedAnimation === null) continue
+          const mediaUri = actionCatalogRef.current.find(
+            (action) => action.id === result.state.actionId,
+          )?.mediaUri ?? skinRef.current?.uri ?? ASSET_BASE
           commands.push({
             type: 'play',
             motion: effect.motion,
             loop: effect.loop,
             replay: true,
             generation: result.state.generation,
+            animation: expectedAnimation,
+            mediaUri,
           })
           continue
         }
@@ -370,29 +395,28 @@ export function App() {
         )
         return
       }
-      callbackGenerationRef.current = null
+      pendingServerActionRef.current = null
+      playbackCallbacks.disarm()
       petApiRef.current.motion(options)
     },
-    [dispatchPlayback],
+    [dispatchPlayback, playbackCallbacks],
   )
   playLegacyMotionRef.current = playLegacyMotion
 
   const handleMotionChange = useCallback(
     (motion: PetMotion | 'dragging'): void => {
-      const generation = callbackGenerationRef.current
-      if (generation === null) return
-      dispatchPlayback({ type: 'motionChanged', motion, generation })
+      const event = playbackCallbacks.motionChanged(motion)
+      if (event !== null) dispatchPlayback(event)
     },
-    [dispatchPlayback],
+    [dispatchPlayback, playbackCallbacks],
   )
 
   const handleAnimationChange = useCallback(
     (animation: { name: string; once: boolean; src?: string | null; row?: number; column?: number } | null): void => {
-      const generation = callbackGenerationRef.current
-      if (generation === null) return
-      dispatchPlayback({ type: 'animationChanged', animation, generation })
+      const event = playbackCallbacks.animationChanged(animation)
+      if (event !== null) dispatchPlayback(event)
     },
-    [dispatchPlayback],
+    [dispatchPlayback, playbackCallbacks],
   )
 
   // config 先随 React commit 落到 <Pet>，再执行命令面；否则 pet.motion 会命中旧的 waving 映射。
@@ -405,11 +429,12 @@ export function App() {
 
     for (const command of batch.commands) {
       if (command.type === 'clear') {
+        playbackCallbacks.disarm()
         petApiRef.current.clear()
         continue
       }
       if (command.type === 'play') {
-        callbackGenerationRef.current = command.generation
+        playbackCallbacks.arm(command.generation, command.animation, command.mediaUri)
         petApiRef.current.motion({
           type: command.motion,
           loop: command.loop,
@@ -417,17 +442,14 @@ export function App() {
         })
         continue
       }
-      callbackGenerationRef.current = null
+      playbackCallbacks.disarm()
       petApiRef.current.motion(command.options)
     }
 
     const restoreCompletion = restoreCompletedEvent(playbackRef.current)
     if (restoreCompletion !== null) dispatchPlayback(restoreCompletion)
-    if (!batch.commands.some((command) => command.type === 'play')) {
-      callbackGenerationRef.current = null
-    }
     setPendingBatch((current) => current?.id === batch.id ? null : current)
-  }, [dispatchPlayback, pendingBatch, renderedConfig])
+  }, [dispatchPlayback, pendingBatch, playbackCallbacks, renderedConfig])
 
   // 先订阅再主动拉一次，覆盖主进程 catalog 已提交但首推早于 renderer 挂载的竞态。
   useEffect(() => {
@@ -755,10 +777,23 @@ export function App() {
   }, [activeConfig, dispatchPlayback])
 
   /**
-   * 皮肤运行期出错（素材损坏/解码失败等）：回退到上一个皮肤并弹气泡。
-   * 主进程发送前已检查 14 个文件是否存在，这里兜住运行期才暴露的问题。
+   * 运行期素材错误先看当前命令面：借用槽里的注册表动作失败只停动作；
+   * 只有稳态皮肤自身失败才回退到上一个皮肤。
    */
   const handlePetError = (cause: unknown): void => {
+    if (petErrorTarget(playbackRef.current) === 'action') {
+      dispatchPlayback({ type: 'stopAction' }, { forceBase: true })
+      console.warn('[desktop-pet] 动作素材播不了，已停止当前动作', cause)
+      pet.bubble({
+        id: 'action-error',
+        title: '动作没载入',
+        description: '这段动作素材播不了，先停下当前动作。',
+        variant: 'danger',
+        timeout: 5000,
+      })
+      return
+    }
+
     const current = skinRef.current
     dispatchPlayback({ type: 'skinChanged' }, { forceBase: true })
     if (!current) return
@@ -786,6 +821,7 @@ export function App() {
    * - 没送到：标题「没送到」+ note，4 秒后收起。
    */
   const handleDialogue = (text: string): void => {
+    const requestGeneration = ++chatRequestGenerationRef.current
     const requestChat = window.petBridge?.requestChat
     if (!requestChat) {
       pet.bubble({
@@ -800,6 +836,7 @@ export function App() {
 
     const thinking = chatThinkingPlan(playbackRef.current)
     if (thinking.preemptMotion) playLegacyMotion(thinking.preemptMotion)
+    const playbackGeneration = playbackRef.current?.generation ?? 0
     pet.bubble({
       id: CHAT_BUBBLE_ID,
       title: '正在想…',
@@ -809,10 +846,17 @@ export function App() {
 
     void requestChat(text)
       .then((result) => {
+        const reply = chatReplyPlaybackDecision({
+          requestGeneration,
+          latestRequestGeneration: chatRequestGenerationRef.current,
+          playbackGeneration,
+          playback: playbackRef.current,
+        })
+        if (!reply.current) return
         if (result.ok && result.herReply.trim() !== '') {
           // 加载气泡是常驻的，必须自己收掉；reply 会另开说话气泡。
           pet.bubble.close(CHAT_BUBBLE_ID)
-          pagerRef.current?.play(result.herReply, 'waving')
+          pagerRef.current?.play(result.herReply, reply.motion)
           return
         }
         if (result.ok) {
@@ -839,6 +883,7 @@ export function App() {
         })
       })
       .catch(() => {
+        if (chatRequestGenerationRef.current !== requestGeneration) return
         pet.bubble({
           id: CHAT_BUBBLE_ID,
           title: '没送到',
