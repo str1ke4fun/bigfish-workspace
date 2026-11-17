@@ -216,6 +216,30 @@ test('onAppend：异步观察器在 append 返回前结束，拒绝不挡住其�
   })
 })
 
+test('onAppend：永不结束的观察器不能无限阻塞 append 返回', async () => {
+  await withRoot(async (root) => {
+    const m = mem(root)
+    let secondDone = false
+    m.onAppend(() => new Promise(() => {}))
+    m.onAppend(async () => { secondDone = true })
+
+    let timer
+    const result = await Promise.race([
+      m.append({ type: 'utterance', text: '事件已经落盘，不能被观察器扣住' }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('append blocked by observer')), 500)
+      }),
+    ]).finally(() => clearTimeout(timer))
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(secondDone, true, '一个不结束的观察器不能挡住其它观察器')
+
+    const [stored] = await diskEvents(root)
+    assert.equal(stored.id, result.event.id)
+    assert.equal(stored.text, '事件已经落盘，不能被观察器扣住')
+  })
+}, { timeout: 2_000 })
+
 // ---------------------------------------------------------------- commit / appendSystem
 
 test('commit：source 固定 tool，type 默认 utterance，channel/surface 从 agent 推断', async () => {

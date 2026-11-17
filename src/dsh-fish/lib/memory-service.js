@@ -20,6 +20,7 @@ import { similarity, ECHO_MIN_SIM } from './similarity.js'
 const DAY_MS = 86_400_000
 const DEFAULT_LIMIT = 200
 const MAX_LIMIT = 2000
+const DEFAULT_APPEND_OBSERVER_TIMEOUT_MS = 100
 
 /** 写入后需要刷新身份文档的类型（设计 §5.5 + A1.2 主控裁定）。meta 不在其中。 */
 const REFRESH_TYPES = new Set([
@@ -43,6 +44,18 @@ function snapshotEvent(event) {
   } catch {
     return JSON.parse(JSON.stringify(event))
   }
+}
+
+/** 观察器可以异步收尾，但不能永久扣住一条已经落盘的事件。 */
+function waitForObserver(promise, timeoutMs) {
+  let timer
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(resolve, timeoutMs)
+  })
+  return Promise.race([
+    Promise.resolve(promise).catch(() => {}),
+    timeout,
+  ]).finally(() => clearTimeout(timer))
 }
 
 /** ISO 字符串 / Date / epoch 数字 → 毫秒；无法解析返回 null（调用方忽略）。 */
@@ -155,11 +168,21 @@ async function loadKnownIds(root, type) {
  *   root?: string,
  *   core?: object,
  *   refreshSelfDoc?: (root: string) => Promise<any>,
+ *   appendObserverTimeoutMs?: number,
  * }} [options]
  */
-export function createMemoryService({ root, core, refreshSelfDoc: injectedRefresh } = {}) {
+export function createMemoryService({
+  root,
+  core,
+  refreshSelfDoc: injectedRefresh,
+  appendObserverTimeoutMs,
+} = {}) {
   const baseRoot = root || paths().root
   const appendObservers = new Set()
+  const configuredTimeout = Number(appendObserverTimeoutMs)
+  const observerTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? configuredTimeout
+    : DEFAULT_APPEND_OBSERVER_TIMEOUT_MS
 
   async function refresh() {
     if (typeof injectedRefresh !== 'function') return { ok: false, why: 'NO_REFRESH' }
@@ -188,7 +211,7 @@ export function createMemoryService({ root, core, refreshSelfDoc: injectedRefres
     const pendingObservers = []
     for (const observer of [...appendObservers]) {
       try {
-        pendingObservers.push(Promise.resolve(observer(snapshotEvent(event))))
+        pendingObservers.push(waitForObserver(observer(snapshotEvent(event)), observerTimeoutMs))
       } catch { /* 观察器失败与原事件写入无关 */ }
     }
     if (pendingObservers.length) await Promise.allSettled(pendingObservers)

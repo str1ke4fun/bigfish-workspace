@@ -38,6 +38,26 @@ import { Reject } from './schema.js'
 import { defineTool } from './tool.js'
 import { registerTool } from './tool-result.js'
 
+function writeFailure(result) {
+  const why = String(result?.why ?? 'WRITE_FAILED')
+  const message = why === 'NOT_HER_TYPE' ? '这一类内容不能写。' : why
+  throw new Reject(why.split(':')[0], message)
+}
+
+async function appendViaMemory(memory, raw, opts, root) {
+  if (typeof memory?.append !== 'function') return appendEvent(raw, opts, root)
+  const result = await memory.append(raw, opts)
+  if (!result?.ok) writeFailure(result)
+  return result.event
+}
+
+async function appendSystemViaMemory(memory, type, text, opts, root) {
+  if (typeof memory?.appendSystem !== 'function') return appendEvent({ type, text }, opts, root)
+  const result = await memory.appendSystem(type, text, opts)
+  if (!result?.ok) writeFailure(result)
+  return result.event
+}
+
 /** 一句留话最多多少字。太长就不是"留句话"，是写报告。 */
 export const LETTER_MAX = 500
 /** 每天最多留几条。 */
@@ -79,7 +99,7 @@ export function lettersToday(events, dk = dateKey()) {
  * 留一句话。永不抛（失败只回 note）。
  * @returns {Promise<{ok:boolean, id:string, note:string}>}
  */
-export async function leaveLetter(root, text, { log } = {}) {
+export async function leaveLetter(root, text, { log, memory, agent } = {}) {
   const body = String(text ?? '').trim()
   if (!body) return { ok: false, id: '', note: '空白的，没留。' }
   if (body.length > LETTER_MAX) {
@@ -99,12 +119,14 @@ export async function leaveLetter(root, text, { log } = {}) {
     }
 
     const model = deriveSelf(events, { growthDays: config.growthDays })
-    const env = { day: model.day, stage: model.stage, source: 'tool' }
-    const ev = await appendEvent({ type: 'utterance', text: body }, env, root)
+    const env = { day: model.day, stage: model.stage, source: 'tool', agent }
+    const ev = await appendViaMemory(memory, { type: 'utterance', text: body }, env, root)
 
     // 打标：source 必须是 system（schema 规定 tool 只能写 HER_TYPES）
-    await appendEvent(
-      { type: 'meta', text: letterMark(dk, ev.id) },
+    await appendSystemViaMemory(
+      memory,
+      'meta',
+      letterMark(dk, ev.id),
       { day: model.day, stage: model.stage, source: 'system' },
       root,
     ).catch((e) => log?.('letter mark failed', e?.message ?? e))
@@ -125,6 +147,7 @@ export async function leaveLetter(root, text, { log } = {}) {
 /** 注册 her_leave 工具。 */
 export function registerLetter(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
+  const memory = deps.memory ?? deps.core?.memory ?? null
   return registerTool(
     ctx,
     defineTool({
@@ -151,8 +174,12 @@ export function registerLetter(ctx, deps = {}) {
       // 也不写成完整句子（2026-10-24：用户看到「留好了。就一句。没说别的。」，
       // 头三个字就是旧回执，模型会把工具返回的话当自己的话接着说）。
       project: (out) => ({ text: out?.ok ? '[已留]' : `[没留：${out?.note ?? ''}]` }),
-      async execute(args) {
-        const r = await leaveLetter(root, args?.text, { log: deps.log })
+      async execute(args, exec) {
+        const r = await leaveLetter(root, args?.text, {
+          log: deps.log,
+          memory,
+          agent: exec?.agent,
+        })
         return { ok: r.ok, note: r.note }
       },
     }),

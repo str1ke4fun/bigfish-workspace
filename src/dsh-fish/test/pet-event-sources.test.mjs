@@ -12,6 +12,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { wirePetEventSources } from '../lib/index.js'
+import { registerCapture } from '../lib/capture.js'
+import { registerLetter } from '../lib/letter.js'
 import { createMemoryService } from '../lib/memory-service.js'
 import { createPetView } from '../lib/pet-view.js'
 import { createScheduleHooks } from '../lib/schedule-hooks.js'
@@ -32,6 +34,7 @@ function fakeMemory() {
 
 function fakeCtx() {
   const handlers = new Set()
+  const tools = new Map()
   return {
     on(_name, fn) {
       handlers.add(fn)
@@ -41,8 +44,95 @@ function fakeCtx() {
       for (const fn of [...handlers]) fn(session, event)
     },
     listenerCount() { return handlers.size },
+    tools: {
+      register(def) {
+        tools.set(def.name, def)
+        return () => tools.delete(def.name)
+      },
+    },
+    toolsByName: tools,
   }
 }
+
+
+test('growth_commit 的真实持久 utterance 会生成 petView speak cue', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-pet-writer-'))
+  try {
+    const ctx = fakeCtx()
+    const core = { surface: { current: () => 'web' } }
+    const memory = createMemoryService({ root, core })
+    core.memory = memory
+    const petView = createPetView({ now: () => 1000 })
+    const wiring = wirePetEventSources({
+      ctx,
+      memory,
+      petView,
+      surfaceOf: (session) => session?.surface ?? 'web',
+      isHerSession: () => true,
+    })
+
+    registerCapture(ctx, { root, core, memory })
+    const tool = ctx.toolsByName.get('growth_commit')
+    const out = await tool.execute(
+      { type: 'utterance', text: '这句是从真实写入路径来的' },
+      { agent: { session: { header: { id: 'web-real-1' } } } },
+    )
+
+    assert.equal(out.ok, true, JSON.stringify(out))
+    assert.deepEqual(petView.snapshot().cues, [{
+      id: out.id,
+      kind: 'speak',
+      text: '这句是从真实写入路径来的',
+      at: 1000,
+      ttlMs: 15_000,
+    }])
+
+    wiring.dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+
+test('her_leave 的真实持久 utterance 也会生成 petView speak cue', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-pet-letter-writer-'))
+  try {
+    const ctx = fakeCtx()
+    const core = { surface: { current: () => 'web' } }
+    const memory = createMemoryService({ root, core })
+    core.memory = memory
+    const petView = createPetView({ now: () => 1500 })
+    const wiring = wirePetEventSources({
+      ctx,
+      memory,
+      petView,
+      surfaceOf: (session) => session?.surface ?? 'web',
+      isHerSession: () => true,
+    })
+
+    registerLetter(ctx, { root, core, memory })
+    const tool = ctx.toolsByName.get('her_leave')
+    const out = await tool.execute(
+      { text: '这句是留给他的，也该出现在桌宠上' },
+      { agent: { session: { header: { id: 'web-real-2' } } } },
+    )
+
+    assert.equal(out.ok, true, JSON.stringify(out))
+    const { events } = await readEvents(root)
+    const utterance = events.find((event) => event.type === 'utterance')
+    assert.deepEqual(petView.snapshot().cues, [{
+      id: utterance.id,
+      kind: 'speak',
+      text: '这句是留给他的，也该出现在桌宠上',
+      at: 1500,
+      ttlMs: 15_000,
+    }])
+
+    wiring.dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
 
 
 test('bili_reply 落盘后按 event id 生成一条 replied cue', () => {
@@ -197,6 +287,34 @@ test('B 站 session 的 turn/start 与 turn/end 驱动 outing scene', () => {
 
   ctx.emit(session, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
   assert.equal(petView.snapshot().scene, null)
+
+  wiring.dispose()
+})
+
+
+test('两个 B 站 session 重叠时，前一个结束不会提前清掉 outing scene', () => {
+  const memory = fakeMemory()
+  const ctx = fakeCtx()
+  const petView = createPetView({ now: () => 3100 })
+  const wiring = wirePetEventSources({
+    ctx,
+    memory,
+    petView,
+    surfaceOf: (session) => session?.surface ?? '',
+    isHerSession: () => true,
+  })
+  const first = { header: { id: 'bili-overlap-1' }, surface: 'bili' }
+  const second = { header: { id: 'bili-overlap-2' }, surface: 'bili' }
+
+  ctx.emit(first, { type: 'turn/start' })
+  ctx.emit(second, { type: 'turn/start' })
+  assert.deepEqual(petView.snapshot().scene, { kind: 'out', at: 3100 })
+
+  ctx.emit(first, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+  assert.deepEqual(petView.snapshot().scene, { kind: 'out', at: 3100 }, '还有另一条 B 站会话没结束')
+
+  ctx.emit(second, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+  assert.equal(petView.snapshot().scene, null, '最后一条 B 站会话结束才出门回家')
 
   wiring.dispose()
 })

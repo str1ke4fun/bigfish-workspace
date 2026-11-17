@@ -497,10 +497,10 @@ export function apply(ctx, baseConfig = {}) {
     if (ctx.tools?.register) {
       // A2：bili_look / bili_watch / bili_speak 由 dsh-bili 注册，core 不再挂。
       for (const reg of [
-        () => registerCapture(ctx, { root, core: fishCore ?? undefined }),
+        () => registerCapture(ctx, { root, core: fishCore ?? undefined, memory: fishCore?.memory }),
         () => registerRecall(ctx, { root, core: fishCore ?? undefined }),
         // R4：留话（不审批）。和 growth_commit 一样是纯追加，但收件人明确。
-        () => registerLetter(ctx, { root, core: fishCore ?? undefined }),
+        () => registerLetter(ctx, { root, core: fishCore ?? undefined, memory: fishCore?.memory }),
         // 定时提醒：包装宿主 schedule，只开「过多少分钟」；许可由 dsh-wx 发。
         () => registerRemind(ctx, { root, core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
         // 待回任务：只读 dsh-wx 的任务摘要，不碰它的文件。
