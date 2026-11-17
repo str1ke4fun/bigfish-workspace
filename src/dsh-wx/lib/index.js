@@ -62,7 +62,7 @@ import { scanStickers } from './sticker-scan.js'
 import { sendSticker, targetEntry } from './sticker-send.js'
 import { collectSticker } from './sticker-collect.js'
 import { normalizeKeyword, searchSticker } from './sticker-search.js'
-import { WxToolError, registerWxToolErrorAdapter } from './tool-error.js'
+import { WxToolError, registerWxToolErrorAdapter, wrapWxTool, wxFailure, wxWithText } from './tool-error.js'
 import { createSendGate } from './send-gate.js'
 import {
   applyWxSendBookkeeping,
@@ -73,7 +73,11 @@ import {
   projectWxContext,
   projectWxOcr,
   projectWxPeek,
+  projectWxResult,
   projectWxSend,
+  projectWxStickerCollect,
+  projectWxStickerSearch,
+  projectWxStickerSend,
   projectWxTaskDone,
   projectWxTaskSnooze,
   resolveSendKeys,
@@ -165,6 +169,7 @@ function policy() {
       implicitTaskBinding: raw.implicitTaskBinding !== false,
       overdueVisibility: overdueVisibilityEnabled(raw),
       mechanicalReminderDelivery: mechanicalReminderDeliveryEnabled(raw),
+      returnEnvelopes: raw.returnEnvelopes !== false,
     }
   } catch {
     return {
@@ -176,6 +181,7 @@ function policy() {
       implicitTaskBinding: true,
       overdueVisibility: true,
       mechanicalReminderDelivery: true,
+      returnEnvelopes: true,
     }
   }
 }
@@ -207,8 +213,6 @@ const textOut = { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text'
 // wx_ocr 的 execute 返回完整 JSON（台账会落 artifact），但 fishCore 缺席时
 // 旧渲染路径最多只该给 24k，不能把整段 JSON 塞进上下文。
 const ocrOut = { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: boundedText(v) }] }
-
-const OFF = '微信这会儿没开。'
 
 // ---------------------------------------------------------------- 点谁
 /** wx_peek 里一行会话常被整行贴回来当 label：先抹掉未读数、角标、时间、坐标再比。 */
@@ -495,9 +499,12 @@ export function apply(ctx, config = {}) {
   })
 
   const disposers = []
-  // 宿主会把普通 throw 渲染成 `Error: ...`。微信预期失败在 apply 里统一挂一条
-  // 只换 content 的投影通道，isError 仍由宿主保留。
-  disposers.push(registerWxToolErrorAdapter(ctx, { log: (m) => console.log(m) }))
+  // 一个注册级回滚开关：默认所有微信工具走 wrapTool 对象信封；显式 false 时
+  // 回到旧字符串返回与宿主错误投影适配器。中途改 policy 需要重载插件才生效。
+  const toolEnvelopesEnabled = policy().returnEnvelopes !== false
+  if (!toolEnvelopesEnabled) {
+    disposers.push(registerWxToolErrorAdapter(ctx, { log: (m) => console.log(m) }))
+  }
   // 预分配的微信会话 id：宿主在 create 期间就触发 agent/created，那时 surface
   // 登记必须已经能命中。本地集合先兜底，fishCore 在场时再写进面注册表。
   const reservedWxSessions = new Set()
@@ -515,12 +522,21 @@ export function apply(ctx, config = {}) {
   const reg = (tool) => {
     const execute = tool.execute
     const base = { ...tool, execute: (...a) => withGuiLock(() => execute(...a)) }
+    const project = tool.project ?? ((result) => ({ text: projectWxResult(result) }))
+    let core
+    try { core = ctx.get?.('fishCore') } catch { core = undefined }
+    if (toolEnvelopesEnabled) {
+      const def = wrapWxTool({ ...base, project }, { core })
+      disposers.push(ctx.tools.register(def))
+      return
+    }
     // 有投影的工具一律注册成懒投影：fishCore 可能在本插件 apply() 之后才出现
     //（profile 里 dsh-wx 先于 dsh-fish 加载），所以把判断推迟到 render。
     // base 必须保留 project，懒包装器才能算出投影。
+    const legacy = wrapWxTool({ ...base, project }, { envelopes: false })
     const def = tool.project
-      ? { ...stripProject(base), project: tool.project, output: { ...(base.output ?? {}), render: lazyRender(ctx, base) } }
-      : stripProject(base)
+      ? { ...stripProject(legacy), project, output: { ...(legacy.output ?? {}), render: lazyRender(ctx, legacy) } }
+      : { ...stripProject(legacy), output: textOut }
     disposers.push(ctx.tools.register(def))
   }
 
@@ -1071,10 +1087,21 @@ export function apply(ctx, config = {}) {
   }
 
   /**
-   * 把一句话发到指定会话。永不自己吞错：发不出去就抛，让调用方如实说。
+   * 把一句话发到指定会话。预期失败返回 ok:false；意外异常仍抛出，让调用方如实说。
    * permit 存在时只绕过 @ / 主机闸；允许名单、说话频率、当前会话核对都照走。
    */
-  async function sendToChat({
+  async function sendToChat(args = {}) {
+    try {
+      return await sendToChatUnsafe(args)
+    } catch (error) {
+      if (error instanceof WxToolError) {
+        return wxFailure(error.code, error.modelText, error.rawDetail)
+      }
+      throw error
+    }
+  }
+
+  async function sendToChatUnsafe({
     chat, targetChat = '', targetChatId = '', text, permit = '', taskId = '', replyTask = null, onReturn = null,
   } = {}) {
     const p = policy()
@@ -1267,9 +1294,27 @@ export function apply(ctx, config = {}) {
    * 表情格点下去就发送、没有二次确认，所以点之前会重新扫描面板并核对 pHash，点之后核对消息区。
    * 不写文本 outbox：表情在预览里都是 "[Sticker]"，写进去会让别人发的同款表情被当成自己的回声。
    */
-  async function sendStickerToChat({ chat, id, taskId = '' } = {}) {
+  function stickerOperationalFailure(error, code, message) {
+    if (error instanceof WxToolError) return wxFailure(error.code, error.modelText, error.rawDetail)
+    if (error instanceof TypeError) return null
+    const detail = String(error?.message ?? error ?? '')
+    if (/缺少\s*run\(\)|缺少\s*look\(\)/.test(detail)) return null
+    return wxFailure(code, message, detail)
+  }
+
+  async function sendStickerToChat(args = {}) {
+    try {
+      return await sendStickerToChatUnsafe(args)
+    } catch (error) {
+      const failure = stickerOperationalFailure(error, 'WX_STICKER_SEND_FAILED', '[表情没发出去]')
+      if (failure) return failure
+      throw error
+    }
+  }
+
+  async function sendStickerToChatUnsafe({ chat, id, taskId = '' } = {}) {
     const p = policy()
-    if (!p.enabled) throw new Error(OFF)
+    if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
     const want = String(chat ?? '').trim()
     const sid = String(id ?? '').trim()
     if (!want) throw new Error('wx_sticker_send: chat 不能为空。')
@@ -1353,9 +1398,19 @@ export function apply(ctx, config = {}) {
    * 把聊天里的一条表情收藏进微信收藏。只右键气泡、点 Add Sticker，不发送任何消息。
    * 不指定 chat 时只处理当前打开的会话；指定了就必须在白名单里，不为了收藏去点陌生会话。
    */
-  async function collectStickerFromChat({ chat = '', which = 1 } = {}) {
+  async function collectStickerFromChat(args = {}) {
+    try {
+      return await collectStickerFromChatUnsafe(args)
+    } catch (error) {
+      const failure = stickerOperationalFailure(error, 'WX_STICKER_COLLECT_FAILED', '[没收藏下来]')
+      if (failure) return failure
+      throw error
+    }
+  }
+
+  async function collectStickerFromChatUnsafe({ chat = '', which = 1 } = {}) {
     const p = policy()
-    if (!p.enabled) throw new Error(OFF)
+    if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
     const want = String(chat ?? '').trim()
     let s = await look()
     if (!s.parsed.ok) throw new Error('读不到微信窗口，不采集。')
@@ -1394,9 +1449,19 @@ export function apply(ctx, config = {}) {
    * 搜索结果没有标签、她看不到图，pick 是盲选；点下去立即发送，没有预览确认。
    * 点之前再确认一次当前会话，避免耳朵在搜索期间把会话切走、表情发错人。
    */
-  async function searchStickerInChat({ chat, keyword, pick = 0, taskId = '' } = {}) {
+  async function searchStickerInChat(args = {}) {
+    try {
+      return await searchStickerInChatUnsafe(args)
+    } catch (error) {
+      const failure = stickerOperationalFailure(error, 'WX_STICKER_SEARCH_FAILED', '[表情没发出去]')
+      if (failure) return failure
+      throw error
+    }
+  }
+
+  async function searchStickerInChatUnsafe({ chat, keyword, pick = 0, taskId = '' } = {}) {
     const p = policy()
-    if (!p.enabled) throw new Error(OFF)
+    if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
     if (!p.stickerSearch) throw new Error('关键词搜索采集已关闭（policy.json 里 stickerSearch=false）。')
     const want = String(chat ?? '').trim()
     if (!want) throw new Error('wx_sticker_search: chat 不能为空。')
@@ -1750,11 +1815,11 @@ export function apply(ctx, config = {}) {
         deliver: async (t, level) => {
           const chat = canonicalName(t.chatName || chatNameOfId(t.chatId))
           if (!chat) throw new Error('会话名当前解析不到')
-          await deliverToChat(chat, t.chatId, overdueText(t, level))
+          const sessionId = await deliverToChat(chat, t.chatId, overdueText(t, level))
           // 提醒本身也算叫了她一次：这个会话的 @ 窗口重新打开，才允许回。
           saveMentions(grant(readMentions(), chat, Date.now()))
           noteRecent([chat])
-          return chat
+          return { ok: true, chat, sessionId }
         },
         nextCheckAt: (_t, level) => new Date(Date.now() + (REMIND_NEXT_MS[level] ?? REMIND_NEXT_MS[3])).toISOString(),
         note: (_t, level) => `第 ${level} 次逾期提醒`,
@@ -2384,13 +2449,19 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => true,
     execute: async (_args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       mkdirSync(SHOT_DIR, { recursive: true })
       const path = join(SHOT_DIR, `shot-${Date.now()}.png`)
       const out = await run(['shot', path])
       const [, w, h] = out.split(/\s+/)
       prune()
-      return `已截图：${path}（窗口 ${w}x${h}）`
+      return {
+        ok: true,
+        path,
+        width: Number(w) || w || '',
+        height: Number(h) || h || '',
+        text: `已截图：${path}（窗口 ${w}x${h}）`,
+      }
     },
   })
 
@@ -2403,11 +2474,17 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => true,
     execute: async (_args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const s = await look()
-      if (s.source === 'ocr') return JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: '屏幕上的字不足以确认当前会话，也不能据此发送。' }, null, 2)
+      if (s.source === 'ocr') {
+        return {
+          ok: true,
+          source: 'ocr',
+          text: JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: '屏幕上的字不足以确认当前会话，也不能据此发送。' }, null, 2),
+        }
+      }
       // 尾巴（[提示]）比正文更重要：先给它留位置，再截正文。
-      return clipPeekBody(s.raw, fresh.notice())
+      return { ok: true, source: s.source, text: clipPeekBody(s.raw, fresh.notice()) }
     },
   })
 
@@ -2449,7 +2526,7 @@ export function apply(ctx, config = {}) {
             await speechGate(g.chat)
             await gateSend({ consume: true, expected: g.chat })
             await run(['key', 'Return'])
-            return '已经按下回车发送了。' + fresh.notice()
+            return { ok: true, text: '已经按下回车发送了。' + fresh.notice() }
           }
           throw new WxToolError('WX_CLICK_TARGET_NOT_FOUND', '[没做成，过会儿再试]')
         }
@@ -2473,7 +2550,14 @@ export function apply(ctx, config = {}) {
       } else {
         parts.push(`当前会话：“${cur || '读不到'}”`)
       }
-      return parts.join('；') + '。' + fresh.notice()
+      return {
+        ok: true,
+        x,
+        y,
+        target: target ? { kind: target.kind, name: target.name } : null,
+        current: cur,
+        text: parts.join('；') + '。' + fresh.notice(),
+      }
     },
   })
 
@@ -2505,7 +2589,7 @@ export function apply(ctx, config = {}) {
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset() // 关浮层会改像素但树不变，旧基线不能再拿来判"落后"
       await run(['type', text], 60_000)
-      if (!enter) return '[字打好了，还没发]'
+      if (!enter) return { ok: true, sent: 'draft', text: '[字打好了，还没发]' }
 
       // 回车之前再核对一次：打字期间界面可能切走
       await sleep(300)
@@ -2525,7 +2609,7 @@ export function apply(ctx, config = {}) {
       const chatRow = after.parsed.chats.find((c) => sameName(c.name, second.chat))
       const inPreview = !!chatRow && chatRow.preview.includes(head.slice(0, 10))
       const sent = classifyWxSend({ inMsgs, inPreview })
-      applyWxSendBookkeeping({
+      const booking = applyWxSendBookkeeping({
         sent,
         chat: second.chat,
         text,
@@ -2540,7 +2624,13 @@ export function apply(ctx, config = {}) {
             }],
         }),
       })
-      return projectWxSend({ chat: second.chat, sent })
+      return {
+        ok: true,
+        chat: second.chat,
+        sent,
+        booking,
+        text: projectWxSend({ chat: second.chat, sent }),
+      }
     },
   })
 
@@ -2582,7 +2672,7 @@ export function apply(ctx, config = {}) {
       deny(exec)
       const a = args || {}
       const taskId = String(a.task_id ?? '').trim()
-      if (!taskId) throw new Error('这儿缺了那件事的记号。')
+      if (!taskId) return wxFailure('WX_TASK_ID_REQUIRED', '[没做成，过会儿再试]', 'wx_context: task_id missing')
       const r = await contextStore.contextForTask({
         taskId,
         query: String(a.query ?? ''),
@@ -2590,8 +2680,8 @@ export function apply(ctx, config = {}) {
         limit: Number(a.limit) || undefined,
         ignoreChats: policy().ignoreChats,
       })
-      if (!r.ok) throw new Error(r.why)
-      return r.text
+      if (!r.ok) return wxFailure('WX_CONTEXT_FAILED', '[没翻到]', r.why)
+      return { ...r, ok: true, text: r.text }
     },
   })
 
@@ -2618,8 +2708,8 @@ export function apply(ctx, config = {}) {
       const r = chat
         ? contextStore.historyForChat({ chat, query: String(a.query ?? ''), hours: Number(a.hours) || 0, limit, ignoreChats })
         : contextStore.listRecordedChats({ limit, ignoreChats })
-      if (!r.ok) throw new Error(r.why)
-      return r.text
+      if (!r.ok) return wxFailure('WX_HISTORY_FAILED', '[没翻到]', r.why)
+      return { ...r, ok: true, text: r.text }
     },
   })
 
@@ -2640,11 +2730,11 @@ export function apply(ctx, config = {}) {
       deny(exec)
       const a = args || {}
       const taskId = String(a.task_id ?? '').trim()
-      if (!taskId) throw new Error('这儿缺了那件事的记号。')
+      if (!taskId) return wxFailure('WX_TASK_ID_REQUIRED', '[没做成，过会儿再试]', 'wx_task_snooze: task_id missing')
       const minutes = Math.max(1, Math.min(24 * 60, Number(a.minutes) || 15))
       const r = contextStore.snooze({ taskId, minutes })
-      if (!r?.ok) throw new Error(r?.why || '任务没记上。')
-      return projectWxTaskSnooze()
+      if (!r?.ok) return wxFailure('WX_TASK_SNOOZE_FAILED', '[没做成，过会儿再试]', r?.why || 'task snooze failed')
+      return { ...r, ok: true, text: projectWxTaskSnooze() }
     },
   })
 
@@ -2665,10 +2755,10 @@ export function apply(ctx, config = {}) {
       deny(exec)
       const a = args || {}
       const taskId = String(a.task_id ?? '').trim()
-      if (!taskId) throw new Error('这儿缺了那件事的记号。')
+      if (!taskId) return wxFailure('WX_TASK_ID_REQUIRED', '[没做成，过会儿再试]', 'wx_task_done: task_id missing')
       const r = contextStore.done({ taskId, note: String(a.note ?? '') })
-      if (!r?.ok) throw new Error(r?.why || '任务没记上。')
-      return projectWxTaskDone()
+      if (!r?.ok) return wxFailure('WX_TASK_DONE_FAILED', '[没做成，过会儿再试]', r?.why || 'task done failed')
+      return { ...r, ok: true, text: projectWxTaskDone() }
     },
   })
 
@@ -2681,11 +2771,11 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => true,
     execute: async (_args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const data = await ocrRead()
       // 完整返回：台账会把大字段落 artifact（审计副本）。模型看到的由
       // projectWxOcr 投影；fishCore 缺席时由 ocrOut 限长，不把整段 JSON 塞进上下文。
-      return JSON.stringify(data, null, 2)
+      return { ok: true, data, text: JSON.stringify(data, null, 2) }
     },
   })
 
@@ -2702,8 +2792,8 @@ export function apply(ctx, config = {}) {
     execute: async (args, exec) => {
       deny(exec)
       const keys = String((args || {}).keys ?? '').trim()
-      if (!keys) throw new Error('wx_key: keys 不能为空。')
-      if (!policy().enabled) throw new Error(OFF)
+      if (!keys) return wxFailure('WX_KEY_REQUIRED', '[没做成，过会儿再试]', 'wx_key: keys missing')
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       let where = ''
       if (/(^|\+)(return|kp_enter|enter)$/i.test(keys)) {
         // 回车视同发送：先过频率闸，再扣一次主动额度，频率拒绝时不白扣。
@@ -2713,7 +2803,12 @@ export function apply(ctx, config = {}) {
         where = `当前会话：“${g.chat}”。`
       }
       await run(['key', keys])
-      return `已按 ${keys}。${where}` + fresh.notice()
+      return {
+        ok: true,
+        keys,
+        chat: where ? where.match(/当前会话：“([^”]*)”/)?.[1] ?? '' : '',
+        text: `已按 ${keys}。${where}` + fresh.notice(),
+      }
     },
   })
 
@@ -2736,7 +2831,7 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (_args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       let r
       try {
         r = await scanStickers({ run, dir: stickerDir, log: (m) => console.log('[dsh-wx] 表情扫描：' + m) })
@@ -2744,14 +2839,24 @@ export function apply(ctx, config = {}) {
         const extra = []
         if (err?.panelShot) extra.push(`截图：${err.panelShot}`)
         if (err?.closed === false) extra.push('面板可能还开着，请人工看一眼')
-        throw new Error([String(err?.message ?? err), ...extra].filter(Boolean).join('；'))
+        const failure = stickerOperationalFailure(
+          err,
+          'WX_STICKER_SCAN_FAILED',
+          '[表情没扫成]',
+        )
+        if (failure) {
+          failure.detail = [failure.detail, ...extra].filter(Boolean).join('；')
+          return failure
+        }
+        throw err
       }
       const warn = stickerWarnings(r)
-      return [
+      const text = [
         `收藏表情扫描完成：共 ${r.total} 张（新增 ${r.added}，认回 ${r.matched}，本轮没看到 ${r.stale}）。`,
         r.closed ? '面板已关闭。' : '',
         ...warn.map((x) => `注意：${x}。`),
       ].filter(Boolean).join('\n')
+      return { ...r, ok: true, text }
     },
   })
 
@@ -2766,11 +2871,16 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => true,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const limit = Number((args || {}).limit ?? 20)
       const { index, recovered } = loadIndex(stickerDir)
       const note = recovered ? '索引文件有损坏，无法解析的条目已跳过；建议重新运行 wx_sticker_scan。\n' : ''
-      return note + formatList(index, listStickers(index, { limit }))
+      return {
+        ok: true,
+        index,
+        recovered,
+        text: note + formatList(index, listStickers(index, { limit })),
+      }
     },
   })
 
@@ -2789,13 +2899,19 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => true,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const query = String((args || {}).query ?? '').trim()
-      if (!query) throw new Error('wx_sticker_find: query 不能为空。')
+      if (!query) return wxFailure('WX_STICKER_QUERY_REQUIRED', '[没做成，过会儿再试]', 'wx_sticker_find: query missing')
       const { index, recovered } = loadIndex(stickerDir)
       const rows = findStickers(index, query, { limit: (args || {}).limit ?? 5 })
       const note = recovered ? '索引文件有损坏，无法解析的条目已跳过；建议重新运行 wx_sticker_scan。\n' : ''
-      return note + formatFind(index, query, rows)
+      return {
+        ok: true,
+        query,
+        rows,
+        recovered,
+        text: note + formatFind(index, query, rows),
+      }
     },
   })
 
@@ -2818,10 +2934,10 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const a = args || {}
       const id = String(a.id ?? '').trim()
-      if (!id) throw new Error('还没说是哪张表情。')
+      if (!id) return wxFailure('WX_STICKER_ID_REQUIRED', '[还没说是哪张表情]', 'wx_sticker_tag: id missing')
       const patch = {}
       if (a.text != null) patch.text = String(a.text)
       if (a.desc != null) patch.desc = String(a.desc)
@@ -2829,19 +2945,35 @@ export function apply(ctx, config = {}) {
       if (a.textConf != null) patch.textConf = String(a.textConf)
       if (a.descConf != null) patch.descConf = String(a.descConf)
       if (a.text == null && a.desc == null && a.tags == null) {
-        throw new Error('wx_sticker_tag: 至少要提供 text、desc、tags 之一。')
+        return wxFailure('WX_STICKER_PATCH_REQUIRED', '[没做成，过会儿再试]', 'wx_sticker_tag: empty patch')
       }
       patch.source = 'manual'
       if (patch.text != null && patch.textConf == null) patch.textConf = 'high'
       if (patch.desc != null && patch.descConf == null) patch.descConf = 'high'
-      const { index } = loadIndex(stickerDir)
-      const { index: next, entry } = annotate(index, id, patch)
-      saveIndex(stickerDir, next)
+      let index, next, entry
+      try {
+        const loaded = loadIndex(stickerDir)
+        index = loaded.index
+        const annotated = annotate(index, id, patch)
+        next = annotated.index
+        entry = annotated.entry
+        saveIndex(stickerDir, next)
+      } catch (err) {
+        const failure = stickerOperationalFailure(err, 'WX_STICKER_TAG_FAILED', '[没改成]')
+        if (failure) return failure
+        throw err
+      }
       const bits = []
       if (entry.tags.length) bits.push(`标签：${entry.tags.join('、')}`)
       if (entry.text) bits.push(`图上文字：${entry.text}`)
       if (entry.desc) bits.push(`描述：${entry.desc}`)
-      return `已更新 ${entry.id}${bits.length ? '｜' + bits.join('｜') : ''}。`
+      return {
+        ok: true,
+        id: entry.id,
+        entry,
+        index,
+        text: `已更新 ${entry.id}${bits.length ? '｜' + bits.join('｜') : ''}。`,
+      }
     },
   })
 
@@ -2861,15 +2993,14 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const r = await withSendLock(() => sendStickerToChat({
         chat: args?.chat,
         id: args?.id,
         taskId: String(args?.task_id ?? ''),
       }))
-      return r.confirmed
-        ? `[表情发到「${r.chat}」了，末尾看见了]`
-        : '[点下去了，没看见落下去。先看看现在停在哪儿，别急着再点]'
+      if (!r?.ok) return r
+      return wxWithText(r, projectWxStickerSend)
     },
   })
 
@@ -2887,14 +3018,13 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const r = await withSendLock(() => collectStickerFromChat({
         chat: args?.chat,
         which: args?.which,
       }))
-      return r.confirmed
-        ? '[收进收藏了]'
-        : '[点了收藏，没确认下来]'
+      if (!r?.ok) return r
+      return wxWithText(r, projectWxStickerCollect)
     },
   })
 
@@ -2915,16 +3045,15 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const r = await withSendLock(() => searchStickerInChat({
         chat: args?.chat,
         keyword: args?.keyword,
         pick: args?.pick,
         taskId: String(args?.task_id ?? ''),
       }))
-      return r.confirmed
-        ? `[表情发到「${r.chat}」了，末尾看见了]`
-        : '[点下去了，没看见落下去]'
+      if (!r?.ok) return r
+      return wxWithText(r, projectWxStickerSearch)
     },
   })
 

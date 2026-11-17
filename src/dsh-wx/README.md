@@ -24,6 +24,7 @@ node --test
   "implicitTaskBinding": true,
   "overdueVisibility": true,
   "mechanicalReminderDelivery": true,
+  "returnEnvelopes": true,
   "ignoreChats": ["Tencent News", "File Transfer"],
   "capture": {
     "preview": true,
@@ -46,6 +47,7 @@ node --test
 - `implicitTaskBinding`：默认开。`wx_send` 只在会话名能唯一解析到目录里的 exact / resolved 目标时，自动挂到该会话的唯一活动任务；显式 `task_id` 仍优先，设为 `false` 可只走旧调用。
 - `overdueVisibility`：默认开。第三次逾期提醒在任务板里与最终 block 一起落盘，并让工作台显示只读的待回/逾期/人工处理摘要；设为 `false` 会隐藏摘要接口、状态和卡片，并回到旧的“提醒后由调用方 block”路径。改完立即生效，不需要重启。
 - `mechanicalReminderDelivery`：默认开。新提醒写进只追加的 `~/.dsh-wx/reminder-jobs.jsonl`，由核心 schedule tick 领取并直接走一次性许可发送，不再起一轮模型对话；按下 Return 后无论确认、未确认还是异常都不重发。成功、未确认、失败和未知都在下一次唤醒给一句不含会话、原文或 permit 的世界声。设为 `false` 会回到旧宿主 schedule 路径，已有机械任务留在盘上暂停领取。
+- `returnEnvelopes`：默认开。全部微信工具返回对象信封：成功为 `{ ok: true, ...完整结果, text }`，预期失败为 `{ ok: false, code, message }`；`text` / `message` 是模型投影，完整结果与 `code` 留给工具台账，意外异常仍是错误。设为 `false` 可回滚为旧的字符串返回与预期错误抛出。这是注册级开关，改完需要重载插件；工作台保存会原样保留这个键。
 - 说话频率在 `~/dsh-plugins/speech/speech.json`：顶层 `minGapSeconds` / `maxPerMinute` / `maxPerHour` 是 QQ/base；`wx` 是微信覆盖层，缺省 8 秒 / 4 条每分钟 / 40 条每小时。改完立即生效，不用重启。
 
 ## 查询：`wx_history`

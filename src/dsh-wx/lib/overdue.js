@@ -126,7 +126,15 @@ export async function runOverdueReminderPass({
     const level = Math.min(cap, (Number(task.overdueCount) || 0) + 1)
     let chat
     try {
-      chat = await deliver(task, level)
+      const delivered = await deliver(task, level)
+      if (delivered && typeof delivered === 'object' && delivered.ok === false) {
+        out.failed += 1
+        log?.(`逾期提醒投不进去（${task.chatName || task.chatId || task.taskId}）：${delivered.code || delivered.message || 'delivery-failed'}`)
+        continue
+      }
+      chat = delivered && typeof delivered === 'object' && delivered.ok === true
+        ? (delivered.chat ?? delivered.sessionId ?? '')
+        : delivered
     } catch (err) {
       log?.(`逾期提醒投不进去（${task.chatName || task.chatId || task.taskId}）：${String(err?.message ?? err).slice(0, 120)}`)
       continue

@@ -190,14 +190,17 @@ export function createToolLedger({
     const isError = result?.isError === true
     const ok = !isError && rawValue?.ok !== false
     const wxToolError = wxToolErrorOf(result)
+    const envelopeFailed = !isError && rawValue?.ok === false
     const rawCode = wxToolError?.code
       ? sanitize(wxToolError.code, redactState)
       : value?.code ?? sanitize(result?.error?.info?.code ?? '', redactState)
     const code = rawCode == null ? '' : String(rawCode)
     const rawError = wxToolError
       ? (wxToolError.rawDetail || wxToolError.text)
-      : errorTextOf(result)
-    const error = isError ? sanitize(rawError, redactState) : null
+      : envelopeFailed
+        ? (rawValue?.detail ?? rawValue?.message ?? '')
+        : errorTextOf(result)
+    const error = (isError || envelopeFailed) ? sanitize(rawError, redactState) : null
 
     const handles = sanitize(rawValue?.handles ?? [], redactState)
     const refs = sanitize(rawValue?.refs ?? {}, redactState)

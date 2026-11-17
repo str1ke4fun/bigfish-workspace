@@ -432,13 +432,14 @@ test('overdueVisibility 关闭时隐藏状态与摘要路由，改回 true 立�
   assert.equal(onSummary.status, 200)
 })
 
-test('微信策略保存保留 mechanicalReminderDelivery:false 与已有硬熔断', async () => {
+test('微信策略保存保留 mechanicalReminderDelivery:false、returnEnvelopes:false 与已有硬熔断', async () => {
   mkdirSync(join(home, '.dsh-wx'), { recursive: true })
   const policyFile = join(home, '.dsh-wx', 'policy.json')
   writeFileSync(policyFile, JSON.stringify({
     enabled: true,
     allowChats: ['旧群'],
     mechanicalReminderDelivery: false,
+    returnEnvelopes: false,
     hardBreaker: 12,
   }) + '\n')
 
@@ -465,12 +466,14 @@ test('微信策略保存保留 mechanicalReminderDelivery:false 与已有硬熔�
   assert.equal(saved.status, 200)
   const onDisk = JSON.parse(readFileSync(policyFile, 'utf8'))
   assert.equal(onDisk.mechanicalReminderDelivery, false)
+  assert.equal(onDisk.returnEnvelopes, false)
   assert.equal(onDisk.hardBreaker, 12)
 
   const scope = await fetch(`http://127.0.0.1:${port}/api/wx/scope`)
   assert.equal(scope.status, 200)
   const scopePolicy = (await scope.json()).policy
   assert.equal(scopePolicy.mechanicalReminderDelivery, false)
+  assert.equal(scopePolicy.returnEnvelopes, false)
   assert.equal(scopePolicy.hardBreaker, 12)
 })
 

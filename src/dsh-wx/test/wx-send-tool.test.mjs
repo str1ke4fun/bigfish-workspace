@@ -348,24 +348,30 @@ test('wx_send 工具级集成：绑定、别名回滚、回执与三个确认态
     },
   })
 
-  assert.match(await tool.execute({ chat: '群甲', text: '回甲' }, {}), /末尾能看见/)
+  const run = async (args) => {
+    const out = await tool.execute(args, {})
+    assert.equal(out.ok, true)
+    return out.text
+  }
+
+  assert.match(await run({ chat: '群甲', text: '回甲' }), /末尾能看见/)
   assert.equal(board.get(exactTask.taskId).replyCount, 1)
   assert.deepEqual(
     { source: outcomes.at(-1).source, status: outcomes.at(-1).status, booking: outcomes.at(-1).booking },
     { source: 'implicit', status: 'bound', booking: 'recorded' },
   )
 
-  assert.match(await tool.execute({ chat: '星晓家园10号楼13...', text: '回截断' }, {}), /末尾能看见/)
+  assert.match(await run({ chat: '星晓家园10号楼13...', text: '回截断' }), /末尾能看见/)
   assert.equal(sends.at(-1).targetChat, '星晓家园10号楼1301')
   assert.equal(board.get(resolvedTask.taskId).replyCount, 1)
 
-  assert.match(await tool.execute({ chat: '旧群名', text: '回旧名', permit: 'permit-old-1' }, {}), /末尾能看见/)
+  assert.match(await run({ chat: '旧群名', text: '回旧名', permit: 'permit-old-1' }), /末尾能看见/)
   assert.equal(sends.at(-1).chat, '旧群名', '策略与许可保留请求名')
   assert.equal(sends.at(-1).targetChat, '新群名', '导航使用规范名')
   assert.equal(board.get(renamedTask.taskId).replyCount, 1)
 
   policy.implicitTaskBinding = false
-  assert.match(await tool.execute({ chat: '关闭绑定', text: '回关闭' }, {}), /末尾能看见/)
+  assert.match(await run({ chat: '关闭绑定', text: '回关闭' }), /末尾能看见/)
   assert.equal(sends.at(-1).taskId, '')
   assert.equal(sends.at(-1).replyTask, null)
   assert.equal(board.get(disabledTask.taskId).replyCount, 0)
@@ -373,48 +379,59 @@ test('wx_send 工具级集成：绑定、别名回滚、回执与三个确认态
     { source: outcomes.at(-1).source, status: outcomes.at(-1).status },
     { source: 'disabled', status: 'disabled' },
   )
-  assert.match(await tool.execute({ chat: '回滚旧名', text: '回滚旧名' }, {}), /末尾能看见/)
+  assert.match(await run({ chat: '回滚旧名', text: '回滚旧名' }), /末尾能看见/)
   assert.equal(sends.at(-1).chat, '回滚旧名')
   assert.equal(sends.at(-1).targetChat, '回滚旧名', '回滚开关关闭时不改用规范名')
   policy.implicitTaskBinding = true
 
   const beforeAmbiguous = sends.length
-  await assert.rejects(
-    () => tool.execute({ chat: '撞名群', text: '别发错' }, {}),
-    (error) => parseWxToolError(error.message)?.code === 'WX_CHAT_AMBIGUOUS',
-  )
+  const ambiguous = await tool.execute({ chat: '撞名群', text: '别发错' }, {})
+  assert.equal(ambiguous.ok, false)
+  assert.equal(ambiguous.code, 'WX_CHAT_AMBIGUOUS')
+  assert.match(ambiguous.message, /对不上是哪一个会话/)
   assert.equal(sends.length, beforeAmbiguous, '歧义会话在发送前失败')
 
-  assert.match(await tool.execute({ chat: '没任务群', text: '回没任务' }, {}), /末尾能看见/)
+  assert.match(await run({ chat: '没任务群', text: '回没任务' }), /末尾能看见/)
   assert.deepEqual(
     { source: outcomes.at(-1).source, status: outcomes.at(-1).status, booking: outcomes.at(-1).booking },
     { source: 'none', status: 'no-active-task', booking: 'no-task' },
   )
 
-  assert.match(await tool.execute({ chat: '陌生群', text: '回陌生' }, {}), /没认出是哪一个会话/)
+  assert.match(await run({ chat: '陌生群', text: '回陌生' }), /没认出是哪一个会话/)
   assert.deepEqual(
     { source: outcomes.at(-1).source, status: outcomes.at(-1).status, booking: outcomes.at(-1).booking },
     { source: 'unresolved', status: 'unresolved', booking: 'no-task' },
   )
 
-  assert.match(await tool.execute({ chat: '陌生预览群', text: '回陌生预览' }, {}), /先别当发出去了/)
+  assert.match(await run({ chat: '陌生预览群', text: '回陌生预览' }), /先别当发出去了/)
   assert.doesNotMatch(outcomes.at(-1).warnings.join('\n'), /发出去了/)
-  assert.match(await tool.execute({ chat: '陌生没看见群', text: '回陌生没看见' }, {}), /可能出去了，也可能没有/)
+  assert.match(await run({ chat: '陌生没看见群', text: '回陌生没看见' }), /可能出去了，也可能没有/)
   assert.doesNotMatch(outcomes.at(-1).warnings.join('\n'), /发出去了/)
 
-  assert.match(await tool.execute({ chat: '确认群', text: '回确认' }, {}), /末尾能看见/)
+  assert.match(await run({ chat: '确认群', text: '回确认' }), /末尾能看见/)
   assert.equal(board.get(confirmedTask.taskId).replyCount, 1)
   assert.equal(outcomes.at(-1).booking, 'recorded')
 
-  assert.match(await tool.execute({ chat: '预览群', text: '回预览' }, {}), /先别当发出去了/)
+  assert.match(await run({ chat: '预览群', text: '回预览' }), /先别当发出去了/)
   assert.equal(board.get(previewTask.taskId).replyCount, 0)
   assert.equal(outcomes.at(-1).booking, 'not-booked')
 
-  assert.match(await tool.execute({ chat: '没看见群', text: '回没看见' }, {}), /可能出去了，也可能没有/)
+  assert.match(await run({ chat: '没看见群', text: '回没看见' }), /可能出去了，也可能没有/)
   assert.equal(board.get(unconfirmedTask.taskId).replyCount, 0)
   assert.equal(outcomes.at(-1).booking, 'not-booked')
 
-  assert.match(await tool.execute({ chat: '确认群', text: '回无记号' }, {}), /没记到待回里/)
+  assert.match(await run({ chat: '确认群', text: '回无记号' }), /没记到待回里/)
   assert.equal(board.get(confirmedTask.taskId).replyCount, 1, '空 msgId 不产生第二次回复记账')
   assert.equal(outcomes.at(-1).booking, 'not-recorded')
+})
+
+test('wx_send 把发送层 ok:false 原样交回，不伪造成功文案', async () => {
+  const tool = createWxSendTool({
+    getPolicy: () => ({ enabled: true, implicitTaskBinding: false }),
+    directory: { sendableLookup: () => ({ status: 'none', target: null }) },
+    board: { activeForChat: () => null },
+    sendToChat: async () => ({ ok: false, code: 'WX_TREE_STALE', message: '[没看清。屏幕可能慢半拍]' }),
+  })
+  const out = await tool.execute({ chat: '测试群A', text: '在吗' }, {})
+  assert.deepEqual(out, { ok: false, code: 'WX_TREE_STALE', message: '[没看清。屏幕可能慢半拍]' })
 })

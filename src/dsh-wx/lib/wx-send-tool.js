@@ -1,5 +1,5 @@
 import { projectWxSend, resolveWxSendTask } from './project.js'
-import { WxToolError } from './tool-error.js'
+import { wxFailure } from './tool-error.js'
 
 const BINDING_FAILURE_TEXT = {
   WX_CHAT_AMBIGUOUS: '[这个名字对不上是哪一个会话，先别发]',
@@ -27,7 +27,7 @@ export async function runWxSendTool({
 } = {}) {
   deny(exec)
   const policy = getPolicy()
-  if (!policy?.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
+  if (!policy?.enabled) return wxFailure('WX_DISABLED', '[微信现在没开]')
 
   const binding = resolveWxSendTask({
     chat: args.chat,
@@ -37,7 +37,7 @@ export async function runWxSendTool({
     implicitTaskBinding: policy.implicitTaskBinding !== false,
   })
   if (!binding.ok) {
-    throw new WxToolError(binding.code, BINDING_FAILURE_TEXT[binding.code] || '[没做成，过会儿再试]')
+    return wxFailure(binding.code, BINDING_FAILURE_TEXT[binding.code] || '[没做成，过会儿再试]')
   }
 
   const task = binding.task
@@ -53,6 +53,10 @@ export async function runWxSendTool({
       ? (outMsgId) => recordReply({ taskId, msgId: outMsgId })
       : null,
   }) || {}
+  if (result.ok === false) {
+    return wxFailure(result.code, result.message, result.detail)
+  }
+  if (result.ok !== true) return wxFailure('WX_SEND_FAILED', '[没做成，过会儿再试]')
 
   const booking = result.booking?.status ?? (task ? 'unknown' : 'no-task')
   const recorded = result.booking?.recorded === true
@@ -65,6 +69,8 @@ export async function runWxSendTool({
 
   const text = [projectWxSend({ chat: binding.requestedChat, sent: result.sent }), ...warnings].join('\n')
   return {
+    ...result,
+    ok: true,
     text,
     outcome: {
       source: binding.source,
@@ -88,7 +94,7 @@ export function createWxSendTool(options = {}) {
     execute: async (args, exec) => {
       const result = await runWxSendTool({ ...options, args: args || {}, exec })
       options.onOutcome?.(result.outcome)
-      return result.text
+      return result
     },
   }
 }

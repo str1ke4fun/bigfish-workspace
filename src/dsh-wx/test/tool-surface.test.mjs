@@ -10,8 +10,12 @@ import {
   lazyRender,
   projectWxContext,
   projectWxOcr,
+  projectWxResult,
   projectWxPeek,
   projectWxSend,
+  projectWxStickerCollect,
+  projectWxStickerSearch,
+  projectWxStickerSend,
   projectWxTaskDone,
   projectWxTaskSnooze,
   resolveWxSendTask,
@@ -110,6 +114,22 @@ test('wx_send / wx_type 的 confirmed、preview、unconfirmed 是三句不同世
   ]) {
     assert.doesNotMatch(text, /字|额度|taskId|task_id|回执|t_|消息已出现/)
   }
+})
+
+test('信封投影失败只给 message，成功只读 text，不把审计字段带进上下文', () => {
+  assert.equal(projectWxResult({ ok: false, code: 'WX_DISABLED', message: '[微信现在没开]', detail: 'policy=false' }), '[微信现在没开]')
+  assert.equal(projectWxResult({ ok: true, text: '[看到] 一句话', raw: 'audit-only' }), '[看到] 一句话')
+  assert.equal(projectWxPeek({ ok: false, code: 'WX_TREE_STALE', message: '[没看清。屏幕可能慢半拍]' }), '[没看清。屏幕可能慢半拍]')
+  assert.equal(projectWxOcr({ ok: false, code: 'WX_DISABLED', message: '[微信现在没开]' }), '[微信现在没开]')
+})
+
+test('表情结果投影先看 ok，成功文案仍不暴露确认或标识细节', () => {
+  assert.equal(projectWxStickerSend({ ok: false, code: 'WX_STICKER_SEND_FAILED', message: '[表情没发出去]' }), '[表情没发出去]')
+  assert.equal(projectWxStickerSend({ ok: true, confirmed: true, chat: '测试群A', outMsgId: 'm1' }), '[表情发到「测试群A」了，末尾看见了]')
+  assert.equal(projectWxStickerSend({ ok: true, confirmed: false, chat: '测试群A' }), '[点下去了，没看见落下去。先看看现在停在哪儿，别急着再点]')
+  assert.equal(projectWxStickerCollect({ ok: true, confirmed: true, chat: '测试群A' }), '[收进收藏了]')
+  assert.equal(projectWxStickerSearch({ ok: false, code: 'WX_STICKER_SEARCH_FAILED', message: '[没找到]' }), '[没找到]')
+  assert.equal(projectWxStickerSearch({ ok: true, confirmed: false, chat: '测试群A' }), '[点下去了，没看见落下去]')
 })
 
 test('预览发送写回声凭据，但不写历史也不记任务回复', () => {
@@ -292,8 +312,8 @@ test('wx_task_snooze / wx_task_done 的状态句不带内部任务号', () => {
     assert.doesNotMatch(text, /任务|taskId|task_id|t_/)
   }
   const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
-  assert.match(src, /return projectWxTaskSnooze\(\)/)
-  assert.match(src, /return projectWxTaskDone\(\)/)
+  assert.match(src, /projectWxTaskSnooze\(\)/)
+  assert.match(src, /projectWxTaskDone\(\)/)
 })
 
 test('wx_context 投影改成翻到几段原话，不带匹配原因/来源/置信度/msgId', () => {
@@ -680,6 +700,18 @@ test('所有微信工具说明压短，参数集合与 required 集合保持不�
     assert.deepEqual(keys, expectedSchemas[name][0], `${name} property keys`)
     assert.deepEqual(required, expectedSchemas[name][1], `${name} required keys`)
   }
+})
+
+test('所有微信注册共用 wrapWxTool 边界和单一回滚开关', () => {
+  const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const registrations = [...src.matchAll(/\n  reg\(\{/g)]
+  const names = [...src.matchAll(/name: '(wx_[^']+)'/g)]
+  assert.equal(registrations.length, names.length)
+  assert.match(src, /returnEnvelopes: raw\.returnEnvelopes !== false/)
+  assert.match(src, /const toolEnvelopesEnabled = policy\(\)\.returnEnvelopes !== false/)
+  assert.match(src, /if \(toolEnvelopesEnabled\) \{\n      const def = wrapWxTool/)
+  assert.match(src, /wrapWxTool\(\{ \.\.\.base, project \}, \{ envelopes: false \}\)/)
+  assert.equal([...src.matchAll(/ctx\.tools\.register\(/g)].length, 2, '注册只能发生在统一 reg 边界')
 })
 
 test('lazyRender 在 core 晚到时仍能接上投影', () => {

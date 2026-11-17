@@ -162,6 +162,18 @@ test('机械投递：Return 前失败记 failed，并由下一次唤醒拿到一
   assert.doesNotMatch(notices[0].text, /测试群A|到点了，喝水|permit-|rem-/)
 })
 
+test('机械投递：sendReminder 返回 ok:false 时按失败终态结算，不再读取 sent', async () => {
+  const { jobs, permits, worker } = runtimeFixture({
+    sendReminder: async () => ({ ok: false, code: 'WX_TREE_STALE', message: '[没看清]' }),
+  })
+  const created = worker.create({ sessionId: 'session-wx', chat: '测试群A', text: '到点了，喝水', dueAt: T + 60_000 })
+  assert.equal(created.ok, true)
+  await worker.deliverDue({ now: T + 60_000 })
+  assert.equal(jobs.list()[0].result, 'failed')
+  assert.equal(permits.check({ id: jobs.list()[0].permit, chat: '测试群A', text: '到点了，喝水' }).ok, false)
+  assert.match(worker.takeNotices()[0].text, /没发出去/)
+})
+
 test('重启恢复：上次已领取但没结果的提醒记 unknown，不再发送', async () => {
   const dir = temp()
   const file = join(dir, 'reminder-jobs.jsonl')

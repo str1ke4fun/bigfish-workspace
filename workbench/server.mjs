@@ -385,9 +385,10 @@ async function wxPolicy() {
       trigger: Array.isArray(j.trigger) ? j.trigger.map((s) => String(s)) : [],
       overdueVisibility: overdueVisibilityEnabled(j),
       mechanicalReminderDelivery: j.mechanicalReminderDelivery !== false,
+      returnEnvelopes: j.returnEnvelopes !== false,
     }
   } catch {
-    return { enabled: false, allowChats: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [], ...normalizeWxProactive(), watch: true, trigger: [], overdueVisibility: true, mechanicalReminderDelivery: true }
+    return { enabled: false, allowChats: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [], ...normalizeWxProactive(), watch: true, trigger: [], overdueVisibility: true, mechanicalReminderDelivery: true, returnEnvelopes: true }
   }
 }
 
@@ -473,6 +474,7 @@ async function saveWxScope(body) {
     trigger: clean(body.trigger).length ? clean(body.trigger) : before.trigger,
     overdueVisibility: typeof body.overdueVisibility === 'boolean' ? body.overdueVisibility : before.overdueVisibility,
     mechanicalReminderDelivery: typeof body.mechanicalReminderDelivery === 'boolean' ? body.mechanicalReminderDelivery : before.mechanicalReminderDelivery,
+    returnEnvelopes: typeof body.returnEnvelopes === 'boolean' ? body.returnEnvelopes : before.returnEnvelopes,
   }
   const payload = Buffer.from(JSON.stringify(next, null, 2) + '\n', 'utf8').toString('base64')
   const r = await asHer(`

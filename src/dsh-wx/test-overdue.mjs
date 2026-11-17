@@ -55,6 +55,26 @@ test('投递期间的新入站让旧提醒变成 stale，不覆盖新计数', as
   assert.equal(board.get(task.taskId).lastText, '新消息')
 })
 
+test('deliver 返回 ok:false 时不记已投递，也不推进逾期计数', async () => {
+  const board = createTaskBoard({ file: file(), now: () => T, log: () => {} })
+  const { task } = seed(board)
+  let deliveries = 0
+  const result = await runOverdueReminderPass({
+    board,
+    at: T + 16 * 60_000,
+    deliver: async () => {
+      deliveries += 1
+      return { ok: false, code: 'WX_WINDOW_UNAVAILABLE', message: '[没看清]' }
+    },
+    nextCheckAt: () => at(60),
+  })
+  assert.equal(deliveries, 1)
+  assert.equal(result.delivered, 0)
+  assert.equal(result.failed, 1)
+  assert.equal(board.get(task.taskId).overdueCount, 0)
+  assert.equal(board.get(task.taskId).lastRemindedAt, '')
+})
+
 test('落盘失败后进入退避，不再重复投递；恢复后才继续', async () => {
   const target = file()
   let failWrites = false

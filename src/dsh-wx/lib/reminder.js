@@ -376,8 +376,12 @@ export function createReminderDeliveryWorker({
               jobs.markReturned(job.id, { at: new Date(clock()).toISOString() })
             },
           })
-          const result = sent?.sent === 'confirmed' ? 'confirmed' : 'unconfirmed'
-          finish(job, result, sent?.sent ? `send:${sent.sent}` : 'send:unknown')
+          if (sent?.ok === false) {
+            finish(job, 'failed', String(sent.code || sent.message || 'send-failed'))
+          } else {
+            const result = sent?.sent === 'confirmed' ? 'confirmed' : 'unconfirmed'
+            finish(job, result, sent?.sent ? `send:${sent.sent}` : 'send:unknown')
+          }
         } catch (err) {
           const current = jobs.get(job.id)
           const afterReturn = returned || !!current?.returnedAt

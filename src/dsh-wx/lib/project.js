@@ -1,8 +1,8 @@
 /**
  * project.js —— dsh-wx 工具的模型投影
  *
- * `wrapRenderOnly` 只在 render 时读这里的结果：execute 的返回值和 output.schema
- * 都不变，模型看到的是去掉坐标 / 置信度 / 台账编号之后的文字。
+ * 信封模式由 wrapTool 在 render 时读完整结果；旧模式由 wrapRenderOnly 读字符串。
+ * 两种模式都只把模型该看见的文字交出去，坐标 / 置信度 / 台账编号留在完整结果里。
  *
  * 纯函数，不 import 任何东西：测试不启动 GUI，也不依赖 dsh-fish 是否安装。
  */
@@ -19,6 +19,24 @@ const OCR_SKIP_KEYS = new Set([
 ])
 // 无障碍树每行末尾的屏幕坐标：`中心(711,555) 250x68`。
 const PEEK_CENTER = /\s*中心\(-?\d+,-?\d+\) \d+x\d+\s*$/
+
+/** 信封失败只把 message 交给模型；成功才继续走各工具自己的投影。 */
+function envelopeFailure(result) {
+  if (!result || typeof result !== 'object' || result.ok !== false) return null
+  return String(result.message ?? '')
+}
+
+function envelopeText(result) {
+  if (result && typeof result === 'object' && result.ok === true) return result.text ?? ''
+  return result
+}
+
+export function projectWxResult(result) {
+  const failure = envelopeFailure(result)
+  if (failure !== null) return failure
+  if (result && typeof result === 'object') return String(result.text ?? '')
+  return String(result ?? '')
+}
 
 /** 发送确认只能有一个结论：末尾看见、只看见侧栏预览、没看见。 */
 export function classifyWxSend({ inMsgs = false, inPreview = false } = {}) {
@@ -171,6 +189,26 @@ export function projectWxSend({ chat = '', sent = 'unconfirmed' } = {}) {
   return '[按下去了，没看见落下去。可能出去了，也可能没有]'
 }
 
+export function projectWxStickerSend(result) {
+  const failure = envelopeFailure(result)
+  if (failure !== null) return failure
+  if (!result?.confirmed) return '[点下去了，没看见落下去。先看看现在停在哪儿，别急着再点]'
+  return `[表情发到「${String(result.chat ?? '').trim() || '那个会话'}」了，末尾看见了]`
+}
+
+export function projectWxStickerCollect(result) {
+  const failure = envelopeFailure(result)
+  if (failure !== null) return failure
+  return result?.confirmed ? '[收进收藏了]' : '[点了收藏，没确认下来]'
+}
+
+export function projectWxStickerSearch(result) {
+  const failure = envelopeFailure(result)
+  if (failure !== null) return failure
+  if (!result?.confirmed) return '[点下去了，没看见落下去]'
+  return `[表情发到「${String(result.chat ?? '').trim() || '那个会话'}」了，末尾看见了]`
+}
+
 export function projectWxTaskSnooze() {
   return '[先搁一会儿]'
 }
@@ -228,7 +266,9 @@ const cleanClock = (value) => {
  * wx_context：检索层保留可解释卡片供内部审计；模型这里只看见谁在何时说了什么。
  */
 export function projectWxContext(raw) {
-  const text = String(raw ?? '').trim()
+  const failure = envelopeFailure(raw)
+  if (failure !== null) return failure
+  const text = String(envelopeText(raw) ?? '').trim()
   if (!text) return '[翻到]\n没有找到。'
 
   // 新投影已经是世界声；正文里以“匹配/来源/置信度”开头的行也可能是原话。
@@ -303,7 +343,9 @@ function collectStrings(value, out, seen, key) {
 }
 
 export function projectWxOcr(raw) {
-  const text = String(raw ?? '')
+  const failure = envelopeFailure(raw)
+  if (failure !== null) return failure
+  const text = String(envelopeText(raw) ?? '')
   let data
   try {
     data = JSON.parse(text)
@@ -364,7 +406,9 @@ function renderScreen(data, { untrusted = false } = {}) {
  * 整段可能有几十行，超长截断。OCR 分支返回的是 JSON，同样只留可读文字。
  */
 export function projectWxPeek(raw) {
-  const text = String(raw ?? '')
+  const failure = envelopeFailure(raw)
+  if (failure !== null) return failure
+  const text = String(envelopeText(raw) ?? '')
   const trimmed = text.trim()
   if (trimmed.startsWith('{')) {
     try {

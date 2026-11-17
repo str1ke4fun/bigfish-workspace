@@ -70,6 +70,36 @@ test('微信业务错误拆出 code，error 留原始原因，模型文本仍是
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('微信 ok:false 信封在台账保留完整结果、code、原始原因和模型投影', async () => {
+  const root = await tmpRoot()
+  try {
+    const ledger = createToolLedger({ root, guard })
+    const value = {
+      ok: false,
+      code: 'WX_NOT_ALLOWED',
+      message: '[这个会话现在说不了]',
+      detail: 'canSendWithPolicy：「测试群B」不在允许发送的会话里。',
+      audit: { allowChats: ['测试群A'] },
+    }
+    const result = {
+      isError: false,
+      value,
+      content: [{ type: 'text', text: value.message }],
+    }
+    const entry = await ledger.record(
+      { name: 'wx_send', arguments: {}, agent: { session: { header: { id: 's1' } } } },
+      result,
+      { surface: 'wx' },
+    )
+    assert.equal(entry.ok, false)
+    assert.equal(entry.code, 'WX_NOT_ALLOWED')
+    assert.equal(entry.error, value.detail)
+    assert.deepEqual(entry.value, value)
+    assert.equal(entry.modelText, value.message)
+    assert.equal(result.isError, false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('微信业务错误的原始原因也经过脱敏', async () => {
   const root = await tmpRoot()
   try {
