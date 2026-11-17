@@ -16,8 +16,8 @@ import { registerTool, ToolError } from './tool-result.js'
 const isOnebot = (exec) => String(exec?.agent?.session?.id ?? '').startsWith('onebot-')
 
 // handler 的固定文案。投影按整句精确比较，摘要里碰巧出现「看不到 / 没有要回」不会被误判。
-const NO_WX_TEXT = '微信任务板没接上，现在看不到待回的消息。'
-const UNREADABLE_TEXT = '任务摘要读不出来，现在看不到待回的消息。'
+const NO_WX_TEXT = '这会儿看不到谁在等。'
+const UNREADABLE_TEXT = '这会儿看不清谁在等。'
 const EMPTY_TEXT = '现在没有要回的微信消息。'
 
 /**
@@ -36,7 +36,7 @@ export function registerInbox(ctx, { getWx, log, core } = {}) {
 
   const off = registerTool(ctx, {
     name: 'her_inbox',
-    description: '看微信里还没回完的任务：会话名、谁在等、等了多久、最后一句、状态和 taskId。只在微信通道里可用；没有任务时如实说没有。',
+    description: '看看微信里还有谁在等你回。没有就没有。',
     parameters: { type: 'object', properties: {} },
     output: {
       schema: {
@@ -55,7 +55,7 @@ export function registerInbox(ctx, { getWx, log, core } = {}) {
     isConcurrencySafe: () => true,
     async execute(_args, exec) {
       // 用 ToolError：包装器只会透传它的 message，普通 Error 会被换成通用兜底话。
-      if (isOnebot(exec)) throw new ToolError('WX_CHANNEL_ONLY', '微信任务只能在微信通道里看。')
+      if (isOnebot(exec)) throw new ToolError('WX_CHANNEL_ONLY', '这儿看不到微信里的消息。')
       const w = wx()
       if (!w?.inboxSummary) {
         log?.('her_inbox：wx 服务没接上')

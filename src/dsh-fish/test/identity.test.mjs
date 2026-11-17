@@ -111,8 +111,8 @@ test('attachIdentity：挂五段——身份 + 处境 + 提醒说明 + 任务摘
   assert.equal(remind.name, REMIND_SECTION)
   assert.equal(remind.order, REMIND_ORDER)
   assert.equal(typeof remind.text, 'function')
-  assert.match(remind.text(), /her_remind/)
-  assert.match(remind.text(), /wx_send/)
+  assert.match(remind.text(), /过一会儿提醒/)
+  assert.doesNotMatch(remind.text(), /her_remind|wx_send|permit|宿主/)
 
   // 第四段：任务摘要。有任务才出标题，没有就是空串。
   const inbox = calls[3]
@@ -200,7 +200,8 @@ test('attachIdentity：不是微信那条会话时，提醒说明和任务摘要
   assert.equal(calls[2].text(), '')
   assert.equal(calls[3].text(), '')
   assert.equal(attachIdentity(agent, root, { canRemind: () => true, inboxText: () => 't_1' }).ok, true)
-  assert.match(calls[7].text(), /her_remind/)
+  assert.match(calls[7].text(), /过一会儿提醒/)
+  assert.doesNotMatch(calls[7].text(), /her_remind|wx_send|permit|宿主/)
   assert.match(calls[8].text(), /t_1/)
 })
 

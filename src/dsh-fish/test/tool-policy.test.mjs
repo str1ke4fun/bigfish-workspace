@@ -1,9 +1,50 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveAllow, catalog, loadTargets, groupsFor } from '../lib/tool-policy.js'
+import { resolveAllow, catalog, loadTargets, groupsFor, describeEntry } from '../lib/tool-policy.js'
 
 const caps = { hasGui: true, hasOcr: true, hasImageRoute: true }
 const CORE = ['growth_commit', 'her_recall', 'her_leave', 'her_tools']
+
+test('全部面的常驻与按需可见矩阵不变', () => {
+  const expectedAllow = {
+    web: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image'],
+    wx: [
+      'growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image',
+      'wx_peek', 'wx_send', 'wx_context', 'wx_task_done', 'wx_task_snooze',
+      'her_inbox', 'her_remind', 'her_reminders', 'her_remind_cancel',
+    ],
+    qq: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image'],
+    bili: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image'],
+    screen: ['read_image', 'her_recall'],
+  }
+  const expectedCatalog = {
+    web: [],
+    wx: [
+      'wx_see', 'wx_click', 'wx_type', 'wx_key', 'wx_ocr',
+      'wx_sticker_scan', 'wx_sticker_list', 'wx_sticker_find', 'wx_sticker_tag',
+      'wx_sticker_send', 'wx_sticker_collect', 'wx_sticker_search', 'wx_history',
+    ],
+    qq: [
+      'qq_send_image', 'qq_send_voice', 'qq_send_video', 'qq_send_file',
+      'qq_send_forward', 'qq_napcat_api', 'qq_group_history',
+    ],
+    bili: [],
+    screen: [],
+  }
+
+  for (const surface of ['web', 'wx', 'qq', 'bili', 'screen']) {
+    assert.deepEqual(resolveAllow({ surface, caps }), expectedAllow[surface], `${surface} 常驻矩阵变了`)
+    assert.deepEqual(catalog({ surface, caps }).map((e) => e.name), expectedCatalog[surface], `${surface} 按需矩阵变了`)
+  }
+})
+
+test('目录摘要是世界声，不露出机器接口名或内部术语', () => {
+  const entries = ['web', 'wx', 'qq', 'bili', 'screen'].flatMap((surface) => catalog({ surface, caps }))
+  for (const entry of entries) {
+    assert.doesNotMatch(entry.summary, /模型|通道|台账|任务板|主机|宿主|permit|白名单|门禁|额度|配额|JSON|OCR|API|NapCat|工具/)
+  }
+  assert.equal(describeEntry('qq_napcat_api', 'qq').summary, '在 QQ 里做一件这里没有现成入口的小事')
+})
 
 test('web 只有 core + read_image，看不到 wx/qq/bili', () => {
   const allow = resolveAllow({ surface: 'web', caps })

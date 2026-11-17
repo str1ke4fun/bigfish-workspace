@@ -36,17 +36,12 @@ export const REMIND_TITLE_PREFIX = '提醒｜'
 export const REMIND_MARK = 'remind:'
 /** 她每轮都能看到的工具说明，固定在 system prompt 里。 */
 export const REMIND_PROMPT = [
-  '## 定时提醒（her_remind）',
+  '## 过一会儿提醒',
   '',
-  '这件事你做得到：有人在微信里让你过一会儿提醒，先调 her_remind 定上，别用「我这边没闹钟」这类话回绝。',
-  '它只开「过多少分钟」这一种，1 分钟到 7 天；真定不了，它会给出原因，再照实说。',
-  '- chat：刚把你叫醒的那个微信会话名，从 [微信] 通知里的「会话名」原样抄；不能填别的会话。',
-  '- text：到点要发出去的那句话，按到点时的口气写，不要写「30 分钟后」。不能含换行，500 字以内。',
-  '- 到点后宿主会把提醒交回给你，并附一个一次性的 permit。用 wx_send 把同样的 text 发到同样的 chat，permit 原样带上。',
-  '- 只发这一次：不改字、不换会话、不带 permit 重发。发不出去就如实说没发出去，不要假装发了。',
-  '- 没被叫醒的会话、没让你提醒的事，不要自己定；也不要拿它当定时刷屏。',
-  '- her_reminders 看还没到点的提醒，her_remind_cancel 取消其中一条。',
-  '- her_inbox 看还有哪些微信任务没回完；没有任务时会如实说没有。',
+  '有人在微信里让你过一会儿提醒，你做得到。先定上，别说自己没有闹钟。',
+  '只能定「过多少分钟」，最短一会儿，最长七天。会话只能是刚把你叫醒的那个。',
+  '到点时把你当时写的那句发出去，一个字不改。发不出去就说没发出去。',
+  '没人让你提醒的事，不要自己定。',
 ].join('\n')
 
 const MINUTE_MS = 60_000
@@ -101,21 +96,12 @@ export function reminderTitle(chat, title) {
   return (REMIND_TITLE_PREFIX + body).slice(0, 80)
 }
 
-/**
- * 到点交给她的那段话。参数用 JSON.stringify，避免会话名或正文里的引号把指令拆坏。
- */
+/** 到点交给她的固定三行：一句场面话、逐字原文、末行一次性记号。 */
 export function buildReminderPrompt({ chat, text, permit }) {
   return [
-    '[提醒到点] 你之前定的提醒到点了。',
-    `会话：${JSON.stringify(String(chat ?? ''))}`,
-    `要发的话：${JSON.stringify(String(text ?? ''))}`,
-    '',
-    '现在用 wx_send 发出去，三个参数原样照抄：',
-    `  chat: ${JSON.stringify(String(chat ?? ''))}`,
-    `  text: ${JSON.stringify(String(text ?? ''))}`,
-    `  permit: ${JSON.stringify(String(permit ?? ''))}`,
-    '只发这一次：不要改字，不要换会话，不要不带 permit 重发。',
-    '发完就停。发不出去就如实说没发出去，不要假装发了。',
+    `[时间到了。把下面这句发到「${String(chat ?? '')}」，一个字都不要改]`,
+    `「${String(text ?? '')}」`,
+    `〔${String(permit ?? '')}〕`,
   ].join('\n')
 }
 
@@ -308,14 +294,12 @@ export function registerRemind(ctx, deps = {}) {
     ctx,
     defineTool({
       name: 'her_remind',
-      description:
-        '定一条微信定时提醒，这件事你做得到。只在有人刚在微信里让你过一会儿提醒时用；' +
-        '先调它，不要预先回绝。chat 只能是刚把你叫醒的会话，text 是到点要发出去的那句话。',
+      description: '有人让你过一会儿提醒时，把到点要说的那句定上。只能定刚叫醒你的那个会话。',
       parameters: toJsonSchema({
-        chat: { type: 'string', required: true, description: '刚把你叫醒的微信会话名，从 [微信] 通知里原样抄。' },
-        text: { type: 'string', required: true, description: `到点要发出去的那句话，按到点时的口气写。${REMIND_TEXT_MAX} 字以内，不能含换行。` },
-        after_minutes: { type: 'number', required: true, description: `过多少分钟提醒，${REMIND_MIN_MINUTES} 到 ${REMIND_MAX_MINUTES}。` },
-        title: { type: 'string', required: false, description: '可选，给这条提醒起个短名字，方便之后找。' },
+        chat: { type: 'string', required: true, description: '刚把你叫醒的那个微信会话。' },
+        text: { type: 'string', required: true, description: `到点要发出去的那一句。${REMIND_TEXT_MAX} 字以内，不要换行。` },
+        after_minutes: { type: 'number', required: true, description: '过多少分钟提醒；最短一会儿，最长七天。' },
+        title: { type: 'string', required: false, description: '可选，给这条提醒起个短名字。' },
       }),
       output: {
         schema: {
@@ -360,7 +344,7 @@ export function registerRemind(ctx, deps = {}) {
     ctx,
     defineTool({
       name: 'her_reminders',
-      description: '看看还有哪些自己定的提醒没到点。',
+      description: '看看自己定了、还没到点的提醒。',
       parameters: toJsonSchema({}),
       output: {
         schema: {
@@ -399,9 +383,9 @@ export function registerRemind(ctx, deps = {}) {
     ctx,
     defineTool({
       name: 'her_remind_cancel',
-      description: '取消一条还没到点的提醒。id 从 her_reminders 里抄。',
+      description: '取消一条还没到点的提醒。',
       parameters: toJsonSchema({
-        id: { type: 'string', required: true, description: 'her_reminders 列出的那条提醒的 id。' },
+        id: { type: 'string', required: true, description: '要取消的那条提醒末行里的记号。' },
       }),
       output: {
         schema: {

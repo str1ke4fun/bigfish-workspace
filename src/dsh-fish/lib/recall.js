@@ -122,8 +122,7 @@ export function registerRecall(ctx, deps = {}) {
     ctx,
     defineTool({
       name: 'her_recall',
-      description:
-        '翻你自己过去记下的事。想提"以前有一次"的时候先用它翻一翻，翻到了再说；翻不到就别编。',
+      description: '翻自己过去记下的事。记得不清就翻；翻不到就说没翻到，别编。',
       parameters: toJsonSchema({
         query: { type: 'string', required: true, description: '你想找的是什么，几个词就够。' },
         days: { type: 'number', required: false, description: `往回翻多少天，默认 ${RECALL_DAYS}。` },

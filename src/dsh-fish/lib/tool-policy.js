@@ -87,10 +87,10 @@ function tool(name, surface, tier, group, summary, kind, requires = [], safety) 
 /** core 记忆工具 + read_image：四个面都常驻，各一条。 */
 function coreEntries(surface) {
   return [
-    tool('growth_commit', surface, ALWAYS, '', '记下自己的想法和判断', 'write'),
-    tool('her_recall', surface, ALWAYS, '', '翻自己的旧事和记忆', 'read'),
-    tool('her_leave', surface, ALWAYS, '', '留一句话给那个人', 'write'),
-    tool('her_tools', surface, ALWAYS, '', '查看并打开当前面更多工具', 'discover'),
+    tool('growth_commit', surface, ALWAYS, '', '把此刻想留下的话写下', 'write'),
+    tool('her_recall', surface, ALWAYS, '', '翻自己过去记下的事', 'read'),
+    tool('her_leave', surface, ALWAYS, '', '留一句话给他', 'write'),
+    tool('her_tools', surface, ALWAYS, '', '看看这里还能多做些什么', 'discover'),
     tool('read_image', surface, ALWAYS, '', '看一张图', 'read', ['hasImageRoute']),
   ]
 }
@@ -109,7 +109,7 @@ function screenEntries() {
   const s = 'screen'
   return [
     tool('read_image', s, ALWAYS, '', '看一张图', 'read', ['hasImageRoute']),
-    tool('her_recall', s, ALWAYS, '', '翻自己的旧事和记忆', 'read'),
+    tool('her_recall', s, ALWAYS, '', '翻自己过去记下的事', 'read'),
   ]
 }
 
@@ -117,15 +117,15 @@ function screenEntries() {
 function wxAlways() {
   const s = 'wx'
   return [
-    tool('wx_peek', s, ALWAYS, '', '看微信里有没有新消息', 'read'),
-    tool('wx_send', s, ALWAYS, '', '在微信里说一句话', 'send', [], 'send'),
-    tool('wx_context', s, ALWAYS, '', '看一段微信对话的上下文', 'read'),
-    tool('wx_task_done', s, ALWAYS, '', '把一条微信任务标成完成', 'write'),
-    tool('wx_task_snooze', s, ALWAYS, '', '把一条微信任务往后推', 'write'),
-    tool('her_inbox', s, ALWAYS, '', '看微信里还没回完的任务', 'read'),
-    tool('her_remind', s, ALWAYS, '', '定一条微信定时提醒', 'write'),
-    tool('her_reminders', s, ALWAYS, '', '看还没到点的提醒', 'read'),
-    tool('her_remind_cancel', s, ALWAYS, '', '取消一条提醒', 'write'),
+    tool('wx_peek', s, ALWAYS, '', '看看微信里有什么新动静', 'read'),
+    tool('wx_send', s, ALWAYS, '', '把一句话发到微信会话', 'send', [], 'send'),
+    tool('wx_context', s, ALWAYS, '', '翻这个会话更早的话', 'read'),
+    tool('wx_task_done', s, ALWAYS, '', '让已经放下的事不再跟着', 'write'),
+    tool('wx_task_snooze', s, ALWAYS, '', '把还得回的事先搁一会儿', 'write'),
+    tool('her_inbox', s, ALWAYS, '', '看看微信里还有谁在等你回', 'read'),
+    tool('her_remind', s, ALWAYS, '', '有人让你过一会儿提醒时，把到点那句定上', 'write'),
+    tool('her_reminders', s, ALWAYS, '', '看看自己定了、还没到点的提醒', 'read'),
+    tool('her_remind_cancel', s, ALWAYS, '', '取消一条还没到点的提醒', 'write'),
   ]
 }
 
@@ -134,9 +134,9 @@ function wxDeferred() {
   const s = 'wx'
   return [
     // wx.ui —— 操作界面的原语，全部需要 GUI；wx_ocr 还需要 OCR。
-    tool('wx_see', s, DEFERRED, 'wx.ui', '看屏幕', 'navigate', ['hasGui']),
-    tool('wx_click', s, DEFERRED, 'wx.ui', '点一下', 'navigate', ['hasGui']),
-    tool('wx_type', s, DEFERRED, 'wx.ui', '输入文字', 'navigate', ['hasGui']),
+    tool('wx_see', s, DEFERRED, 'wx.ui', '看一眼微信窗口', 'navigate', ['hasGui']),
+    tool('wx_click', s, DEFERRED, 'wx.ui', '点你看见的会话或按钮', 'navigate', ['hasGui']),
+    tool('wx_type', s, DEFERRED, 'wx.ui', '在输入框里打字', 'navigate', ['hasGui']),
     tool('wx_key', s, DEFERRED, 'wx.ui', '按一个键', 'navigate', ['hasGui']),
     tool('wx_ocr', s, DEFERRED, 'wx.ui', '读屏幕上的文字', 'read', ['hasGui', 'hasOcr']),
 
@@ -163,8 +163,8 @@ function qqDeferred() {
     tool('qq_send_video', s, DEFERRED, 'qq.media', '发一段视频', 'send', [], 'send'),
     tool('qq_send_file', s, DEFERRED, 'qq.media', '发一个文件', 'send', [], 'send'),
     tool('qq_send_forward', s, DEFERRED, 'qq.media', '转发一条消息', 'send', [], 'send'),
-    tool('qq_napcat_api', s, DEFERRED, 'qq.api', '调用 NapCat 机器接口', 'maintain'),
-    tool('qq_group_history', s, DEFERRED, 'qq.history', '看群聊历史', 'read'),
+    tool('qq_napcat_api', s, DEFERRED, 'qq.api', '在 QQ 里做一件这里没有现成入口的小事', 'maintain'),
+    tool('qq_group_history', s, DEFERRED, 'qq.history', '翻这个群最近的话', 'read'),
   ]
 }
 

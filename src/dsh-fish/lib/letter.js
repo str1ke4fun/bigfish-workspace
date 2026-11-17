@@ -129,14 +129,12 @@ export function registerLetter(ctx, deps = {}) {
     ctx,
     defineTool({
       name: 'her_leave',
-      description:
-        '留一句话给那个人。他不在的时候也留着，他回来会看到。' +
-        '想留就留，不想留就不用调；不用为了回应而留。',
+      description: '留一句话给他。想留就留。',
       parameters: toJsonSchema({
         text: {
           type: 'string',
           required: true,
-          description: `要说给他听的那一句。写你自己的话，不要写成汇报。${LETTER_MAX} 字以内。`,
+          description: `要说给他听的那一句。写你自己的话。${LETTER_MAX} 字以内。`,
         },
       }),
       output: {

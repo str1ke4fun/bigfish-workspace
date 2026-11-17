@@ -17,7 +17,7 @@ function harness(wx) {
 test('没有 wx 服务：如实说看不到，不编任务', async () => {
   const { def } = harness(undefined)
   const out = await def.execute({}, {})
-  assert.match(out.text, /没接上/)
+  assert.match(out.text, /看不到谁在等/)
 })
 
 test('有任务：原样返回摘要', async () => {
@@ -33,7 +33,7 @@ test('没有任务：说没有', async () => {
 
 test('QQ 会话里拒绝', async () => {
   const { def } = harness({ inboxSummary: () => 't_1' })
-  await assert.rejects(() => def.execute({}, { agent: { session: { id: 'onebot-1' } } }), /微信通道/)
+  await assert.rejects(() => def.execute({}, { agent: { session: { id: 'onebot-1' } } }), /看不到微信/)
 })
 
 test('模型投影：有任务给 [待回]，没任务给 [没有要回的]', async () => {
@@ -69,10 +69,13 @@ test('模型投影：wx 没接上或摘要抛错给 [没看到]，不是空串�
   assert.ok(brokenText.length > '[没看到] '.length, '不能只给空状态')
 })
 
-test('工具形状：object-rooted schema + render', () => {
+test('工具形状：世界声说明 + object-rooted schema + render', () => {
   const { def } = harness(undefined)
   assert.equal(def.name, 'her_inbox')
+  assert.equal(def.description, '看看微信里还有谁在等你回。没有就没有。')
   assert.equal(def.parameters.type, 'object')
+  assert.deepEqual(def.parameters.properties, {})
+  assert.equal(def.parameters.required, undefined)
   assert.equal(def.output.schema.type, 'object')
   assert.equal(typeof def.output.render, 'function')
 })

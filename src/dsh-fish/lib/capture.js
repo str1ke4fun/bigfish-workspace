@@ -57,23 +57,7 @@ export function registerCapture(ctx, deps = {}) {
     ctx,
     defineTool({
       name: 'growth_commit',
-      description:
-        '把你此刻想说的话留下来。只能新增，不能修改或删除。' +
-        // 2026-10-24（用户选方案①）：原来只在 schema 的 refs 字段里写「revise 要带 refs」，
-        // 她看不到"这一步"和"上一句"的关系，于是把改口写成了普通判断（`改口` 一直是 0）。
-        // 把规则提到工具说明里，让她每次调用前都先看见这句话。
-        '如果你在修正之前说过的话，用 revise 带上那句的 id。' +
-        '想改以前的说法，就提交 type=revise 并用 refs 指向原来那条的 id。' +
-        // 2026-10-27（0.5.8）：narration 也要凭证。以前只要求 revise，于是
-        // 「我变成了什么样」可以凭空写——这正是叙事漂移的入口。
-        '写 narration（你对自己整体的说法）时，也要用 refs 指向 her_recall 翻到的那几条 id；' +
-        '真的没想清楚，就直接写「我没想清楚」，那句也算数。' +
-        // 2026-11-13：人物笔记走同一个写入入口，不另开工具。
-        '想记下某个人是谁、你对他有什么印象、或一次有意义的互动，用 type=person_note：' +
-        'person.kind=identity 写“他是谁/有哪些名字”，impression 写你对他的印象，interaction 写一次互动。' +
-        'owner 的身份事实用 person.id=owner、kind=identity，并带 person.label。' +
-        '不要抄整段聊天原文，写你自己的话；原始消息用 refs 指回去。群里的笔记要带 chatId。' +
-        '这个工具不会告诉你你的任何状态，也不会返回你的设定。如果这次没什么想说的，就不要调用。',
+      description: '把此刻想留下的话写下。只能新增。改以前的说法，带上翻到的那条记号。没什么想说的，就别写。',
       // 必须 toJsonSchema：简写 DSL 直接发出去会被 provider 拒
       // （"schema must be a JSON Schema of 'type: object', got 'type: null'"）
       parameters: toJsonSchema({
@@ -81,34 +65,30 @@ export function registerCapture(ctx, deps = {}) {
           type: 'string',
           required: true,
           enum: [...HER_TYPES, 'diary'],
-          description:
-            'utterance=一句你自己的判断/想法；revise=改写旧的那句（必须带 refs）；' +
-            'refusal=你拒绝了什么；reunion=他不在之后你们重新说话时的感受；narration=你对自己整体的说法；' +
-            'diary=今天写下的日记（写进你自己的日记本，不是交给他看的）。',
+          description: '一句自己的判断；改口；拒绝；他回来之后的感受；对自己的整体说法；今天的日记；关于某个人的笔记。',
         },
-        text: { type: 'string', required: true, description: '你要留下的话。不要写成汇报。2000 字以内。' },
+        text: { type: 'string', required: true, description: '你要留下的话。写你自己的话，2000 字以内。' },
         refs: {
           type: 'array',
           required: false,
           items: { type: 'string' },
-          description:
-            'type=revise 或 narration 时必填：指向被改写/被回顾的那条事件的 id（形如 ev_xxx，用 her_recall 翻得到）。',
+          description: '要改口或回顾自己时，带上以前翻到的那条记号。',
         },
         verdict: {
           type: 'string',
           required: false,
           enum: ['confirmed', 'refuted', 'refined'],
-          description: 'revise 专用：你原来那句是还成立(confirmed)、被推翻(refuted)、还是被修正(refined)。',
+          description: '改口时，你原来那句还成立、被推翻，还是被修正。',
         },
         confidence: {
           type: 'number',
           required: false,
-          description: '你有多确定，0–1。不确定就写低一点。',
+          description: '你有多确定，不确定就写低一点。',
         },
         person: {
           type: 'object',
           required: false,
-          description: 'type=person_note 时必填：{ id, name, label, channel, chatId, kind, confidence }。owner 身份事实用 id=owner、kind=identity，并带 label。',
+          description: '关于某个人时才填：是谁、你怎么叫他、这是印象还是一次相处。关于他本人时，名字用他。',
           properties: {
             id: { type: 'string' },
             name: { type: 'string' },
@@ -123,19 +103,19 @@ export function registerCapture(ctx, deps = {}) {
           type: 'array',
           required: false,
           items: { type: 'string' },
-          description: '替换旧 person_note 的 id（改名/修正）。',
+          description: '要替掉以前记下的哪一条。',
         },
         revokes: {
           type: 'array',
           required: false,
           items: { type: 'string' },
-          description: '撤销旧 person_note 的 id（这条不算了）。',
+          description: '要收回以前记下的哪一条。',
         },
         flags: {
           type: 'array',
           required: false,
           items: { type: 'string' },
-          description: '可选；owner 身份事实用 ["identity"]。其它 flag 会被忽略。',
+          description: '可选；只给自己留下的窄记号。',
         },
       }),
       output: {

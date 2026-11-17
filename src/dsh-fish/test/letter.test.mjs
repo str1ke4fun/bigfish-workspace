@@ -211,16 +211,21 @@ test('person_note 不进信箱', () => {
 
 // ---------------------------------------------------------------- 工具面
 
-test('registerLetter 注册 her_leave，参数是合法 object schema', () => {
+test('registerLetter 注册 her_leave：世界声说明 + 参数 schema 不变', () => {
   const ctx = fakeCtx()
   registerLetter(ctx, { root: join(tmpdir(), 'dsh-fish-letter-reg') })
   assert.equal(ctx._tools.length, 1)
   const spec = ctx._tools[0]
   assert.equal(spec.name, 'her_leave')
+  assert.equal(spec.description, '留一句话给他。想留就留。')
   assert.equal(spec.parameters.type, 'object')
-  assert.ok(spec.parameters.properties.text)
+  assert.deepEqual(Object.keys(spec.parameters.properties), ['text'])
   assert.deepEqual(spec.parameters.required, ['text'])
   assert.equal(spec.parameters.properties.text.type, 'string')
+  assert.equal(
+    spec.parameters.properties.text.description,
+    `要说给他听的那一句。写你自己的话。${LETTER_MAX} 字以内。`,
+  )
 })
 
 test('her_leave 的 render 返回 ContentBlock 数组（不是字符串）', () => {

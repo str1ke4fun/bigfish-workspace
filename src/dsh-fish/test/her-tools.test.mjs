@@ -64,7 +64,7 @@ test('search 只列当前面 deferred，最多 5 条，不改 revealed', async (
   registerHerTools(h.ctx, { core: { surface: { current: () => 'wx' }, tools: { reveal: () => { revealed += 1 } } }, policy })
   const def = h.defs.get('her_tools')
   const out = await def.execute({ action: 'search', query: '屏幕' }, { agent: {} })
-  assert.match(render(def, out, { action: 'search', query: '屏幕' }), /wx_see/)
+  assert.equal(render(def, out, { action: 'search', query: '屏幕' }), '看屏幕 〔wx_see〕')
   assert.equal(revealed, 0)
 })
 
@@ -198,7 +198,9 @@ test('describe 读实时工具表：说明和参数名，但不输出 schema', a
   const out = await def.execute({ action: 'describe', names: ['wx_see'] }, { agent })
   assert.match(out.data.items[0].summary, /看屏幕上的字/)
   assert.deepEqual(out.data.items[0].params, ['region'])
-  assert.equal(render(def, out, { action: 'describe', names: ['wx_see'] }).includes('{'), false)
+  const text = render(def, out, { action: 'describe', names: ['wx_see'] })
+  assert.match(text, /参数：region/)
+  assert.doesNotMatch(text, /\{|properties|schema|JSON|示例|type=/i)
 })
 
 test('describe 的说明里即使有花括号，投影里也不出现 {', async () => {
@@ -420,7 +422,21 @@ test('判不面时返回 NO_SURFACE 失败信封', async () => {
   const out = await def.execute({ action: 'search' }, { agent: {} })
   assert.equal(out.ok, false)
   assert.equal(out.code, 'NO_SURFACE')
-  assert.match(render(def, out, { action: 'search' }), /打不开工具目录/)
+  assert.match(render(def, out, { action: 'search' }), /打不开|想不起/)
+})
+
+test('her_tools 说明是世界声，参数键与枚举不变', () => {
+  const { def } = register({ core: { surface: { current: () => 'wx' }, tools: { reveal() {} } } })
+  assert.equal(
+    def.description,
+    '看看这里还能多做些什么，或者把需要的打开。常用的一直在，不用打开。',
+  )
+  assert.deepEqual(Object.keys(def.parameters.properties), ['action', 'query', 'group', 'names'])
+  assert.deepEqual(def.parameters.required, ['action'])
+  assert.deepEqual(def.parameters.properties.action.enum, ['search', 'describe', 'load'])
+  for (const spec of Object.values(def.parameters.properties)) {
+    assert.doesNotMatch(String(spec.description ?? ''), /search=|describe=|load=|schema|JSON|示例|\{|\}/i)
+  }
 })
 
 test('注册返回宿主给的注销函数', () => {

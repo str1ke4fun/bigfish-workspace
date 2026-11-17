@@ -19,6 +19,7 @@ import {
   createReminder, listReminders, normalizeChatName, parseAfterMinutes, registerRemind, reminderMarks,
 } from '../lib/remind.js'
 import { readEvents } from '../lib/store.js'
+import { createPermitStore } from '../../dsh-wx/lib/reminder.js'
 
 function tmp() {
   return fs.mkdtempSync(join(os.tmpdir(), 'dsh-fish-remind-'))
@@ -78,6 +79,21 @@ function fakeCtx({ wx, schedule } = {}) {
   }
 }
 
+function extractReminderPrompt(prompt) {
+  const lines = String(prompt).split('\n')
+  assert.equal(lines.length, 3, '提醒模板必须固定三行')
+  const headPrefix = '[时间到了。把下面这句发到「'
+  const headSuffix = '」，一个字都不要改]'
+  assert.ok(lines[0].startsWith(headPrefix) && lines[0].endsWith(headSuffix))
+  assert.ok(lines[1].startsWith('「') && lines[1].endsWith('」'))
+  assert.ok(lines[2].startsWith('〔') && lines[2].endsWith('〕'))
+  return {
+    chat: lines[0].slice(headPrefix.length, -headSuffix.length),
+    text: lines[1].slice(1, -1),
+    permit: lines[2].slice(1, -1),
+  }
+}
+
 test('会话名归一：去掉「会话名：」前缀和成对引号', () => {
   assert.equal(normalizeChatName('测试群A'), '测试群A')
   assert.equal(normalizeChatName('  会话名：测试群A  '), '测试群A')
@@ -108,12 +124,63 @@ test('正文：多行压一行；冒充系统指令整条拒；凭据不往外�
   assert.match(secret.why, /凭据/)
 })
 
-test('到点提示：chat / text / permit 一字不差，能直接照抄', () => {
+test('到点提示固定三行：世界声在前，记号只在末行，没有参数操作块', () => {
   const p = buildReminderPrompt({ chat: '测试群A', text: '到点了，喝水', permit: 'permit-123' })
-  assert.match(p, /chat: "测试群A"/)
-  assert.match(p, /text: "到点了，喝水"/)
-  assert.match(p, /permit: "permit-123"/)
-  assert.match(p, /只发这一次/)
+  assert.deepEqual(p.split('\n'), [
+    '[时间到了。把下面这句发到「测试群A」，一个字都不要改]',
+    '「到点了，喝水」',
+    '〔permit-123〕',
+  ])
+  assert.deepEqual(extractReminderPrompt(p), { chat: '测试群A', text: '到点了，喝水', permit: 'permit-123' })
+  assert.doesNotMatch(p, /\bchat\s*:|\btext\s*:/i)
+  assert.doesNotMatch(p, /wx_send|三个参数|原样照抄/)
+  assert.equal(p.split('\n').findIndex((line) => line.includes('permit-123')), 2)
+})
+
+test('到点提示遇到引号和反斜杠：仍能人工辨认并逐字节还原原文', () => {
+  const chat = '群「晚点再说」\'"'
+  const text = '他说：「先别改」。“原样”\\留在这里。'
+  const permit = '2b3c4d5e-6789-4abc-8def-0123456789ab'
+  const p = buildReminderPrompt({ chat, text, permit })
+  const parsed = extractReminderPrompt(p)
+  const lines = p.split('\n')
+
+  assert.deepEqual(parsed, { chat, text, permit })
+  assert.ok(Buffer.from(parsed.chat).equals(Buffer.from(chat)))
+  assert.ok(Buffer.from(parsed.text).equals(Buffer.from(text)))
+  assert.ok(Buffer.from(parsed.permit).equals(Buffer.from(permit)))
+  assert.equal(lines[0].includes(permit), false)
+  assert.equal(lines[1].includes(permit), false)
+  assert.equal(lines[2], `〔${permit}〕`)
+})
+
+test('提醒模板提取出的三项能通过微信许可检查并被 wx_send 逐字提交', () => {
+  const now = 1_800_000_000_000
+  const store = createPermitStore({ file: join(tmp(), 'reminder-permits.json'), now: () => now })
+  const chat = '群「原样」\'"'
+  const text = '他说：「不要改」。"\\n只是字面。'
+  const permit = '4c5d6e7f-890a-4bcd-9ef0-123456789abc'
+
+  assert.equal(store.grant({ id: permit, chat, text, dueAt: now + 60_000 }).ok, true)
+  const parsed = extractReminderPrompt(buildReminderPrompt({ chat, text, permit }))
+  const checked = store.check({ id: parsed.permit, chat: parsed.chat, text: parsed.text })
+  assert.equal(checked.ok, true)
+  assert.equal(checked.permit.chat, chat)
+  assert.equal(checked.permit.text, text)
+
+  const calls = []
+  const fakeWxSend = ({ chat, text, permit }) => {
+    const ok = store.check({ id: permit, chat, text })
+    if (!ok.ok) return ok
+    calls.push({ chat, text, permit })
+    return { ok: true }
+  }
+  assert.deepEqual(fakeWxSend(parsed), { ok: true })
+  assert.deepEqual(calls, [{ chat, text, permit }])
+  assert.ok(Buffer.from(calls[0].chat).equals(Buffer.from(chat)))
+  assert.ok(Buffer.from(calls[0].text).equals(Buffer.from(text)))
+  assert.ok(Buffer.from(calls[0].permit).equals(Buffer.from(permit)))
+  assert.equal(store.consume({ id: parsed.permit, chat: parsed.chat, text: parsed.text }).ok, true)
 })
 
 test('成功定提醒：绑会话、绑原文、after_seconds 用分钟换算、写一条 meta', async () => {
@@ -221,9 +288,15 @@ test('列表只认带前缀的提醒；取消只删自己那条', async () => {
 })
 
 test('提醒说明先说做得到，不给她「我没闹钟」的回绝台阶', () => {
-  assert.match(REMIND_PROMPT, /你做得到/)
-  assert.match(REMIND_PROMPT, /先调 her_remind/)
-  assert.match(REMIND_PROMPT, /别用「我这边没闹钟」/)
+  assert.equal(REMIND_PROMPT, [
+    '## 过一会儿提醒',
+    '',
+    '有人在微信里让你过一会儿提醒，你做得到。先定上，别说自己没有闹钟。',
+    '只能定「过多少分钟」，最短一会儿，最长七天。会话只能是刚把你叫醒的那个。',
+    '到点时把你当时写的那句发出去，一个字不改。发不出去就说没发出去。',
+    '没人让你提醒的事，不要自己定。',
+  ].join('\n'))
+  assert.doesNotMatch(REMIND_PROMPT, /her_remind|wx_send|permit|宿主|工具/)
 })
 
 test('三个提醒工具的模型投影都是方括号状态，不回显提醒原文', async () => {
@@ -273,7 +346,7 @@ test('三个提醒工具的模型投影都是方括号状态，不回显提醒�
   assert.match(noSchedule.her_reminders.output.render({}, failed)[0].text, /^\[没看到：/)
 })
 
-test('三个工具都注册，参数是宿主认的 JSON Schema', () => {
+test('三个提醒工具：世界声说明、宿主认的 JSON Schema、参数集合不变', () => {
   const ctx = fakeCtx({ wx: fakeWx(), schedule: fakeSchedule() })
   registerRemind(ctx, { root: tmp() })
   assert.deepEqual(ctx.defs.map((d) => d.name), ['her_remind', 'her_reminders', 'her_remind_cancel'])
@@ -284,5 +357,15 @@ test('三个工具都注册，参数是宿主认的 JSON Schema', () => {
     assert.equal(typeof d.output.render, 'function')
     assert.equal(typeof d.execute, 'function')
   }
+  assert.equal(
+    ctx.defs[0].description,
+    '有人让你过一会儿提醒时，把到点要说的那句定上。只能定刚叫醒你的那个会话。',
+  )
+  assert.deepEqual(Object.keys(ctx.defs[0].parameters.properties), ['chat', 'text', 'after_minutes', 'title'])
   assert.deepEqual(ctx.defs[0].parameters.required.sort(), ['after_minutes', 'chat', 'text'])
+  assert.deepEqual(Object.keys(ctx.defs[1].parameters.properties), [])
+  assert.deepEqual(Object.keys(ctx.defs[2].parameters.properties), ['id'])
+  assert.deepEqual(ctx.defs[2].parameters.required, ['id'])
+  assert.equal(ctx.defs[1].description, '看看自己定了、还没到点的提醒。')
+  assert.equal(ctx.defs[2].description, '取消一条还没到点的提醒。')
 })

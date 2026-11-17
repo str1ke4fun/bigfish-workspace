@@ -253,16 +253,37 @@ test('person_note 在 bili/qq 面被拒，web/wx 面可写', async () => {
   }
 })
 
-test('改口规则写在 growth_commit 的说明里（2026-10-24 用户选方案①）', async () => {
-  // 背景：她原来只把"修正旧话"写成普通 utterance（`改口` 一直是 0），
-  // 因为 refs 规则只藏在参数的 description 里、调用前看不见。
-  // 现在工具说明里直接写一句：修正之前说过的话，用 revise 带上那句的 id。
+test('growth_commit 说明是世界声，参数键和必填集合不变', async () => {
   await withRoot(async (root) => {
     const ctx = fakeCtx()
     registerCapture(ctx, { root })
-    const desc = String(ctx.regs.get('growth_commit')?.description ?? '')
-    assert.ok(desc.includes('用 revise 带上那句的 id'), `工具说明里要有这句，实际：${desc}`)
-    assert.ok(desc.includes('如果你在修正之前说过的话'), '要说明这是"修正旧话"的场景')
-    assert.ok(desc.includes('type=revise'), '也要保留原来那句 type=revise 的说法')
+    const def = ctx.regs.get('growth_commit')
+
+    assert.equal(
+      def.description,
+      '把此刻想留下的话写下。只能新增。改以前的说法，带上翻到的那条记号。没什么想说的，就别写。',
+    )
+
+    assert.deepEqual(Object.keys(def.parameters.properties), [
+      'type', 'text', 'refs', 'verdict', 'confidence', 'person', 'supersedes', 'revokes', 'flags',
+    ])
+    assert.deepEqual(def.parameters.required, ['type', 'text'])
+    assert.deepEqual(Object.keys(def.parameters.properties.person.properties), [
+      'id', 'name', 'label', 'channel', 'chatId', 'kind', 'confidence',
+    ])
+
+    assert.equal(
+      def.parameters.properties.type.description,
+      '一句自己的判断；改口；拒绝；他回来之后的感受；对自己的整体说法；今天的日记；关于某个人的笔记。',
+    )
+    assert.equal(
+      def.parameters.properties.person.description,
+      '关于某个人时才填：是谁、你怎么叫他、这是印象还是一次相处。关于他本人时，名字用他。',
+    )
+    assert.equal(def.parameters.properties.confidence.description, '你有多确定，不确定就写低一点。')
+
+    for (const spec of Object.values(def.parameters.properties)) {
+      assert.doesNotMatch(String(spec.description ?? ''), /工具|宿主|状态|设定|schema|JSON|\{|\}|type=|owner|chatId/)
+    }
   })
 })

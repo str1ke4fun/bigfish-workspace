@@ -25,8 +25,8 @@ const MAX_SEARCH = 5
 /** describe 一次最多讲几个。 */
 const MAX_DESCRIBE = 2
 
-const CATALOG_FAILED = '这里打不开工具目录'
-const LOAD_FAILED_TEXT = '这条路上打不开'
+const CATALOG_FAILED = '这会儿想不起还有什么'
+const LOAD_FAILED_TEXT = '这儿打不开'
 
 function failure(code, message) {
   return { ok: false, code, message }
@@ -210,18 +210,16 @@ function project(result, args) {
       const msg = String(result?.message ?? LOAD_FAILED_TEXT)
       if (action === 'load') return { text: `[没打开：${msg}]` }
       if (action === 'describe') return { text: `[说明] ${msg}` }
-      return { text: `[工具] ${msg}` }
+      return { text: '[这儿打不开]' }
     }
 
     const data = result.data ?? {}
     if (action === 'search') {
       const items = Array.isArray(data.items) ? data.items : []
-      if (items.length === 0) return { text: '[工具] 这里没有能打开的工具了。' }
+      if (items.length === 0) return { text: '[这儿没有别的了]' }
       return {
         text: items
-          .map((it, i) => (it.summary
-            ? `[工具] ${i + 1}. ${it.name} — ${it.summary}`
-            : `[工具] ${i + 1}. ${it.name}`))
+          .map((it) => `${it.summary || '能多做一件事'} 〔${it.name}〕`)
           .join('\n'),
       }
     }
@@ -231,7 +229,7 @@ function project(result, args) {
       if (items.length === 0) {
         // 给了名字却一个都没留下：只回一句，不回显被拒绝的名字。
         const asked = parseNames(args?.names).length > 0
-        return { text: asked ? '[说明] 这几样这里没有。' : '[说明] 没有说明要哪个工具。' }
+        return { text: asked ? '[说明] 这几样这里没有。' : '[说明] 没说要哪一个。' }
       }
       // 说明来自实时工具定义，理论上可能夹着 schema 片段；投影里绝不出现 `{`。
       const clean = (s) => String(s ?? '').replace(/[{}]/g, '')
@@ -275,32 +273,29 @@ function project(result, args) {
 export function registerHerTools(ctx, { core, policy, caps = {} } = {}) {
   const def = {
     name: 'her_tools',
-    description:
-      '看看这里还能打开哪些工具，或者把需要的工具打开。' +
-      'search=看看还有什么；describe=看一两个工具的说明；load=按组或按名字打开。' +
-      '常用的工具一直在这儿，不用打开；只有目录里列出来的才需要 load。',
+    description: '看看这里还能多做些什么，或者把需要的打开。常用的一直在，不用打开。',
     parameters: toJsonSchema({
       action: {
         type: 'string',
         required: true,
         enum: ['search', 'describe', 'load'],
-        description: 'search=看目录；describe=看说明；load=打开。',
+        description: '想看看还有什么、听一句说明，还是打开。',
       },
       query: {
         type: 'string',
         required: false,
-        description: 'search 用：按名字、说明或组筛一下。',
+        description: '按名字、说明或类别找。',
       },
       group: {
         type: 'string',
         required: false,
-        description: 'load 用：打开一整组。组名从 search 的结果里看。',
+        description: '要打开的一整类。',
       },
       names: {
         type: 'array',
         required: false,
         items: { type: 'string' },
-        description: 'describe 用：最多两个名字；load 用：要打开的工具名（只传这一个选择器）。',
+        description: '要听说明的名字，或者要打开的名字；一次只选一种。',
       },
     }),
     async execute(args, exec) {
