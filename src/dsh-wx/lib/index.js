@@ -51,6 +51,7 @@ import { scanStickers } from './sticker-scan.js'
 import { sendSticker, targetEntry } from './sticker-send.js'
 import { collectSticker } from './sticker-collect.js'
 import { normalizeKeyword, searchSticker } from './sticker-search.js'
+import { WxToolError, registerWxToolErrorAdapter } from './tool-error.js'
 import {
   boundedText,
   clipPeekBody,
@@ -520,6 +521,9 @@ export function apply(ctx, config = {}) {
   })
 
   const disposers = []
+  // 宿主会把普通 throw 渲染成 `Error: ...`。微信预期失败在 apply 里统一挂一条
+  // 只换 content 的投影通道，isError 仍由宿主保留。
+  disposers.push(registerWxToolErrorAdapter(ctx, { log: (m) => console.log(m) }))
   // 预分配的微信会话 id：宿主在 create 期间就触发 agent/created，那时 surface
   // 登记必须已经能命中。本地集合先兜底，fishCore 在场时再写进面注册表。
   const reservedWxSessions = new Set()
@@ -1030,25 +1034,25 @@ export function apply(ctx, config = {}) {
   // 现在只认「当前会话」这一个字段，并且要求树没落后（落后时当前会话可能是旧的）。
   async function gateSend({ consume = false, expected = '' } = {}) {
     const p = policy()
-    if (!p.enabled) throw new Error(OFF)
+    if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
     if (hostBlocksSend()) {
-      throw new Error('主机刚在对话框里跟你说话，没有让你发微信：答案写在对话框里，别往微信里发。他真要你发，会明说（比如“发给谁”“回她”）。')
+      throw new WxToolError('WX_HOST_BLOCKED', '[这句是在这儿说的，不是发到微信]')
     }
     const s = await look()
-    if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认当前会话，不发送。')
-    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不发送。' + fresh.notice().trim())
-    if (!s.parsed.current) throw new Error('读不到当前会话名（可能没打开任何聊天），不发送。')
+    if (!s.parsed.ok) throw new WxToolError('WX_WINDOW_UNAVAILABLE', '[没看清。屏幕可能慢半拍]')
+    if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
+    if (!s.parsed.current) throw new WxToolError('WX_CHAT_UNKNOWN', '[没看清。屏幕可能慢半拍]')
     // 「这些会话不用 @」是最高权限：既不用等 @，也不用先进允许名单——它自己就是白名单。
     const exempt = p.noMentionChats.find((n) => sameName(n, s.parsed.current)) ?? null
     const hit = allowedCurrent(s.parsed, p.allowChats) || exempt
     if (!hit) {
-      if (p.allowChats.length === 0) throw new Error('允许名单为空，不能发送。')
-      throw new Error(`当前会话是「${s.parsed.current}」，不在允许名单内（${p.allowChats.join('、')}），不发送。`)
+      if (p.allowChats.length === 0) throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]')
+      throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]')
     }
     // 调用方知道目标会话时必须在这里复核：频率闸等待期间窗口可能被切走，
     // 不能在切换后的会话上扣掉另一群/另一个人的主动额度。
     if (expected && !sameName(hit, expected)) {
-      throw new Error(`当前会话变成了「${hit}」，不是「${expected}」，不发送。`)
+      throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
     }
     // @ 才回：只有最近被 @ 过的会话才开口（QQ 那边是同一条规矩，按条判；微信只能按会话判）。
     // 没被 @ 时还可以用当天主动额度，由 proactive.js 统一判定。
@@ -1057,13 +1061,18 @@ export function apply(ctx, config = {}) {
       : { ok: true }
     const state = loadState()
     const dec = decideProactive({ policy: p, state, chat: hit, mention: verdict, exempt, now: Date.now() })
-    if (!dec.ok) throw new Error(`「${hit}」${dec.why}；这个群今天没有可用的主动额度，先不发。`)
+    if (!dec.ok) {
+      if (dec.why === '主动额度状态读不出来') {
+        throw new WxToolError('WX_PROACTIVE_STATE', '[没做成，过会儿再试]')
+      }
+      throw new WxToolError('WX_PROACTIVE_LIMIT', '[这个群今天先不主动开口]')
+    }
     let left = dec.left
     if (dec.proactive && consume) {
       // 一次发送只在这里扣一次：前面的 gateSend 都只是检查，避免一道闸扣三次额度。
       // 记不下来就不发：否则每轮都读到“今天用了 0 条”，额度等于无限。
       const next = consumeProactive(p, state, hit)
-      if (!saveState(next.state)) throw new Error('主动额度记不下来，先不发。')
+      if (!saveState(next.state)) throw new WxToolError('WX_PROACTIVE_STATE', '[没做成，过会儿再试]')
       left = next.left
       logInbound({ type: 'proactive-send', chat: hit, remaining: left })
     }
@@ -1098,7 +1107,7 @@ export function apply(ctx, config = {}) {
     const mod = await speech()
     if (!mod) return
     const v = await mod.waitAndAdmit('wx:' + chatName, 45_000)
-    if (!v.ok) throw new Error('说话频率：' + v.reason + '。')
+    if (!v.ok) throw new WxToolError('WX_RATE_LIMIT', '[说得太密了，等一下]')
   }
 
   // ---- 高层发送：wx_send 与到点提醒共用 ----
@@ -1121,58 +1130,58 @@ export function apply(ctx, config = {}) {
    */
   async function sendToChat({ chat, text, permit = '', taskId = '' } = {}) {
     const p = policy()
-    if (!p.enabled) throw new Error(OFF)
+    if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
     const want = String(chat ?? '').trim()
     const body = String(text ?? '')
-    if (!want) throw new Error('wx_send: chat 不能为空。')
-    if (!body) throw new Error('wx_send: text 不能为空。')
-    if (/[\r\n]/.test(body)) throw new Error('wx_send: 文本含换行，会被拆成多条发送。')
-    if ([...body].length > 500) throw new Error('wx_send: 文本超过 500 字。')
+    if (!want) throw new WxToolError('WX_MISSING_CHAT', '[没做成，过会儿再试]')
+    if (!body) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
+    if (/[\r\n]/.test(body)) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
+    if ([...body].length > 500) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
 
     const allowed = canSendWithPolicy(p, want)
-    if (!allowed.ok) throw new Error(allowed.why)
+    if (!allowed.ok) throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]')
 
     const token = String(permit ?? '').trim()
     if (token) {
       // 到点提醒：许可绑定会话 + 原文 + 一次性。这里只查，不消费。
       const v = permitStore.check({ id: token, chat: allowed.chat, text: body })
-      if (!v.ok) throw new Error('提醒许可：' + v.why)
+      if (!v.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
     }
 
     let s = await look()
-    if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不发送。')
-    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+    if (!s.parsed.ok) throw new WxToolError('WX_WINDOW_UNAVAILABLE', '[没看清。屏幕可能慢半拍]')
+    if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
 
     if (!sameName(s.parsed.current, allowed.chat)) {
       const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
-      if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不发送。`)
+      if (!target) throw new WxToolError('WX_CHAT_NOT_FOUND', '[这个会话现在说不了]')
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset()
       await run(['click', String(target.box.cx), String(target.box.cy), '1'])
       await sleep(700)
       s = await look({ confirm: false })
-      if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+      if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
       if (!sameName(s.parsed.current, allowed.chat)) {
-        throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不发送。`)
+        throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
       }
     }
 
     if (!token) {
       // 许可只免 @ / 主机两道闸；频率和名单仍然要过（频率在回车前只记一次）。
       const g = await gateSend()
-      if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不发送。`)
+      if (!sameName(g.chat, allowed.chat)) throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
     }
 
     // 清浮层再重新读一次坐标：点开会话后布局可能变了。
     await run(['clean'], 30_000).catch(() => '')
     fresh.reset()
     s = await look({ confirm: false })
-    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不发送。' + fresh.notice().trim())
+    if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
     if (!sameName(s.parsed.current, allowed.chat)) {
-      throw new Error(`当前会话是「${s.parsed.current || '读不到'}」，不是「${allowed.chat}」，不发送。`)
+      throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
     }
     const focus = findInputBox(s.parsed)
-    if (!focus) throw new Error('找不到输入框，不发送。')
+    if (!focus) throw new WxToolError('WX_INPUT_NOT_FOUND', '[没做成，过会儿再试]')
     await run(['click', String(focus.box.cx), String(focus.box.cy), '1'])
     await sleep(300)
     await run(['type', body], 60_000)
@@ -1181,14 +1190,14 @@ export function apply(ctx, config = {}) {
     await sleep(300)
     if (token) {
       const again = permitStore.check({ id: token, chat: allowed.chat, text: body })
-      if (!again.ok) throw new Error('提醒许可：' + again.why)
+      if (!again.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
       const now = await look({ confirm: false })
       if (!sameName(now.parsed.current, allowed.chat)) {
-        throw new Error(`打字期间当前会话变成了「${now.parsed.current || '读不到'}」，不发送。`)
+        throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
       }
     } else {
       const g = await gateSend()
-      if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不发送。`)
+      if (!sameName(g.chat, allowed.chat)) throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
     }
     // 频率闸只在这里记一次：前面两次核对都不占额度。
     await speechGate(allowed.chat)
@@ -1197,17 +1206,17 @@ export function apply(ctx, config = {}) {
     let proactiveLeft = 0
     if (token) {
       const still = permitStore.check({ id: token, chat: allowed.chat, text: body })
-      if (!still.ok) throw new Error('提醒许可：' + still.why)
+      if (!still.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
       const last = await look({ confirm: false })
       if (!sameName(last.parsed.current, allowed.chat)) {
-        throw new Error(`等待发送期间当前会话变成了「${last.parsed.current || '读不到'}」，不发送。`)
+        throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
       }
     } else {
       // 最后一道闸：真正回车前才扣主动额度，一次发送只扣一次。
       const last = await gateSend({ consume: true, expected: allowed.chat })
       proactive = last.proactive
       proactiveLeft = last.proactiveLeft
-      if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
+      if (!sameName(last.chat, allowed.chat)) throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
     }
 
     await run(['key', 'Return'])
@@ -2391,13 +2400,15 @@ export function apply(ctx, config = {}) {
       deny(exec)
       const a = args || {}
       const label = String(a.label ?? '').trim()
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       await run(['clean'], 30_000).catch(() => '') // 挡住点击的 Qt 浮层先清掉
       fresh.reset() // 关浮层会改像素但树不变，旧基线不能再拿来判"落后"
 
       let x, y, target = null
       const before = await look()
-      if (!before.parsed.ok && before.source !== 'ocr') throw new Error('读不到微信窗口。')
+      if (!before.parsed.ok && before.source !== 'ocr') {
+        throw new WxToolError('WX_WINDOW_UNAVAILABLE', '[没看清。屏幕可能慢半拍]')
+      }
       if (label) {
         target = resolveLabel(before.parsed, label)
         if (!target) {
@@ -2411,13 +2422,14 @@ export function apply(ctx, config = {}) {
             const pro = admitted.proactive ? `这条用了主动额度，今天「${admitted.chat}」还剩 ${admitted.proactiveLeft} 条。` : ''
             return '树里没有“发送”按钮，已按回车发送。' + (pro ? ' ' + pro : '') + fresh.notice()
           }
-          const names = before.parsed.chats.map((c) => c.name).slice(0, 12).join('、')
-          throw new Error(`没找到「${label}」。会话列表：${names || '（空）'}。按钮名见 wx_peek 的“能点的”。` + fresh.notice())
+          throw new WxToolError('WX_CLICK_TARGET_NOT_FOUND', '[没做成，过会儿再试]')
         }
         x = target.box.cx; y = target.box.cy
       } else {
         x = Math.round(Number(a.x)); y = Math.round(Number(a.y))
-        if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('wx_click: 需要 label，或数字 x/y。')
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          throw new WxToolError('WX_INVALID_COORDINATES', '[没做成，过会儿再试]')
+        }
         target = hitTest(before.parsed, x, y)
       }
       await run(['click', String(x), String(y), String(Number(a.button) === 3 ? 3 : 1)])
@@ -2451,12 +2463,12 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const a = args || {}
       const text = String(a.text ?? '')
-      if (!text) throw new Error('wx_type: text 不能为空。')
-      if (/[\r\n]/.test(text)) throw new Error('wx_type: 文本含换行，会被拆成多条发送。请去掉换行或分多次发送。')
-      if ([...text].length > 500) throw new Error('wx_type: 文本超过 500 字。')
+      if (!text) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
+      if (/[\r\n]/.test(text)) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
+      if ([...text].length > 500) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
       const enter = a.enter === true
 
       // 输入也要过闸：在名单外的会话里打字，会在对方输入框里留下草稿
@@ -2524,15 +2536,15 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new Error(OFF)
+      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const a = args || {}
       const taskId = String(a.task_id ?? '').trim()
       let task = null
       if (taskId) {
         task = contextStore.board.get(taskId)
-        if (!task) throw new Error('没有这个任务：' + taskId)
+        if (!task) throw new WxToolError('WX_TASK_NOT_FOUND', '[没做成，过会儿再试]')
         if (!sameName(task.chatName, a.chat)) {
-          throw new Error(`任务「${taskId}」的会话是「${task.chatName}」，不是「${String(a.chat ?? '')}」，不发送。`)
+          throw new WxToolError('WX_TASK_CHAT_MISMATCH', '[没做成，过会儿再试]')
         }
       }
       const r = await withSendLock(() => sendToChat({

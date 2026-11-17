@@ -58,6 +58,14 @@ function errorTextOf(result) {
   try { return JSON.stringify(err) } catch { return String(err) }
 }
 
+function wxToolErrorOf(result) {
+  if (result?.isError !== true) return null
+  const text = errorTextOf(result)
+  if (typeof text !== 'string') return null
+  const match = /^WXTOOL\|([A-Z0-9_]+)\|([\s\S]*)$/.exec(text)
+  return match ? { code: match[1], text: match[2] } : null
+}
+
 /**
  * 创建工具台账。
  *
@@ -161,9 +169,12 @@ export function createToolLedger({
 
     const isError = result?.isError === true
     const ok = !isError && rawValue?.ok !== false
-    const rawCode = value?.code ?? sanitize(result?.error?.info?.code ?? '', redactState)
+    const wxToolError = wxToolErrorOf(result)
+    const rawCode = wxToolError?.code
+      ? sanitize(wxToolError.code, redactState)
+      : value?.code ?? sanitize(result?.error?.info?.code ?? '', redactState)
     const code = rawCode == null ? '' : String(rawCode)
-    const error = isError ? sanitize(errorTextOf(result), redactState) : null
+    const error = isError ? sanitize(wxToolError?.text ?? errorTextOf(result), redactState) : null
 
     const handles = sanitize(rawValue?.handles ?? [], redactState)
     const refs = sanitize(rawValue?.refs ?? {}, redactState)

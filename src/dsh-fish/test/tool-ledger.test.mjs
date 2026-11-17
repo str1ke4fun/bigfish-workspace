@@ -41,6 +41,29 @@ test('失败调用也写台账，error 进 error 字段', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('微信业务错误拆出 code，error 只留人话且仍记失败', async () => {
+  const root = await tmpRoot()
+  try {
+    const ledger = createToolLedger({ root, guard })
+    const result = {
+      isError: true,
+      error: { message: 'WXTOOL|WX_NOT_ALLOWED|[这个会话现在说不了]' },
+      content: [{ type: 'text', text: '[这个会话现在说不了]' }],
+    }
+    const entry = await ledger.record(
+      { name: 'wx_send', arguments: {}, agent: { session: { header: { id: 's1' } } } },
+      result,
+      { surface: 'wx' },
+    )
+    assert.equal(entry.ok, false)
+    assert.equal(entry.code, 'WX_NOT_ALLOWED')
+    assert.equal(entry.error, '[这个会话现在说不了]')
+    assert.equal(entry.modelText, '[这个会话现在说不了]')
+    assert.equal(JSON.stringify(entry).includes('WXTOOL|'), false)
+    assert.equal(result.isError, true)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('失败调用里的 error 文本也脱敏', async () => {
   const root = await tmpRoot()
   try {
