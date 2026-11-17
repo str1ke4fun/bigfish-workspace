@@ -99,7 +99,9 @@ registerHooks({
             invoke: (channel) => {
               mock.rendererInvokes.push(channel)
               return channel === 'pet:get-action-catalog'
-                ? Promise.resolve([{ id: 'wave', label: '挥手', group: '回应' }])
+                ? Promise.resolve([{
+                    id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应',
+                  }])
                 : Promise.resolve({ ok: true, actions: [] })
             },
           }
@@ -412,7 +414,10 @@ test('动作桥：菜单动作发新 union，旧 motion 字符串仍归一成 { 
 test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC 频道', async () => {
   const main = await loadMainModule()
   const { win, sent } = fakeWindow()
-  const catalog = [registered('swing', '荡秋千', '玩耍')]
+  const catalog: ActionDefinition[] = [
+    registered('swing', '荡秋千', '玩耍'),
+    { id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息' },
+  ]
 
   main.sendActionMessage(win, { motion: 'waving' })
   main.sendActionCatalog(win, catalog)
@@ -420,7 +425,10 @@ test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC �
 
   assert.deepEqual(sent, [
     ['pet:action', { motion: 'waving' }],
-    ['pet:action-catalog', [{ id: 'swing', label: '荡秋千', group: '玩耍' }]],
+    ['pet:action-catalog', [
+      { id: 'swing', label: '荡秋千', anim: 'swing-anim', loop: false, group: '玩耍' },
+      { id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息' },
+    ]],
     ['pet:action-stop', undefined],
   ])
 })
@@ -486,7 +494,7 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
   assert.deepEqual(first.actions, [{ id: 'wave', label: '挥手', group: '回应' }])
   assert.deepEqual(sent.slice(0, 2), [
     ['pet:action-stop', undefined],
-    ['pet:action-catalog', [{ id: 'wave', label: '挥手', group: '回应' }]],
+    ['pet:action-catalog', [{ id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应' }]],
   ])
   assert.deepEqual(helloBodies, [{
     version: '0.1.0',
@@ -506,7 +514,9 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
 
   const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
   assert.ok(getCatalog)
-  assert.deepEqual(await getCatalog(), [{ id: 'wave', label: '挥手', group: '回应' }])
+  assert.deepEqual(await getCatalog(), [
+    { id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应' },
+  ])
 })
 
 test('动作重载：只使用最后提交成功的皮肤，不用被拒绝的请求', async (t) => {
@@ -590,7 +600,9 @@ test('动作重载：旧 reload 在较新皮肤提交后完成也不覆盖新 ca
 
   const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
   assert.ok(getCatalog)
-  assert.deepEqual(await getCatalog(), [{ id: 'default-wave', label: '默认挥手', group: '回应' }])
+  assert.deepEqual(await getCatalog(), [
+    { id: 'default-wave', label: '默认挥手', anim: 'default-wave-anim', loop: false, group: '回应' },
+  ])
   assert.deepEqual(helloBodies, [{
     version: '0.1.0',
     skins: [{ id: '', name: '默认' }],
@@ -598,7 +610,9 @@ test('动作重载：旧 reload 在较新皮肤提交后完成也不覆盖新 ca
   }])
   assert.deepEqual(
     sent.filter(([channel]) => channel === 'pet:action-catalog'),
-    [['pet:action-catalog', [{ id: 'default-wave', label: '默认挥手', group: '回应' }]]],
+    [['pet:action-catalog', [
+      { id: 'default-wave', label: '默认挥手', anim: 'default-wave-anim', loop: false, group: '回应' },
+    ]]],
   )
 })
 
@@ -690,15 +704,21 @@ test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载�
 
   electronMock.rendererListeners.get('pet:action')![0]({}, { motion: 'waving' })
   electronMock.rendererListeners.get('pet:action')![0]({}, 'thinking')
-  electronMock.rendererListeners.get('pet:action-catalog')![0]({}, [{ id: 'wave', label: '挥手', group: '回应' }])
+  electronMock.rendererListeners.get('pet:action-catalog')![0]({}, [
+    { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
+  ])
   electronMock.rendererListeners.get('pet:action-stop')![0]({})
   electronMock.rendererListeners.get('pet:action-error')![0]({}, { why: '坏了' })
 
   assert.deepEqual(actions, [{ motion: 'waving' }, 'thinking'])
-  assert.deepEqual(catalogs, [[{ id: 'wave', label: '挥手', group: '回应' }]])
+  assert.deepEqual(catalogs, [[
+    { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
+  ]])
   assert.equal(stops, 1)
   assert.deepEqual(errors, [{ why: '坏了' }])
-  assert.deepEqual(await bridge.getActionCatalog(), [{ id: 'wave', label: '挥手', group: '回应' }])
+  assert.deepEqual(await bridge.getActionCatalog(), [
+    { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
+  ])
   assert.deepEqual(await bridge.reloadActions(), { ok: true, actions: [] })
   assert.deepEqual(electronMock.rendererInvokes, ['pet:get-action-catalog', 'pet:actions-reload'])
 

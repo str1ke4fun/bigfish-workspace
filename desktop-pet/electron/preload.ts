@@ -3,15 +3,21 @@ import { contextBridge, ipcRenderer } from 'electron'
 type Unsubscribe = () => void
 type PetActionMessage = { motion: string } | { action: string }
 
-interface PetActionCatalogEntry {
+interface PetActionCatalogMetadata {
   id: string
   label: string
   group: string
 }
 
+interface PetActionCatalogEntry extends PetActionCatalogMetadata {
+  anim?: string
+  seq?: string[]
+  loop: boolean
+}
+
 interface PetActionReloadResult {
   ok: boolean
-  actions: PetActionCatalogEntry[]
+  actions: PetActionCatalogMetadata[]
   error?: string
   stale?: boolean
 }

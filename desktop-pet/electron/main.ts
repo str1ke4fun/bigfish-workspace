@@ -218,7 +218,10 @@ export function sendActionMessage(win: BrowserWindow | null, payload: PetActionM
 }
 
 export function sendActionCatalog(win: BrowserWindow | null, actions: readonly ActionDefinition[]): void {
-  if (win && !win.isDestroyed()) win.webContents.send('pet:action-catalog', actionCatalogEntries(actions))
+  if (win && !win.isDestroyed()) {
+    // renderer 要用 anim/seq/loop 改写借用槽；hello/reload 结果仍只暴露公开元数据。
+    win.webContents.send('pet:action-catalog', mergeActionCatalogs(actions, []))
+  }
 }
 
 export function sendActionStop(win: BrowserWindow | null): void {
@@ -691,7 +694,7 @@ ipcMain.on('pet:ready', () => {
 
 ipcMain.handle('pet:get-size', () => petSize)
 ipcMain.handle('pet:get-look', () => petLook)
-ipcMain.handle('pet:get-action-catalog', () => actionCatalogEntries(actionCatalog))
+ipcMain.handle('pet:get-action-catalog', () => mergeActionCatalogs(actionCatalog, []))
 ipcMain.handle('pet:actions-reload', () => reloadRegisteredActions())
 
 /** 渲染进程挂载时主动拉取最近皮肤，避免首推丢失后一直停在默认皮肤。 */

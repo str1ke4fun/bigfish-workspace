@@ -121,6 +121,8 @@ export interface PlaybackState {
   generation: number
   /** 动作播放期间收到的最新声明式稳态，恢复时使用它而不是启动时快照。 */
   steady: PetMotion
+  /** 进入循环时冻结给 `<Pet motion>` 的安全值；循环期回调仍可更新 steady。 */
+  frozenSteady: PetMotion
   actionId: string | null
   animations: string[]
   index: number
@@ -292,6 +294,7 @@ export function initialPlaybackState(steady: PetMotion = 'idle', now = 0): Playb
     status: 'idle',
     generation: 0,
     steady,
+    frozenSteady: steady,
     actionId: null,
     animations: [],
     index: 0,
@@ -373,6 +376,7 @@ function advancePlayback(state: PlaybackState, steady: PetMotion, now: number): 
       ...state,
       status: holdsLoop ? 'holding-loop' : 'playing-seq',
       steady,
+      frozenSteady: steady,
       index: nextIndex,
       expectedAnimation: animation,
       targetSeen: false,
@@ -430,6 +434,7 @@ export function reducePlayback(
         status,
         generation,
         steady,
+        frozenSteady: steady,
         actionId: action.id,
         animations,
         index: 0,
