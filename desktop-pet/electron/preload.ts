@@ -13,6 +13,7 @@ interface PetActionReloadResult {
   ok: boolean
   actions: PetActionCatalogEntry[]
   error?: string
+  stale?: boolean
 }
 
 const bridge = {

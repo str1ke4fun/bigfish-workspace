@@ -48,6 +48,7 @@ export interface PetActionReloadResult {
   ok: boolean
   actions: PetActionCatalogEntry[]
   error?: string
+  stale?: boolean
 }
 
 let petPoller: Poller | null = null
@@ -55,6 +56,8 @@ let petWindow: BrowserWindow | null = null
 let petSize = 400
 /** 最近一次应用/尝试应用的设置；用来让每 2 秒重复下发的同一份设置保持幂等。 */
 let petSettings: PetSettings = { size: petSize, skin: '' }
+/** 已同时提交给 renderer 的皮肤；`petSettings.skin` 只代表服务端请求意图。 */
+let activeSkinId = ''
 /** 启动时扫描到的本地皮肤；只用于 hello 上报，实际加载按需读盘复核。 */
 let skinCatalog: ScannedSkin[] = [{ id: '', name: '默认', config: null }]
 let helloTimer: ReturnType<typeof setInterval> | null = null
@@ -73,6 +76,8 @@ let lastPresence: { on: boolean; mode: string | null } | null = null
 /** 当前默认注册表 + 当前皮肤覆盖后的完整动作；菜单、渲染进程与 hello 共用。 */
 let actionCatalog: ActionDefinition[] = []
 let lastActionError: string | null = null
+/** 每次 reload 争用所有权、每次皮肤提交完成时递增；旧异步任务不得再提交。 */
+let actionCatalogGeneration = 0
 
 /**
  * 皮肤推送缓存：首推可能早于渲染进程注册 `onSkin`（和 `pet:state` 同样的竞态）。
@@ -394,6 +399,8 @@ export async function readActionCatalog(assetsRoot: string, skinId: string): Pro
   return mergeActionCatalogs(defaults, skinActions)
 }
 
+export type ReadActionCatalog = (assetsRoot: string, skinId: string) => Promise<ActionDefinition[]>
+
 function setActionCatalog(actions: readonly ActionDefinition[], win: BrowserWindow | null = petWindow): void {
   actionCatalog = mergeActionCatalogs(actions, [])
   // 右键/托盘菜单每次打开都从 actionCatalog 现建，更新这里就是菜单重建。
@@ -407,15 +414,34 @@ function setActionCatalog(actions: readonly ActionDefinition[], win: BrowserWind
 export async function reloadRegisteredActions(
   win: BrowserWindow | null = petWindow,
   assetsRoot: string = appFile('assets'),
+  readCatalog: ReadActionCatalog = readActionCatalog,
 ): Promise<PetActionReloadResult> {
+  const skinId = activeSkinId
+  const generation = ++actionCatalogGeneration
   sendActionStop(win)
   try {
-    const next = await readActionCatalog(assetsRoot, petSettings.skin)
+    const next = await readCatalog(assetsRoot, skinId)
+    if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
+      return {
+        ok: false,
+        stale: true,
+        actions: actionCatalogEntries(actionCatalog),
+        error: '动作目录已被更新的重载或皮肤切换替代，未提交旧结果。',
+      }
+    }
     setActionCatalog(next, win)
     lastActionError = null
     void sendHello()
     return { ok: true, actions: actionCatalogEntries(actionCatalog) }
   } catch (error) {
+    if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
+      return {
+        ok: false,
+        stale: true,
+        actions: actionCatalogEntries(actionCatalog),
+        error: '动作目录已被更新的重载或皮肤切换替代，未提交旧结果。',
+      }
+    }
     const why = `动作没重新载入，继续用上一份：${errorText(error)}`
     reportActionError(why, win)
     return { ok: false, actions: actionCatalogEntries(actionCatalog), error: why }
@@ -428,13 +454,11 @@ export async function reloadRegisteredActions(
  * 只写 console.warn 时用户在工作台选了坏皮肤却看不到任何提示，
  * 所以统一发 `pet:skin-error { id, why }`，由渲染进程弹「皮肤没载入」。
  */
-function reportSkinError(id: string, why: string): void {
+function reportSkinError(id: string, why: string, win: BrowserWindow | null = petWindow): void {
   const payload = skinRefusal(id, why)
   lastSkinError = payload
   console.warn(`[desktop-pet] 皮肤 ${id || '默认'} 没载入，保留当前皮肤：${payload.why}`)
-  if (petWindow && !petWindow.isDestroyed()) {
-    petWindow.webContents.send('pet:skin-error', payload)
-  }
+  if (win && !win.isDestroyed()) win.webContents.send('pet:skin-error', payload)
 }
 
 /**
@@ -443,26 +467,37 @@ function reportSkinError(id: string, why: string): void {
  * 先记录服务端意图（`petSettings.skin`），这样同一份失败设置不会每 2 秒重试并刷日志；
  * 但渲染进程只在校验通过（含 14 个动画文件齐全）后收到新皮肤，失败时继续用旧皮肤。
  */
-async function applySkin(id: string): Promise<void> {
+export interface ApplySkinOptions {
+  win?: BrowserWindow | null
+  assetsRoot?: string
+  readCatalog?: ReadActionCatalog
+}
+
+export async function applySkin(id: string, options: ApplySkinOptions = {}): Promise<void> {
   const revision = ++skinRevision
   petSettings = { ...petSettings, skin: id }
-  const assetsRoot = appFile('assets')
+  const win = options.win === undefined ? petWindow : options.win
+  const assetsRoot = options.assetsRoot ?? appFile('assets')
+  const loadCatalog = options.readCatalog ?? readActionCatalog
 
   async function applyValidatedSkin(config: unknown, uri: string): Promise<void> {
     let nextActions: ActionDefinition[]
     try {
-      nextActions = await readActionCatalog(assetsRoot, id)
+      nextActions = await loadCatalog(assetsRoot, id)
     } catch (error) {
       throw new Error(`动作注册表没载入：${errorText(error)}`)
     }
     if (revision !== skinRevision) return
 
     // 新皮肤会替换全部动画映射；先让播放器结束旧 generation 的借用槽。
-    sendActionStop(petWindow)
+    sendActionStop(win)
     lastSkinError = null
     lastActionError = null
     skinForwarder.onSkin({ id, revision, config, uri })
-    setActionCatalog(nextActions)
+    setActionCatalog(nextActions, win)
+    // skin forwarder 与动作 catalog 都成功后，这个 id 才成为 reload 可信的已提交皮肤。
+    activeSkinId = id
+    actionCatalogGeneration += 1
     // 皮肤与动作目录都在同一成功点生效，随后马上刷新服务端可接受的 action id。
     void sendHello()
   }
@@ -473,27 +508,27 @@ async function applySkin(id: string): Promise<void> {
       config = JSON.parse(await readFile(join(assetsRoot, 'config.json'), 'utf8'))
     } catch (error) {
       if (revision === skinRevision) {
-        reportSkinError('', `默认皮肤配置没载入：${errorText(error)}`)
+        reportSkinError('', `默认皮肤配置没载入：${errorText(error)}`, win)
       }
       return
     }
     try {
       await applyValidatedSkin(config, DEFAULT_SKIN_URI)
     } catch (error) {
-      if (revision === skinRevision) reportSkinError('', errorText(error))
+      if (revision === skinRevision) reportSkinError('', errorText(error), win)
     }
     return
   }
 
   if (!SIMPLE_SKIN_ID.test(id)) {
-    reportSkinError(id, '皮肤 id 不合法。')
+    reportSkinError(id, '皮肤 id 不合法。', win)
     return
   }
 
   const skinDir = join(assetsRoot, 'skins', id)
   const file = normalize(join(skinDir, 'skin.json'))
   if (!isInside(assetsRoot, file)) {
-    reportSkinError(id, '皮肤路径越界。')
+    reportSkinError(id, '皮肤路径越界。', win)
     return
   }
 
@@ -502,14 +537,14 @@ async function applySkin(id: string): Promise<void> {
     if (revision !== skinRevision) return
     const decision = decideSkinLoad(parsed, skinDir)
     if (!decision.ok) {
-      reportSkinError(id, decision.why)
+      reportSkinError(id, decision.why, win)
       return
     }
     await applyValidatedSkin(decision.config, `pet-asset://local/skins/${id}/webm`)
   } catch (error) {
     if (revision === skinRevision) {
       const why = errorText(error)
-      reportSkinError(id, why.startsWith('动作注册表') ? why : `读不了 skin.json：${why}`)
+      reportSkinError(id, why.startsWith('动作注册表') ? why : `读不了 skin.json：${why}`, win)
     }
   }
 }
@@ -790,12 +825,13 @@ if (gotInstanceLock) app
   .then(async () => {
     petSize = readPetSize()
     petSettings = { size: petSize, skin: '' }
+    activeSkinId = ''
     sizeSync = { current: petSize, pending: null }
     registerAssetProtocol()
     registerOpenProtocol()
     skinCatalog = scanSkins(appFile('assets'))
     try {
-      actionCatalog = mergeActionCatalogs(await readActionCatalog(appFile('assets'), petSettings.skin), [])
+      actionCatalog = mergeActionCatalogs(await readActionCatalog(appFile('assets'), activeSkinId), [])
     } catch (error) {
       // 动作表坏了不拦桌宠启动；菜单先空着，手动重载可保留/恢复上一份。
       reportActionError(`启动时动作没载入：${errorText(error)}`, null)

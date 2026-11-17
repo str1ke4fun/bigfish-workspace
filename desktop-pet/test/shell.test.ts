@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { registerHooks } from 'node:module'
@@ -138,6 +138,52 @@ async function actionFixture() {
   await mkdir(join(assets, 'webm'), { recursive: true })
   await mkdir(join(assets, 'skins', 'rest', 'webm'), { recursive: true })
   return { root, assets }
+}
+
+async function writeValidSkin(assets: string, id: string, name: string): Promise<void> {
+  const skinDir = join(assets, 'skins', id)
+  await mkdir(join(skinDir, 'webm'), { recursive: true })
+  await writeFile(join(skinDir, 'webm', 'idle.webm'), '')
+  const motions = {
+    idle: 'idle',
+    turn: 'idle',
+    'moving-left': 'idle',
+    'moving-right': 'idle',
+    waving: 'idle',
+    thinking: 'idle',
+    working: 'idle',
+    result: 'idle',
+    waiting: 'idle',
+    running: 'idle',
+    review: 'idle',
+    failed: 'idle',
+    success: 'idle',
+    error: 'idle',
+  }
+  await writeFile(join(skinDir, 'skin.json'), JSON.stringify({ name, motions }))
+}
+
+function captureWarnings(t: TestContext): string[] {
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '))
+  t.after(() => {
+    console.warn = originalWarn
+  })
+  return warnings
+}
+
+function captureHello(t: TestContext): unknown[] {
+  const helloBodies: unknown[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_input, init) => {
+    helloBodies.push(JSON.parse(String(init?.body)))
+    return new Response('{"ok":true}', { status: 200 })
+  }
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+  return helloBodies
 }
 
 test('读远端外观：缺字段/非法值给 null，合法值夹取', () => {
@@ -461,6 +507,135 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
   const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
   assert.ok(getCatalog)
   assert.deepEqual(await getCatalog(), [{ id: 'wave', label: '挥手', group: '回应' }])
+})
+
+test('动作重载：只使用最后提交成功的皮肤，不用被拒绝的请求', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  await writeFile(join(assets, 'config.json'), '{}')
+
+  const warnings = captureWarnings(t)
+  const helloBodies = captureHello(t)
+  const { win } = fakeWindow()
+  const defaultActions = [registered('default-wave', '默认挥手', '回应')]
+
+  await main.applySkin('', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => defaultActions,
+  })
+  await main.applySkin('rejected-skin', { win, assetsRoot: assets })
+
+  const readSkins: string[] = []
+  const result = await main.reloadRegisteredActions(win, assets, async (_root, skinId) => {
+    readSkins.push(skinId)
+    return defaultActions
+  })
+
+  assert.deepEqual(readSkins, [''])
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.actions, [{ id: 'default-wave', label: '默认挥手', group: '回应' }])
+  assert.deepEqual(helloBodies.at(-1), {
+    version: '0.1.0',
+    skins: [{ id: '', name: '默认' }],
+    actions: [{ id: 'default-wave', label: '默认挥手', group: '回应' }],
+  })
+  assert.match(warnings.join('\n'), /rejected-skin/)
+})
+
+test('动作重载：旧 reload 在较新皮肤提交后完成也不覆盖新 catalog/hello', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeValidSkin(assets, 'start', '起始皮肤')
+
+  captureWarnings(t)
+  const helloBodies = captureHello(t)
+  const { win, sent } = fakeWindow()
+  const startActions = [registered('start-wave', '起始挥手', '回应')]
+  const defaultActions = [registered('default-wave', '默认挥手', '回应')]
+
+  await main.applySkin('start', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => startActions,
+  })
+  sent.length = 0
+  helloBodies.length = 0
+
+  let reloadSkin = ''
+  let resolveReload: ((actions: ActionDefinition[]) => void) | null = null
+  const reload = main.reloadRegisteredActions(win, assets, async (_root, skinId) => {
+    reloadSkin = skinId
+    return await new Promise<ActionDefinition[]>((resolve) => {
+      resolveReload = resolve
+    })
+  })
+
+  assert.equal(reloadSkin, 'start')
+  await main.applySkin('', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => defaultActions,
+  })
+  resolveReload!(startActions)
+
+  const stale = await reload
+  assert.equal(stale.ok, false)
+  assert.equal(stale.stale, true)
+
+  const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getCatalog)
+  assert.deepEqual(await getCatalog(), [{ id: 'default-wave', label: '默认挥手', group: '回应' }])
+  assert.deepEqual(helloBodies, [{
+    version: '0.1.0',
+    skins: [{ id: '', name: '默认' }],
+    actions: [{ id: 'default-wave', label: '默认挥手', group: '回应' }],
+  }])
+  assert.deepEqual(
+    sent.filter(([channel]) => channel === 'pet:action-catalog'),
+    [['pet:action-catalog', [{ id: 'default-wave', label: '默认挥手', group: '回应' }]]],
+  )
+})
+
+test('皮肤切换：成功后按 stop、skin/catalog、立即 hello 的顺序提交', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeValidSkin(assets, 'start', '起始皮肤')
+
+  const helloBodies = captureHello(t)
+  const { win, sent } = fakeWindow()
+  const actions = [registered('start-wave', '起始挥手', '回应')]
+
+  await main.applySkin('', { win, assetsRoot: assets, readCatalog: async () => [] })
+  sent.length = 0
+  helloBodies.length = 0
+
+  await main.applySkin('start', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => actions,
+  })
+
+  assert.deepEqual(sent, [
+    ['pet:action-stop', undefined],
+    ['pet:action-catalog', [{ id: 'start-wave', label: '起始挥手', group: '回应' }]],
+  ])
+  const getSkin = electronMock.ipcHandled.get('pet:get-skin')
+  assert.ok(getSkin)
+  assert.equal((await getSkin() as { id: string }).id, 'start')
+  assert.deepEqual(helloBodies, [{
+    version: '0.1.0',
+    skins: [{ id: '', name: '默认' }],
+    actions: [{ id: 'start-wave', label: '起始挥手', group: '回应' }],
+  }])
 })
 
 test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载荷', async () => {
