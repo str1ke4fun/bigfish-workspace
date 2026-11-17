@@ -70,10 +70,12 @@
 
 **Interfaces:** `softLimit`, `hardBreaker`; mention window remains hard; soft overage allowed only where proactive send is already permitted; audit marker.
 
-- [ ] 写失败测试：mention window hard, noMention/exempt paths, soft overage, breaker, bad state fails closed.
-- [ ] 实现 config-compatible keys and audit flags; keep old proactive.json.
-- [ ] 更新 workbench and prompt-removal tests.
-- [ ] 跑 wx/workbench/fish tests，提交。
+- [x] 写失败测试：mention window hard, noMention/exempt paths, soft overage, breaker, bad state fails closed.
+- [x] 实现 config-compatible keys and audit flags; keep old proactive.json.
+- [x] 更新 workbench and prompt-removal tests.
+- [x] 跑 wx/workbench/fish tests，提交。
+
+**Evidence (2026-11-18, `fc70f40`):** 保留 `proactivePerDay` / `proactiveChats` 作为软上限，新增 `hardBreaker`（默认和上限 50）及 `softLimit` 读兼容别名；超过软上限但未到硬熔断仍放行，显式 0 仍静音，@/免 @/名单/主机/permit/长度/speech 闸未放宽。`inbound.jsonl` 的 `proactive-send` / `proactive-breaker` 记录完整 `used` / `softLimit` / `hardBreaker` / `overSoftLimit` / `atHardBreaker` 审计标记。坏 `proactive.json` 状态失败关闭主动路径，文件路径与 `{ day, used }` 形状未迁移；workbench 表单和状态卡接入软/硬阈值，prompt-removal 回归仍不含额度数字。`src/dsh-wx`: `node --test` → 149 pass / 0 fail；`workbench`: `node --test` → 128 pass / 0 fail；`src/dsh-fish`: `node --test` → 1154 pass / 0 fail。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未推送、未部署、未重启服务、未做真机微信发送。
 
 ### Task 5: WeChat return envelopes
 
