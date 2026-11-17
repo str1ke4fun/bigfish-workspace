@@ -1,4 +1,5 @@
 import { WxToolError } from './tool-error.js'
+import { resolveSendKeys } from './project.js'
 
 function reason(...parts) {
   return parts
@@ -102,19 +103,22 @@ export function createSendGate({
       ? canSpeak(readMentions(), mentionChat, now(), p.mentionWindowMinutes)
       : { ok: true }
     const state = loadState()
-    const dec = decideProactive({ policy: p, state, chat: hit, mention: verdict, exempt, now: now() })
+    const sendKeys = resolveSendKeys({ chat: hit, canonicalChat, chatId: target?.chatId })
+    const dec = decideProactive({
+      policy: p, state, chat: sendKeys.quota, mention: verdict, exempt, now: now(),
+    })
     if (!dec.ok) {
       if (dec.why === '主动额度状态读不出来') {
         throw new WxToolError(
           'WX_PROACTIVE_STATE',
           '[没做成，过会儿再试]',
-          reason('发送闸：主动额度状态不可信。', state?.why || dec.why, `chat=${hit}`),
+          reason('发送闸：主动额度状态不可信。', state?.why || dec.why, `chat=${sendKeys.quota}`),
         )
       }
       throw new WxToolError(
         'WX_PROACTIVE_LIMIT',
         '[这个群今天先不主动开口]',
-        reason('发送闸：主动额度不足。', dec.why, `chat=${hit}`),
+        reason('发送闸：主动额度不足。', dec.why, `chat=${sendKeys.quota}`),
       )
     }
 
@@ -122,17 +126,17 @@ export function createSendGate({
     if (dec.proactive && consume) {
       // 一次发送只在这里扣一次：前面的 gateSend 都只是检查，避免一道闸扣三次额度。
       // 记不下来就不发：否则每轮都读到“今天用了 0 条”，额度等于无限。
-      const next = consumeProactive(p, state, hit)
+      const next = consumeProactive(p, state, sendKeys.quota)
       if (!saveState(next.state)) {
         throw new WxToolError(
           'WX_PROACTIVE_STATE',
           '[没做成，过会儿再试]',
-          `发送闸：saveState 写入失败；chat=${hit}`,
+          `发送闸：saveState 写入失败；chat=${sendKeys.quota}`,
         )
       }
       left = next.left
-      logInbound({ type: 'proactive-send', chat: hit, remaining: left })
+      logInbound({ type: 'proactive-send', chat: sendKeys.quota, remaining: left })
     }
-    return { chat: hit, snap: s, proactive: dec.proactive, proactiveLeft: left }
+    return { chat: hit, account: sendKeys.quota, snap: s, proactive: dec.proactive, proactiveLeft: left }
   }
 }

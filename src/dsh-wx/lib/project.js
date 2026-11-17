@@ -40,6 +40,14 @@ export function shouldNoteWxEcho(sent) {
 const sameChatName = (a, b) => String(a ?? '').trim().replace(/\s+/g, ' ') ===
   String(b ?? '').trim().replace(/\s+/g, ' ')
 
+/** 同一会话的额度/频率必须落在规范键上，不能让别名各记一份。 */
+export function resolveSendKeys({ chat = '', canonicalChat = '', chatId = '' } = {}) {
+  const fallback = String(chat ?? '').trim()
+  const id = String(chatId ?? '').trim()
+  const quota = String(canonicalChat ?? '').trim() || id || fallback
+  return { quota, speech: id || quota }
+}
+
 /**
  * wx_send 的任务绑定：优先认显式 task_id；没给时才走
  * 规范会话名 → 目录 chatId → 该会话唯一活动任务。未知/歧义名不猜。
@@ -83,8 +91,8 @@ export function resolveWxSendTask({
       source: 'explicit',
       status: 'bound',
       ...base,
-      chatName: task.chatName || chatName,
-      targetChat: task.chatName || chatName,
+      chatName: target?.chatName || task.chatName || chatName,
+      targetChat: target?.chatName || task.chatName || chatName,
       chatId: task.chatId,
       task,
     }
@@ -93,7 +101,7 @@ export function resolveWxSendTask({
   if (implicitTaskBinding === false) {
     return {
       ok: true, source: 'disabled', status: 'disabled', ...base, chatName: requestedChat,
-      targetChat: requestedChat, chatId: '', task: null,
+      targetChat: requestedChat, task: null,
     }
   }
   if (!target) {

@@ -65,6 +65,7 @@ import {
   projectWxSend,
   projectWxTaskDone,
   projectWxTaskSnooze,
+  resolveSendKeys,
   shouldBookWxSend,
 } from './project.js'
 import { createWxSendTool } from './wx-send-tool.js'
@@ -1055,7 +1056,9 @@ export function apply(ctx, config = {}) {
    * 把一句话发到指定会话。永不自己吞错：发不出去就抛，让调用方如实说。
    * permit 存在时只绕过 @ / 主机闸；允许名单、说话频率、当前会话核对都照走。
    */
-  async function sendToChat({ chat, targetChat = '', text, permit = '', taskId = '', replyTask = null } = {}) {
+  async function sendToChat({
+    chat, targetChat = '', targetChatId = '', text, permit = '', taskId = '', replyTask = null,
+  } = {}) {
     const p = policy()
     if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]', '微信通道已关闭。')
     const want = String(chat ?? '').trim()
@@ -1068,7 +1071,7 @@ export function apply(ctx, config = {}) {
 
     const allowed = canSendWithPolicy(p, want)
     if (!allowed.ok) throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]', allowed.why)
-    const gateTarget = { chat: allowed.chat, canonicalChat: navigateTo }
+    const gateTarget = { chat: allowed.chat, canonicalChat: navigateTo, chatId: String(targetChatId ?? '').trim() }
 
     const token = String(permit ?? '').trim()
     if (token) {
@@ -1153,7 +1156,9 @@ export function apply(ctx, config = {}) {
       }
     }
     // 频率闸只在这里记一次：前面两次核对都不占额度。
-    await speechGate(allowed.chat)
+    await speechGate(resolveSendKeys({
+      chat: allowed.chat, canonicalChat: navigateTo, chatId: gateTarget.chatId,
+    }).speech)
     // 频率闸可能要等，等完再看一眼当前会话，别在等待期间被切走。
     let proactive = false
     let proactiveLeft = 0

@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 
 import { createDirectory } from '../lib/directory.js'
 import { createTaskBoard } from '../lib/tasks.js'
-import { applyWxSendBookkeeping } from '../lib/project.js'
+import { applyWxSendBookkeeping, resolveSendKeys, resolveWxSendTask } from '../lib/project.js'
+import { consume as consumeProactive, dateKey, decideProactive } from '../lib/proactive.js'
 import { canSendWithPolicy, createPermitStore } from '../lib/reminder.js'
 import { createSendGate } from '../lib/send-gate.js'
 import { allowedCurrent, sameName } from '../lib/tree.js'
@@ -26,6 +27,23 @@ function seededDirectory(chats) {
 function task(board, chatId, chatName, msgId) {
   return board.create({ chatId, chatName, inboundMsgId: msgId, text: '在吗', at: iso() }).task
 }
+
+test('显式 task_id 在改名后仍导航到目录规范名，而不是旧任务名', () => {
+  const at = iso()
+  const directory = seededDirectory([{
+    chatId: 'c_renamed_explicit', displayName: '改名后的群', fullName: '改名后的群',
+    aliases: ['改名前的群'], nameConfidence: 'exact', firstSeenAt: at,
+  }])
+  const board = createTaskBoard({ file: temp('tasks.jsonl'), now: () => T, log: () => {} })
+  const bound = task(board, 'c_renamed_explicit', '改名前的群', 'm_renamed_explicit')
+  const result = resolveWxSendTask({
+    chat: '改名前的群', taskId: bound.taskId, directory, board,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.chatName, '改名后的群')
+  assert.equal(result.targetChat, '改名后的群')
+  assert.equal(result.task.chatName, '改名前的群')
+})
 
 test('旧别名在允许名单里时，发送闸按规范当前会话放行', async () => {
   const sendPolicy = {
@@ -58,6 +76,58 @@ test('旧别名在允许名单里时，发送闸按规范当前会话放行', as
   const result = await gate({ target: { chat: '旧群名', canonicalChat: '新群名' } })
   assert.equal(result.chat, '旧群名')
   assert.equal(mentionChat, '新群名')
+})
+
+test('同一规范会话的两个别名共用 proactivePerDay 额度', async () => {
+  const now = Date.now()
+  const sendPolicy = {
+    enabled: true,
+    allowChats: ['别名一', '别名二'],
+    noMentionChats: [],
+    requireMention: true,
+    mentionWindowMinutes: 3,
+    proactivePerDay: 1,
+    proactiveChats: {},
+  }
+  let state = { ok: true, day: dateKey(now), used: {} }
+  const gate = createSendGate({
+    policy: () => sendPolicy,
+    hostBlocksSend: () => false,
+    look: async () => ({ parsed: { ok: true, current: '规范群', chats: [], messages: [] } }),
+    isStale: () => false,
+    staleDetail: () => '',
+    allowedCurrent,
+    sameName,
+    canSpeak: () => ({ ok: false, reason: '最近没人 @ 你' }),
+    readMentions: () => ({}),
+    loadState: () => state,
+    decideProactive,
+    consumeProactive,
+    saveState: (next) => { state = next; return true },
+    logInbound: () => {},
+    now: () => now,
+  })
+
+  const first = await gate({
+    consume: true,
+    target: { chat: '别名一', canonicalChat: '规范群', chatId: 'c_canonical' },
+  })
+  assert.equal(first.proactive, true)
+  await assert.rejects(
+    () => gate({ target: { chat: '别名二', canonicalChat: '规范群', chatId: 'c_canonical' } }),
+    (error) => parseWxToolError(error.message)?.code === 'WX_PROACTIVE_LIMIT',
+  )
+})
+
+test('两个别名生成同一组规范额度/频率键', () => {
+  assert.deepEqual(
+    resolveSendKeys({ chat: '别名一', canonicalChat: '规范群', chatId: 'c_canonical' }),
+    { quota: '规范群', speech: 'c_canonical' },
+  )
+  assert.deepEqual(
+    resolveSendKeys({ chat: '别名二', canonicalChat: '规范群', chatId: 'c_canonical' }),
+    { quota: '规范群', speech: 'c_canonical' },
+  )
 })
 
 test('wx_send 工具级集成：绑定、别名回滚、回执与三个确认态', async () => {
@@ -97,7 +167,7 @@ test('wx_send 工具级集成：绑定、别名回滚、回执与三个确认态
     enabled: true,
     allowChats: [
       '群甲', '星晓家园10号楼13...', '旧群名', '回滚旧名', '关闭绑定',
-      '没任务群', '确认群', '预览群', '没看见群', '陌生群',
+      '没任务群', '确认群', '预览群', '没看见群', '陌生群', '陌生预览群', '陌生没看见群',
     ],
     noMentionChats: [],
     implicitTaskBinding: true,
@@ -118,6 +188,8 @@ test('wx_send 工具级集成：绑定、别名回滚、回执与三个确认态
     回预览: ['preview', 'm_out_preview'],
     回没看见: ['unconfirmed', 'm_out_unconfirmed'],
     回无记号: ['confirmed', ''],
+    回陌生预览: ['preview', 'm_out_unknown_preview'],
+    回陌生没看见: ['unconfirmed', 'm_out_unknown_unconfirmed'],
   }
   const tool = createWxSendTool({
     getPolicy: () => ({ ...policy }),
@@ -192,6 +264,11 @@ test('wx_send 工具级集成：绑定、别名回滚、回执与三个确认态
     { source: outcomes.at(-1).source, status: outcomes.at(-1).status, booking: outcomes.at(-1).booking },
     { source: 'unresolved', status: 'unresolved', booking: 'no-task' },
   )
+
+  assert.match(await tool.execute({ chat: '陌生预览群', text: '回陌生预览' }, {}), /先别当发出去了/)
+  assert.doesNotMatch(outcomes.at(-1).warnings.join('\n'), /发出去了/)
+  assert.match(await tool.execute({ chat: '陌生没看见群', text: '回陌生没看见' }, {}), /可能出去了，也可能没有/)
+  assert.doesNotMatch(outcomes.at(-1).warnings.join('\n'), /发出去了/)
 
   assert.match(await tool.execute({ chat: '确认群', text: '回确认' }, {}), /末尾能看见/)
   assert.equal(board.get(confirmedTask.taskId).replyCount, 1)

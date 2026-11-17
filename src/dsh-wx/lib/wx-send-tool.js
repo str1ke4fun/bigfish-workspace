@@ -5,6 +5,12 @@ const BINDING_FAILURE_TEXT = {
   WX_CHAT_AMBIGUOUS: '[这个名字对不上是哪一个会话，先别发]',
 }
 
+function unresolvedWarning(sent) {
+  if (sent === 'confirmed') return '[发出去了，但没认出是哪一个会话；这句没记到待回里。别再重发。]'
+  if (sent === 'preview') return '[还没确认发出去，也没认出是哪一个会话；这句没记到待回里。先看清再说。]'
+  return '[没看见落下去，也没认出是哪一个会话；这句没记到待回里。先别重发。]'
+}
+
 /**
  * wx_send 工具注册与执行共用的窄编排层。
  * 请求名原样交给策略与许可；规范名只用于导航和任务绑定。
@@ -39,6 +45,7 @@ export async function runWxSendTool({
   const result = await sendToChat({
     chat: binding.requestedChat,
     targetChat: binding.targetChat,
+    targetChatId: binding.chatId,
     text: args.text,
     permit: String(args.permit ?? '').trim(),
     taskId,
@@ -51,8 +58,8 @@ export async function runWxSendTool({
   const recorded = result.booking?.recorded === true
   const warnings = []
   if (binding.status === 'unresolved') {
-    warnings.push('[发出去了，但没认出是哪一个会话；这句没记到待回里。别再重发。]')
-  } else if (task && booking === 'not-recorded') {
+    warnings.push(unresolvedWarning(result.sent))
+  } else if (result.sent === 'confirmed' && task && booking === 'not-recorded') {
     warnings.push('[发出去了，但没记到待回里。别再发一遍。]')
   }
 

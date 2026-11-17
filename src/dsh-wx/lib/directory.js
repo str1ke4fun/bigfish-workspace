@@ -375,6 +375,16 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
 }
 
 const sameName = (a, b) => norm(a) === norm(b)
+const sameScanRow = (a, b) => {
+  if (!sameName(a?.name, b?.name)) return false
+  const ap = norm(a?.preview)
+  const bp = norm(b?.preview)
+  if (ap && bp) return ap === bp
+  const at = norm(a?.time)
+  const bt = norm(b?.time)
+  if (at && bt) return at === bt
+  return true
+}
 
 /**
  * 侧栏跨页枚举。只读：只滚侧栏，不点开会话、不改变当前会话。
@@ -398,16 +408,36 @@ export async function scanSidebar({
     return { ok: false, why: '有会话带草稿，先不滚动', pages: 0, chats: [] }
   }
 
-  const seen = new Map() // norm(name) -> chat
+  const collected = []
+  let previousRows = []
   const collect = (page, index) => {
-    for (const c of pageChats(page)) {
-      const key = norm(c.name)
-      if (!key) continue
-      const prev = seen.get(key)
-      // 同一行重复出现时保留信息更多的那份（有未读/预览/坐标）。
-      if (!prev || (!prev.preview && c.preview) || (Number(c.unread) > Number(prev.unread))) seen.set(key, c)
+    const rows = pageChats(page)
+    let overlap = 0
+    if (index > 0 && previousRows.length && rows.length) {
+      const max = Math.min(previousRows.length, rows.length)
+      for (let n = max; n > 0; n--) {
+        const tail = previousRows.slice(-n)
+        if (tail.every((row, i) => sameScanRow(row, rows[i]))) {
+          overlap = n
+          break
+        }
+      }
     }
+    if (index === 0) {
+      collected.push(...rows)
+    } else {
+      // 重叠页只更新上一页已有行；重叠区之外即使撞名也是另一行，不能按名字吃掉。
+      for (let i = 0; i < overlap; i++) {
+        const prev = previousRows[previousRows.length - overlap + i]
+        if ((!prev.preview && rows[i].preview) || Number(rows[i].unread) > Number(prev.unread)) {
+          Object.assign(prev, rows[i])
+        }
+      }
+      collected.push(...rows.slice(overlap))
+    }
+    previousRows = rows
     onPage?.(page, index)
+    return { overlap, fresh: index === 0 ? rows.length : rows.length - overlap }
   }
   collect(first, 0)
 
@@ -416,7 +446,7 @@ export async function scanSidebar({
   let scrolled = 0
   let reason = 'max-pages'
   const anchor = first.parsed.chats.at(-1)?.box
-  if (!anchor) return { ok: false, why: '侧栏没有可用坐标', pages: 1, chats: [...seen.values()] }
+  if (!anchor) return { ok: false, why: '侧栏没有可用坐标', pages: 1, chats: collected }
 
   while (pages < Math.max(1, Number(maxPages) || 8)) {
     await scroll({ x: anchor.cx, y: anchor.cy, direction: 'down', times: 5 })
@@ -426,8 +456,7 @@ export async function scanSidebar({
     const rows = pageChats(page)
     if (rows.some((c) => c.draft)) { reason = 'draft'; break }
     const nextSig = rows.map((c) => norm(c.name)).join('‖')
-    const fresh = rows.filter((c) => !seen.has(norm(c.name))).length
-    collect(page, pages)
+    const { fresh } = collect(page, pages)
     pages += 1
     scrolled += 1
     if (nextSig === sig || fresh === 0) { reason = 'bottom'; break }
@@ -445,7 +474,7 @@ export async function scanSidebar({
     scrolled,
     reason,
     complete: reason === 'bottom',
-    chats: [...seen.values()],
+    chats: collected,
   }
 }
 
@@ -458,7 +487,9 @@ export function mergeScanned(chats = []) {
     const base = stripEllipsis(name)
     const hit = out.find((c) => {
       const n = norm(c.name)
-      return n === name || (base.length >= 2 && (n.startsWith(base) || name.startsWith(stripEllipsis(n))))
+      if (n === name) return false
+      if (!looksTruncated(c.name) && !looksTruncated(name)) return false
+      return base.length >= 2 && (n.startsWith(base) || name.startsWith(stripEllipsis(n)))
     })
     if (!hit) { out.push({ ...chat, name }); continue }
     const hitTrunc = looksTruncated(hit.name)

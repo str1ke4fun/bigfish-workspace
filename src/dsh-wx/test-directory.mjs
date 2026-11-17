@@ -259,5 +259,26 @@ await t('多页去重：截断名与全名保留全名', async () => {
   const merged = mergeScanned([{ name: '星晓家园10号楼13...' }, { name: '星晓家园10号楼1301' }, { name: '别的群' }])
   assert.deepEqual(merged.map((c) => c.name), ['星晓家园10号楼1301', '别的群'])
 })
+await t('同名会话分处两页时不被扫描去重，并让目录 fail closed', async () => {
+  const pages = [
+    { parsed: { ok: true, chats: [row('甲群'), row('撞名群')] } },
+    { parsed: { ok: true, chats: [row('乙群'), row('撞名群')] } },
+  ]
+  let i = 0
+  const scanned = await scanSidebar({
+    read: async () => pages[Math.min(i++, pages.length - 1)],
+    scroll: async () => {},
+    sleep: async () => {},
+    maxPages: 2,
+  })
+  assert.equal(scanned.ok, true)
+  assert.equal(scanned.chats.filter((c) => c.name === '撞名群').length, 2)
+
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({ chats: mergeScanned(scanned.chats) })
+  assert.equal(d.entry('撞名群'), null)
+  assert.equal(d.sendableTarget('撞名群'), null)
+  assert.equal(d.idFor('撞名群'), '')
+})
 
 console.log(`\n${n} 项通过`)
