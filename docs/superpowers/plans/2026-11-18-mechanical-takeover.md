@@ -47,6 +47,8 @@
 
 **Evidence (2026-11-18, `baae3f3`):** `src/dsh-wx`: `node --test` → 125 pass / 0 fail；`workbench`: `node --test` → 124 pass / 0 fail。覆盖 stale inbound/block precondition、提醒落盘失败退避、最终 block 单事件与旧半截修复、`overdueVisibility=false/true` 运行时回滚，以及任务摘要不可读时 `ok:false` / `unavailable`。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未部署、未重启服务。
 
+**Evidence round 2 (2026-11-18, `f7f2b52`):** `src/dsh-wx`: `node --test` → 126 pass / 0 fail；`workbench`: `node --test` → 124 pass / 0 fail。补充覆盖 probe 可写但 append 连续失败时退避累计、stale block 返回 `stale` 且状态/版本不变。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未部署、未重启服务。
+
 ### Task 3: Durable mechanical reminder delivery
 
 **Files:** `src/dsh-fish/lib/remind.js`, `schedule-hooks.js`, `src/dsh-wx/lib/reminder.js`, `index.js`, tests.
