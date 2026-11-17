@@ -55,6 +55,78 @@ test('动作槽校验、覆盖与过期', () => {
   assert.equal(pv.snapshot().action, null)
 })
 
+test('hello 动作目录按 id 去重、排序并截断 256 条', () => {
+  const pv = createPetView({ now: () => 1000 })
+  const actions = []
+  for (let i = 256; i >= 0; i -= 1) {
+    const id = `action-${String(i).padStart(3, '0')}`
+    actions.push({ id, label: `动作 ${i}`, group: '测试' })
+  }
+  // 后出现的同 id 条目覆盖前一条，且不应额外占用目录名额。
+  actions.push({ id: 'action-127', label: '更新后的动作', group: '更新组' })
+
+  pv.noteHello({ actions })
+
+  assert.equal(pv.act({ action: 'action-000' }).ok, true)
+  assert.equal(pv.act({ action: 'action-255' }).ok, true)
+  assert.equal(pv.act({ action: 'action-256' }).ok, false)
+})
+
+test('合法 action 生成 action 事件', () => {
+  const pv = createPetView({ now: () => 1000 })
+  pv.noteHello({ actions: [{ id: 'wave', label: '挥手', group: '回应' }] })
+
+  const r = pv.act({ action: 'wave', text: ' 你好 ', ttlMs: 10 })
+
+  assert.equal(r.ok, true)
+  assert.equal(typeof r.action.id, 'string')
+  assert.equal(r.action.action, 'wave')
+  assert.equal(r.action.motion, undefined)
+  assert.equal(r.action.text, '你好')
+  assert.equal(r.action.at, 1000)
+  assert.equal(r.action.ttlMs, 1000)
+  assert.deepEqual(pv.snapshot().action, r.action)
+})
+
+test('未知 action 失败且不覆盖旧 action', () => {
+  const pv = createPetView({ now: () => 1000 })
+  pv.noteHello({ actions: [{ id: 'wave', label: '挥手', group: '回应' }] })
+  const current = pv.act({ action: 'wave' }).action
+
+  const r = pv.act({ action: 'missing' })
+
+  assert.equal(r.ok, false)
+  assert.deepEqual(pv.snapshot().action, current)
+})
+
+test('最新的 hello 动作目录生效，缺省或非法 actions 清空旧目录', () => {
+  const pv = createPetView({ now: () => 1000 })
+  pv.noteHello({ actions: [{ id: 'old', label: '旧动作', group: '测试' }] })
+  pv.noteHello({ actions: [{ id: 'new', label: '新动作', group: '测试' }] })
+
+  assert.equal(pv.act({ action: 'old' }).ok, false)
+  assert.equal(pv.act({ action: 'new' }).ok, true)
+
+  pv.noteHello({ version: '0.1.1' })
+  assert.equal(pv.act({ action: 'new' }).ok, false)
+
+  pv.noteHello({ actions: [{ id: 'new', label: '新动作', group: '测试' }] })
+  assert.equal(pv.act({ action: 'new' }).ok, true)
+
+  pv.noteHello({ actions: { id: 'new', label: '新动作', group: '测试' } })
+  assert.equal(pv.act({ action: 'new' }).ok, false)
+})
+
+test('action 请求与 motion 请求必须二选一', () => {
+  const pv = createPetView({ now: () => 1000 })
+  pv.noteHello({ actions: [{ id: 'wave', label: '挥手', group: '回应' }] })
+
+  assert.equal(pv.act({}).ok, false)
+  assert.equal(pv.act({ motion: 'success', action: 'wave' }).ok, false)
+  assert.equal(pv.act({ motion: 'success' }).ok, true)
+  assert.equal(pv.act({ action: 'wave' }).ok, true)
+})
+
 test('noteSessionEvent 忽略非她面/非六档事件', () => {
   const pv = createPetView({ now: () => 1 })
   assert.equal(pv.noteSessionEvent({ sessionId: 's', surface: 'bili' }, { type: 'turn/start' }), false)

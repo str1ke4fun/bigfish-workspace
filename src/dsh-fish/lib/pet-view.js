@@ -24,6 +24,8 @@ export const PET_ACTION_TTL_MS = 15_000
 
 const PET_ACTION_TTL_MIN_MS = 1_000
 const PET_ACTION_TTL_MAX_MS = 60_000
+const PET_ACTION_CATALOG_LIMIT = 256
+const PET_ACTION_ID_RE = /^[a-z0-9-]{1,32}$/
 
 const PET_SURFACES = new Set(['web', 'screen'])
 const PET_ACTION_MOTION_SET = new Set(PET_ACTION_MOTIONS)
@@ -132,6 +134,7 @@ export function createPetView({ now = Date.now, log } = {}) {
   let helloAt = null
   let version = ''
   let skins = []
+  let actionCatalog = new Map()
 
   /**
    * 记录她的一条会话事件。只接受 web/screen 面。
@@ -152,11 +155,19 @@ export function createPetView({ now = Date.now, log } = {}) {
 
   /**
    * 覆盖单槽动作。校验失败时旧动作保持不变。
-   * @returns {{ok:true, action:{id:string, motion:string, text?:string, at:number, ttlMs:number}}|{ok:false, note:string}}
+   * @returns {{ok:true, action:{id:string, motion?:string, action?:string, text?:string, at:number, ttlMs:number}}|{ok:false, note:string}}
    */
-  function act({ motion, text, ttlMs } = {}) {
-    if (!PET_ACTION_MOTION_SET.has(motion)) {
+  function act({ motion, action: actionId, text, ttlMs } = {}) {
+    const hasMotion = motion !== undefined
+    const hasAction = actionId !== undefined
+    if (hasMotion === hasAction) {
+      return { ok: false, note: 'motion 和 action 必须二选一。' }
+    }
+    if (hasMotion && !PET_ACTION_MOTION_SET.has(motion)) {
       return { ok: false, note: `不认识的桌宠动作：${motion ?? '（空）'}` }
+    }
+    if (hasAction && (typeof actionId !== 'string' || !actionCatalog.has(actionId))) {
+      return { ok: false, note: `不认识的桌宠动作：${actionId ?? '（空）'}` }
     }
 
     let cleanText
@@ -175,7 +186,9 @@ export function createPetView({ now = Date.now, log } = {}) {
 
     const at = now()
     actionCounter += 1
-    action = { id: `pet-${at}-${actionCounter}`, motion, text: cleanText, at, ttlMs: ttl }
+    action = hasMotion
+      ? { id: `pet-${at}-${actionCounter}`, motion, text: cleanText, at, ttlMs: ttl }
+      : { id: `pet-${at}-${actionCounter}`, action: actionId, text: cleanText, at, ttlMs: ttl }
     return { ok: true, action: { ...action } }
   }
 
@@ -188,7 +201,7 @@ export function createPetView({ now = Date.now, log } = {}) {
    * 桌宠窗口启动时报到。version 只收字符串，skins 只收数组；
    * 非法项直接丢弃，不抛错，也不影响 helloAt（窗口确实活着）。
    */
-  function noteHello({ version: v, skins: s } = {}, at = now()) {
+  function noteHello({ version: v, skins: s, actions } = {}, at = now()) {
     helloAt = Number(at)
     if (typeof v === 'string') version = v
     if (Array.isArray(s)) {
@@ -197,6 +210,26 @@ export function createPetView({ now = Date.now, log } = {}) {
         .map((x) => ({ id: x.id, name: x.name }))
         .filter((x) => x.name.trim() !== '')
         .slice(0, 64)
+    }
+
+    // 目录永远跟随最近一次 hello：缺省或非法 actions 都清空旧目录。
+    actionCatalog = new Map()
+    if (Array.isArray(actions)) {
+      const deduped = new Map()
+      for (const item of actions) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+        if (typeof item.id !== 'string' || !PET_ACTION_ID_RE.test(item.id)) continue
+        if (typeof item.label !== 'string' || typeof item.group !== 'string') continue
+        const label = item.label.trim()
+        const group = item.group.trim()
+        if (!label || !group) continue
+        // Map.set 保证同一个 id 以最后一次上报的条目为准。
+        deduped.set(item.id, { id: item.id, label, group })
+      }
+      const normalized = [...deduped.values()]
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .slice(0, PET_ACTION_CATALOG_LIMIT)
+      actionCatalog = new Map(normalized.map((item) => [item.id, item]))
     }
   }
 
@@ -209,7 +242,7 @@ export function createPetView({ now = Date.now, log } = {}) {
     }
   }
 
-  /** @returns {{activity:{state:string, at:number, sessionId:string}|null, action:{id:string, motion:string, text?:string, at:number, ttlMs:number}|null}} */
+  /** @returns {{activity:{state:string, at:number, sessionId:string}|null, action:{id:string, motion?:string, action?:string, text?:string, at:number, ttlMs:number}|null}} */
   function snapshot() {
     const nowMs = now()
     pruneExpired(nowMs)
@@ -241,6 +274,7 @@ export function createPetView({ now = Date.now, log } = {}) {
     helloAt = null
     version = ''
     skins = []
+    actionCatalog.clear()
   }
 
   return { noteSessionEvent, act, markPolled, noteHello, snapshot, clear }

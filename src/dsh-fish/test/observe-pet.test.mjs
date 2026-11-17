@@ -120,6 +120,55 @@ test('/pet/act 的文本上限与 ttl 归一交给 petView，不重复校验', a
   assert.equal(defaulted.body.action.ttlMs, 15_000)
 })
 
+test('/pet/hello 转发 action 目录，/pet/act 接受已上报的 action', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const hello = await callRoute(ctx.routes, '/pet/hello', 'POST', {
+    version: '0.2.0',
+    skins: [{ id: '', name: '默认' }],
+    actions: [{ id: 'wave', label: '挥手', group: '回应' }],
+  })
+  assert.equal(hello.status, 200)
+
+  const ok = await callRoute(ctx.routes, '/pet/act', 'POST', { action: 'wave', text: '你好' })
+  assert.equal(ok.status, 200)
+  assert.equal(ok.body.ok, true)
+  assert.equal(ok.body.action.action, 'wave')
+  assert.equal(ok.body.action.motion, undefined)
+  assert.equal(ok.body.action.text, '你好')
+
+  const unknown = await callRoute(ctx.routes, '/pet/act', 'POST', { action: 'missing' })
+  assert.equal(unknown.status, 400)
+  assert.equal(unknown.body.ok, false)
+
+  const motion = await callRoute(ctx.routes, '/pet/act', 'POST', { motion: 'success' })
+  assert.equal(motion.status, 200)
+  assert.equal(motion.body.action.motion, 'success')
+
+  const state = await callRoute(ctx.routes, '/pet/state', 'GET')
+  assert.equal(Object.hasOwn(state.body, 'actions'), false)
+  assert.equal(Object.hasOwn(state.body.pet, 'actions'), false)
+})
+
+test('/pet/act 同时给 motion 和 action 或两者都不给时返回 400', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  petView.noteHello({ actions: [{ id: 'wave', label: '挥手', group: '回应' }] })
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const both = await callRoute(ctx.routes, '/pet/act', 'POST', { motion: 'success', action: 'wave' })
+  assert.equal(both.status, 400)
+  assert.equal(both.body.ok, false)
+
+  const neither = await callRoute(ctx.routes, '/pet/act', 'POST', {})
+  assert.equal(neither.status, 400)
+  assert.equal(neither.body.ok, false)
+})
+
 test('hello / config / rotate 三条新路由', async () => {
   const ctx = fakeCtx()
   ctx.cfg.connection = { requestRejection: () => null }

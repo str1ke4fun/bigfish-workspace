@@ -928,7 +928,7 @@ export function registerObserve(ctx, deps = {}) {
       let body = {}
       try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
       catch { return send(res, 400, { ok: false, note: 'body 不是 JSON' }) }
-      pet.noteHello({ version: body?.version, skins: body?.skins })
+      pet.noteHello({ version: body?.version, skins: body?.skins, actions: body?.actions })
       return send(res, 200, { ok: true })
     }],
     ['/pet/config', async (req, res) => {
@@ -990,7 +990,12 @@ export function registerObserve(ctx, deps = {}) {
       let body = {}
       try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
       catch { return send(res, 400, { ok: false, note: 'body 不是 JSON' }) }
-      const r = pet.act({ motion: body?.motion, text: body?.text, ttlMs: body?.ttlMs })
+      const hasMotion = body?.motion !== undefined
+      const hasAction = body?.action !== undefined
+      if (hasMotion === hasAction) {
+        return send(res, 400, { ok: false, note: 'motion 和 action 必须二选一。' })
+      }
+      const r = pet.act({ motion: body?.motion, action: body?.action, text: body?.text, ttlMs: body?.ttlMs })
       if (!r.ok) return send(res, 400, r)
       return send(res, 200, r)
     }],
