@@ -238,6 +238,24 @@ t('旧提醒快照不能覆盖投递期间的新入站', () => {
   assert.equal(now.lastRemindedAt, '')
   assert.equal(now.lastText, '新消息')
 })
+t('旧快照 block 返回 stale，状态和版本都不变', () => {
+  const b = make()
+  const { task } = seed(b)
+  const staleSnapshot = b.get(task.taskId)
+  b.create({ chatId: 'c1', inboundMsgId: 'm_block_race', text: '新消息', at: at(1) })
+  const before = b.get(task.taskId)
+
+  const r = b.block(task.taskId, {
+    why: '旧快照的最终 block',
+    expectedVersion: staleSnapshot.version,
+    expectedOverdueCount: staleSnapshot.overdueCount,
+    at: at(2),
+  })
+
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'stale')
+  assert.deepEqual(b.get(task.taskId), before)
+})
 t('提醒落盘失败时返回失败，失败期间状态不变，恢复后可重试', () => {
   const filePath = file()
   let failWrites = false

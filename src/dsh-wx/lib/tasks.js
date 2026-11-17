@@ -278,6 +278,21 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log, append
   const iso = (t) => new Date(Number(t) || 0).toISOString()
 
   const commit = (rec) => {
+    const taskId = str(rec?.taskId)
+    const current = rec?.type === 'create' ? null : states.get(taskId)
+    if (current) {
+      const expectedVersion = Number(rec?.expectedVersion)
+      const expectedOverdueCount = Number(rec?.expectedOverdueCount)
+      if ((Number.isFinite(expectedVersion) && current.version !== expectedVersion)
+        || (Number.isFinite(expectedOverdueCount) && current.overdueCount !== expectedOverdueCount)) {
+        return {
+          ok: false,
+          code: 'stale',
+          why: '任务在写入期间已经变了，旧状态不记。',
+          task: get(taskId),
+        }
+      }
+    }
     try {
       mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
       append(file, JSON.stringify({ v: TASK_SCHEMA_VERSION, ...rec }) + '\n', { mode: 0o600 })
@@ -285,7 +300,15 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log, append
       log?.('任务板写盘失败', err)
       return { ok: false, code: 'persistence', why: String(err?.message ?? err).slice(0, 160) }
     }
-    apply(states, rec)
+    if (apply(states, rec) === false) {
+      log?.(`任务板记录未生效：${rec?.type || 'unknown'} ${taskId}`)
+      return {
+        ok: false,
+        code: 'stale',
+        why: '任务状态在写入期间已经变了，旧记录未生效。',
+        task: get(taskId),
+      }
+    }
     const key = str(rec.dedupeKey)
     if (key && (rec.type === 'create' || rec.type === 'inbound')) dedupe.set(key, str(rec.taskId))
     return { ok: true }

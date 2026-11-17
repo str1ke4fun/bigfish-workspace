@@ -103,6 +103,47 @@ test('落盘失败后进入退避，不再重复投递；恢复后才继续', as
   assert.equal(board.get(task.taskId).overdueCount, 1)
 })
 
+test('探测可写不等于落盘成功，连续 append 失败仍累加退避', async () => {
+  const target = file()
+  let failWrites = false
+  const board = createTaskBoard({
+    file: target,
+    now: () => T,
+    log: () => {},
+    append: (dest, data, opts) => {
+      if (failWrites) throw new Error('disk full')
+      return appendFileSync(dest, data, opts)
+    },
+    probe: () => true,
+  })
+  const { task } = seed(board)
+  const backoff = createReminderBackoff({ baseMs: 5 * 60_000, maxMs: 20 * 60_000 })
+  let deliveries = 0
+  const opts = {
+    board,
+    backoff,
+    deliver: async () => { deliveries += 1; return '测试群A' },
+    nextCheckAt: () => at(60),
+  }
+
+  failWrites = true
+  const first = await runOverdueReminderPass({ ...opts, at: T + 16 * 60_000 })
+  assert.equal(first.failed, 1)
+  assert.equal(backoff.get(task.taskId).attempts, 1)
+
+  const second = await runOverdueReminderPass({ ...opts, at: T + 17 * 60_000 })
+  assert.equal(second.failed, 1)
+  assert.equal(backoff.get(task.taskId).attempts, 2)
+
+  const third = await runOverdueReminderPass({ ...opts, at: T + 18 * 60_000 })
+  assert.equal(third.failed, 1)
+  assert.deepEqual(backoff.get(task.taskId), {
+    attempts: 3,
+    until: T + 38 * 60_000,
+  })
+  assert.equal(deliveries, 3)
+})
+
 test('回滚路径的最终 block 写失败会在下一轮补上，不重投第三次提醒', async () => {
   const target = file()
   let failBlock = false

@@ -48,7 +48,6 @@ function canWrite(board, backoff, taskId, at, log) {
       log?.(`任务板仍不可写，继续退避（${taskId}）：${p?.why || 'unknown'}`)
       return false
     }
-    backoff.clear(taskId)
   }
   const p = probe()
   if (p?.ok !== true) {
