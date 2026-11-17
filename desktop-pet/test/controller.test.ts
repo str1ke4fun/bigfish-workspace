@@ -240,9 +240,9 @@ test('播放器：顺序动作最后一段非 loop 时恢复稳态', () => {
   ])
 })
 
-test('播放器：新动作抢占并递增 generation，旧回调不能覆盖新动作', () => {
+test('播放器：一次性动作抢占后旧 generation 的完成与恢复回调都被忽略', () => {
   const first = { id: 'first', label: '第一段', anim: 'first-file', loop: false, group: '测试' }
-  const second = { id: 'second', label: '第二段', anim: 'second-file', loop: true, group: '测试' }
+  const second = { id: 'second', label: '第二段', anim: 'second-file', loop: false, group: '测试' }
   const options = { actions: [first, second], steady: 'idle' as const, now: 10 }
   const started = controller.reducePlayback(null, { type: 'startAction', actionId: 'first' }, options)
   const steady = controller.reducePlayback(started.state, {
@@ -252,31 +252,117 @@ test('播放器：新动作抢占并递增 generation，旧回调不能覆盖新
     type: 'startAction', actionId: 'second',
   }, { ...options, steady: 'working', now: 30 })
 
-  assert.equal(preempted.state.status, 'holding-loop')
+  assert.equal(preempted.state.status, 'playing-once')
   assert.equal(preempted.state.actionId, 'second')
   assert.equal(preempted.state.generation, started.state.generation + 1)
   assert.equal(preempted.state.steady, 'working')
   assert.deepEqual(preempted.effects, [
     { type: 'clear-motion' },
     { type: 'bind-slot', slot: 'waving', animation: 'second-file' },
-    { type: 'play-motion', motion: 'waving', loop: true, replay: true },
+    { type: 'play-motion', motion: 'waving', loop: false, replay: true },
   ])
 
-  const stale = controller.reducePlayback(preempted.state, {
+  const currentTarget = controller.reducePlayback(preempted.state, {
+    type: 'animationChanged',
+    generation: preempted.state.generation,
+    animation: { name: 'second-file', once: true },
+  }, { ...options, steady: 'working', now: 40 })
+  assert.equal(currentTarget.state.targetSeen, true)
+
+  const staleCompletion = controller.reducePlayback(currentTarget.state, {
     type: 'animationChanged',
     generation: started.state.generation,
     animation: { name: 'idle-file', once: false },
-  }, { ...options, steady: 'working', now: 40 })
-  assert.deepEqual(stale.state, preempted.state)
-  assert.deepEqual(stale.effects, [])
+  }, { ...options, steady: 'working', now: 50 })
+  assert.deepEqual(staleCompletion.state, currentTarget.state)
+  assert.deepEqual(staleCompletion.effects, [])
 
-  const staleRestore = controller.reducePlayback(preempted.state, {
+  const ended = controller.reducePlayback(currentTarget.state, {
+    type: 'animationChanged',
+    generation: preempted.state.generation,
+    animation: { name: 'idle-file', once: false },
+  }, { ...options, steady: 'working', now: 60 })
+  assert.equal(ended.state.status, 'restoring')
+
+  const staleAnimationRestore = controller.reducePlayback(ended.state, {
+    type: 'animationChanged',
+    generation: started.state.generation,
+    animation: { name: 'working-file', once: false },
+  }, { ...options, steady: 'working', now: 70 })
+  assert.deepEqual(staleAnimationRestore.state, ended.state)
+  assert.deepEqual(staleAnimationRestore.effects, [])
+
+  const staleMotionRestore = controller.reducePlayback(ended.state, {
     type: 'motionChanged',
     generation: started.state.generation,
+    motion: 'working',
+  }, { ...options, steady: 'working', now: 80 })
+  assert.deepEqual(staleMotionRestore.state, ended.state)
+  assert.deepEqual(staleMotionRestore.effects, [])
+})
+
+test('播放器：新回调事件缺少 generation 时不改变状态', () => {
+  const action = { id: 'once', label: '一次', anim: 'once-file', loop: false, group: '测试' }
+  const options = { actions: [action], steady: 'idle' as const, now: 10 }
+  const started = controller.reducePlayback(null, { type: 'startAction', actionId: 'once' }, options)
+
+  const missingAnimationGeneration = {
+    type: 'animationChanged',
+    animation: { name: 'once-file', once: true },
+  } as unknown as controller.PlaybackEvent
+  const animationResult = controller.reducePlayback(
+    started.state,
+    missingAnimationGeneration,
+    options,
+  )
+  assert.deepEqual(animationResult.state, started.state)
+  assert.deepEqual(animationResult.effects, [])
+
+  const target = controller.reducePlayback(started.state, {
+    type: 'animationChanged',
+    generation: started.state.generation,
+    animation: { name: 'once-file', once: true },
+  }, options)
+  const ended = controller.reducePlayback(target.state, {
+    type: 'animationChanged',
+    generation: started.state.generation,
+    animation: { name: 'idle-file', once: false },
+  }, options)
+  assert.equal(ended.state.status, 'restoring')
+
+  const missingMotionGeneration = {
+    type: 'motionChanged',
     motion: 'idle',
-  }, { ...options, steady: 'working', now: 50 })
-  assert.deepEqual(staleRestore.state, preempted.state)
-  assert.deepEqual(staleRestore.effects, [])
+  } as unknown as controller.PlaybackEvent
+  const motionResult = controller.reducePlayback(ended.state, missingMotionGeneration, options)
+  assert.deepEqual(motionResult.state, ended.state)
+  assert.deepEqual(motionResult.effects, [])
+})
+
+test('播放器：一次性动作中途更新 steady 后，自然结束恢复最新值', () => {
+  const action = { id: 'once', label: '一次', anim: 'once-file', loop: false, group: '测试' }
+  const baseOptions = { actions: [action], steady: 'idle' as const, now: 10 }
+  const started = controller.reducePlayback(null, { type: 'startAction', actionId: 'once' }, baseOptions)
+  const steady = controller.reducePlayback(started.state, {
+    type: 'steadyChanged', steady: 'working',
+  }, { ...baseOptions, steady: 'working', now: 20 })
+  const target = controller.reducePlayback(steady.state, {
+    type: 'animationChanged',
+    generation: started.state.generation,
+    animation: { name: 'once-file', once: true },
+  }, { ...baseOptions, steady: 'working', now: 30 })
+  const ended = controller.reducePlayback(target.state, {
+    type: 'animationChanged',
+    generation: started.state.generation,
+    animation: { name: 'working-file', once: false },
+  }, { ...baseOptions, steady: 'working', now: 40 })
+
+  assert.equal(ended.state.status, 'restoring')
+  assert.equal(ended.state.steady, 'working')
+  assert.deepEqual(ended.effects, [
+    { type: 'clear-motion' },
+    { type: 'restore-slot', slot: 'waving', steady: 'working' },
+  ])
 })
 
 test('播放器：stop 使用最新 steady，当前 generation 的恢复回调回到 idle', () => {

@@ -141,8 +141,8 @@ export interface PlaybackAnimation {
 export type PlaybackEvent =
   | { type: 'startAction'; action?: string | PlaybackAction; actionId?: string }
   | { type: 'stopAction' }
-  | { type: 'motionChanged'; motion: PetMotion | 'dragging'; generation?: number }
-  | { type: 'animationChanged'; animation: PlaybackAnimation | null; generation?: number }
+  | { type: 'motionChanged'; motion: PetMotion | 'dragging'; generation: number }
+  | { type: 'animationChanged'; animation: PlaybackAnimation | null; generation: number }
   | { type: 'steadyChanged'; steady?: PetMotion }
   | { type: 'dragStarted' }
   | { type: 'skinChanged' }
@@ -447,7 +447,7 @@ export function reducePlayback(
   }
 
   if (event.type === 'motionChanged') {
-    if (event.generation !== undefined && event.generation !== current.generation) {
+    if (event.generation !== current.generation) {
       return { state: current, effects: [] }
     }
     if (current.status === 'restoring') {
@@ -469,7 +469,7 @@ export function reducePlayback(
   }
 
   if (event.type === 'animationChanged') {
-    if (event.generation !== undefined && event.generation !== current.generation) {
+    if (event.generation !== current.generation) {
       return { state: current, effects: [] }
     }
     if (current.status === 'restoring') {
