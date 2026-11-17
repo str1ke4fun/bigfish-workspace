@@ -105,7 +105,7 @@ export function createSendGate({
     const state = loadState()
     const sendKeys = resolveSendKeys({ chat: hit, canonicalChat, chatId: target?.chatId })
     const dec = decideProactive({
-      policy: p, state, chat: sendKeys.quota, mention: verdict, exempt, now: now(),
+      policy: p, state, chat: sendKeys.quota, policyChat: hit, mention: verdict, exempt, now: now(),
     })
     if (!dec.ok) {
       if (dec.why === '主动额度状态读不出来') {
@@ -126,7 +126,7 @@ export function createSendGate({
     if (dec.proactive && consume) {
       // 一次发送只在这里扣一次：前面的 gateSend 都只是检查，避免一道闸扣三次额度。
       // 记不下来就不发：否则每轮都读到“今天用了 0 条”，额度等于无限。
-      const next = consumeProactive(p, state, sendKeys.quota)
+      const next = consumeProactive(p, state, sendKeys.quota, undefined, hit)
       if (!saveState(next.state)) {
         throw new WxToolError(
           'WX_PROACTIVE_STATE',

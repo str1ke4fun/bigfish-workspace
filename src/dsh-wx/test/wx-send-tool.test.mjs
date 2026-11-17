@@ -119,6 +119,46 @@ test('同一规范会话的两个别名共用 proactivePerDay 额度', async () 
   )
 })
 
+test('别名上的 proactiveChats 覆盖仍按规范会话记额度', async () => {
+  const now = Date.now()
+  const sendPolicy = {
+    enabled: true,
+    allowChats: ['别名'],
+    noMentionChats: [],
+    requireMention: true,
+    mentionWindowMinutes: 3,
+    proactivePerDay: 1,
+    proactiveChats: { 别名: 0 },
+  }
+  let state = { ok: true, day: dateKey(now), used: {} }
+  const gate = createSendGate({
+    policy: () => sendPolicy,
+    hostBlocksSend: () => false,
+    look: async () => ({ parsed: { ok: true, current: '规范群', chats: [], messages: [] } }),
+    isStale: () => false,
+    staleDetail: () => '',
+    allowedCurrent,
+    sameName,
+    canSpeak: () => ({ ok: false, reason: '最近没人 @ 你' }),
+    readMentions: () => ({}),
+    loadState: () => state,
+    decideProactive,
+    consumeProactive,
+    saveState: (next) => { state = next; return true },
+    logInbound: () => {},
+    now: () => now,
+  })
+
+  await assert.rejects(
+    () => gate({
+      consume: true,
+      target: { chat: '别名', canonicalChat: '规范群', chatId: 'c_canonical' },
+    }),
+    (error) => parseWxToolError(error.message)?.code === 'WX_PROACTIVE_LIMIT',
+  )
+  assert.deepEqual(state.used, {})
+})
+
 test('两个别名生成同一组规范额度/频率键', () => {
   assert.deepEqual(
     resolveSendKeys({ chat: '别名一', canonicalChat: '规范群', chatId: 'c_canonical' }),

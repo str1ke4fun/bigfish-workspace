@@ -383,7 +383,8 @@ const sameScanRow = (a, b) => {
   const at = norm(a?.time)
   const bt = norm(b?.time)
   if (at && bt) return at === bt
-  return true
+  // 同名不是身份。接缝两侧没有可比的预览/时间时保留两行，交给目录按撞名 fail closed。
+  return false
 }
 
 /**

@@ -44,12 +44,19 @@ export function normalizeProactive(raw = {}) {
   return { proactivePerDay: parseQuota(raw?.proactivePerDay), proactiveChats: chats }
 }
 
-/** 这个群今天最多能主动说几条。群覆盖优先于默认值，0 也是有效覆盖。 */
-export function quotaFor(policy, chat) {
-  const key = String(chat ?? '')
+/**
+ * 这个群今天最多能主动说几条。请求别名上的覆盖优先，其次才是规范名覆盖和默认值；
+ * 0 也是有效覆盖。额度记账仍由调用方放在规范键上，别让别名各记一份。
+ */
+export function quotaFor(policy, chat, policyChat = chat) {
   const map = policy?.proactiveChats
-  const has = map && typeof map === 'object' && Object.prototype.hasOwnProperty.call(map, key)
-  return parseQuota(has ? map[key] : policy?.proactivePerDay)
+  if (map && typeof map === 'object') {
+    for (const candidate of [policyChat, chat]) {
+      const key = String(candidate ?? '')
+      if (Object.prototype.hasOwnProperty.call(map, key)) return parseQuota(map[key])
+    }
+  }
+  return parseQuota(policy?.proactivePerDay)
 }
 
 const empty = (day, ok = true) => ({ ok, day, used: {} })
@@ -100,14 +107,14 @@ function usedToday(state, chat, today) {
 }
 
 /** 今天这个群还剩几条。状态不可信时按 0 算，主动路径因此被关死。 */
-export function remaining(policy, state, chat, today = dateKey()) {
+export function remaining(policy, state, chat, today = dateKey(), policyChat = chat) {
   if (state?.ok === false) return 0
-  return Math.max(0, quotaFor(policy, chat) - usedToday(state, chat, today))
+  return Math.max(0, quotaFor(policy, chat, policyChat) - usedToday(state, chat, today))
 }
 
 /** 扣一条，返回新的 state 与剩余；额度为 0 / 状态不可信时原样返回。纯函数，不写盘。 */
-export function consume(policy, state, chat, today = dateKey()) {
-  const left = remaining(policy, state, chat, today)
+export function consume(policy, state, chat, today = dateKey(), policyChat = chat) {
+  const left = remaining(policy, state, chat, today, policyChat)
   if (left <= 0) return { state, left: 0 }
   const key = String(chat ?? '')
   const used = state?.day === today ? { ...state.used } : {}
@@ -121,9 +128,9 @@ export function consume(policy, state, chat, today = dateKey()) {
  *   状态不可信 → 拒绝主动（@ 窗口/免 @ 仍放行）；
  *   否则有额度 → 放行且主动；没额度 → 拒绝（带上 @ 闸原来的原因）。
  */
-export function decideProactive({ policy, state, chat, mention, exempt, now = Date.now() }) {
+export function decideProactive({ policy, state, chat, policyChat = chat, mention, exempt, now = Date.now() }) {
   const today = dateKey(now)
-  const left = remaining(policy, state, chat, today)
+  const left = remaining(policy, state, chat, today, policyChat)
   if (policy?.requireMention === false || exempt || mention?.ok) {
     return { ok: true, proactive: false, left }
   }

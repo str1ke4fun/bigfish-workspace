@@ -225,13 +225,13 @@ await t('目录写盘 0600，重开一个实例能读回', async () => {
 })
 
 console.log('跨页扫描')
-const row = (name, y = 100) => ({ name, unread: 0, preview: '', box: { cx: 100, cy: y } })
+const row = (name, y = 100, preview = '') => ({ name, unread: 0, preview, box: { cx: 100, cy: y } })
 await t('滚到底：收集多页并回到顶部', async () => {
   const pages = [
-    [{ parsed: { ok: true, chats: [row('A'), row('B')] } }],
-    [{ parsed: { ok: true, chats: [row('B'), row('C')] } }],
-    [{ parsed: { ok: true, chats: [row('C'), row('D')] } }],
-    [{ parsed: { ok: true, chats: [row('D')] } }],
+    [{ parsed: { ok: true, chats: [row('A', 100, 'A: 预览'), row('B', 220, 'B: 预览')] } }],
+    [{ parsed: { ok: true, chats: [row('B', 100, 'B: 预览'), row('C', 220, 'C: 预览')] } }],
+    [{ parsed: { ok: true, chats: [row('C', 100, 'C: 预览'), row('D', 220, 'D: 预览')] } }],
+    [{ parsed: { ok: true, chats: [row('D', 100, 'D: 预览')] } }],
   ]
   let i = 0
   const scrolls = []
@@ -279,6 +279,26 @@ await t('同名会话分处两页时不被扫描去重，并让目录 fail close
   assert.equal(d.entry('撞名群'), null)
   assert.equal(d.sendableTarget('撞名群'), null)
   assert.equal(d.idFor('撞名群'), '')
+})
+await t('跨页接缝的同名行没有共同身份证据时保留为撞名', async () => {
+  const pages = [
+    { parsed: { ok: true, chats: [row('甲群'), row('撞名群', 220)] } },
+    { parsed: { ok: true, chats: [{ ...row('撞名群', 100), preview: '另一个人: 收到' }, row('乙群', 220)] } },
+  ]
+  let i = 0
+  const scanned = await scanSidebar({
+    read: async () => pages[Math.min(i++, pages.length - 1)],
+    scroll: async () => {},
+    sleep: async () => {},
+    maxPages: 2,
+  })
+  assert.equal(scanned.ok, true)
+  assert.deepEqual(scanned.chats.map((c) => c.name), ['甲群', '撞名群', '撞名群', '乙群'])
+
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({ chats: mergeScanned(scanned.chats) })
+  assert.equal(d.entry('撞名群'), null)
+  assert.equal(d.sendableTarget('撞名群'), null)
 })
 
 console.log(`\n${n} 项通过`)
