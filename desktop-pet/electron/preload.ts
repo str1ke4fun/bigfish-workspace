@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { TriggerDefinition } from './triggers'
 
 type Unsubscribe = () => void
 type PetActionMessage = { motion: string } | { action: string }
@@ -52,6 +53,19 @@ const bridge = {
 
   getActionCatalog(): Promise<PetActionCatalogEntry[]> {
     return ipcRenderer.invoke('pet:get-action-catalog')
+  },
+
+  /** 触发表与动作目录分开推送；启动早于订阅时用 getTriggerCatalog 主动拉。 */
+  onTriggerCatalog(handler: (catalog: TriggerDefinition[]) => void): Unsubscribe {
+    const listener = (_event: Electron.IpcRendererEvent, catalog: TriggerDefinition[]): void => handler(catalog)
+    ipcRenderer.on('pet:trigger-catalog', listener)
+    return () => {
+      ipcRenderer.removeListener('pet:trigger-catalog', listener)
+    }
+  },
+
+  getTriggerCatalog(): Promise<TriggerDefinition[]> {
+    return ipcRenderer.invoke('pet:get-trigger-catalog')
   },
 
   /** 菜单 stop、重新载入或 skin 切换时，主进程要求当前播放 generation 失效。 */

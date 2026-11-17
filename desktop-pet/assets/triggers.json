@@ -1,0 +1,54 @@
+{
+  "triggers": [
+    {
+      "when": "activity:success",
+      "pool": ["asset-060"],
+      "once": true
+    },
+    {
+      "when": "activity:error",
+      "pool": ["asset-056"],
+      "once": true
+    },
+    {
+      "when": "speak",
+      "pool": ["asset-094", "asset-095", "asset-096"],
+      "w": [3, 3, 1]
+    },
+    {
+      "when": "bili_replied",
+      "pool": ["asset-085"]
+    },
+    {
+      "when": "scene:rest:enter",
+      "pool": ["asset-091"]
+    },
+    {
+      "when": "scene:rest:exit",
+      "pool": ["asset-093"]
+    },
+    {
+      "when": "scene:out:enter",
+      "pool": ["asset-103"]
+    },
+    {
+      "when": "scene:out:exit",
+      "pool": ["asset-061"]
+    },
+    {
+      "when": "ambient",
+      "pool": ["asset-110", "asset-099"],
+      "minGapSec": 300
+    },
+    {
+      "when": "date:12-25",
+      "pool": ["asset-107"],
+      "inAmbient": true
+    },
+    {
+      "when": "date:10-31",
+      "pool": ["asset-108"],
+      "inAmbient": true
+    }
+  ]
+}

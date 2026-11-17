@@ -7,6 +7,7 @@ import {
 } from 'dsh-pet-component'
 import { shouldIgnoreMouse } from '../electron/pointer'
 import { resolveSkinApply, type SkinRef } from '../electron/skin-apply'
+import type { TriggerDefinition } from '../electron/triggers'
 import {
   decideEffects,
   emptySeen,
@@ -54,6 +55,8 @@ declare global {
       onAction?(handler: (payload: { motion: string } | { action: string } | string) => void): () => void
       onActionCatalog?(handler: (catalog: unknown) => void): () => void
       getActionCatalog?(): Promise<unknown>
+      onTriggerCatalog?(handler: (catalog: unknown) => void): () => void
+      getTriggerCatalog?(): Promise<unknown>
       onActionStop?(handler: () => void): () => void
       onActionError?(handler: (error: unknown) => void): () => void
       setIgnoreMouse?(ignore: boolean): void
@@ -246,6 +249,42 @@ function parseActionCatalog(raw: unknown): PlaybackAction[] {
   return actions
 }
 
+/** 主进程已校验触发表；渲染侧再窄化一次，坏条目不会进入 trigger state。 */
+function parseTriggerCatalog(raw: unknown): TriggerDefinition[] {
+  if (!Array.isArray(raw)) return []
+  const triggers: TriggerDefinition[] = []
+  const whens = new Set<string>()
+
+  for (const value of raw) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const entry = value as Record<string, unknown>
+    const when = typeof entry.when === 'string' ? entry.when.trim() : ''
+    if (when === '' || whens.has(when)) continue
+    if (!Array.isArray(entry.pool) || entry.pool.length === 0) continue
+
+    const pool = entry.pool.map((id) => (typeof id === 'string' ? id.trim() : ''))
+    if (pool.some((id) => id === '') || new Set(pool).size !== pool.length) continue
+
+    if (!Array.isArray(entry.w) || entry.w.length !== pool.length) continue
+    if (!entry.w.every((weight) => typeof weight === 'number' && Number.isFinite(weight) && weight >= 0)) continue
+    if (entry.w.reduce((sum, weight) => sum + weight, 0) <= 0) continue
+    if (typeof entry.once !== 'boolean' || typeof entry.inAmbient !== 'boolean') continue
+    if (typeof entry.minGapSec !== 'number' || !Number.isFinite(entry.minGapSec) || entry.minGapSec < 0) continue
+
+    triggers.push({
+      when,
+      pool,
+      w: [...entry.w],
+      once: entry.once,
+      minGapSec: entry.minGapSec,
+      inAmbient: entry.inAmbient,
+    })
+    whens.add(when)
+  }
+
+  return triggers
+}
+
 export function App() {
   const [config, setConfig] = useState<DshPetConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -256,6 +295,8 @@ export function App() {
   const [skin, setSkin] = useState<ActiveSkin | null>(null)
   /** 主进程最近一次成功提交的完整注册表；App 是播放侧唯一所有者。 */
   const [actionCatalog, setActionCatalog] = useState<PlaybackAction[]>([])
+  /** trigger 与动作目录分开保存，后续 trigger engine 只消费这一份。 */
+  const [triggerCatalog, setTriggerCatalog] = useState<TriggerDefinition[]>([])
   const [playback, setPlayback] = useState<PlaybackState | null>(null)
   /** 借出 waving 时使用的 config 克隆；null = 直接使用当前皮肤 config。 */
   const [playbackConfig, setPlaybackConfig] = useState<DshPetConfig | null>(null)
@@ -511,6 +552,35 @@ export function App() {
       unsubscribe?.()
     }
   }, [dispatchPlayback])
+
+  // 订阅与主动拉取分开处理，避免主进程首推早于 renderer 挂载时丢触发表。
+  useEffect(() => {
+    let cancelled = false
+    let unsubscribe: (() => void) | undefined
+
+    const receive = (raw: unknown): void => {
+      setTriggerCatalog(parseTriggerCatalog(raw))
+    }
+
+    try {
+      unsubscribe = window.petBridge?.onTriggerCatalog?.(receive)
+    } catch {
+      unsubscribe = undefined
+    }
+    void window.petBridge
+      ?.getTriggerCatalog?.()
+      .then((raw) => {
+        if (!cancelled) receive(raw)
+      })
+      .catch(() => {
+        // 老 preload 没有 trigger API：保持空表，现有手动动作不受影响。
+      })
+
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [])
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined

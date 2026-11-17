@@ -7,6 +7,7 @@ import { extname, join } from 'node:path'
 import { noteLocalLook, resolveRemoteLook, readRemoteLook } from '../electron/look.ts'
 import type { ActionDefinition } from '../electron/actions.ts'
 import { buildMenuModel, type MenuCallbacks, type MenuState } from '../electron/menu-model.ts'
+import type { TriggerDefinition } from '../electron/triggers.ts'
 
 type ElectronMock = {
   appPath: string
@@ -102,6 +103,10 @@ registerHooks({
                 ? Promise.resolve([{
                     id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应',
                   }])
+                : channel === 'pet:get-trigger-catalog'
+                  ? Promise.resolve([{
+                      when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+                    }])
                 : Promise.resolve({ ok: true, actions: [] })
             },
           }
@@ -145,6 +150,7 @@ async function actionFixture() {
   const assets = join(root, 'assets')
   await mkdir(join(assets, 'webm'), { recursive: true })
   await mkdir(join(assets, 'skins', 'rest', 'webm'), { recursive: true })
+  await writeFile(join(assets, 'triggers.json'), '{"triggers":[]}')
   return { root, assets }
 }
 
@@ -456,6 +462,23 @@ test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC �
   ])
 })
 
+test('触发桥：trigger catalog 走独立推送频道', async () => {
+  const main = await loadMainModule()
+  const { win, sent } = fakeWindow()
+  const catalog: TriggerDefinition[] = [{
+    when: 'speak',
+    pool: ['swing'],
+    w: [1],
+    once: false,
+    minGapSec: 0,
+    inAmbient: false,
+  }]
+
+  main.sendTriggerCatalog(win, catalog)
+
+  assert.deepEqual(sent, [['pet:trigger-catalog', catalog]])
+})
+
 test('动作注册表：混合默认与皮肤动作保留各自媒体基地址，皮肤同 id 覆盖来源', async (t) => {
   const main = await loadMainModule()
   const { root, assets } = await actionFixture()
@@ -555,6 +578,54 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
       mediaUri: 'pet-asset://local/webm',
     },
   ])
+})
+
+test('触发表加载失败时保留上一份 trigger，手动动作目录仍正常重载', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  captureHello(t)
+  const warnings = captureWarnings(t)
+
+  await writeFile(join(assets, 'webm', 'wave.webm'), '')
+  await writeFile(join(assets, 'webm', 'new.webm'), '')
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'wave', label: '旧挥手', anim: 'wave', group: '回应' }],
+  }))
+  await writeFile(join(assets, 'triggers.json'), JSON.stringify({
+    triggers: [{ when: 'speak', pool: ['wave'] }],
+  }))
+
+  const { win, sent } = fakeWindow()
+  assert.equal(await main.applySkin('', { win, assetsRoot: assets }), true)
+  const getTriggers = electronMock.ipcHandled.get('pet:get-trigger-catalog')
+  assert.ok(getTriggers)
+  assert.deepEqual(await getTriggers(), [{
+    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
+
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'new', label: '新动作', anim: 'new', group: '回应' }],
+  }))
+  await writeFile(join(assets, 'triggers.json'), '{ nope')
+  sent.length = 0
+
+  const result = await main.reloadRegisteredActions(win, assets)
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.actions, [{ id: 'new', label: '新动作', group: '回应' }])
+  const getActions = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getActions)
+  assert.deepEqual(await getActions(), [{
+    id: 'new', label: '新动作', anim: 'new', loop: false, group: '回应',
+    mediaUri: 'pet-asset://local/webm',
+  }])
+  assert.deepEqual(await getTriggers(), [{
+    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
+  assert.match(warnings.join('\n'), /触发表/)
 })
 
 test('动作重载：hello 未确认成功时不报成功并恢复旧 catalog', async (t) => {
@@ -1029,25 +1100,29 @@ test('皮肤切换：两次重叠失败都只停留最后确认的基线，不�
   assert.match(warnings.join('\n'), /hello|报到|上传/)
 })
 
-test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载荷', async () => {
+test('preload 暴露 action/trigger catalog API，并兼容旧 motion 字符串载荷', async () => {
   await loadMainModule()
   await import('../electron/preload.ts')
   const bridge = electronMock.exposed.petBridge as {
     onAction(handler: (payload: unknown) => void): () => void
     onActionCatalog(handler: (catalog: unknown) => void): () => void
+    onTriggerCatalog(handler: (catalog: unknown) => void): () => void
     onActionStop(handler: () => void): () => void
     onActionError(handler: (error: unknown) => void): () => void
     getActionCatalog(): Promise<unknown>
+    getTriggerCatalog(): Promise<unknown>
     reloadActions(): Promise<unknown>
     requestAction(payload: unknown): void
   }
 
   const actions: unknown[] = []
   const catalogs: unknown[] = []
+  const triggerCatalogs: unknown[] = []
   let stops = 0
   const errors: unknown[] = []
   bridge.onAction((payload) => actions.push(payload))
   bridge.onActionCatalog((catalog) => catalogs.push(catalog))
+  bridge.onTriggerCatalog((catalog) => triggerCatalogs.push(catalog))
   bridge.onActionStop(() => { stops += 1 })
   bridge.onActionError((error) => errors.push(error))
 
@@ -1056,6 +1131,9 @@ test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载�
   electronMock.rendererListeners.get('pet:action-catalog')![0]({}, [
     { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
   ])
+  electronMock.rendererListeners.get('pet:trigger-catalog')![0]({}, [{
+    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
   electronMock.rendererListeners.get('pet:action-stop')![0]({})
   electronMock.rendererListeners.get('pet:action-error')![0]({}, { why: '坏了' })
 
@@ -1063,13 +1141,23 @@ test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载�
   assert.deepEqual(catalogs, [[
     { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
   ]])
+  assert.deepEqual(triggerCatalogs, [[{
+    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }]])
   assert.equal(stops, 1)
   assert.deepEqual(errors, [{ why: '坏了' }])
   assert.deepEqual(await bridge.getActionCatalog(), [
     { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
   ])
+  assert.deepEqual(await bridge.getTriggerCatalog(), [{
+    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
   assert.deepEqual(await bridge.reloadActions(), { ok: true, actions: [] })
-  assert.deepEqual(electronMock.rendererInvokes, ['pet:get-action-catalog', 'pet:actions-reload'])
+  assert.deepEqual(electronMock.rendererInvokes, [
+    'pet:get-action-catalog',
+    'pet:get-trigger-catalog',
+    'pet:actions-reload',
+  ])
 
   bridge.requestAction('waving')
   bridge.requestAction({ action: 'wave' })
