@@ -231,7 +231,7 @@ test('聊天 thinking 遇到借用播放时先显式停止，不再用 bubble mo
   assert.equal(settled.state.steady, 'working')
 })
 
-test('临近结束的旧一次性动作被抢占后，旧结束回调不能完成新动作', () => {
+test('临近结束的旧一次性动作被抢占后，新素材就绪前不能绑定任何结束回调', () => {
   const first: PlaybackAction = {
     id: 'first',
     label: '第一段',
@@ -251,10 +251,11 @@ test('临近结束的旧一次性动作被抢占后，旧结束回调不能完�
   const callbacks = createPlaybackCallbackArbiter()
 
   const started = reducePlayback(null, { type: 'startAction', actionId: first.id }, options)
-  callbacks.arm(started.state.generation, started.state.expectedAnimation!, mediaUri)
-  const firstTarget = callbacks.animationChanged({
+  callbacks.expectTarget(started.state.generation, started.state.expectedAnimation!, mediaUri, true)
+  assert.equal(callbacks.animationChanged({
     name: 'first-file', once: true, src: `${mediaUri}/first-file.webm`,
-  })
+  }), null)
+  const firstTarget = callbacks.ready()
   assert.ok(firstTarget)
   const nearEnd = reducePlayback(started.state, firstTarget!, { ...options, now: 20 }).state
   assert.equal(nearEnd.targetSeen, true)
@@ -263,19 +264,32 @@ test('临近结束的旧一次性动作被抢占后，旧结束回调不能完�
     ...options,
     now: 30,
   })
-  callbacks.arm(preempted.state.generation, preempted.state.expectedAnimation!, mediaUri)
+  callbacks.expectTarget(preempted.state.generation, preempted.state.expectedAnimation!, mediaUri, true)
 
-  // 旧视频的 idle 回调会在新视频尚未 loadeddata 时晚到；不能借新 generation 完成第二段。
+  // 旧视频的 idle/end 回调可能落在目标选择前后，但 loadeddata 前都不能借新 generation 完成第二段。
   assert.equal(callbacks.motionChanged('idle'), null)
-  const staleEnd = callbacks.animationChanged({
+  assert.equal(callbacks.animationChanged({
     name: 'idle', once: false, src: `${mediaUri}/idle.webm`,
-  })
-  assert.equal(staleEnd, null)
+  }), null)
+  assert.equal(callbacks.animationChanged({
+    name: 'second-file', once: true, src: `${mediaUri}/second-file.webm`,
+  }), null)
+  assert.equal(callbacks.motionChanged('idle'), null)
+  assert.equal(callbacks.animationChanged({
+    name: 'idle', once: false, src: `${mediaUri}/idle.webm`,
+  }), null)
   assert.equal(preempted.state.actionId, second.id)
   assert.equal(preempted.state.targetSeen, false)
 
-  const secondTarget = callbacks.animationChanged({
-    name: 'second-file', once: true, src: `${mediaUri}/second-file.webm`,
+  const secondTarget = callbacks.ready()
+  assert.deepEqual(secondTarget, {
+    type: 'animationChanged',
+    generation: preempted.state.generation,
+    animation: {
+      name: 'second-file',
+      once: true,
+      src: `${mediaUri}/second-file.webm`,
+    },
   })
   assert.ok(secondTarget)
   const secondNearEnd = reducePlayback(preempted.state, secondTarget!, { ...options, now: 40 }).state
@@ -305,6 +319,30 @@ test('自定义动作素材错误只停止动作，不按皮肤错误处理', ()
   const stopped = reducePlayback(started.state, { type: 'stopAction' }, options)
   assert.equal(petErrorTarget(stopped.state), 'skin')
   assert.equal(petErrorTarget(null), 'skin')
+})
+
+test('同一动作的重复素材错误在 restoring 完成前仍归动作，不能回退皮肤', () => {
+  const action: PlaybackAction = {
+    id: 'bad-video',
+    label: '坏视频',
+    anim: 'bad-video-file',
+    loop: true,
+    group: '测试',
+    mediaUri: 'pet-asset://local/webm',
+  }
+  const options = { actions: [action], steady: 'idle' as const, now: 10 }
+  const started = reducePlayback(null, { type: 'startAction', actionId: action.id }, options)
+
+  assert.equal(petErrorTarget(started.state, false), 'action')
+  const stopped = reducePlayback(started.state, { type: 'stopAction' }, options)
+  assert.equal(stopped.state.status, 'restoring')
+  assert.equal(petErrorTarget(stopped.state, true), 'action')
+
+  const completion = restoreCompletedEvent(stopped.state)
+  assert.ok(completion)
+  const settled = reducePlayback(stopped.state, completion!, options)
+  assert.equal(settled.state.status, 'idle')
+  assert.equal(petErrorTarget(settled.state, true), 'skin')
 })
 
 test('停止、拖动、换皮肤和更新动作都会清掉待补目录的服务端动作', () => {

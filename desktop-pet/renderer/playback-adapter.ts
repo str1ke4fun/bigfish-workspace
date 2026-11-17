@@ -117,57 +117,88 @@ export function playbackAnimationSource(mediaUri: string, animation: string): st
 }
 
 export interface PlaybackCallbackArbiter {
-  /** 新命令下发后只接受对应 generation 的目标素材；旧素材回调在目标出现前全部作废。 */
-  arm(generation: number, animation: string, mediaUri: string): void
+  /** 新命令下发时登记目标；在组件回报资源就绪前不接受任何动作回调。 */
+  expectTarget(generation: number, animation: string, mediaUri: string, once: boolean): void
+  /** `loadeddata` 且前后台交换完成后才绑定 generation，并交出一条目标已出现的状态事件。 */
+  ready(): PlaybackEvent | null
   disarm(): void
   motionChanged(motion: PetMotion | 'dragging'): PlaybackEvent | null
   animationChanged(animation: PlaybackAnimation | null): PlaybackEvent | null
 }
 
 /**
- * 组件的动作回调没有命令 id，只带当前动作/动画。新命令发出后先等待它的目标素材出现，
- * 再将后续结束回调绑定到该 generation；这样临近结束的旧视频晚到的 idle 不会完成新动作。
+ * 组件的动作回调没有命令 id，只带当前动作/动画。onAnimationChange 可能先于 loadeddata，
+ * 所以目标选择只算候选；直到 onReady 确认交换完成，旧视频晚到的结束回调都不能绑定新 generation。
  */
 export function createPlaybackCallbackArbiter(): PlaybackCallbackArbiter {
-  let armed: { generation: number; animation: string; source: string; sourceSeen: boolean } | null = null
+  let expected: {
+    generation: number
+    animation: string
+    source: string
+    once: boolean
+    selected: boolean
+    ready: boolean
+  } | null = null
 
   return {
-    arm(generation: number, animation: string, mediaUri: string): void {
-      armed = {
+    expectTarget(generation: number, animation: string, mediaUri: string, once: boolean): void {
+      expected = {
         generation,
         animation,
         source: playbackAnimationSource(mediaUri, animation),
-        sourceSeen: false,
+        once,
+        selected: false,
+        ready: false,
+      }
+    },
+    ready(): PlaybackEvent | null {
+      if (expected === null || !expected.selected || expected.ready) return null
+      expected.ready = true
+      return {
+        type: 'animationChanged',
+        generation: expected.generation,
+        animation: {
+          name: expected.animation,
+          once: expected.once,
+          src: expected.source,
+        },
       }
     },
     disarm(): void {
-      armed = null
+      expected = null
     },
     motionChanged(motion: PetMotion | 'dragging'): PlaybackEvent | null {
-      if (armed === null || !armed.sourceSeen) return null
-      return { type: 'motionChanged', motion, generation: armed.generation }
+      if (expected === null || !expected.ready) return null
+      return { type: 'motionChanged', motion, generation: expected.generation }
     },
     animationChanged(animation: PlaybackAnimation | null): PlaybackEvent | null {
-      if (armed === null) return null
+      if (expected === null) return null
       if (
         animation !== null
-        && animation.name === armed.animation
-        && animation.src === armed.source
+        && animation.name === expected.animation
+        && animation.src === expected.source
       ) {
-        armed.sourceSeen = true
+        expected.selected = true
       }
-      if (!armed.sourceSeen) return null
-      return { type: 'animationChanged', animation, generation: armed.generation }
+      if (!expected.ready) return null
+      return { type: 'animationChanged', animation, generation: expected.generation }
     },
   }
 }
 
-/** 借用槽正在播放注册表动作时，运行期媒体错误属于动作；其余才回退皮肤。 */
-export function petErrorTarget(playback: PlaybackState | null | undefined): 'action' | 'skin' {
+/**
+ * 借用槽正在播放注册表动作时，运行期媒体错误属于动作；restoring 期间保留同一动作的
+ * 错误所有权，避免组件重复 onError 被误判成皮肤错误。恢复回 idle 后才重新归皮肤。
+ */
+export function petErrorTarget(
+  playback: PlaybackState | null | undefined,
+  actionErrorOwned = false,
+): 'action' | 'skin' {
   if (playback === null || playback === undefined || playback.actionId === null) return 'skin'
   return playback.status === 'playing-once'
     || playback.status === 'playing-seq'
     || playback.status === 'holding-loop'
+    || (actionErrorOwned && playback.status === 'restoring')
     ? 'action'
     : 'skin'
 }

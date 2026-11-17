@@ -115,10 +115,16 @@ registerHooks({
 type MainModule = typeof import('../electron/main.ts')
 type PetWindow = Parameters<MainModule['sendActionMessage']>[0]
 let mainModulePromise: Promise<MainModule> | null = null
+let freshModuleSequence = 0
 
 function loadMainModule(): Promise<MainModule> {
   mainModulePromise ??= import('../electron/main.ts')
   return mainModulePromise
+}
+
+function loadFreshMainModule(label: string): Promise<MainModule> {
+  freshModuleSequence += 1
+  return import(`../electron/main.ts?test=${freshModuleSequence}-${label}`)
 }
 
 function fakeWindow(): { win: PetWindow; sent: Array<[string, unknown]> } {
@@ -186,6 +192,14 @@ function captureHello(t: TestContext): unknown[] {
     globalThis.fetch = originalFetch
   })
   return helloBodies
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  throw new Error('等待测试条件超时')
 }
 
 test('读远端外观：缺字段/非法值给 null，合法值夹取', () => {
@@ -733,7 +747,7 @@ test('动作重载：旧 reload 在较新皮肤提交后完成也不覆盖新 ca
   )
 })
 
-test('皮肤切换：单个事件日志证明 stop → skin → catalog → hello 的顺序', async (t) => {
+test('皮肤切换：单个事件日志证明 hello 确认后才提交 skin 与 catalog', async (t) => {
   const main = await loadMainModule()
   const { root, assets } = await actionFixture()
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -789,7 +803,7 @@ test('皮肤切换：单个事件日志证明 stop → skin → catalog → hell
     readCatalog: async () => actions,
   })
 
-  assert.deepEqual(events, ['stop', 'skin', 'catalog', 'hello'])
+  assert.deepEqual(events, ['stop', 'hello', 'skin', 'catalog'])
   assert.deepEqual(helloBodies, [{
     version: '0.1.0',
     skins: [{ id: '', name: '默认' }],
@@ -843,6 +857,103 @@ test('皮肤切换：hello 失败时回退旧皮肤和 catalog，不报告提交
     { id: 'default-wave', label: '默认挥手', anim: 'default-wave-anim', loop: false, group: '回应' },
   ])
   assert.equal(sent.at(-1)?.[0], 'pet:skin-error')
+  assert.match(warnings.join('\n'), /hello|报到|上传/)
+})
+
+test('皮肤切换：首个非默认皮肤 hello 失败时不把候选推给渲染进程', async (t) => {
+  const main = await loadFreshMainModule('first-skin-failure')
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeValidSkin(assets, 'first', '第一张皮肤')
+
+  const warnings = captureWarnings(t)
+  const originalFetch = globalThis.fetch
+  let helloCalls = 0
+  globalThis.fetch = async () => {
+    helloCalls += 1
+    return new Response('{"ok":false}', { status: 200 })
+  }
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  const { win, sent } = fakeWindow()
+  const candidate = [registered('first-wave', '第一张挥手', '回应')]
+  const committed = await main.applySkin('first', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => candidate,
+  })
+
+  const getSkin = electronMock.ipcHandled.get('pet:get-skin')
+  const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getSkin)
+  assert.ok(getCatalog)
+  assert.equal(committed, false)
+  assert.equal(helloCalls, 1)
+  assert.equal(await getSkin(), null)
+  assert.deepEqual(await getCatalog(), [])
+  assert.equal(sent.some(([channel]) => channel === 'pet:skin'), false)
+  assert.equal(sent.some(([channel]) => channel === 'pet:action-catalog'), false)
+  assert.equal(sent.at(-1)?.[0], 'pet:skin-error')
+  assert.match(warnings.join('\n'), /hello|报到|上传/)
+})
+
+test('皮肤切换：两次重叠失败都只停留最后确认的基线，不回退到未确认候选', async (t) => {
+  const main = await loadFreshMainModule('overlapping-skin-failures')
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeValidSkin(assets, 'first', '第一张皮肤')
+  await writeValidSkin(assets, 'second', '第二张皮肤')
+
+  const warnings = captureWarnings(t)
+  const pendingHellos: Array<{
+    body: unknown
+    resolve: (ok: boolean) => void
+  }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_input, init) => await new Promise<Response>((resolve) => {
+    pendingHellos.push({
+      body: JSON.parse(String(init?.body)),
+      resolve: (ok) => resolve(new Response(JSON.stringify({ ok }), { status: 200 })),
+    })
+  })
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  const { win, sent } = fakeWindow()
+  const first = main.applySkin('first', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => [registered('first-wave', '第一张挥手', '回应')],
+  })
+  await waitFor(() => pendingHellos.length === 1)
+
+  const second = main.applySkin('second', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => [registered('second-wave', '第二张挥手', '回应')],
+  })
+  await waitFor(() => sent.filter(([channel]) => channel === 'pet:action-stop').length === 2)
+
+  pendingHellos[0].resolve(false)
+  await waitFor(() => pendingHellos.length === 2)
+  pendingHellos[1].resolve(false)
+  assert.deepEqual(await Promise.all([first, second]), [false, false])
+
+  const getSkin = electronMock.ipcHandled.get('pet:get-skin')
+  const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getSkin)
+  assert.ok(getCatalog)
+  assert.equal(await getSkin(), null)
+  assert.deepEqual(await getCatalog(), [])
+  assert.equal(sent.some(([channel]) => channel === 'pet:skin'), false)
+  assert.equal(sent.some(([channel]) => channel === 'pet:action-catalog'), false)
   assert.match(warnings.join('\n'), /hello|报到|上传/)
 })
 

@@ -150,6 +150,7 @@ type PlaybackCommand =
       generation: number
       animation: string
       mediaUri: string
+      once: boolean
     }
   | { type: 'motion'; options: PerformedMotion }
 
@@ -276,6 +277,8 @@ export function App() {
   actionCatalogRef.current = actionCatalog
   const playbackRef = useRef<PlaybackState | null>(playback)
   playbackRef.current = playback
+  /** 动作媒体可能连续报错；restoring 完成前保持动作错误所有权，不能改判皮肤失败。 */
+  const actionErrorOwnedRef = useRef(false)
   const playbackConfigRef = useRef<DshPetConfig | null>(playbackConfig)
   playbackConfigRef.current = playbackConfig
   const latestSteadyRef = useRef<PetMotion>(steady)
@@ -333,6 +336,7 @@ export function App() {
         now: Date.now(),
       })
       playbackRef.current = result.state
+      if (result.state.status === 'idle') actionErrorOwnedRef.current = false
       setPlayback(result.state)
 
       let nextConfig = playbackConfigRef.current
@@ -357,6 +361,7 @@ export function App() {
             generation: result.state.generation,
             animation: expectedAnimation,
             mediaUri,
+            once: !effect.loop,
           })
           continue
         }
@@ -419,6 +424,11 @@ export function App() {
     [dispatchPlayback, playbackCallbacks],
   )
 
+  const handleReady = useCallback((): void => {
+    const event = playbackCallbacks.ready()
+    if (event !== null) dispatchPlayback(event)
+  }, [dispatchPlayback, playbackCallbacks])
+
   // config 先随 React commit 落到 <Pet>，再执行命令面；否则 pet.motion 会命中旧的 waving 映射。
   useEffect(() => {
     const batch = pendingBatch
@@ -434,7 +444,12 @@ export function App() {
         continue
       }
       if (command.type === 'play') {
-        playbackCallbacks.arm(command.generation, command.animation, command.mediaUri)
+        playbackCallbacks.expectTarget(
+          command.generation,
+          command.animation,
+          command.mediaUri,
+          command.once,
+        )
         petApiRef.current.motion({
           type: command.motion,
           loop: command.loop,
@@ -781,7 +796,8 @@ export function App() {
    * 只有稳态皮肤自身失败才回退到上一个皮肤。
    */
   const handlePetError = (cause: unknown): void => {
-    if (petErrorTarget(playbackRef.current) === 'action') {
+    if (petErrorTarget(playbackRef.current, actionErrorOwnedRef.current) === 'action') {
+      actionErrorOwnedRef.current = true
       dispatchPlayback({ type: 'stopAction' }, { forceBase: true })
       console.warn('[desktop-pet] 动作素材播不了，已停止当前动作', cause)
       pet.bubble({
@@ -794,6 +810,7 @@ export function App() {
       return
     }
 
+    actionErrorOwnedRef.current = false
     const current = skinRef.current
     dispatchPlayback({ type: 'skinChanged' }, { forceBase: true })
     if (!current) return
@@ -912,6 +929,7 @@ export function App() {
       onDialogue={handleDialogue}
       onAnimationChange={handleAnimationChange}
       onMotionChange={handleMotionChange}
+      onReady={handleReady}
       onError={handlePetError}
     />
   )

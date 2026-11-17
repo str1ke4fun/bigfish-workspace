@@ -547,34 +547,24 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
 
     // 新皮肤会替换全部动画映射；先让播放器结束旧 generation 的借用槽。
     sendActionStop(win)
-    lastSkinError = null
-    lastActionError = null
-    const previousCatalog = actionCatalog
-    const previousSkin = skinForwarder.get()
-    const previousSkinId = activeSkinId
     const nextCatalog = mergeActionCatalogs(nextActions, [])
-    skinForwarder.onSkin({ id, revision, config, uri })
-    setActionCatalog(nextCatalog, win)
-    // 候选皮肤和 catalog 已推到 renderer；hello 失败会在队列释放前回退。
-    activeSkinId = id
-    actionCatalogGeneration += 1
-    const catalogGeneration = actionCatalogGeneration
-    // 本地面板已切到候选皮肤；hello 失败必须回退，且回退要发生在队列释放前。
+    // hello 是候选皮肤/目录的服务端确认点；确认前不推给 renderer，失败或已被替代时 UI 保持原基线。
     const published = await enqueueHello(async () => {
-      const ok = await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog))
-      if (!ok && revision === skinRevision && catalogGeneration === actionCatalogGeneration) {
-        if (previousSkin !== null) skinForwarder.onSkin(previousSkin)
-        setActionCatalog(previousCatalog, win)
-        activeSkinId = previousSkinId
-        actionCatalogGeneration += 1
-      }
-      return ok
+      return await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog))
     })
     if (revision !== skinRevision) return false
     if (!published) {
       reportSkinError(id, '皮肤没载入：hello 没确认服务端已接受新目录。', win)
       return false
     }
+
+    // 服务端已确认且请求仍是最新，才原子地切换 main 缓存与 renderer 可见状态。
+    lastSkinError = null
+    lastActionError = null
+    skinForwarder.onSkin({ id, revision, config, uri })
+    setActionCatalog(nextCatalog, win)
+    activeSkinId = id
+    actionCatalogGeneration += 1
     return true
   }
 
