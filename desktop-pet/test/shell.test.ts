@@ -247,6 +247,7 @@ function callbacks(log: string[]): MenuCallbacks {
     width: (n) => log.push(`width:${n}`),
     toggleHidden: () => log.push('toggle'),
     resetPosition: () => log.push('reset'),
+    rest: (id, action) => log.push(`rest:${action}:${id}`),
     presence: (mode) => log.push(`presence:${mode}`),
     openWorkbench: () => log.push('workbench'),
     quit: () => log.push('quit'),
@@ -385,6 +386,27 @@ test('注册表动作按 group 建二级菜单，组和动作顺序稳定', () =
   assert.deepEqual(log, ['action:swing'])
 })
 
+test('休息组里的睡觉/起来改走 rest 回调，普通注册动作仍走 action', () => {
+  const log: string[] = []
+  const catalog = [
+    registered('sleep-action', '睡觉', '休息'),
+    registered('wake-action', '起来', '休息'),
+    registered('swing', '荡秋千', '玩耍'),
+  ]
+  const menu = find(buildMenuModel(baseState, catalog, callbacks(log), 'context'), '演一个动作').submenu!
+
+  const rest = find(menu, '休息').submenu!
+  rest.find((item) => item.label === '睡觉')!.click!()
+  rest.find((item) => item.label === '起来')!.click!()
+  find(menu, '玩耍').submenu![0].click!()
+
+  assert.deepEqual(log, [
+    'rest:sleep:sleep-action',
+    'rest:wake:wake-action',
+    'action:swing',
+  ])
+})
+
 test('空白 group 落到其他，不生成空标题菜单', () => {
   const menu = find(
     buildMenuModel(baseState, [registered('misc', '随手动作', '   ')], callbacks([]), 'context'),
@@ -472,6 +494,32 @@ test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC �
     ]],
     ['pet:action-stop', undefined],
   ])
+})
+
+test('休息菜单：先 POST /pet/rest，再带 scene 结果播放对应注册动作', async () => {
+  const main = await loadMainModule()
+  const { win, sent } = fakeWindow()
+  const requests: Array<{ url: string; body: unknown }> = []
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    requests.push({ url: String(input), body: JSON.parse(String(init?.body)) })
+    return new Response(JSON.stringify({
+      ok: true,
+      action: 'sleep',
+      scene: { kind: 'rest', at: 100 },
+    }), { status: 200 })
+  }
+
+  const result = await main.runRestAction(win, 'sleep', 'sleep', fetchImpl)
+
+  assert.deepEqual(result, { ok: true, scene: 'rest' })
+  assert.deepEqual(requests, [{
+    url: 'http://127.0.0.1:8788/api/fish/pet/rest',
+    body: { action: 'sleep' },
+  }])
+  assert.deepEqual(sent, [[
+    'pet:action',
+    { action: 'sleep', rest: 'sleep', scene: 'rest' },
+  ]])
 })
 
 test('触发桥：trigger catalog 走独立推送频道', async () => {

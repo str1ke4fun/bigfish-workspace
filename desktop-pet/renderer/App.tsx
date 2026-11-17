@@ -10,7 +10,6 @@ import { resolveSkinApply, type SkinRef } from '../electron/skin-apply'
 import type { TriggerDefinition } from '../electron/triggers'
 import {
   decideEffects,
-  emptySeen,
   performedMotion,
   reducePlayback,
   type PerformedMotion,
@@ -20,23 +19,37 @@ import {
   type PlaybackState,
   type PetMotion,
   type PetState,
-  type Seen,
 } from './controller'
 import {
+  applyManualRestIntent,
   borrowActionConfig,
   chatReplyPlaybackDecision,
   chatThinkingPlan,
+  cueDispatchIsFresh,
   createActionErrorOwner,
   createPlaybackCallbackArbiter,
+  emptyPetSeen,
+  interruptSceneLoop,
+  isPetDragGesture,
+  legacySeen,
+  mergePetSeen,
+  parsePetSeen,
   pendingServerActionAfterPlaybackEvent,
   petErrorTarget,
   petMotionProp,
   petUriProp,
+  restClickBubble,
   retainsActionErrorOwnership,
   restoreCompletedEvent,
   restoreActionConfig,
+  shouldOpenPetDialogue,
+  triggerPlaybackBusy,
+  withoutPresenceComments,
   type ActionErrorOwner,
+  type PetSeen,
+  type PlaybackSource,
 } from './playback-adapter'
+import { reduceTriggers } from './trigger-engine'
 import type { ChatResult } from './chat'
 import {
   BUBBLE_OPACITY_DEFAULT,
@@ -52,7 +65,13 @@ declare global {
   interface Window {
     petBridge?: {
       onState(handler: (state: unknown) => void): () => void
-      onAction?(handler: (payload: { motion: string } | { action: string } | string) => void): () => void
+      onAction?(handler: (payload: {
+        motion: string
+      } | {
+        action: string
+        rest?: 'sleep' | 'wake'
+        scene?: 'rest' | 'out' | null
+      } | string) => void): () => void
       onActionCatalog?(handler: (catalog: unknown) => void): () => void
       getActionCatalog?(): Promise<unknown>
       onTriggerCatalog?(handler: (catalog: unknown) => void): () => void
@@ -102,24 +121,17 @@ function isPointerOverUi(x: number, y: number): boolean {
   return false
 }
 
-function loadSeen(): Seen {
+function loadSeen(): PetSeen {
   try {
     const raw = window.localStorage.getItem(SEEN_STORAGE_KEY)
-    if (!raw) return emptySeen()
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return emptySeen()
-    const record = parsed as Record<string, unknown>
-    // 只恢复去重游标；旧版本存过的 activity 字段直接忽略（它不是「已播放」）。
-    return {
-      lastActionId: typeof record.lastActionId === 'string' ? record.lastActionId : '',
-      lastCommentAt: typeof record.lastCommentAt === 'string' ? record.lastCommentAt : '',
-    }
+    if (!raw) return emptyPetSeen()
+    return parsePetSeen(JSON.parse(raw))
   } catch {
-    return emptySeen()
+    return emptyPetSeen()
   }
 }
 
-function saveSeen(seen: Seen): void {
+function saveSeen(seen: PetSeen): void {
   try {
     window.localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(seen))
   } catch {
@@ -194,7 +206,14 @@ function actionErrorReason(raw: unknown): string {
   return skinErrorReason(raw)
 }
 
-function parseActionMessage(raw: unknown): { kind: 'motion' | 'action'; value: string } | null {
+interface ParsedActionMessage {
+  kind: 'motion' | 'action'
+  value: string
+  rest?: 'sleep' | 'wake'
+  scene?: 'rest' | 'out' | null
+}
+
+function parseActionMessage(raw: unknown): ParsedActionMessage | null {
   if (typeof raw === 'string') {
     const value = raw.trim()
     return value === '' ? null : { kind: 'motion', value }
@@ -207,7 +226,14 @@ function parseActionMessage(raw: unknown): { kind: 'motion' | 'action'; value: s
   const kind = hasMotion ? 'motion' : 'action'
   const value = message[kind]
   if (typeof value !== 'string' || value.trim() === '') return null
-  return { kind, value: value.trim() }
+  const parsed: ParsedActionMessage = { kind, value: value.trim() }
+  if (kind === 'action') {
+    if (message.rest === 'sleep' || message.rest === 'wake') parsed.rest = message.rest
+    if (Object.hasOwn(message, 'scene')) {
+      parsed.scene = message.scene === 'rest' || message.scene === 'out' ? message.scene : null
+    }
+  }
+  return parsed
 }
 
 /** 主进程已校验的完整动作目录再做一次渲染侧窄化，坏条目不会污染播放器。 */
@@ -319,8 +345,16 @@ export function App() {
   activeConfigRef.current = activeConfig
   const actionCatalogRef = useRef<PlaybackAction[]>(actionCatalog)
   actionCatalogRef.current = actionCatalog
+  const triggerCatalogRef = useRef<TriggerDefinition[]>(triggerCatalog)
+  triggerCatalogRef.current = triggerCatalog
   const playbackRef = useRef<PlaybackState | null>(playback)
   playbackRef.current = playback
+  /** 当前命令面动作是谁发起的；trigger 一次性动作与手动/skin loop 必须分开计忙。 */
+  const playbackSourceRef = useRef<PlaybackSource>(null)
+  /** 最近一拍 /pet/state：点击与迟到回调同步读取，不依赖 React commit。 */
+  const latestStateRef = useRef<PetState | null>(null)
+  const seenRef = useRef<PetSeen | null>(null)
+  if (seenRef.current === null) seenRef.current = loadSeen()
   /** 动作媒体可能连续报错；ownership 绑定首次失败的动作 generation/source，恢复完成前不能串给别的动作或皮肤。 */
   const actionErrorOwnerRef = useRef<ActionErrorOwner | null>(null)
   const playbackConfigRef = useRef<DshPetConfig | null>(playbackConfig)
@@ -439,6 +473,7 @@ export function App() {
     (value: string): void => {
       const options = performedMotion(value)
       if (!options) return
+      playbackSourceRef.current = 'manual'
       const current = playbackRef.current
       if (current !== null && current.status !== 'idle') {
         dispatchPlayback(
@@ -525,9 +560,14 @@ export function App() {
       const pendingAction = pendingServerActionRef.current
       if (pendingAction !== null && next.some((action) => action.id === pendingAction)) {
         pendingServerActionRef.current = null
+        playbackSourceRef.current = 'manual'
         dispatchPlayback({ type: 'startAction', actionId: pendingAction })
       }
       const current = playbackRef.current
+      if (current?.actionId && seenRef.current?.sceneLoopActionId === current.actionId) {
+        seenRef.current = interruptSceneLoop(seenRef.current)
+        saveSeen(seenRef.current)
+      }
       if (current?.actionId && !next.some((action) => action.id === current.actionId)) {
         dispatchPlayback({ type: 'stopAction' }, { forceBase: true })
       }
@@ -559,7 +599,9 @@ export function App() {
     let unsubscribe: (() => void) | undefined
 
     const receive = (raw: unknown): void => {
-      setTriggerCatalog(parseTriggerCatalog(raw))
+      const next = parseTriggerCatalog(raw)
+      triggerCatalogRef.current = next
+      setTriggerCatalog(next)
     }
 
     try {
@@ -604,6 +646,15 @@ export function App() {
           playLegacyMotion(message.value)
           return
         }
+        if (message.rest) {
+          const scene = message.scene === undefined
+            ? message.rest === 'sleep' ? 'rest' : null
+            : message.scene
+          const seen = seenRef.current ?? emptyPetSeen()
+          seenRef.current = applyManualRestIntent(seen, message.rest, message.value, scene)
+          saveSeen(seenRef.current)
+        }
+        playbackSourceRef.current = 'manual'
         dispatchPlayback({ type: 'startAction', actionId: message.value })
       })
     } catch {
@@ -663,6 +714,10 @@ export function App() {
       const current = skinRef.current
       // 失败皮肤的重放（同一 revision）必须忽略；换皮肤或新 revision 才重新应用。
       if (resolveSkinApply(current, next, failedSkinRef.current) === 'ignore') return
+      if (seenRef.current) {
+        seenRef.current = interruptSceneLoop(seenRef.current)
+        saveSeen(seenRef.current)
+      }
       dispatchPlayback({ type: 'skinChanged' }, { forceBase: true })
       failedSkinRef.current = null
       previousSkinRef.current = current
@@ -696,6 +751,10 @@ export function App() {
     let unsubscribe: (() => void) | undefined
     try {
       unsubscribe = window.petBridge?.onSkinError?.((raw) => {
+        if (seenRef.current) {
+          seenRef.current = interruptSceneLoop(seenRef.current)
+          saveSeen(seenRef.current)
+        }
         dispatchPlayback({ type: 'skinChanged' }, { forceBase: true })
         pet.bubble({
           id: 'skin-error',
@@ -751,27 +810,54 @@ export function App() {
 
   useEffect(() => {
     if (!activeConfig) return
-    let seen = loadSeen()
     let unsubscribe: (() => void) | undefined
 
     try {
       unsubscribe = window.petBridge?.onState((raw) => {
-        const state = raw as WirePetState
+        const state = raw as WirePetState | null
         const now = Date.now()
-        const previousActionId = seen.lastActionId
-        const effect = decideEffects(seen, state as PetState, now)
-        seen = effect.seen
-        saveSeen(seen)
+        latestStateRef.current = state as PetState | null
+        const previous = seenRef.current ?? emptyPetSeen()
+        const previousActionId = previous.lastActionId
+
+        // presence.recent 只保留一期旧数据兼容；二期同一句事实走 cue，不能再独立挥手一次。
+        const effect = decideEffects(
+          legacySeen(previous),
+          withoutPresenceComments(state as PetState | null),
+          now,
+        )
+        const action = state?.action ?? null
+        const actionAlive = action !== null
+          && Number.isFinite(action.at)
+          && Number.isFinite(action.ttlMs)
+          && now - action.at < action.ttlMs
+        const busy = triggerPlaybackBusy(playbackRef.current, playbackSourceRef.current)
+        const triggerEffect = reduceTriggers({
+          state: state as PetState | null,
+          triggers: triggerCatalogRef.current,
+          actions: actionCatalogRef.current,
+          seen: previous,
+          now,
+          // 服务端显式 action 与用户动作同级：先占住播放器，cue/scene 留到下一拍。
+          manualBusy: busy.manualBusy || actionAlive,
+          actionBusy: busy.actionBusy,
+        })
+        const nextSeen = mergePetSeen({
+          ...previous,
+          lastActionId: effect.seen.lastActionId,
+          lastCommentAt: effect.seen.lastCommentAt,
+        }, triggerEffect.seen)
+        seenRef.current = nextSeen
+        saveSeen(nextSeen)
 
         // 稳态走声明式 prop；activity 更新只更新 ref，循环期间由 adapter 冻结实际 prop。
-        latestSteadyRef.current = effect.steady
-        setSteady(effect.steady)
-        const action = state?.action ?? null
-        const actionAlive = action !== null && now - action.at < action.ttlMs
+        latestSteadyRef.current = triggerEffect.steady
+        setSteady(triggerEffect.steady)
         const customAction = actionAlive && typeof action?.action === 'string' ? action.action : null
         if (action !== null && customAction !== null && action.id !== previousActionId) {
           if (actionCatalogRef.current.some((entry) => entry.id === customAction)) {
             pendingServerActionRef.current = null
+            playbackSourceRef.current = 'manual'
             dispatchPlayback({ type: 'startAction', actionId: customAction })
           } else {
             pendingServerActionRef.current = customAction
@@ -782,6 +868,27 @@ export function App() {
         if (!actionAlive) pendingServerActionRef.current = null
         if (effect.bubble) {
           pagerRef.current?.play(effect.bubble.text, effect.bubble.motion)
+        }
+
+        // cue 归约和真正下发之间再核一次 TTL；过期时动作与气泡一起丢弃，不补播。
+        const triggerCueFresh = !triggerEffect.bubble
+          || cueDispatchIsFresh(state as PetState | null, triggerEffect.bubble.id, now)
+        if (triggerCueFresh && triggerEffect.action) {
+          pendingServerActionRef.current = null
+          if (triggerEffect.action.type === 'startAction') {
+            playbackSourceRef.current = triggerEffect.action.loop ? 'scene' : 'trigger'
+            dispatchPlayback({
+              type: 'startAction',
+              actionId: triggerEffect.action.actionId,
+              loop: triggerEffect.action.loop,
+            })
+          } else {
+            playbackSourceRef.current = null
+            dispatchPlayback({ type: 'stopAction' }, { forceBase: true })
+          }
+        }
+        if (triggerCueFresh && triggerEffect.bubble) {
+          pagerRef.current?.play(triggerEffect.bubble.text)
         }
       })
       // 订阅已经挂上：让 main 补发首拍缓存，避免它早于订阅被丢掉。
@@ -802,6 +909,9 @@ export function App() {
     let overPet = false
     let overUi = false
     let dragging = false
+    let gesture: { startX: number; startY: number; dragging: boolean } | null = null
+    let suppressClick = false
+    let suppressClickTimer: ReturnType<typeof setTimeout> | null = null
 
     const publish = (): void => {
       window.petBridge?.setIgnoreMouse?.(shouldIgnoreMouse({ overPet, overUi, dragging }))
@@ -818,7 +928,23 @@ export function App() {
       publish()
     }
 
-    const onMouseMove = (event: MouseEvent): void => update(event.clientX, event.clientY)
+    const onPointerMove = (event: PointerEvent): void => {
+      update(event.clientX, event.clientY)
+      if (gesture === null || gesture.dragging) return
+      if (!isPetDragGesture(
+        { x: gesture.startX, y: gesture.startY },
+        { x: event.clientX, y: event.clientY },
+      )) return
+
+      // 按下只进入候选态；越过阈值才真的拖动，短点击才能保留给休息提示/对话。
+      gesture.dragging = true
+      dragging = true
+      suppressClick = true
+      overPet = true
+      publish()
+      dispatchPlayback({ type: 'dragStarted' }, { forceBase: true })
+      window.petBridge?.startDrag?.()
+    }
     const reset = (): void => {
       if (!overPet && !overUi) return
       overPet = false
@@ -835,34 +961,61 @@ export function App() {
 
     const onPointerDown = (event: PointerEvent): void => {
       if (event.button !== 0 || !inBody(event.clientX, event.clientY)) return
-      dragging = true
+      gesture = { startX: event.clientX, startY: event.clientY, dragging: false }
       overPet = true
       publish()
-      dispatchPlayback({ type: 'dragStarted' }, { forceBase: true })
-      window.petBridge?.startDrag?.()
+      // 休息中的短点击由窗口捕获层接管；先拦住组件的对话入口，拖动仍由后续阈值接管。
+      if (!shouldOpenPetDialogue(latestStateRef.current)) event.stopImmediatePropagation()
     }
 
-    const endDrag = (): void => {
-      if (!dragging) return
-      dragging = false
-      window.petBridge?.endDrag?.()
+    const endGesture = (): void => {
+      const wasDragging = gesture?.dragging === true
+      gesture = null
+      if (wasDragging) {
+        dragging = false
+        window.petBridge?.endDrag?.()
+        // 拖动后浏览器偶尔仍补发 click；只在同一任务阻止它，不能吞下一次真实点击。
+        if (suppressClickTimer) clearTimeout(suppressClickTimer)
+        suppressClickTimer = setTimeout(() => {
+          suppressClick = false
+          suppressClickTimer = null
+        }, 0)
+      }
       publish()
     }
 
-    window.addEventListener('mousemove', onMouseMove, true)
+    const onClick = (event: MouseEvent): void => {
+      if (!inBody(event.clientX, event.clientY)) return
+      if (suppressClick) {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        suppressClick = false
+        return
+      }
+      if (shouldOpenPetDialogue(latestStateRef.current)) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      petApiRef.current.bubble({ ...restClickBubble(), timeout: 3000 })
+    }
+
+    window.addEventListener('pointermove', onPointerMove, true)
     window.addEventListener('pointerdown', onPointerDown, true)
-    window.addEventListener('pointerup', endDrag, true)
-    window.addEventListener('pointercancel', endDrag, true)
+    window.addEventListener('pointerup', endGesture, true)
+    window.addEventListener('pointercancel', endGesture, true)
+    window.addEventListener('click', onClick, true)
     document.addEventListener('mouseleave', reset)
-    window.addEventListener('blur', endDrag)
+    window.addEventListener('blur', endGesture)
 
     return () => {
-      window.removeEventListener('mousemove', onMouseMove, true)
+      window.removeEventListener('pointermove', onPointerMove, true)
       window.removeEventListener('pointerdown', onPointerDown, true)
-      window.removeEventListener('pointerup', endDrag, true)
-      window.removeEventListener('pointercancel', endDrag, true)
+      window.removeEventListener('pointerup', endGesture, true)
+      window.removeEventListener('pointercancel', endGesture, true)
+      window.removeEventListener('click', onClick, true)
       document.removeEventListener('mouseleave', reset)
-      window.removeEventListener('blur', endDrag)
+      window.removeEventListener('blur', endGesture)
+      if (suppressClickTimer) clearTimeout(suppressClickTimer)
+      if (gesture?.dragging) window.petBridge?.endDrag?.()
       window.petBridge?.setIgnoreMouse?.(true)
     }
   }, [activeConfig, dispatchPlayback])
@@ -889,6 +1042,10 @@ export function App() {
 
     actionErrorOwnerRef.current = null
     const current = skinRef.current
+    if (seenRef.current) {
+      seenRef.current = interruptSceneLoop(seenRef.current)
+      saveSeen(seenRef.current)
+    }
     dispatchPlayback({ type: 'skinChanged' }, { forceBase: true })
     if (!current) return
 
@@ -915,6 +1072,10 @@ export function App() {
    * - 没送到：标题「没送到」+ note，4 秒后收起。
    */
   const handleDialogue = (text: string): void => {
+    if (!shouldOpenPetDialogue(latestStateRef.current)) {
+      pet.bubble({ ...restClickBubble(), timeout: 3000 })
+      return
+    }
     const requestGeneration = ++chatRequestGenerationRef.current
     const requestChat = window.petBridge?.requestChat
     if (!requestChat) {

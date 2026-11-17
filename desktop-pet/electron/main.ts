@@ -14,7 +14,7 @@ import {
 import { sendChat } from '../renderer/chat'
 import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition, resetPetPosition, resizePetWindow } from './window'
 import { DEFAULT_LOOK, noteLocalLook, readRemoteLook, resolveRemoteLook, type BubbleLook, type LookSyncState } from './look'
-import { buildMenuModel, type MenuItemModel } from './menu-model'
+import { buildMenuModel, type MenuItemModel, type PetRestAction } from './menu-model'
 import { OPEN_PROTOCOL, protocolTarget } from './open-link'
 import { readPetSize, savePetSize } from './settings'
 import { clampPetSize } from './size'
@@ -35,6 +35,7 @@ import {
 const PET_STATE_URL = 'http://127.0.0.1:8788/api/fish/pet/state'
 const PET_CONFIG_URL = 'http://127.0.0.1:8788/api/fish/pet/config'
 const PET_HELLO_URL = 'http://127.0.0.1:8788/api/fish/pet/hello'
+const PET_REST_URL = 'http://127.0.0.1:8788/api/fish/pet/rest'
 const PET_POLL_INTERVAL_MS = 2000
 const PET_REQUEST_TIMEOUT_MS = 5000
 const PET_HELLO_INTERVAL_MS = 60_000
@@ -47,7 +48,9 @@ function skinMediaUri(id: string): string {
 const WORKBENCH_PET_URL = 'http://127.0.0.1:8788/#her/pet'
 const PRESENCE_MODE_URL = 'http://127.0.0.1:8788/api/fish/presence/mode'
 
-export type PetActionMessage = { motion: string } | { action: string }
+export type PetActionMessage =
+  | { motion: string }
+  | { action: string; rest?: PetRestAction; scene?: 'rest' | 'out' | null }
 
 export interface PetActionCatalogEntry {
   id: string
@@ -782,6 +785,45 @@ async function setPresence(mode: 'off' | 'event' | 'ambient' | 'work'): Promise<
   }
 }
 
+export interface PetRestActionResult {
+  ok: boolean
+  scene: 'rest' | 'out' | null
+}
+
+function sceneKindFrom(value: unknown): 'rest' | 'out' | null {
+  if (!isRecord(value)) return null
+  return value.kind === 'rest' || value.kind === 'out' ? value.kind : null
+}
+
+/**
+ * 菜单显式休息：先让服务端提交手动覆盖，再把同一个 action 交给渲染进程。
+ * 附带回执 scene 让 trigger seen 直接记下这次 transition，避免 scene trigger 再播一遍。
+ */
+export async function runRestAction(
+  win: BrowserWindow | null,
+  actionId: string,
+  action: PetRestAction,
+  fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response> = fetch,
+): Promise<PetRestActionResult> {
+  try {
+    const response = await fetchImpl(PET_REST_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action }),
+      signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) return { ok: false, scene: null }
+    const body: unknown = await response.json().catch(() => null)
+    if (!isRecord(body) || body.ok !== true) return { ok: false, scene: null }
+
+    const scene = sceneKindFrom(body.scene)
+    sendActionMessage(win, { action: actionId, rest: action, scene })
+    return { ok: true, scene }
+  } catch {
+    return { ok: false, scene: null }
+  }
+}
+
 function setPetHidden(hidden: boolean): void {
   petHidden = hidden
   const win = petWindow
@@ -798,6 +840,7 @@ function buildMenu(kind: 'context' | 'tray'): Menu {
     {
       motion: (motion) => sendActionMessage(win, toActionMessage('motion', motion)),
       action: (id) => sendActionMessage(win, toActionMessage('action', id)),
+      rest: (id, action) => void runRestAction(win, id, action),
       stop: () => sendActionStop(win),
       reload: () => void reloadRegisteredActions(win),
       size: (size) => win && changePetSize(win, size),
