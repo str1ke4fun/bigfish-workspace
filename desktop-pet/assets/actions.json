@@ -1,0 +1,798 @@
+{
+  "actions": [
+    {
+      "id": "asset-001",
+      "label": "三球抛接",
+      "anim": "三球抛接",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-002",
+      "label": "下五子棋",
+      "anim": "下五子棋",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-003",
+      "label": "东张西望",
+      "anim": "东张西望",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-004",
+      "label": "中秋赏月吃月饼",
+      "anim": "中秋赏月吃月饼",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-005",
+      "label": "优雅女仆舞",
+      "anim": "优雅女仆舞",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-006",
+      "label": "余额-分文不剩",
+      "anim": "余额-分文不剩",
+      "loop": false,
+      "group": "其他"
+    },
+    {
+      "id": "asset-007",
+      "label": "余额-数金皱眉",
+      "anim": "余额-数金皱眉",
+      "loop": false,
+      "group": "其他"
+    },
+    {
+      "id": "asset-008",
+      "label": "余额-袋空如洗",
+      "anim": "余额-袋空如洗",
+      "loop": false,
+      "group": "其他"
+    },
+    {
+      "id": "asset-009",
+      "label": "余额-金袋叮当",
+      "anim": "余额-金袋叮当",
+      "loop": false,
+      "group": "其他"
+    },
+    {
+      "id": "asset-010",
+      "label": "余额-钱袋如常",
+      "anim": "余额-钱袋如常",
+      "loop": false,
+      "group": "其他"
+    },
+    {
+      "id": "asset-011",
+      "label": "余额-钱袋满溢",
+      "anim": "余额-钱袋满溢",
+      "loop": false,
+      "group": "其他"
+    },
+    {
+      "id": "asset-012",
+      "label": "侧身急躁跑",
+      "anim": "侧身急躁跑",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-013",
+      "label": "偷吃零食被抓住",
+      "anim": "偷吃零食被抓住",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-014",
+      "label": "写代码",
+      "anim": "写代码",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-015",
+      "label": "写福字",
+      "anim": "写福字",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-016",
+      "label": "凭空生花",
+      "anim": "凭空生花",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-017",
+      "label": "动物环绕",
+      "anim": "动物环绕",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-018",
+      "label": "原地专心玩魔方",
+      "anim": "原地专心玩魔方",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-019",
+      "label": "原地小憩沉眠",
+      "anim": "原地小憩沉眠",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-020",
+      "label": "原地左转奔跑",
+      "anim": "原地左转奔跑",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-021",
+      "label": "原地敲击桌面互动",
+      "anim": "原地敲击桌面互动",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-022",
+      "label": "原地漂浮踏步",
+      "anim": "原地漂浮踏步",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-023",
+      "label": "原地跳跃抓碎头顶物品",
+      "anim": "原地跳跃抓碎头顶物品",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-024",
+      "label": "原地蹲下玩玩具汽车",
+      "anim": "原地蹲下玩玩具汽车",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-025",
+      "label": "原地重力下蹲压缩",
+      "anim": "原地重力下蹲压缩",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-026",
+      "label": "变鸽子",
+      "anim": "变鸽子",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-027",
+      "label": "可爱宅舞",
+      "anim": "可爱宅舞",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-028",
+      "label": "吃Token",
+      "anim": "吃Token",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-029",
+      "label": "吃冰淇淋融化",
+      "anim": "吃冰淇淋融化",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-030",
+      "label": "吃午餐",
+      "anim": "吃午餐",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-031",
+      "label": "吃大闸蟹",
+      "anim": "吃大闸蟹",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-032",
+      "label": "吃年糕",
+      "anim": "吃年糕",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-033",
+      "label": "吃早餐",
+      "anim": "吃早餐",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-034",
+      "label": "吃晚餐",
+      "anim": "吃晚餐",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-035",
+      "label": "吃汤圆",
+      "anim": "吃汤圆",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-036",
+      "label": "吃白饭",
+      "anim": "吃白饭",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-037",
+      "label": "吃粽子",
+      "anim": "吃粽子",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-038",
+      "label": "吃糖葫芦",
+      "anim": "吃糖葫芦",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-039",
+      "label": "吃腊八粥",
+      "anim": "吃腊八粥",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-040",
+      "label": "吃西瓜",
+      "anim": "吃西瓜",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-041",
+      "label": "吃重阳糕",
+      "anim": "吃重阳糕",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-042",
+      "label": "吃长寿面",
+      "anim": "吃长寿面",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-043",
+      "label": "吃青团",
+      "anim": "吃青团",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-044",
+      "label": "吃饭·碗饭",
+      "anim": "吃饭·碗饭",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-045",
+      "label": "吃饭团",
+      "anim": "吃饭团",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-046",
+      "label": "吃饺子",
+      "anim": "吃饺子",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-047",
+      "label": "吹气球",
+      "anim": "吹气球",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-048",
+      "label": "吹笛子",
+      "anim": "吹笛子",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-049",
+      "label": "哈欠连天",
+      "anim": "哈欠连天",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-050",
+      "label": "堆雪人",
+      "anim": "堆雪人",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-051",
+      "label": "大口吃零食",
+      "anim": "大口吃零食",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-052",
+      "label": "女仆屈膝礼仪",
+      "anim": "女仆屈膝礼仪",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-053",
+      "label": "小幅度原地360度旋转展示",
+      "anim": "小幅度原地360度旋转展示",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-054",
+      "label": "小提琴演奏",
+      "anim": "小提琴演奏",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-055",
+      "label": "工作状态-原地踱步张望",
+      "anim": "工作状态-原地踱步张望",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-056",
+      "label": "工作状态-垂头叹气冒汗",
+      "anim": "工作状态-垂头叹气冒汗",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-057",
+      "label": "工作状态-忙碌点按",
+      "anim": "工作状态-忙碌点按",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-058",
+      "label": "工作状态-思考冒泡",
+      "anim": "工作状态-思考冒泡",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-059",
+      "label": "工作状态-清点归档",
+      "anim": "工作状态-清点归档",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-060",
+      "label": "工作状态-雀跃庆祝",
+      "anim": "工作状态-雀跃庆祝",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-061",
+      "label": "开心小跑",
+      "anim": "开心小跑",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-062",
+      "label": "待机呼吸休闲",
+      "anim": "待机呼吸休闲",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-063",
+      "label": "悠闲哼歌",
+      "anim": "悠闲哼歌",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-064",
+      "label": "扑克魔术",
+      "anim": "扑克魔术",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-065",
+      "label": "打瞌睡被惊醒",
+      "anim": "打瞌睡被惊醒",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-066",
+      "label": "抽陀螺",
+      "anim": "抽陀螺",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-067",
+      "label": "拆礼物",
+      "anim": "拆礼物",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-068",
+      "label": "插茱萸赏菊",
+      "anim": "插茱萸赏菊",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-069",
+      "label": "摇扇纳凉",
+      "anim": "摇扇纳凉",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-070",
+      "label": "撸猫",
+      "anim": "撸猫",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-071",
+      "label": "收红包",
+      "anim": "收红包",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-072",
+      "label": "放孔明灯",
+      "anim": "放孔明灯",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-073",
+      "label": "放河灯",
+      "anim": "放河灯",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-074",
+      "label": "放烟花",
+      "anim": "放烟花",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-075",
+      "label": "放风筝",
+      "anim": "放风筝",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-076",
+      "label": "整体换装试色",
+      "anim": "整体换装试色",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-077",
+      "label": "是啊，吃什么",
+      "anim": "是啊，吃什么",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-078",
+      "label": "晨间刷牙",
+      "anim": "晨间刷牙",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-079",
+      "label": "期待开饭",
+      "anim": "期待开饭",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-080",
+      "label": "涮火锅",
+      "anim": "涮火锅",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-081",
+      "label": "深度思考碎碎念",
+      "anim": "深度思考碎碎念",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-082",
+      "label": "点击回应-傲娇生气",
+      "anim": "点击回应-傲娇生气",
+      "loop": false,
+      "group": "回应"
+    },
+    {
+      "id": "asset-083",
+      "label": "点击回应-元气挥手",
+      "anim": "点击回应-元气挥手",
+      "loop": false,
+      "group": "回应"
+    },
+    {
+      "id": "asset-084",
+      "label": "点击回应-害羞惊讶",
+      "anim": "点击回应-害羞惊讶",
+      "loop": false,
+      "group": "回应"
+    },
+    {
+      "id": "asset-085",
+      "label": "点击回应-开心跃动",
+      "anim": "点击回应-开心跃动",
+      "loop": false,
+      "group": "回应"
+    },
+    {
+      "id": "asset-086",
+      "label": "点击回应-挠痒咯咯笑",
+      "anim": "点击回应-挠痒咯咯笑",
+      "loop": false,
+      "group": "回应"
+    },
+    {
+      "id": "asset-087",
+      "label": "照镜子",
+      "anim": "照镜子",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-088",
+      "label": "玩水枪",
+      "anim": "玩水枪",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-089",
+      "label": "玩游戏气急败坏",
+      "anim": "玩游戏气急败坏",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-090",
+      "label": "用鲸鱼尾巴拍打地面",
+      "anim": "用鲸鱼尾巴拍打地面",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-091",
+      "label": "睡觉",
+      "seq": [
+        "睡觉-开始",
+        "睡觉-循环"
+      ],
+      "loop": true,
+      "group": "休息"
+    },
+    {
+      "id": "asset-093",
+      "label": "睡觉-起来",
+      "anim": "睡觉-起来",
+      "loop": false,
+      "group": "休息"
+    },
+    {
+      "id": "asset-094",
+      "label": "碎碎念-发呆碎碎念",
+      "anim": "碎碎念-发呆碎碎念",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-095",
+      "label": "碎碎念-对屏碎碎念",
+      "anim": "碎碎念-对屏碎碎念",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-096",
+      "label": "碎碎念-擦桌碎碎念",
+      "anim": "碎碎念-擦桌碎碎念",
+      "loop": false,
+      "group": "工作"
+    },
+    {
+      "id": "asset-097",
+      "label": "穿针乞巧",
+      "anim": "穿针乞巧",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-098",
+      "label": "舞狮头",
+      "anim": "舞狮头",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-099",
+      "label": "荡秋千",
+      "anim": "荡秋千",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-100",
+      "label": "萌化小幽灵",
+      "anim": "萌化小幽灵",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-101",
+      "label": "蓝鲸现世",
+      "anim": "蓝鲸现世",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-102",
+      "label": "蝴蝶蜜蜂环绕头顶开花",
+      "anim": "蝴蝶蜜蜂环绕头顶开花",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-103",
+      "label": "螃蟹走路",
+      "anim": "螃蟹走路",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-104",
+      "label": "被吓一跳",
+      "anim": "被吓一跳",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-105",
+      "label": "被落叶淹没",
+      "anim": "被落叶淹没",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-106",
+      "label": "被鼠标拖拽悬空反馈",
+      "anim": "被鼠标拖拽悬空反馈",
+      "loop": false,
+      "group": "回应"
+    },
+    {
+      "id": "asset-107",
+      "label": "装点圣诞树",
+      "anim": "装点圣诞树",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-108",
+      "label": "讨糖南瓜灯",
+      "anim": "讨糖南瓜灯",
+      "loop": false,
+      "group": "节日"
+    },
+    {
+      "id": "asset-109",
+      "label": "超大伸懒腰",
+      "anim": "超大伸懒腰",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-110",
+      "label": "踢毽子",
+      "anim": "踢毽子",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-111",
+      "label": "轻快摇摆舞",
+      "anim": "轻快摇摆舞",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-112",
+      "label": "轻快记录",
+      "anim": "轻快记录",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-113",
+      "label": "骑木马",
+      "anim": "骑木马",
+      "loop": false,
+      "group": "日常"
+    },
+    {
+      "id": "asset-114",
+      "label": "鲸鱼吐泡泡特效",
+      "anim": "鲸鱼吐泡泡特效",
+      "loop": false,
+      "group": "日常"
+    }
+  ]
+}

@@ -21,7 +21,7 @@ cd D:\fish-handoff\desktop-pet
 npm install
 
 # 2. 同步动画素材（见下一节；assets/webm/ 不进 Git）
-node scripts/sync-assets.mjs --from <asar 解包目录>\assets\webm
+node scripts/sync-assets.mjs --from D:\bigfish-desktop-pet\assets\webm
 
 # 3. 构建渲染进程 / 主进程 / preload
 npm run build
@@ -42,43 +42,72 @@ npm start
 因为它是大肥鱼形象、按 CC BY-NC-SA 4.0 授权，见 `assets/ATTRIBUTION.md`。
 干净 checkout 里没有这些文件，`npm run dist:win` 会先跑 `scripts/check-assets.mjs` 并拒绝缺素材的构建。
 
-实际使用的来源是 **dsh-pet v0.4.8 的 Windows 发布包**：
+实际使用的素材快照是 **dsh-pet v0.4.9**，共 **114 个 `.webm` 文件**。素材来源以
+[`dsh-pet v0.4.9`](https://github.com/PC2005-cloud/dsh-pet/tree/v0.4.9) 标签为准；本地开发机可直接使用
+`D:\bigfish-desktop-pet\assets\webm`（WSL 路径为 `/mnt/d/bigfish-desktop-pet/assets/webm`）。
 
 ```powershell
-# 原始安装包解出的 asar（本机路径）
-#   D:\dsh-pet\release-v0.4.8\dsh-pet-0.4.8-win-x64\resources\app.asar
-
-# 1. 解包 asar（npx 会按需下载 @electron/asar）
-npx @electron/asar extract `
-  "D:\dsh-pet\release-v0.4.8\dsh-pet-0.4.8-win-x64\resources\app.asar" `
-  "D:\dsh-pet\asar-v0.4.8"
-
-# 2. 只复制 assets/config.json 引用到的 11 个 webm
 cd D:\fish-handoff\desktop-pet
-node scripts/sync-assets.mjs --from "D:\dsh-pet\asar-v0.4.8\assets\webm"
+
+# 先对本地素材做完整性检查，不复制文件
+node scripts/check-assets.mjs --from "D:\bigfish-desktop-pet\assets\webm"
+
+# 检查通过后再同步到 assets/webm/
+node scripts/sync-assets.mjs --from "D:\bigfish-desktop-pet\assets\webm"
 ```
 
-`scripts/sync-assets.mjs` 以 `assets/config.json` 的 `animations.motions` / `idle` /
-`turn` / `drag` / `clicks` / `moves` 为准，缺失任何一个都会列名失败，不会静默跳过。
+WSL 中可直接复用同一批素材：
 
-当前 v1 子集共 **11 个文件**：
-
-```text
-待机呼吸休闲.webm
-东张西望.webm
-螃蟹走路.webm
-点击回应-元气挥手.webm
-被鼠标拖拽悬空反馈.webm
-工作状态-思考冒泡.webm
-工作状态-忙碌点按.webm
-工作状态-清点归档.webm
-工作状态-原地踱步张望.webm
-工作状态-垂头叹气冒汗.webm
-工作状态-雀跃庆祝.webm
+```bash
+cd /mnt/d/fish-handoff/desktop-pet
+node scripts/check-assets.mjs --from /mnt/d/bigfish-desktop-pet/assets/webm
 ```
 
-换全量素材时只需把同名（或多出的）文件放进 `assets/webm/` 并更新
-`assets/config.json` 的映射，不用改代码。
+若从发布包取素材，先从对应版本的 `resources/app.asar` 解包，再把 `--from` 指向解包后的
+`assets/webm`。`check-assets.mjs` 与 `sync-assets.mjs` 都取
+`assets/config.json` 和 `assets/actions.json` 的并集并去重；缺失任一引用都会列出文件名并失败，
+不会自动扫描或暗中登记目录里的其他 webm。
+
+当前目录登记 **114 段素材、113 条动作**：`睡觉-开始` 与 `睡觉-循环` 合并成一条 `seq` 动作，
+`睡觉-起来` 保持单独动作。`assets/actions.json` 进 Git，`assets/webm/` 仍被忽略。
+
+## 手动动作注册与播放
+
+`assets/actions.json` 是手动动作的唯一目录；不会从 `assets/webm/` 自动发现文件名，也不能把
+basename 直接当作 action id 猜。每条动作格式如下：
+
+```json
+{
+  "actions": [
+    { "id": "asset-001", "label": "三球抛接", "anim": "三球抛接", "loop": false, "group": "日常" },
+    { "id": "asset-091", "label": "睡觉", "seq": ["睡觉-开始", "睡觉-循环"], "loop": true, "group": "休息" },
+    { "id": "asset-093", "label": "睡觉-起来", "anim": "睡觉-起来", "loop": false, "group": "休息" }
+  ]
+}
+```
+
+- **稳定 id**：`asset-NNN` 按 v0.4.9 的 114 个文件名排序快照编号。`睡觉-开始` 使用
+  `asset-091` 并合并循环段，因此 `asset-092` 是保留空位；`睡觉-起来` 为 `asset-093`。
+  新增动作请在末尾续号，不重排已有 id，避免 `/pet/act`、菜单和旧客户端失配。
+- **分组**：只能使用「日常 / 回应 / 工作 / 休息 / 节日 / 其他」。余额类素材只留在「其他」，
+  作为手动动画播放，不引入余额状态、接口或 trigger。
+- **注册**：把 webm 放进 `assets/webm/`，在 `actions.json` 的 `actions` 数组显式加一条，
+  然后在托盘/右键菜单点「重新载入动作」。重载成功会刷新菜单、目录和 `/pet/hello` 上报；
+  动作注册表有坏条目时，该条丢弃并记日志，其他动作继续可用。
+- **一次性与 seq**：普通 `anim` 播完恢复最新稳态；`seq` 按数组顺序播放。最后一段若是
+  `loop:true`，播到该段后持续循环；否则播完恢复映射和最新稳态。组件回调推进段切换，
+  不靠写死视频时长。
+- **停止与抢占**：循环动作不会自己结束；点「停下当前动作」显式停止并恢复最新稳态。
+  新动作会抢占旧动作；拖动、换 skin、重载目录也会先让当前 generation 失效，旧回调不能覆盖新状态。
+- **未登记素材**：即使 webm 已同步，只要没有 `actions.json` 条目，菜单不显示，`/pet/act`
+  也不接受该 id。
+
+### Windows 真机验收边界
+
+Node 单测、`check-assets` 和 `npm run build` 只能证明协议、目录、引用和构建链路，**不能证明**
+视频解码、透明或视觉正确。发布前必须在 Windows 真机逐项验收：透明、闪烁、一次性、`seq`、
+`loop`、stop、动作抢占、拖动、skin 切换、activity 变化，以及 `/pet/act { action }`。
+菜单能点开或单测全绿都不算动作播放已验收。
 
 ## 气泡、托盘与右键菜单
 

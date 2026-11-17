@@ -11,10 +11,10 @@
 
 ## 形象与动画素材
 
-- 角色形象与 `assets/webm/` 下的动画素材来自 **dsh-pet**，采用 **CC BY-NC-SA 4.0**（Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International）许可。
+- 角色形象与 `assets/webm/` 下的 114 段动画素材来自 **dsh-pet v0.4.9**，采用 **CC BY-NC-SA 4.0**（Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International）许可。
   - 许可要点：署名（BY）、非商业性使用（NC）、相同方式共享（SA）。
   - 许可全文：<https://creativecommons.org/licenses/by-nc-sa/4.0/>
-  - 素材来源：<https://github.com/PC2005-cloud/dsh-pet>
+  - 素材来源与版本：<https://github.com/PC2005-cloud/dsh-pet/tree/v0.4.9>
 - 若要用于商业用途或公开分发，必须替换为自有人工形象与素材，或另行取得授权。
 
 ## 说明
