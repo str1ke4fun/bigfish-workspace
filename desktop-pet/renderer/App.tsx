@@ -55,7 +55,7 @@ import {
   type PetSeen,
   type PlaybackSource,
 } from './playback-adapter'
-import { reduceTriggers } from './trigger-engine'
+import { reduceTriggers, type TriggerEngineConfig } from './trigger-engine'
 import type { ChatResult } from './chat'
 import {
   BUBBLE_OPACITY_DEFAULT,
@@ -114,6 +114,10 @@ const ASSET_BASE = 'pet-asset://local/webm'
 const PET_SIZE_DEFAULT = 400
 const SEEN_STORAGE_KEY = 'desktop-pet:seen'
 const BUBBLE_TIMEOUT_MS = 10_000
+/** 安静时段只影响 idle ambient/date；显式 cue、活动与手动动作不受影响。 */
+const TRIGGER_ENGINE_CONFIG: TriggerEngineConfig = {
+  quietHours: { startMinute: 23 * 60, endMinute: 7 * 60 },
+}
 /** 对话的加载/失败气泡共用一个 key：失败时原地更新，不叠第二只气泡。 */
 const CHAT_BUBBLE_ID = 'chat'
 /** 气泡层指针事件是 none，只能按几何矩形判断；对话框与错误提示同理。 */
@@ -909,6 +913,7 @@ export function App() {
           actions: actionCatalogRef.current,
           seen: previous,
           now,
+          config: TRIGGER_ENGINE_CONFIG,
           // 服务端显式 action 与用户动作同级：先占住播放器，cue/scene 留到下一拍。
           manualBusy: busy.manualBusy
             || manualMotionLeaseBusy(manualMotionLeaseRef.current, now)

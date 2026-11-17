@@ -22,6 +22,7 @@ import {
   isPetDragGesture,
   manualRestPlaybackSource,
   manualMotionLeaseBusy,
+  mergePetSeen,
   noteManualMotionChange,
   parsePetSeen,
   pendingServerActionAfterPlaybackEvent,
@@ -492,6 +493,21 @@ test('持久化 Seen 兼容旧记录，并把 cue/occurrence 游标限制为有�
   assert.deepEqual(seen.cueIds, cueIds.slice(-64))
   assert.deepEqual(seen.occurrenceKeys, occurrenceKeys.slice(-64))
   assert.deepEqual(parsePetSeen(null), emptyPetSeen())
+})
+
+test('mergePetSeen 写回 reducer 产生的 date/ambient occurrence 游标', () => {
+  const previous = { ...emptyPetSeen(), occurrenceKeys: ['fire|ambient|1000'] }
+  const next = {
+    ...emptyTriggerSeen(),
+    occurrenceKeys: ['fire|ambient|2000', 'date|date:12-25|2026-12-25'],
+  }
+
+  const merged = mergePetSeen(previous, next)
+
+  assert.deepEqual(merged.occurrenceKeys, [
+    'fire|ambient|2000',
+    'date|date:12-25|2026-12-25',
+  ])
 })
 
 test('冷启动把持久化 scene loop 标成待恢复，不把旧进程的 active 当成仍在播放', () => {

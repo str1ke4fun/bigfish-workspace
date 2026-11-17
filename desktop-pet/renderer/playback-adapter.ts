@@ -17,8 +17,6 @@ export const PET_SEEN_LIMIT = 64
 export interface PetSeen extends TriggerSeen {
   lastActionId: string
   lastCommentAt: string
-  /** 给后续 date/ambient occurrence 使用的有界稳定键。 */
-  occurrenceKeys: string[]
 }
 
 type BorrowAction = string | Pick<PlaybackAction, 'anim' | 'seq'>
@@ -180,7 +178,7 @@ export function mergePetSeen(previous: PetSeen, next: TriggerSeen): PetSeen {
     ...previous,
     ...next,
     cueIds: boundedKeys(next.cueIds),
-    occurrenceKeys: boundedKeys(previous.occurrenceKeys),
+    occurrenceKeys: boundedKeys(next.occurrenceKeys ?? previous.occurrenceKeys),
   }
 }
 

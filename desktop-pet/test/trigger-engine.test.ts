@@ -11,8 +11,13 @@ function action(id: string, loop = false): PlaybackAction {
   return { id, label: id, anim: `${id}-file`, loop, group: '测试' }
 }
 
-function trigger(when: string, pool: string[], w: number[] = pool.map(() => 1)): TriggerDefinition {
-  return { when, pool, w, once: false, minGapSec: 0, inAmbient: false }
+function trigger(
+  when: string,
+  pool: string[],
+  w: number[] = pool.map(() => 1),
+  overrides: Partial<Pick<TriggerDefinition, 'once' | 'minGapSec' | 'inAmbient'>> = {},
+): TriggerDefinition {
+  return { when, pool, w, once: false, minGapSec: 0, inAmbient: false, ...overrides }
 }
 
 function state(overrides: Partial<PetState> = {}): PetState {
@@ -532,6 +537,143 @@ test('过期 cue 不播放、不阻塞 ambient，并记入有界已消费游标'
   assert.equal(result.bubble, undefined)
   assert.deepEqual(result.action, { type: 'startAction', actionId: 'ambient-once', loop: false })
   assert.ok(result.seen.cueIds.includes('cue-stale'))
+})
+
+test('date 按本地 MM-DD 每天只播一次，同日不重播、跨日与跨年重新计算', () => {
+  const localNoon = (year: number, month: number, day: number, hour = 12): number =>
+    new Date(year, month - 1, day, hour, 0, 0, 0).getTime()
+  const triggers = [
+    trigger('date:12-25', ['xmas-loop'], [1], { inAmbient: true }),
+    trigger('date:12-26', ['boxing-loop'], [1], { inAmbient: true }),
+  ]
+  const actions = [action('xmas-loop', true), action('boxing-loop', true)]
+  const base = { triggers, actions, manualBusy: false, rng: () => 0 }
+
+  const xmas = reduceTriggers({
+    ...base,
+    state: state(),
+    seen: emptyTriggerSeen(),
+    now: localNoon(2026, 12, 25),
+  })
+  assert.deepEqual(xmas.action, { type: 'startAction', actionId: 'xmas-loop', loop: false })
+  assert.ok(xmas.seen.occurrenceKeys.some((key) => key.includes('date:12-25')))
+
+  const xmasReplay = reduceTriggers({
+    ...base,
+    state: state(),
+    seen: xmas.seen,
+    now: localNoon(2026, 12, 25, 23),
+  })
+  assert.equal(xmasReplay.action, undefined)
+
+  const boxingDay = reduceTriggers({
+    ...base,
+    state: state(),
+    seen: xmasReplay.seen,
+    now: localNoon(2026, 12, 26),
+  })
+  assert.deepEqual(boxingDay.action, { type: 'startAction', actionId: 'boxing-loop', loop: false })
+
+  const nextYear = reduceTriggers({
+    ...base,
+    state: state(),
+    seen: boxingDay.seen,
+    now: localNoon(2027, 12, 25),
+  })
+  assert.deepEqual(nextYear.action, { type: 'startAction', actionId: 'xmas-loop', loop: false })
+})
+
+test('inAmbient 日期不压过 presence，且日期游标保持在有界 occurrenceKeys 内', () => {
+  const now = new Date(2026, 11, 25, 12, 0, 0, 0).getTime()
+  const presence = {
+    on: true,
+    mode: 'event' as const,
+    busy: false,
+    snapshot: null,
+    recent: [],
+  }
+  const historic = Array.from({ length: 70 }, (_, index) => `fire|old-${index}|1`)
+  const seen = { ...emptyTriggerSeen(), occurrenceKeys: historic }
+  const base = {
+    triggers: [trigger('date:12-25', ['xmas-loop'], [1], { inAmbient: true })],
+    actions: [action('xmas-loop', true)],
+    now,
+    manualBusy: false,
+    rng: () => 0,
+  }
+
+  const present = reduceTriggers({ ...base, state: state({ presence }), seen })
+  assert.equal(present.action, undefined)
+  assert.ok(present.seen.occurrenceKeys.every((key) => !key.includes('date:12-25')))
+
+  const idle = reduceTriggers({ ...base, state: state(), seen: present.seen })
+  assert.deepEqual(idle.action, { type: 'startAction', actionId: 'xmas-loop', loop: false })
+  assert.equal(idle.seen.occurrenceKeys.length, 64)
+  assert.ok(idle.seen.occurrenceKeys.at(-1)?.includes('date:12-25'))
+})
+
+test('ambient minGap 跨重启保留，离线超过 gap 后才重新允许', () => {
+  const start = new Date(2026, 10, 18, 12, 0, 0, 0).getTime()
+  const idle = state()
+  const working = state({ activity: { state: 'working', at: start + 1, sessionId: 's' } })
+  const input = {
+    triggers: [trigger('ambient', ['ambient-once'], [1], { minGapSec: 300 })],
+    actions: [action('ambient-once', true)],
+    manualBusy: false,
+    rng: () => 0,
+  }
+
+  const first = reduceTriggers({ ...input, state: idle, seen: emptyTriggerSeen(), now: start })
+  assert.deepEqual(first.action, { type: 'startAction', actionId: 'ambient-once', loop: false })
+
+  const interrupted = reduceTriggers({
+    ...input,
+    state: working,
+    seen: first.seen,
+    now: start + 1_000,
+  })
+  assert.equal(interrupted.seen.ambientConsumed, false)
+
+  const restartedWithinGap = reduceTriggers({
+    ...input,
+    state: idle,
+    seen: interrupted.seen,
+    now: start + 100_000,
+  })
+  assert.equal(restartedWithinGap.action, undefined)
+  assert.equal(restartedWithinGap.seen.ambientConsumed, false)
+
+  const offlineExpired = reduceTriggers({
+    ...input,
+    state: idle,
+    seen: restartedWithinGap.seen,
+    now: start + 301_000,
+  })
+  assert.deepEqual(offlineExpired.action, {
+    type: 'startAction', actionId: 'ambient-once', loop: false,
+  })
+})
+
+test('quiet hours 由注入配置控制，按本地分钟支持跨午夜窗口', () => {
+  const at = (hour: number, minute: number): number =>
+    new Date(2026, 10, 18, hour, minute, 0, 0).getTime()
+  const input = {
+    state: state(),
+    triggers: [trigger('ambient', ['ambient-once'])],
+    actions: [action('ambient-once')],
+    manualBusy: false,
+    rng: () => 0,
+    config: { quietHours: { startMinute: 23 * 60, endMinute: 7 * 60 } },
+  }
+
+  assert.deepEqual(reduceTriggers({ ...input, seen: emptyTriggerSeen(), now: at(22, 59) }).action, {
+    type: 'startAction', actionId: 'ambient-once', loop: false,
+  })
+  assert.equal(reduceTriggers({ ...input, seen: emptyTriggerSeen(), now: at(23, 0) }).action, undefined)
+  assert.equal(reduceTriggers({ ...input, seen: emptyTriggerSeen(), now: at(6, 59) }).action, undefined)
+  assert.deepEqual(reduceTriggers({ ...input, seen: emptyTriggerSeen(), now: at(7, 0) }).action, {
+    type: 'startAction', actionId: 'ambient-once', loop: false,
+  })
 })
 
 test('多条未消费 cue 按状态顺序逐拍消费，不丢后一条', () => {

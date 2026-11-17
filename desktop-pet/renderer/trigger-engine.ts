@@ -20,9 +20,22 @@ export type { TriggerDefinition } from '../shared/trigger-model.ts'
 
 export const TRIGGER_SEEN_LIMIT = 64
 
+export interface TriggerQuietHours {
+  /** 本地时间起点，含；从零点起算的分钟数。 */
+  startMinute: number
+  /** 本地时间终点，不含；可小于起点表示跨午夜。 */
+  endMinute: number
+}
+
+export interface TriggerEngineConfig {
+  quietHours?: TriggerQuietHours | null
+}
+
 export interface TriggerSeen {
   /** 已消费的 cue id；有界，避免 localStorage 无限增长。 */
   cueIds: string[]
+  /** date/ambient 的稳定 occurrence 与最近触发时间；有界持久化。 */
+  occurrenceKeys: string[]
   lastActivityState: string | null
   lastSceneKind: 'rest' | 'out' | null
   sceneLoopActionId: string | null
@@ -58,12 +71,15 @@ export interface ReduceTriggersInput {
   manualBusy: boolean
   /** 自动触发的一次性动作尚未完成；true 时不恢复 loop、不消费后续事件。 */
   actionBusy?: boolean
+  /** 安静时段等运行配置由调用方注入，reducer 不读取全局设置。 */
+  config?: TriggerEngineConfig
   rng?: () => number
 }
 
 export function emptyTriggerSeen(): TriggerSeen {
   return {
     cueIds: [],
+    occurrenceKeys: [],
     lastActivityState: null,
     lastSceneKind: null,
     sceneLoopActionId: null,
@@ -87,6 +103,7 @@ function boundedSeen(values: readonly string[]): string[] {
 function cloneSeen(seen: TriggerSeen): TriggerSeen {
   return {
     cueIds: boundedSeen(seen?.cueIds ?? []),
+    occurrenceKeys: boundedSeen(seen?.occurrenceKeys ?? []),
     lastActivityState: typeof seen?.lastActivityState === 'string' ? seen.lastActivityState : null,
     lastSceneKind: seen?.lastSceneKind === 'rest' || seen?.lastSceneKind === 'out'
       ? seen.lastSceneKind
@@ -103,17 +120,113 @@ function rememberCue(seen: TriggerSeen, id: string): void {
   seen.cueIds = boundedSeen([...seen.cueIds, id])
 }
 
+function localDay(now: number): { monthDay: string; dayKey: string; minute: number } {
+  const date = new Date(now)
+  const year = String(date.getFullYear()).padStart(4, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return {
+    monthDay: `${month}-${day}`,
+    dayKey: `${year}-${month}-${day}`,
+    minute: date.getHours() * 60 + date.getMinutes(),
+  }
+}
+
+function inQuietHours(config: TriggerEngineConfig | undefined, minute: number): boolean {
+  const quiet = config?.quietHours
+  if (!quiet) return false
+  const start = quiet.startMinute
+  const end = quiet.endMinute
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return false
+  if (start < 0 || start > 1440 || end < 0 || end > 1440 || start === end) return false
+  return start < end
+    ? minute >= start && minute < end
+    : minute >= start || minute < end
+}
+
+function fireMarker(when: string, now: number): string {
+  return `fire|${when}|${Math.max(0, Math.trunc(now))}`
+}
+
+function dateMarker(when: string, dayKey: string): string {
+  return `date|${when}|${dayKey}`
+}
+
+function replaceMarker(seen: TriggerSeen, prefix: string, marker: string): void {
+  seen.occurrenceKeys = boundedSeen([
+    ...seen.occurrenceKeys.filter((key) => !key.startsWith(prefix)),
+    marker,
+  ])
+}
+
+function rememberFire(seen: TriggerSeen, when: string, now: number): void {
+  replaceMarker(seen, `fire|${when}|`, fireMarker(when, now))
+}
+
+function rememberDate(seen: TriggerSeen, when: string, dayKey: string): void {
+  replaceMarker(seen, `date|${when}|`, dateMarker(when, dayKey))
+}
+
+function hasDate(seen: TriggerSeen, when: string, dayKey: string): boolean {
+  return seen.occurrenceKeys.includes(dateMarker(when, dayKey))
+}
+
+function lastFiredAt(seen: TriggerSeen, when: string, now: number): number | null {
+  const prefix = `fire|${when}|`
+  let latest: number | null = null
+  for (const key of seen.occurrenceKeys) {
+    if (!key.startsWith(prefix)) continue
+    const timestamp = Number(key.slice(prefix.length))
+    if (!Number.isFinite(timestamp) || timestamp < 0 || timestamp > now) continue
+    if (latest === null || timestamp > latest) latest = timestamp
+  }
+  return latest
+}
+
+function triggerCooldownElapsed(trigger: TriggerDefinition, seen: TriggerSeen, now: number): boolean {
+  const gapSec = Number(trigger.minGapSec)
+  if (!Number.isFinite(gapSec) || gapSec <= 0) return true
+  const last = lastFiredAt(seen, trigger.when, now)
+  return last === null || now - last >= gapSec * 1000
+}
+
+interface SelectedAction {
+  trigger: TriggerDefinition
+  action: PlaybackAction
+}
+
 function selectAction(
   when: string,
   triggers: readonly TriggerDefinition[],
   actions: readonly PlaybackAction[],
   rng: () => number,
-): PlaybackAction | null {
+): SelectedAction | null {
   const trigger = triggers.find((entry) => entry?.when === when)
   if (!trigger) return null
   const actionId = pickTriggerAction(trigger, rng)
   if (actionId === null) return null
+  const action = actions.find((entry) => entry?.id === actionId)
+  return action ? { trigger, action } : null
+}
+
+function actionForTrigger(
+  trigger: TriggerDefinition,
+  actions: readonly PlaybackAction[],
+  rng: () => number,
+): PlaybackAction | null {
+  const actionId = pickTriggerAction(trigger, rng)
+  if (actionId === null) return null
   return actions.find((entry) => entry?.id === actionId) ?? null
+}
+
+function takeAction(
+  selected: SelectedAction | null,
+  seen: TriggerSeen,
+  now: number,
+): PlaybackAction | null {
+  if (selected === null || !triggerCooldownElapsed(selected.trigger, seen, now)) return null
+  rememberFire(seen, selected.trigger.when, now)
+  return selected.action
 }
 
 function cueWhen(kind: unknown): 'speak' | 'bili_replied' | null {
@@ -144,6 +257,7 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
   const rng = input.rng ?? Math.random
   const now = Number.isFinite(input.now) ? input.now : 0
   const ambientEligible = isAmbientState(input.state)
+  const local = localDay(now)
 
   // 任何非 ambient 状态都算一次离开空闲；提前返回也要重新武装下一次 ambient。
   if (!ambientEligible) seen.ambientConsumed = false
@@ -178,7 +292,9 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
 
     seen.ambientConsumed = false
     rememberCue(seen, id)
-    const action = when === null ? null : selectAction(when, input.triggers, input.actions, rng)
+    const action = when === null
+      ? null
+      : takeAction(selectAction(when, input.triggers, input.actions, rng), seen, now)
     if (action !== null) seen.sceneLoopActive = false
     return {
       steady,
@@ -199,7 +315,11 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     : null
 
   if (activityState === 'waiting' && seen.lastActivityState !== 'waiting') {
-    const action = selectAction('activity:waiting', input.triggers, input.actions, rng)
+    const action = takeAction(
+      selectAction('activity:waiting', input.triggers, input.actions, rng),
+      seen,
+      now,
+    )
     const shouldStop = action === null && seen.sceneLoopActive
     seen.lastActivityState = 'waiting'
     seen.sceneLoopActive = false
@@ -221,7 +341,7 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     const when = exiting
       ? `scene:${seen.lastSceneKind}:exit`
       : `scene:${sceneKind}:enter`
-    const action = selectAction(when, input.triggers, input.actions, rng)
+    const action = takeAction(selectAction(when, input.triggers, input.actions, rng), seen, now)
     const effect: TriggerActionEffect | undefined = action !== null
       ? {
           type: 'startAction',
@@ -254,7 +374,11 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     } else if (sceneKind !== null) {
       seen.lastActivityState = activityState
     } else {
-      const action = selectAction(`activity:${activityState}`, input.triggers, input.actions, rng)
+      const action = takeAction(
+        selectAction(`activity:${activityState}`, input.triggers, input.actions, rng),
+        seen,
+        now,
+      )
       seen.lastActivityState = activityState
       return {
         steady,
@@ -272,8 +396,11 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     && seen.sceneLoopActionId !== null
     && !seen.sceneLoopActive
   ) {
-    const action = seen.sceneLoopNeedsRevalidation
+    const selected = seen.sceneLoopNeedsRevalidation
       ? selectAction(`scene:${sceneKind}:enter`, input.triggers, input.actions, rng)
+      : null
+    const action = selected !== null
+      ? takeAction(selected, seen, now)
       : input.actions.find((entry) => entry.id === seen.sceneLoopActionId) ?? null
     seen.sceneLoopNeedsRevalidation = false
     if (action === null || !action.loop) {
@@ -290,10 +417,37 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     }
   }
 
+  if (ambientEligible && inQuietHours(input.config, local.minute)) return { steady, seen }
+
+  // 日期触发优先占用空闲拍；inAmbient 日期只在真正空闲时参与。
+  for (const trigger of input.triggers) {
+    if (!trigger.when.startsWith('date:') || trigger.when.slice('date:'.length) !== local.monthDay) {
+      continue
+    }
+    if (trigger.inAmbient && !ambientEligible) continue
+    if (hasDate(seen, trigger.when, local.dayKey)) continue
+
+    rememberDate(seen, trigger.when, local.dayKey)
+    if (ambientEligible) seen.ambientConsumed = true
+    if (!triggerCooldownElapsed(trigger, seen, now)) return { steady, seen }
+    const action = actionForTrigger(trigger, input.actions, rng)
+    if (action === null) return { steady, seen }
+    rememberFire(seen, trigger.when, now)
+    return {
+      steady,
+      seen,
+      action: { type: 'startAction', actionId: action.id, loop: false },
+    }
+  }
+
   if (!ambientEligible) return { steady, seen }
   if (!seen.ambientConsumed) {
+    const selected = selectAction('ambient', input.triggers, input.actions, rng)
+    if (selected !== null && !triggerCooldownElapsed(selected.trigger, seen, now)) {
+      return { steady, seen }
+    }
     seen.ambientConsumed = true
-    const action = selectAction('ambient', input.triggers, input.actions, rng)
+    const action = takeAction(selected, seen, now)
     if (action !== null) {
       return {
         steady,
