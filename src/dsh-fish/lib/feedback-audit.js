@@ -513,13 +513,14 @@ const FAILED_OR_UNCONFIRMED = new Set(['preview', 'unconfirmed', 'error', 'rejec
 const GATE_REJECTIONS = new Set([
   'at_window', 'at-window', 'mention_window', 'quota', 'allowance', 'frequency', 'rate',
 ])
-const DELIVERY_VERB = /(?:发到|发出(?:去)?|发送|发了|发过|送到|送出去|送达|传到|传过去|转达|转过去)/
+const DELIVERY_VERB = /(?:发给|发到|发出(?:去)?|发送|发了|发过|送到|送出去|送达|传到|传过去|转达|转过去)/
 const DELIVERY_COMPLETION = /(?:成功|完成|送达|好了|啦|了)(?:[^，。！？；\n]*)$/
 const ASSERTIVE_MARKER = /(?:已经|已|确实|真的)/
 const NON_ASSERTIVE_PREFIX = /^(?:要不要|该不该|是不是|是否|能不能|会不会|可不可以|有没有|别|不要|不用|没有?|尚未|还没|未|并未|不能|无法|没能|准备|打算|想|要|即将|马上|等下|等会儿|稍后|回头|如果|要是|假如|万一|可能|也许|大概|好像|似乎|应该|试试|试着)/
 const NON_ASSERTIVE_BEFORE_VERB = /(?:准备|打算|想(?:要)?|要|即将|马上|等下|等会儿|稍后|回头|如果|要是|假如|万一|可能|也许|大概|好像|似乎|应该|试试|试着)[^，。！？；\n]{0,8}(?:发|送|传|转)/
 const NEGATED_DELIVERY = /(?:没有?|尚未|还没|未|并未|不能|无法|没能|不|别|不要|不用)[^，。！？；\n]{0,8}(?:发|送|传|转)/
 const PARTIAL_OR_FAILED = /(?:一半|中途|途中|中断|没发完|未发完|正在|开始发|失败|没(?:有)?成功|未成功|不成功)/
+const IMMINENT_OR_STAGED = /(?:快(?:要|一点)?(?=发|送|传|转)|差一点|差点|几乎|险些|差不多|输入框|入框|输入里|草稿|打好了|写好了|填好了|填进|放在|停在|待发|准备发|正在发)/
 const QUESTION_TAIL = /(?:[?？]|吗|呢|吧|没有?|哪|怎么|为什么|为何)\s*$/
 
 function recordsOf(records) {
@@ -599,6 +600,7 @@ function claimsSuccess(reply) {
     if (QUESTION_TAIL.test(raw) || NON_ASSERTIVE_PREFIX.test(part)) continue
     if (NON_ASSERTIVE_BEFORE_VERB.test(part) || NEGATED_DELIVERY.test(part)) continue
     if (PARTIAL_OR_FAILED.test(part)) continue
+    if (IMMINENT_OR_STAGED.test(part)) continue
     if (DELIVERY_COMPLETION.test(part) || ASSERTIVE_MARKER.test(part)) return true
   }
   return false
