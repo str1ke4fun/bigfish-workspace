@@ -2,11 +2,11 @@
  * 每群主动额度：不等人 @，每天也能接几句。
  *
  * 语义（与 2026-11-12 设计一致）：
- *   - 只对 allowChats 里的群生效；生效额度 = proactiveChats[群] ?? proactivePerDay；
- *   - 范围 0..50，0 表示不主动；
+ *   - 只对 allowChats 里的群生效；生效软上限 = proactiveChats[群] ?? proactivePerDay；
+ *   - 软上限范围 0..50，0 表示不主动；超过软上限仍可发到 hardBreaker（默认 50）；
  *   - 被 @ 的窗口内、noMentionChats、以及没开 requireMention 时，都不消耗额度；
  *   - 状态按本地日期存 `{ day, used: { 群名: 条数 } }`，跨天清空；
- *   - 读不到 / 坏文件一律按「今天 0 条」处理，宁可少说，不绕过 @ 闸。
+ *   - 坏状态只让主动路径失败关闭，不绕过 @/免 @ 路径。
  *
  * 纯模块：所有判定不读写文件，读写只有 loadState / saveState 两个入口。
  */
@@ -15,6 +15,7 @@ import { dirname } from 'node:path'
 
 export const STATE_FILE = process.env.WX_PROACTIVE_STATE || '/home/str1k3/.dsh-wx/proactive.json'
 export const MAX_PER_DAY = 50
+export const DEFAULT_HARD_BREAKER = MAX_PER_DAY
 
 const pad = (n) => String(n).padStart(2, '0')
 
@@ -41,11 +42,15 @@ export function normalizeProactive(raw = {}) {
       if (name) chats[name] = parseQuota(v)
     }
   }
-  return { proactivePerDay: parseQuota(raw?.proactivePerDay), proactiveChats: chats }
+  const softLimit = parseQuota(raw?.proactivePerDay ?? raw?.softLimit)
+  const hardBreaker = raw?.hardBreaker === undefined
+    ? DEFAULT_HARD_BREAKER
+    : parseQuota(raw.hardBreaker)
+  return { proactivePerDay: softLimit, proactiveChats: chats, softLimit, hardBreaker }
 }
 
 /**
- * 这个群今天最多能主动说几条。请求别名上的覆盖优先，其次才是规范名覆盖和默认值；
+ * 这个群今天先按几条正常主动。请求别名上的覆盖优先，其次才是规范名覆盖和默认值；
  * 0 也是有效覆盖。额度记账仍由调用方放在规范键上，别让别名各记一份。
  */
 export function quotaFor(policy, chat, policyChat = chat) {
@@ -56,7 +61,19 @@ export function quotaFor(policy, chat, policyChat = chat) {
       if (Object.prototype.hasOwnProperty.call(map, key)) return parseQuota(map[key])
     }
   }
-  return parseQuota(policy?.proactivePerDay)
+  return parseQuota(policy?.proactivePerDay ?? policy?.softLimit)
+}
+
+/** 新接口名；旧 quotaFor 保留给既有调用和测试。 */
+export function softLimitFor(policy, chat, policyChat = chat) {
+  return quotaFor(policy, chat, policyChat)
+}
+
+/** 硬熔断是最后的防失控阈值；缺省沿用旧上限量级，坏值按 0 失败关闭。 */
+export function hardBreakerFor(policy) {
+  return policy?.hardBreaker === undefined
+    ? DEFAULT_HARD_BREAKER
+    : parseQuota(policy.hardBreaker)
 }
 
 const empty = (day, ok = true) => ({ ok, day, used: {} })
@@ -69,15 +86,17 @@ export function loadState(file = STATE_FILE, now = Date.now()) {
   const today = dateKey(now)
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8'))
-    if (!raw || typeof raw !== 'object' || raw.day !== today) return empty(today)
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty(today, false)
+    if (raw.day !== today) {
+      return typeof raw.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.day)
+        ? empty(today)
+        : empty(today, false)
+    }
+    if (!raw.used || typeof raw.used !== 'object' || Array.isArray(raw.used)) return empty(today, false)
     const used = {}
-    if (raw.used && typeof raw.used === 'object') {
-      for (const [k, v] of Object.entries(raw.used)) {
-        const n = Number(v)
-        if (k && Number.isFinite(n) && n > 0) used[k] = Math.floor(n)
-      }
-    } else if (raw.used !== undefined) {
-      return empty(today, false)
+    for (const [k, v] of Object.entries(raw.used)) {
+      if (!k || typeof v !== 'number' || !Number.isInteger(v) || v < 0) return empty(today, false)
+      if (v > 0) used[k] = v
     }
     return { ok: true, day: today, used }
   } catch (err) {
@@ -112,21 +131,41 @@ export function remaining(policy, state, chat, today = dateKey(), policyChat = c
   return Math.max(0, quotaFor(policy, chat, policyChat) - usedToday(state, chat, today))
 }
 
-/** 扣一条，返回新的 state 与剩余；额度为 0 / 状态不可信时原样返回。纯函数，不写盘。 */
+/** 扣一条，返回新的 state 与软额度剩余；显式 0、状态不可信或已到硬熔断时原样返回。 */
 export function consume(policy, state, chat, today = dateKey(), policyChat = chat) {
-  const left = remaining(policy, state, chat, today, policyChat)
-  if (left <= 0) return { state, left: 0 }
   const key = String(chat ?? '')
+  const prior = usedToday(state, key, today)
+  const softLimit = quotaFor(policy, key, policyChat)
+  const hardBreaker = hardBreakerFor(policy)
+  if (state?.ok === false || softLimit <= 0 || prior >= hardBreaker) {
+    return {
+      state,
+      left: 0,
+      used: prior,
+      softLimit,
+      hardBreaker,
+      overSoftLimit: softLimit > 0 && prior >= softLimit,
+      atHardBreaker: prior >= hardBreaker,
+    }
+  }
   const used = state?.day === today ? { ...state.used } : {}
   used[key] = usedToday(state, key, today) + 1
-  return { state: { ok: true, day: today, used }, left: left - 1 }
+  return {
+    state: { ok: true, day: today, used },
+    left: Math.max(0, softLimit - used[key]),
+    used: used[key],
+    softLimit,
+    hardBreaker,
+    overSoftLimit: used[key] > softLimit,
+    atHardBreaker: used[key] >= hardBreaker,
+  }
 }
 
 /**
  * 发送闸的纯判定：
  *   requireMention === false / exempt / @ 窗口内 → 放行且不主动；
  *   状态不可信 → 拒绝主动（@ 窗口/免 @ 仍放行）；
- *   否则有额度 → 放行且主动；没额度 → 拒绝（带上 @ 闸原来的原因）。
+ *   否则软上限内正常放行；超过软上限到硬熔断前放行并标记；到熔断才拒绝。
  */
 export function decideProactive({ policy, state, chat, policyChat = chat, mention, exempt, now = Date.now() }) {
   const today = dateKey(now)
@@ -137,7 +176,37 @@ export function decideProactive({ policy, state, chat, policyChat = chat, mentio
   if (state?.ok === false) {
     return { ok: false, proactive: false, left: 0, why: '主动额度状态读不出来' }
   }
+  const used = usedToday(state, chat, today)
+  const softLimit = quotaFor(policy, chat, policyChat)
+  const hardBreaker = hardBreakerFor(policy)
+  if (softLimit > 0 && used >= hardBreaker) {
+    return {
+      ok: false,
+      proactive: false,
+      left: 0,
+      used,
+      softLimit,
+      hardBreaker,
+      overSoftLimit: used >= softLimit,
+      atHardBreaker: true,
+      code: 'breaker',
+      why: '主动额度熔断',
+    }
+  }
   if (left <= 0) {
+    // 显式 0 仍是静音；只有原本就允许主动发言的群，才可能进入软上限后的放行区。
+    if (softLimit > 0) {
+      return {
+        ok: true,
+        proactive: true,
+        left: 0,
+        used,
+        softLimit,
+        hardBreaker,
+        overSoftLimit: true,
+        atHardBreaker: false,
+      }
+    }
     return { ok: false, proactive: false, left: 0, why: mention?.reason || '最近没人 @ 你' }
   }
   return { ok: true, proactive: true, left }

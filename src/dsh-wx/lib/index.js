@@ -147,7 +147,7 @@ function policy() {
       // @ 才回：开着的时候，只有最近被 @ 过的会话她才敢开口
       requireMention: raw.requireMention !== false,
       mentionWindowMinutes: parseWindowMinutes(raw.mentionWindowMinutes),
-      // 主动额度：没被 @ 时，每个群每天还能自己接几句；显式 0 = 这个群不主动
+      // 主动软上限 + 硬熔断；没被 @ 时显式 0 仍表示这个群不主动。
       ...normalizeProactive(raw),
       // 私聊/自己的文件传输这类：本来就等于在叫她，不受 @ 约束
       noMentionChats: Array.isArray(raw.noMentionChats) ? raw.noMentionChats.map((s) => String(s).trim()).filter(Boolean) : [],
@@ -169,7 +169,7 @@ function policy() {
   } catch {
     return {
       enabled: false, allowChats: [], watch: false, trigger: [], requireMention: true,
-      mentionWindowMinutes: 3, proactivePerDay: 0, proactiveChats: {}, noMentionChats: [],
+      mentionWindowMinutes: 3, proactivePerDay: 0, proactiveChats: {}, softLimit: 0, hardBreaker: 50, noMentionChats: [],
       ignoreChats: DEFAULT_IGNORE_CHATS,
       capture: captureSettings({}),
       stickerSearch: false,

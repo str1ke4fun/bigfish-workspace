@@ -14,8 +14,10 @@ const policy = {
   mentionWindowMinutes: 3,
   proactivePerDay: 0,
   proactiveChats: { 群A: 5 },
+  softLimit: 5,
+  hardBreaker: 12,
 }
-const state = { day: '2026-11-13', used: { 群A: 2 } }
+const state = { day: '2026-11-13', used: { 群A: 6 } }
 const short = channelRulesText(policy, { proactiveState: state, now: NOW })
 const expected = [
   '## 微信',
@@ -31,8 +33,8 @@ test('微信常驻段只保留设计里的五句现实规则', () => {
   assert.equal(short.split('\n').length, 6, '标题之外只有五行规则')
 })
 
-test('常驻段不报会话名单、额度、@ 分钟数或工具手册', () => {
-  for (const bad of ['群A', '私聊B', '剩 3/5', '3 分钟', 'wx_', 'dsh-wx', '白名单', '额度', '任务：']) {
+test('常驻段不报会话名单、软上限/硬熔断、@ 分钟数或工具手册', () => {
+  for (const bad of ['群A', '私聊B', '剩 3/5', '3 分钟', 'wx_', 'dsh-wx', '白名单', '额度', '软上限', '硬熔断', '12', '任务：']) {
     assert.doesNotMatch(short, new RegExp(bad.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   }
 })

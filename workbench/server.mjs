@@ -232,7 +232,10 @@ export function normalizeSpeechPolicy(raw = {}) {
 
 /** 主动额度的读写共用：body 缺省时保留 before；显式 0 是“这个群静音”，必须保留。 */
 export function normalizeWxProactive(body = {}, before = {}) {
-  const perDay = body.proactivePerDay === undefined ? before.proactivePerDay : body.proactivePerDay
+  const perDay = body.proactivePerDay === undefined
+    ? (body.softLimit === undefined ? (before.proactivePerDay ?? before.softLimit) : body.softLimit)
+    : body.proactivePerDay
+  const hardBreaker = body.hardBreaker === undefined ? before.hardBreaker : body.hardBreaker
   const src = body.proactiveChats === undefined ? (before.proactiveChats || {}) : body.proactiveChats
   const chats = {}
   if (src && typeof src === 'object') {
@@ -241,7 +244,59 @@ export function normalizeWxProactive(body = {}, before = {}) {
       if (name) chats[name] = clampNum(v, 0, 0, PROACTIVE_MAX)
     }
   }
-  return { proactivePerDay: clampNum(perDay, 0, 0, PROACTIVE_MAX), proactiveChats: chats }
+  return {
+    proactivePerDay: clampNum(perDay, 0, 0, PROACTIVE_MAX),
+    proactiveChats: chats,
+    hardBreaker: clampNum(hardBreaker, PROACTIVE_MAX, 0, PROACTIVE_MAX),
+  }
+}
+
+/** 工作台只读状态：主动发言先到软上限，硬熔断才是拒绝点。 */
+export function wxSpeakingState({
+  policy = {},
+  current = '',
+  lastMention = 0,
+  used = 0,
+  stateOk = true,
+  now = Date.now(),
+} = {}) {
+  if (!policy.enabled) return { ok: false, why: '「允许说话」关着，微信的工具全部拒绝' }
+  if (!current) return { ok: false, why: '微信没停在任何会话上（先点开一个）' }
+  if ((policy.noMentionChats || []).includes(current)) {
+    return { ok: true, why: `「${current}」在免 @ 白名单里（最高权限，随时能说）` }
+  }
+  if (!(policy.allowChats || []).includes(current)) {
+    return { ok: false, why: `「${current}」不在允许名单里` }
+  }
+  if (policy.requireMention === false) return { ok: true, why: '没开 @ 规则，现在能说' }
+
+  const last = Number(lastMention) || 0
+  const leftMin = Math.ceil((last + clampNum(policy.mentionWindowMinutes, 3, 1, 120) * 60_000 - now) / 60_000)
+  if (leftMin > 0) return { ok: true, why: `被 @ 的窗口还开着，能说（还剩 ${leftMin} 分钟）` }
+
+  const usedCount = Math.max(0, Math.round(Number(used) || 0))
+  const softLimit = clampNum(
+    policy.proactiveChats?.[current] ?? policy.proactivePerDay ?? policy.softLimit,
+    0,
+    0,
+    PROACTIVE_MAX,
+  )
+  const hardBreaker = clampNum(policy.hardBreaker, PROACTIVE_MAX, 0, PROACTIVE_MAX)
+  const mentionReason = last
+    ? `最近没人 @ 她（上一次是 ${Math.round((now - last) / 60_000)} 分钟前）`
+    : '最近没人 @ 她'
+  if (!stateOk) return { ok: false, why: '主动额度状态读不出来，先不主动开口' }
+  if (softLimit <= 0) return { ok: false, why: mentionReason }
+  if (usedCount >= hardBreaker) {
+    return { ok: false, why: `今天这个群已到主动发言硬熔断（${usedCount}/${hardBreaker} 条）` }
+  }
+  if (usedCount >= softLimit) {
+    return {
+      ok: true,
+      why: `最近没人 @，软上限到了但还没到硬熔断，能说（${usedCount}/${hardBreaker} 条）`,
+    }
+  }
+  return { ok: true, why: `最近没人 @，但今天这个群的主动额度还剩 ${softLimit - usedCount} 条，能说` }
 }
 
 async function speechPolicy() {
@@ -357,35 +412,45 @@ async function wxScope() {
   let mentions = {}
   try { mentions = JSON.parse(String(m.out).trim() || '{}') } catch { mentions = {} }
   const last = Number(mentions[current]) || 0
-  const leftMin = Math.ceil((last + policy.mentionWindowMinutes * 60_000 - Date.now()) / 60_000)
-  // 今天的主动额度：状态文件是 dsh-wx 写的，跨天或坏文件都按 0 条展示。
+  // 今天的主动额度：状态文件是 dsh-wx 写的；坏文件只关主动路径，@/免 @ 照常展示。
   const ps = await asHer(`cat ${H}/.dsh-wx/proactive.json 2>/dev/null || echo '{}'`)
   let pstate = {}
-  try { pstate = JSON.parse(String(ps.out).trim() || '{}') } catch { pstate = {} }
+  let proactiveStateOk = true
+  try {
+    pstate = JSON.parse(String(ps.out).trim() || '{}')
+    if (!pstate || typeof pstate !== 'object' || Array.isArray(pstate)) proactiveStateOk = false
+    if (pstate?.used !== undefined && (!pstate.used || typeof pstate.used !== 'object' || Array.isArray(pstate.used))) {
+      proactiveStateOk = false
+    }
+  } catch {
+    pstate = {}
+    proactiveStateOk = false
+  }
   const proactiveUsed = pstate?.day === localDateKey() && pstate.used && typeof pstate.used === 'object' ? { ...pstate.used } : {}
-  const quota = clampNum(policy.proactiveChats?.[current] ?? policy.proactivePerDay, 0, 0, PROACTIVE_MAX)
-  const leftProactive = Math.max(0, quota - (Number(proactiveUsed[current]) || 0))
-  const speaking = !policy.enabled
-    ? { ok: false, why: '「允许说话」关着，微信的工具全部拒绝' }
-    : !current
-      ? { ok: false, why: '微信没停在任何会话上（先点开一个）' }
-      : policy.noMentionChats.includes(current)
-        ? { ok: true, why: `「${current}」在免 @ 白名单里（最高权限，随时能说）` }
-        : !policy.allowChats.includes(current)
-          ? { ok: false, why: `「${current}」不在允许名单里` }
-          : policy.requireMention === false
-            ? { ok: true, why: '没开 @ 规则，现在能说' }
-            : leftMin > 0
-              ? { ok: true, why: `被 @ 的窗口还开着，能说（还剩 ${leftMin} 分钟）` }
-              : leftProactive > 0
-                ? { ok: true, why: `最近没人 @，但今天这个群的主动额度还剩 ${leftProactive} 条，能说` }
-                : { ok: false, why: last ? `最近没人 @ 她（上一次是 ${Math.round((Date.now() - last) / 60_000)} 分钟前）` : '最近没人 @ 她' }
+  const speaking = wxSpeakingState({
+    policy,
+    current,
+    lastMention: last,
+    used: proactiveUsed[current],
+    stateOk: proactiveStateOk,
+  })
   const h = await asHer(`cat ${H}/.dsh-wx/health.json 2>/dev/null || echo '{}'`)
   let health = {}
   try { health = JSON.parse(String(h.out).trim() || '{}') } catch { health = {} }
   // 名单里已经坏掉的名字：前端会挑出来提醒，并且不当成会话候选摆出来
   const garbled = [...new Set([...policy.allowChats, ...policy.noMentionChats, ...Object.keys(policy.proactiveChats || {})].filter(looksGarbled))]
-  return { ok: r.ok && readOk, policy, labels: [...new Set(chats)].slice(0, 80), current, health, speaking, garbled, proactiveUsed, err: r.err }
+  return {
+    ok: r.ok && readOk,
+    policy,
+    labels: [...new Set(chats)].slice(0, 80),
+    current,
+    health,
+    speaking,
+    garbled,
+    proactiveUsed,
+    proactiveStateOk,
+    err: r.err,
+  }
 }
 
 /** 名字坏了：编码丢字时每个汉字会变成一个 "?"（或 U+FFFD）。真会话名里几乎不会出现连着的问号。 */

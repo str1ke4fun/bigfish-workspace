@@ -71,6 +71,7 @@ function build(root, ctx) {
   SPEC.wxMention = el('input', { type: 'checkbox' })
   SPEC.wxWindow = el('input', { type: 'number', min: '1', step: '1' })
   SPEC.wxPerDay = el('input', { type: 'number', min: '0', max: '50', step: '1' })
+  SPEC.wxBreaker = el('input', { type: 'number', min: '0', max: '50', step: '1' })
   SPEC.wxProactive = el('div', { class: 'chips' })
   SPEC.wxNow = el('div', { class: 'meta' })
   SPEC.wxSave = el('button', { class: 'primary small', type: 'button', text: '保存', onclick: () => saveScope() })
@@ -80,8 +81,10 @@ function build(root, ctx) {
     el('div', { class: 'meta', text: '可以开口的会话' }), SPEC.wxAllow,
     el('div', { class: 'meta', text: '不用 @ 的会话' }), SPEC.wxNoMention,
     el('label', { class: 'field' },
-      el('span', { class: 'meta', text: '主动额度：默认每天几条（0 = 不主动）' }), SPEC.wxPerDay),
-    el('div', { class: 'meta', text: '按群覆盖（留空 = 用默认；填 0 = 这个群不主动）' }), SPEC.wxProactive,
+      el('span', { class: 'meta', text: '主动软上限：默认每天几条（0 = 不主动；超出后仍可说到硬熔断）' }), SPEC.wxPerDay),
+    el('div', { class: 'meta', text: '按群软上限（留空 = 用默认；填 0 = 这个群不主动）' }), SPEC.wxProactive,
+    el('label', { class: 'field' },
+      el('span', { class: 'meta', text: '硬熔断：每群每天最多几条（失控保护，0 = 不主动）' }), SPEC.wxBreaker),
     el('label', { class: 'chk' }, SPEC.wxMention, el('span', { text: '@ 才回' })),
     el('label', { class: 'field' }, el('span', { class: 'meta', text: '@ 的有效窗口（分钟）' }), SPEC.wxWindow),
     SPEC.wxNow,
@@ -346,6 +349,7 @@ function renderScopeNow(s) {
   SPEC.wxMention.checked = p.requireMention !== false
   SPEC.wxWindow.value = p.mentionWindowMinutes ?? 3
   SPEC.wxPerDay.value = p.proactivePerDay ?? 0
+  SPEC.wxBreaker.value = p.hardBreaker ?? 50
   renderProactiveChats(p)
 
   const sp = s.speaking
@@ -384,6 +388,7 @@ async function saveScope() {
       noMentionChats: picked(SPEC.wxNoMention),
       proactivePerDay: Number(SPEC.wxPerDay.value),
       proactiveChats: proactiveChatsFromDom(),
+      hardBreaker: Number(SPEC.wxBreaker.value),
     }),
   })
   const d = r.data || {}

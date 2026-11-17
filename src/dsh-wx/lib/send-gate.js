@@ -108,6 +108,17 @@ export function createSendGate({
       policy: p, state, chat: sendKeys.quota, policyChat: hit, mention: verdict, exempt, now: now(),
     })
     if (!dec.ok) {
+      if (dec.code === 'breaker') {
+        logInbound({
+          type: 'proactive-breaker',
+          chat: sendKeys.quota,
+          used: dec.used,
+          softLimit: dec.softLimit,
+          hardBreaker: dec.hardBreaker,
+          overSoftLimit: dec.overSoftLimit === true,
+          atHardBreaker: dec.atHardBreaker === true,
+        })
+      }
       if (dec.why === '主动额度状态读不出来') {
         throw new WxToolError(
           'WX_PROACTIVE_STATE',
@@ -123,6 +134,11 @@ export function createSendGate({
     }
 
     let left = dec.left
+    let proactiveOverSoftLimit = dec.overSoftLimit === true
+    let proactiveAtHardBreaker = dec.atHardBreaker === true
+    let proactiveUsed = dec.used
+    let proactiveSoftLimit = dec.softLimit
+    let proactiveHardBreaker = dec.hardBreaker
     if (dec.proactive && consume) {
       // 一次发送只在这里扣一次：前面的 gateSend 都只是检查，避免一道闸扣三次额度。
       // 记不下来就不发：否则每轮都读到“今天用了 0 条”，额度等于无限。
@@ -135,8 +151,30 @@ export function createSendGate({
         )
       }
       left = next.left
-      logInbound({ type: 'proactive-send', chat: sendKeys.quota, remaining: left })
+      proactiveOverSoftLimit = next.overSoftLimit === true
+      proactiveAtHardBreaker = next.atHardBreaker === true
+      proactiveUsed = next.used
+      proactiveSoftLimit = next.softLimit
+      proactiveHardBreaker = next.hardBreaker
+      logInbound({
+        type: 'proactive-send',
+        chat: sendKeys.quota,
+        remaining: left,
+        used: proactiveUsed,
+        softLimit: proactiveSoftLimit,
+        hardBreaker: proactiveHardBreaker,
+        overSoftLimit: proactiveOverSoftLimit,
+        atHardBreaker: proactiveAtHardBreaker,
+      })
     }
-    return { chat: hit, account: sendKeys.quota, snap: s, proactive: dec.proactive, proactiveLeft: left }
+    return {
+      chat: hit,
+      account: sendKeys.quota,
+      snap: s,
+      proactive: dec.proactive,
+      proactiveLeft: left,
+      proactiveOverSoftLimit,
+      proactiveAtHardBreaker,
+    }
   }
 }

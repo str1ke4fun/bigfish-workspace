@@ -88,6 +88,7 @@ test('同一规范会话的两个别名共用 proactivePerDay 额度', async () 
     mentionWindowMinutes: 3,
     proactivePerDay: 1,
     proactiveChats: {},
+    hardBreaker: 1,
   }
   let state = { ok: true, day: dateKey(now), used: {} }
   const gate = createSendGate({
@@ -168,6 +169,97 @@ test('两个别名生成同一组规范额度/频率键', () => {
     resolveSendKeys({ chat: '别名二', canonicalChat: '规范群', chatId: 'c_canonical' }),
     { quota: '规范群', speech: 'c_canonical' },
   )
+})
+
+test('发送闸：软上限后的主动发送放行，并在台账留下分层数字', async () => {
+  const now = Date.now()
+  const sendPolicy = {
+    enabled: true,
+    allowChats: ['群A'],
+    noMentionChats: [],
+    requireMention: true,
+    mentionWindowMinutes: 3,
+    proactivePerDay: 2,
+    proactiveChats: {},
+    hardBreaker: 4,
+  }
+  let state = { ok: true, day: dateKey(now), used: { 群A: 2 } }
+  const logged = []
+  const gate = createSendGate({
+    policy: () => sendPolicy,
+    hostBlocksSend: () => false,
+    look: async () => ({ parsed: { ok: true, current: '群A', chats: [], messages: [] } }),
+    isStale: () => false,
+    staleDetail: () => '',
+    allowedCurrent,
+    sameName,
+    canSpeak: () => ({ ok: false, reason: '最近没人 @ 你' }),
+    readMentions: () => ({}),
+    loadState: () => state,
+    decideProactive,
+    consumeProactive,
+    saveState: (next) => { state = next; return true },
+    logInbound: (entry) => logged.push(entry),
+    now: () => now,
+  })
+
+  const result = await gate({ consume: true, target: { chat: '群A', canonicalChat: '群A', chatId: 'c_group_a' } })
+  assert.equal(result.proactive, true)
+  assert.equal(result.proactiveOverSoftLimit, true)
+  assert.equal(state.used['群A'], 3)
+  assert.equal(logged.length, 1)
+  assert.equal(logged[0].type, 'proactive-send')
+  assert.equal(logged[0].chat, '群A')
+  assert.equal(logged[0].used, 3)
+  assert.equal(logged[0].softLimit, 2)
+  assert.equal(logged[0].hardBreaker, 4)
+  assert.equal(logged[0].overSoftLimit, true)
+  assert.equal(logged[0].atHardBreaker, false)
+})
+
+test('发送闸：硬熔断拒绝时留下完整数字，软上限本身不再拦', async () => {
+  const now = Date.now()
+  const sendPolicy = {
+    enabled: true,
+    allowChats: ['群A'],
+    noMentionChats: [],
+    requireMention: true,
+    mentionWindowMinutes: 3,
+    proactivePerDay: 2,
+    proactiveChats: {},
+    hardBreaker: 4,
+  }
+  const logged = []
+  const gate = createSendGate({
+    policy: () => sendPolicy,
+    hostBlocksSend: () => false,
+    look: async () => ({ parsed: { ok: true, current: '群A', chats: [], messages: [] } }),
+    isStale: () => false,
+    staleDetail: () => '',
+    allowedCurrent,
+    sameName,
+    canSpeak: () => ({ ok: false, reason: '最近没人 @ 你' }),
+    readMentions: () => ({}),
+    loadState: () => ({ ok: true, day: dateKey(now), used: { 群A: 4 } }),
+    decideProactive,
+    consumeProactive,
+    saveState: () => true,
+    logInbound: (entry) => logged.push(entry),
+    now: () => now,
+  })
+
+  await assert.rejects(
+    () => gate({ consume: true, target: { chat: '群A', canonicalChat: '群A', chatId: 'c_group_a' } }),
+    (error) => parseWxToolError(error.message)?.code === 'WX_PROACTIVE_LIMIT',
+  )
+  assert.equal(logged.length, 1)
+  assert.equal(logged[0].type, 'proactive-breaker')
+  assert.equal(logged[0].chat, '群A')
+  assert.equal(logged[0].used, 4)
+  assert.equal(logged[0].softLimit, 2)
+  assert.equal(logged[0].hardBreaker, 4)
+  assert.equal(logged[0].overSoftLimit, true)
+  assert.equal(logged[0].atHardBreaker, true)
 })
 
 test('wx_send 工具级集成：绑定、别名回滚、回执与三个确认态', async () => {

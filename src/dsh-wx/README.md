@@ -20,6 +20,7 @@ node --test
   "noMentionChats": [],
   "proactivePerDay": 0,
   "proactiveChats": { "测试群A": 5 },
+  "hardBreaker": 50,
   "implicitTaskBinding": true,
   "overdueVisibility": true,
   "mechanicalReminderDelivery": true,
@@ -41,7 +42,7 @@ node --test
   `微信团队`、`微信ClawBot`、`微信支付`、`服务通知`。名字按去空白、ASCII 小写后精确比较，不做前缀或包含匹配。旧台账记录留在盘上，只是不再出现在预览流和 `wx_history` 列表里。
 - `capture`：采集参数。`preview` / `rotate` 只有显式 `false` 才关闭；数值越界会被限制在允许范围内，读不出数字时用缺省值。`chatCooldownSec` 是同一会话两次轮转采集的最小间隔。`queueMax` / `chatCooldownSec` 在采集队列首次创建时读取，改完配置需要重启服务才生效。
 - `allowChats`：允许发送的会话；`noMentionChats`：免 @ 的私聊/文件传输会话。两者仍是发送与叫醒的门槛，和采集开关相互独立。
-- `proactivePerDay` / `proactiveChats`：主动额度。没被 @ 时，`allowChats` 里的群每天还能自己接几句；生效额度 = `proactiveChats[群名] ?? proactivePerDay`，范围 0–50，0 表示不主动。只对 `allowChats` 生效；被 @ 的窗口内和 `noMentionChats` 不消耗额度。当天已用条数记在 `~/.dsh-wx/proactive.json`，跨天清空，坏文件按 0 条处理。
+- `proactivePerDay` / `proactiveChats`：主动软上限。没被 @ 时，`allowChats` 里的群每天先按这个数正常开口；生效软上限 = `proactiveChats[群名] ?? proactivePerDay`，范围 0–50，0 表示这个群不主动。只对 `allowChats` 生效；被 @ 的窗口内和 `noMentionChats` 不消耗额度。兼容读取 `softLimit` 作为 `proactivePerDay` 的别名。`hardBreaker` 是每群每天的高位熔断，默认 50，范围 0–50；软上限用完但未到熔断时仍可主动开口，超出软上限的发送会在 `inbound.jsonl` 的 `proactive-send` 记录里标记 `overSoftLimit`，熔断拒绝记为 `proactive-breaker`。当天已用条数仍只写在原来的 `~/.dsh-wx/proactive.json` 的 `{ day, used }` 形状里，跨天清空；坏状态不会放行主动发言，只影响主动路径，@/免 @ 路径保持原规则。
 - `implicitTaskBinding`：默认开。`wx_send` 只在会话名能唯一解析到目录里的 exact / resolved 目标时，自动挂到该会话的唯一活动任务；显式 `task_id` 仍优先，设为 `false` 可只走旧调用。
 - `overdueVisibility`：默认开。第三次逾期提醒在任务板里与最终 block 一起落盘，并让工作台显示只读的待回/逾期/人工处理摘要；设为 `false` 会隐藏摘要接口、状态和卡片，并回到旧的“提醒后由调用方 block”路径。改完立即生效，不需要重启。
 - `mechanicalReminderDelivery`：默认开。新提醒写进只追加的 `~/.dsh-wx/reminder-jobs.jsonl`，由核心 schedule tick 领取并直接走一次性许可发送，不再起一轮模型对话；按下 Return 后无论确认、未确认还是异常都不重发。成功、未确认、失败和未知都在下一次唤醒给一句不含会话、原文或 permit 的世界声。设为 `false` 会回到旧宿主 schedule 路径，已有机械任务留在盘上暂停领取。
