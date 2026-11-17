@@ -61,6 +61,8 @@ import {
   projectWxOcr,
   projectWxPeek,
   projectWxSend,
+  projectWxTaskDone,
+  projectWxTaskSnooze,
   shouldBookWxSend,
 } from './project.js'
 
@@ -326,9 +328,10 @@ export function channelRulesText(_policy = null) {
   ].join('\n')
 }
 
-const requesterName = (who) => (
-  who?.name && who.confidence !== 'low' && who.confidence !== 'medium' ? String(who.name) : '有人'
-)
+const requesterName = (who) => {
+  const confidence = String(who?.confidence ?? 'unknown').toLowerCase()
+  return who?.name && confidence !== 'low' && confidence !== 'unknown' ? String(who.name) : '有人'
+}
 
 const earPreview = (preview, who) => {
   let text = String(preview ?? '')
@@ -2569,7 +2572,7 @@ export function apply(ctx, config = {}) {
       const minutes = Math.max(1, Math.min(24 * 60, Number(a.minutes) || 15))
       const r = contextStore.snooze({ taskId, minutes })
       if (!r?.ok) throw new Error(r?.why || '任务没记上。')
-      return `任务「${taskId}」推迟 ${minutes} 分钟，到点再提醒。`
+      return projectWxTaskSnooze()
     },
   })
 
@@ -2593,7 +2596,7 @@ export function apply(ctx, config = {}) {
       if (!taskId) throw new Error('wx_task_done: 需要 task_id。')
       const r = contextStore.done({ taskId, note: String(a.note ?? '') })
       if (!r?.ok) throw new Error(r?.why || '任务没记上。')
-      return `任务「${taskId}」已完成。`
+      return projectWxTaskDone()
     },
   })
 

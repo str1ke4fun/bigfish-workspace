@@ -274,6 +274,13 @@ const confidenceText = (doc) => {
   return '低'
 }
 
+const worldSpeaker = (doc) => {
+  if (doc?.direction === 'out') return '你'
+  const confidence = String(doc?.senderConfidence ?? 'unknown').toLowerCase()
+  if (!doc?.sender || confidence === 'low' || confidence === 'unknown') return '看不出是谁'
+  return String(doc.sender)
+}
+
 const cut = (text, max) => {
   const chars = [...String(text ?? '')]
   return chars.length <= max ? chars.join('') : chars.slice(0, max).join('') + '…'
@@ -307,7 +314,7 @@ export function formatCards(hits, {
     // L2 摘要不是原文，也不是某个人的发言：来源和说话人都要标清楚，别冒充台账里的原话。
     const isSummary = doc.kind === 'summary' || doc.source === 'summary'
     if (world) {
-      const who = isSummary ? '那天的一段摘要' : (doc.direction === 'out' ? '你' : (doc.sender || '看不出是谁'))
+      const who = isSummary ? '那天的一段摘要' : worldSpeaker(doc)
       const line = `${who}（${worldTimeText(doc.at, now)}）：${cut(body, CARD_TEXT_MAX)}`
       const size = [...line].length
       if (cards.length > 0 && used + size > budget) break

@@ -11,6 +11,8 @@ import {
   projectWxOcr,
   projectWxPeek,
   projectWxSend,
+  projectWxTaskDone,
+  projectWxTaskSnooze,
   shouldBookWxSend,
 } from '../lib/project.js'
 import { formatCards } from '../lib/retrieval.js'
@@ -94,6 +96,17 @@ test('只有 confirmed 才写成功回执或自动记任务', () => {
   assert.equal(shouldBookWxSend('anything-else'), false)
 })
 
+test('wx_task_snooze / wx_task_done 的状态句不带内部任务号', () => {
+  assert.equal(projectWxTaskSnooze(), '[先搁一会儿]')
+  assert.equal(projectWxTaskDone(), '[这件事放下了]')
+  for (const text of [projectWxTaskSnooze(), projectWxTaskDone()]) {
+    assert.doesNotMatch(text, /任务|taskId|task_id|t_/)
+  }
+  const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  assert.match(src, /return projectWxTaskSnooze\(\)/)
+  assert.match(src, /return projectWxTaskDone\(\)/)
+})
+
 test('wx_context 投影改成翻到几段原话，不带匹配原因/来源/置信度/msgId', () => {
   const raw = [
     '[上下文 1/2] 晚上吃什么｜阿明｜2026-11-09 12:30',
@@ -151,6 +164,43 @@ test('wx_context 的内部检索卡也能直接生成世界声', () => {
     shown: 0,
     dropped: 0,
   })
+})
+
+test('wx_context 的低置信发言人不能写成确定的人', () => {
+  const out = formatCards([{
+    doc: {
+      chatName: '测试群A', sender: '阿明', senderConfidence: 'low',
+      text: '在吗', at: '2026-11-09 12:00',
+    },
+    score: 1,
+    reasons: ['关键词'],
+  }], { world: true, now: Date.parse('2026-11-09T12:30:00') })
+  assert.equal(out.text, [
+    '[翻到] 「测试群A」里相关的 1 条：',
+    '看不出是谁（今天 12:00）：在吗',
+  ].join('\n'))
+})
+
+test('wx_context 的旧卡片也遵守低置信发言人', () => {
+  const raw = [
+    '[上下文 1/1] 测试群A｜阿明｜2026-11-09 12:00',
+    '「在吗」',
+    '匹配：关键词；来源：台账 msg_1；置信度：low',
+  ].join('\n')
+  assert.equal(projectWxContext(raw), [
+    '[翻到] 「测试群A」里相关的 1 条：',
+    '看不出是谁（2026-11-09 12:00）：在吗',
+  ].join('\n'))
+})
+
+test('wx_context 的多行原话原样穿过世界声投影', () => {
+  const world = [
+    '[翻到] 「测试群A」里相关的 2 条：',
+    '阿明（今天 12:00）：晚上来吗',
+    '后面这句也是同一条原话',
+    '你（今天 12:01）：看情况',
+  ].join('\n')
+  assert.equal(projectWxContext(world), world)
 })
 
 test('wx_ocr 投影只保留可读文字，不返回 JSON 字段', () => {

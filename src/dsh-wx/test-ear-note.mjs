@@ -16,7 +16,7 @@ const note = formatEarNote(
   {
     requester: new Map([
       ['某个猫', { name: '阿明', confidence: 'low' }],
-      ['测试群A', { name: '李四', confidence: 'high' }],
+      ['测试群A', { name: '李四', confidence: 'medium' }],
     ]),
     recent: new Map([
       ['某个猫', ['台账里不该出现的一行']],
@@ -53,7 +53,7 @@ assert.equal(formatEarNote([{ chat: 'x', preview: '在吗', why: 'exempt' }], []
 const overdue = formatOverdueNote({
   chatName: '测试群A',
   taskId: 't_overdue',
-  requester: { name: '阿明' },
+  requester: { name: '阿明', confidence: 'medium' },
   reason: '@',
   lastText: '阿明: @大肥鱼 晚上来吗',
 }, 2)

@@ -39,6 +39,14 @@ export function projectWxSend({ chat = '', sent = 'unconfirmed' } = {}) {
   return '[按下去了，没看见落下去。可能出去了，也可能没有]'
 }
 
+export function projectWxTaskSnooze() {
+  return '[先搁一会儿]'
+}
+
+export function projectWxTaskDone() {
+  return '[这件事放下了]'
+}
+
 /** 按字符截断（中文一个字算一个），尾部标明截断。 */
 function cut(text, limit) {
   const chars = [...String(text ?? '')]
@@ -70,7 +78,9 @@ export function clipPeekBody(text, tail = '', limit = PEEK_LIMIT) {
  * wx_context：每条引用卡片第三行是「匹配：…；来源：台账 msg_1；置信度：…」。
  * 这些是给维护者看的检索元数据，模型只需要原文和发言人，整行去掉。
  */
-const cleanParty = (value) => {
+const cleanParty = (value, confidence = 'unknown') => {
+  const certainty = String(confidence ?? 'unknown').toLowerCase()
+  if (!certainty || certainty === 'low' || certainty === 'unknown' || certainty === '低') return '看不出是谁'
   const who = String(value ?? '').trim()
   if (!who) return '看不出是谁'
   if (/^大肥鱼(?:（发出）)?$/.test(who)) return '你'
@@ -107,10 +117,12 @@ export function projectWxContext(raw) {
   const cards = []
   let current = null
   for (const line of text.split('\n')) {
+    const confidence = line.match(/置信度\s*[：:]\s*(high|medium|low|unknown|高|中|低)/i)
+    if (confidence && current) current.confidence = confidence[1]
     if (CONTEXT_META.test(line)) continue
     const header = line.match(/^\[上下文\s+\d+\/\d+\]\s*(.*?)\s*[｜|]\s*(.*?)\s*[｜]\s*(.*)$/)
     if (header) {
-      current = { chat: header[1].trim(), who: header[2].trim(), at: header[3].trim(), text: '' }
+      current = { chat: header[1].trim(), who: header[2].trim(), at: header[3].trim(), text: '', confidence: 'unknown' }
       cards.push(current)
       continue
     }
@@ -125,7 +137,7 @@ export function projectWxContext(raw) {
     const lines = [`[翻到] 「${chat}」里相关的 ${cards.length} 条：`]
     for (const card of cards) {
       if (!card.text) continue
-      lines.push(`${cleanParty(card.who)}（${cleanClock(card.at)}）：${card.text}`)
+      lines.push(`${cleanParty(card.who, card.confidence)}（${cleanClock(card.at)}）：${card.text}`)
     }
     return lines.join('\n')
   }
