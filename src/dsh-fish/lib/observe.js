@@ -890,7 +890,10 @@ export function registerObserve(ctx, deps = {}) {
     ['/pet/state', async (req, res) => {
       const pet = deps.petView
       if (!pet?.snapshot) return send(res, 200, { ok: false, note: '桌宠状态没在跑。' })
-      pet.markPolled?.()
+      // `at` 是这份状态快照的生成时刻，不是响应完成时刻。先读时钟再同步取快照，
+      // 后续 await config 期间发生的 /pet/rest 必须晚于 at，renderer 才能拒绝旧快照。
+      const at = Date.now()
+      pet.markPolled?.(at)
       const s = pet.snapshot()
       const raw = deps.screen?.status?.() ?? null
       const presence = raw ? {
@@ -898,7 +901,6 @@ export function registerObserve(ctx, deps = {}) {
         snapshot: raw.snapshot ?? null, recent: Array.isArray(raw.recent) ? raw.recent : [],
       } : null
       const cfg = await (ctx.get?.('fishCore')?.config?.get?.() ?? null)
-      const at = Date.now()
       return send(res, 200, {
         at,
         presence,

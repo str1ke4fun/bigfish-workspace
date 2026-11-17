@@ -20,6 +20,7 @@ import {
   emptyPetSeen,
   interruptSceneLoop,
   isPetDragGesture,
+  manualRestPlaybackSource,
   manualMotionLeaseBusy,
   noteManualMotionChange,
   parsePetSeen,
@@ -588,6 +589,70 @@ test('manual sleep/wake 标记对应 scene 已消费，不再次触发 scene tra
   })
   assert.equal(woke.action, undefined)
   assert.equal(woke.seen.lastSceneKind, null)
+})
+
+test('手动睡觉的循环 seq 作为可恢复 scene owner，cue 覆盖后恢复同一 loop', () => {
+  const sleepAction: PlaybackAction = {
+    id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息',
+  }
+  const cueAction: PlaybackAction = {
+    id: 'talk', label: '说一句', anim: 'talk-file', loop: false, group: '回应',
+  }
+  const restScene = { kind: 'rest' as const, at: 20 }
+  const triggers = [
+    trigger('scene:rest:enter', [sleepAction.id]),
+    trigger('speak', [cueAction.id]),
+  ]
+
+  const sleptSeen = applyManualRestIntent(emptyPetSeen(), 'sleep', sleepAction.id, restScene, true)
+  assert.equal(sleptSeen.lastSceneKind, 'rest')
+  assert.equal(sleptSeen.sceneLoopActionId, sleepAction.id)
+  assert.equal(sleptSeen.sceneLoopActive, true)
+
+  const intro = reducePlayback(null, { type: 'startAction', actionId: sleepAction.id }, {
+    actions: [sleepAction], steady: 'idle', now: 30,
+  }).state
+  assert.equal(intro.status, 'playing-seq')
+  // The intro section of a looping sequence belongs to the scene, not a generic manual lease.
+  assert.deepEqual(triggerPlaybackBusy(intro, 'scene'), { manualBusy: false, actionBusy: false })
+
+  const cuedState = petState({
+    scene: restScene,
+    cues: [{ id: 'cue-rest', kind: 'speak', text: '睡着也应听见', at: 31, ttlMs: 15_000 }],
+  })
+  const cued = reduceTriggers({
+    state: cuedState,
+    triggers,
+    actions: [sleepAction, cueAction],
+    seen: sleptSeen,
+    now: 32,
+    manualBusy: false,
+  })
+  assert.deepEqual(cued.action, { type: 'startAction', actionId: cueAction.id, loop: false })
+  assert.deepEqual(cued.bubble, { id: 'cue-rest', text: '睡着也应听见' })
+  assert.equal(cued.seen.sceneLoopActionId, sleepAction.id)
+  assert.equal(cued.seen.sceneLoopActive, false)
+
+  const resumed = reduceTriggers({
+    state: cuedState,
+    triggers,
+    actions: [sleepAction, cueAction],
+    seen: cued.seen,
+    now: 33,
+    manualBusy: false,
+  })
+  assert.deepEqual(resumed.action, { type: 'startAction', actionId: sleepAction.id, loop: true })
+  assert.equal(resumed.seen.sceneLoopActionId, sleepAction.id)
+  assert.equal(resumed.seen.sceneLoopActive, true)
+})
+
+test('循环手动睡觉归入 scene 播放源，普通手动动作仍占用 manual 闸', () => {
+  const rest = { kind: 'rest' as const, at: 20 }
+
+  assert.equal(manualRestPlaybackSource('sleep', true, rest), 'scene')
+  assert.equal(manualRestPlaybackSource('sleep', false, rest), 'manual')
+  assert.equal(manualRestPlaybackSource('wake', false, null), 'manual')
+  assert.equal(manualRestPlaybackSource('sleep', true, null), 'manual')
 })
 
 test('出门时手动睡觉保留服务端返回的 out scene，不伪造 rest 退出', () => {

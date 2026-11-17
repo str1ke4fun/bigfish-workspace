@@ -33,6 +33,7 @@ function fakeCtx() {
   return {
     routes,
     cfg,
+    fishCore,
     get: (k) => (k === 'connection' ? cfg.connection : k === 'webServer' ? webServer : k === 'fishCore' ? fishCore : undefined),
     webServer,
     tools: { register: () => {} },
@@ -198,6 +199,36 @@ test('/pet/rest 只把用户显式操作写进易失 scene，不写事件流', a
   assert.equal(invalid.body.ok, false)
   assert.equal((await callRoute(ctx.routes, '/pet/rest', 'GET')).status, 405)
   assert.equal(existsSync(join(root, 'events.jsonl')), false)
+})
+
+test('/pet/state 的顶层 at 跟随 snapshot 时刻，不因等待 config 而跨过之后的 rest 操作', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 500 })
+  let releaseConfig
+  let markConfigStarted
+  const configStarted = new Promise((resolve) => { markConfigStarted = resolve })
+  const configGate = new Promise((resolve) => { releaseConfig = resolve })
+  ctx.fishCore.config.get = async () => {
+    markConfigStarted()
+    await configGate
+    return {}
+  }
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const pending = callRoute(ctx.routes, '/pet/state', 'GET')
+  await configStarted
+  const restAt = Date.now()
+  petView.setRestOverride('sleep')
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  releaseConfig()
+
+  const state = await pending
+  assert.equal(state.status, 200)
+  // This response captured the pre-rest state. Its top-level timestamp must stay pre-rest so
+  // the renderer's manual-intent floor rejects it when the POST /pet/rest response arrives.
+  assert.equal(state.body.scene, null)
+  assert.ok(state.body.at <= restAt, `state.at=${state.body.at} restAt=${restAt}`)
 })
 
 test('hello / config / rotate 三条新路由', async () => {

@@ -32,6 +32,7 @@ import {
   interruptSceneLoop,
   isPetDragGesture,
   legacySeen,
+  manualRestPlaybackSource,
   manualMotionLeaseBusy,
   mergePetSeen,
   noteManualMotionChange,
@@ -701,12 +702,26 @@ export function App() {
           const scene = message.scene === undefined
             ? message.rest === 'sleep' ? 'rest' : null
             : message.scene
+          const restAction = actionCatalogRef.current.find((action) => action.id === message.value)
+          const playbackSource = manualRestPlaybackSource(
+            message.rest,
+            restAction?.loop === true,
+            scene,
+          )
           const seen = seenRef.current ?? emptyPetSeen()
-          seenRef.current = applyManualRestIntent(seen, message.rest, message.value, scene)
+          seenRef.current = applyManualRestIntent(
+            seen,
+            message.rest,
+            message.value,
+            scene,
+            playbackSource === 'scene',
+          )
           saveSeen(seenRef.current)
+          playbackSourceRef.current = playbackSource
+        } else {
+          playbackSourceRef.current = 'manual'
         }
         manualMotionLeaseRef.current = null
-        playbackSourceRef.current = 'manual'
         dispatchPlayback({ type: 'startAction', actionId: message.value })
       })
     } catch {

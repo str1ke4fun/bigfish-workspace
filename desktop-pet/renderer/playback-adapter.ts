@@ -201,21 +201,36 @@ function manualRestSceneKind(scene: ManualRestScene): 'rest' | 'out' | null {
   return scene?.kind ?? null
 }
 
+/** 循环睡觉动作属于当前 scene；其他休息动作仍是普通手动动作。 */
+export function manualRestPlaybackSource(
+  action: 'sleep' | 'wake',
+  loops: boolean,
+  scene: ManualRestScene,
+): PlaybackSource {
+  return action === 'sleep' && loops && manualRestSceneKind(scene) !== null
+    ? 'scene'
+    : 'manual'
+}
+
 /** 菜单 sleep/wake 已代表本次 scene transition，避免随后 scene trigger 再播一遍。 */
 export function applyManualRestIntent<T extends TriggerSeen>(
   seen: T,
   action: 'sleep' | 'wake',
-  _actionId: string,
+  actionId: string,
   scene: ManualRestScene,
+  ownsSceneLoop = false,
 ): T {
+  const sceneKind = manualRestSceneKind(scene)
+  const sceneLoopOwned = ownsSceneLoop && action === 'sleep' && sceneKind !== null
   return {
     ...seen,
     cueIds: boundedKeys(seen.cueIds),
     // 服务端以 out > rest 决定 scene；手动意图只能消费它返回的事实，不能覆盖成 sleep。
-    lastSceneKind: manualRestSceneKind(scene),
-    // 手动动作本身就是这次表现；不留下 loop 游标，避免它结束后再补播同一 scene trigger。
-    sceneLoopActionId: null,
-    sceneLoopActive: false,
+    lastSceneKind: sceneKind,
+    // 循环睡觉动作接管当前 scene：cue 可以暂时覆盖，播完后仍回到同一个 loop。
+    // 非循环/起来动作不留下游标，避免动作结束后再补播同一 scene trigger。
+    sceneLoopActionId: sceneLoopOwned ? actionId : null,
+    sceneLoopActive: sceneLoopOwned,
     sceneLoopNeedsRevalidation: false,
   } as T
 }
