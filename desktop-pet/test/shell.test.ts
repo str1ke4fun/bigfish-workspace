@@ -602,7 +602,7 @@ test('动作重载：旧 reload 在较新皮肤提交后完成也不覆盖新 ca
   )
 })
 
-test('皮肤切换：成功后按 stop、skin/catalog、立即 hello 的顺序提交', async (t) => {
+test('皮肤切换：单个事件日志证明 stop → skin → catalog → hello 的顺序', async (t) => {
   const main = await loadMainModule()
   const { root, assets } = await actionFixture()
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -610,13 +610,47 @@ test('皮肤切换：成功后按 stop、skin/catalog、立即 hello 的顺序�
   await writeFile(join(assets, 'config.json'), '{}')
   await writeValidSkin(assets, 'start', '起始皮肤')
 
-  const helloBodies = captureHello(t)
-  const { win, sent } = fakeWindow()
+  const events: string[] = []
+  const helloBodies: unknown[] = []
+  const readCommittedSkin = electronMock.ipcHandled.get('pet:get-skin')
+  assert.ok(readCommittedSkin)
+  let skinObserved = false
+  const observeSkin = () => {
+    const cached = readCommittedSkin() as { id?: string } | null
+    if (!skinObserved && cached?.id === 'start') {
+      skinObserved = true
+      events.push('skin')
+    }
+  }
+  const win = {
+    isDestroyed: () => false,
+    webContents: {
+      send(channel: string) {
+        observeSkin()
+        if (channel === 'pet:action-stop') events.push('stop')
+        if (channel === 'pet:action-catalog') {
+          observeSkin()
+          events.push('catalog')
+        }
+      },
+    },
+  } as unknown as PetWindow
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_input, init) => {
+    observeSkin()
+    events.push('hello')
+    helloBodies.push(JSON.parse(String(init?.body)))
+    return new Response('{"ok":true}', { status: 200 })
+  }
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
   const actions = [registered('start-wave', '起始挥手', '回应')]
 
   await main.applySkin('', { win, assetsRoot: assets, readCatalog: async () => [] })
-  sent.length = 0
+  events.length = 0
   helloBodies.length = 0
+  skinObserved = false
 
   await main.applySkin('start', {
     win,
@@ -624,13 +658,7 @@ test('皮肤切换：成功后按 stop、skin/catalog、立即 hello 的顺序�
     readCatalog: async () => actions,
   })
 
-  assert.deepEqual(sent, [
-    ['pet:action-stop', undefined],
-    ['pet:action-catalog', [{ id: 'start-wave', label: '起始挥手', group: '回应' }]],
-  ])
-  const getSkin = electronMock.ipcHandled.get('pet:get-skin')
-  assert.ok(getSkin)
-  assert.equal((await getSkin() as { id: string }).id, 'start')
+  assert.deepEqual(events, ['stop', 'skin', 'catalog', 'hello'])
   assert.deepEqual(helloBodies, [{
     version: '0.1.0',
     skins: [{ id: '', name: '默认' }],
