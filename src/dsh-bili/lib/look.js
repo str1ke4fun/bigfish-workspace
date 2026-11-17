@@ -138,6 +138,11 @@ function describeErr(r) {
   return `打不开（${code}）。`
 }
 
+function lookFailure(note) {
+  const reason = String(note ?? '').trim().replace(/[。！？!?]+$/u, '')
+  return reason ? `[没翻到：${reason}]` : '[没翻到]'
+}
+
 /**
  * 注册工具。
  * @param {object} ctx
@@ -176,7 +181,7 @@ export function registerLook(ctx, deps = {}) {
         },
         // ⚠️ render 必须返回 ContentBlock 数组，签名是 (args, value)。
         // 返回裸字符串会让她收到 "Error: content.some is not a function"。
-        render: (_args, out) => [{ type: 'text', text: out.ok ? out.text : `这次没看到什么：${out.note}` }],
+        render: (_args, out) => [{ type: 'text', text: out.ok ? out.text : lookFailure(out.note) }],
       },
       async execute(args) {
         const { config } = await loadConfig()

@@ -147,6 +147,17 @@ test('bili_speak 文本不一致只说不一样，不复述实际文本', async 
   } finally { handle.dispose() }
 })
 
+test('bili_look 失败投影是方括号世界状态', async () => {
+  const { ctx, handle } = await boot({ config: { browse: { enabled: false } } })
+  try {
+    const look = registered(ctx, 'bili_look')
+    const out = await look.execute({ what: 'home' })
+    const blocks = look.output.render({ what: 'home' }, out)
+    assert.equal(blocks[0].text, '[没翻到：现在打不开]')
+    assert.equal(blocks[0].text.includes('这次没看到什么'), false)
+  } finally { handle.dispose() }
+})
+
 test('bili_look 保留素材，BV 只放在末行记号', () => {
   const packs = [
     {
@@ -224,6 +235,38 @@ test('bili_watch 认不出字时只说没读出字', () => {
   })
   assert.match(text, /\[只看到画面，没读出字\]/)
   assert.doesNotMatch(text, /帧/)
+})
+
+test('bili_watch 失败投影区分配额与配置关闭', async () => {
+  const cases = [
+    [{ browse: { enabled: false } }, '[没看成：现在打不开]', 'browse disabled'],
+    [{ browse: { enabled: true }, video: { enabled: false } }, '[没看成：现在看不了画面]', 'video disabled'],
+    [{ browse: { enabled: true }, video: { enabled: true, perDay: 0 } }, '[今天不想再看画面了]', 'quota'],
+  ]
+  for (const [config, want, label] of cases) {
+    const { ctx, handle } = await boot({ config })
+    try {
+      const watch = registered(ctx, 'bili_watch')
+      const out = await watch.execute({ bvid: BV_ONE })
+      const blocks = watch.output.render({ bvid: BV_ONE }, out)
+      assert.equal(blocks[0].text, want, label)
+      assert.equal(blocks[0].text.includes('这次没看成'), false, label)
+    } finally {
+      handle.dispose()
+    }
+  }
+})
+
+test('bili_watch 其他失败也用方括号状态', async () => {
+  const { ctx, handle } = await boot()
+  try {
+    const watch = registered(ctx, 'bili_watch')
+    const blocks = watch.output.render(
+      { bvid: BV_ONE },
+      { ok: false, path: '', text: '', note: '拿不到播放地址。' },
+    )
+    assert.equal(blocks[0].text, '[没看成：拿不到播放地址]')
+  } finally { handle.dispose() }
 })
 
 test('provide bili 服务并注册 /dsh-bili 前缀路由', async () => {

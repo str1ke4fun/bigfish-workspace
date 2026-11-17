@@ -38,6 +38,12 @@ export function formatWatchSuccess({ title = '', body = '', path = '', recognize
   return lines.join('\n')
 }
 
+function watchFailure(note) {
+  const reason = String(note ?? '').trim().replace(/[。！？!?]+$/u, '')
+  if (reason === '今天不想再看画面了') return '[今天不想再看画面了]'
+  return reason ? `[没看成：${reason}]` : '[没看成]'
+}
+
 export function registerWatch(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
 
@@ -68,7 +74,7 @@ export function registerWatch(ctx, deps = {}) {
           required: ['ok', 'path', 'text', 'note'],
         },
         // render 必须返回 ContentBlock 数组，签名是 (args, value)
-        render: (_args, out) => [{ type: 'text', text: out.ok ? out.text : `这次没看成：${out.note}` }],
+        render: (_args, out) => [{ type: 'text', text: out.ok ? out.text : watchFailure(out.note) }],
       },
       async execute(args) {
         const bvid = String(args?.bvid ?? '').trim()
