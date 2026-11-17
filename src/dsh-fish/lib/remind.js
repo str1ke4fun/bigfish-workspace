@@ -34,15 +34,28 @@ export const REMIND_TEXT_MAX = 500
 export const REMIND_TITLE_PREFIX = '提醒｜'
 /** 事件流里的记账标记（仍是 meta，不新增事件类型）。 */
 export const REMIND_MARK = 'remind:'
-/** 她每轮都能看到的工具说明，固定在 system prompt 里。 */
-export const REMIND_PROMPT = [
+const REMIND_PROMPT_HEAD = [
   '## 过一会儿提醒',
   '',
   '有人在微信里让你过一会儿提醒，你做得到。先定上，别说自己没有闹钟。',
   '只能定「过多少分钟」，最短一会儿，最长七天。会话只能是刚把你叫醒的那个。',
+]
+const REMIND_PROMPT_TAIL = ['没人让你提醒的事，不要自己定。']
+
+/** 机械投递开着：到点由插件发，她下次醒来只收结果世界声。 */
+export const REMIND_PROMPT_MECHANICAL = [
+  ...REMIND_PROMPT_HEAD,
   '到点时那句话会自己发出去；你下次醒来只会知道有没有发成。',
-  '没人让你提醒的事，不要自己定。',
+  ...REMIND_PROMPT_TAIL,
 ].join('\n')
+/** 回滚到旧宿主调度：到点那一轮仍由她照原文调用发送。 */
+export const REMIND_PROMPT_LEGACY = [
+  ...REMIND_PROMPT_HEAD,
+  '到点时把你当时写的那句发出去，一个字不改。发不出去就说没发出去。',
+  ...REMIND_PROMPT_TAIL,
+].join('\n')
+/** 兼容旧调用；默认对应当前默认开启的机械投递。 */
+export const REMIND_PROMPT = REMIND_PROMPT_MECHANICAL
 
 const MINUTE_MS = 60_000
 
@@ -159,13 +172,7 @@ export async function createReminder({
   if (!session) return { ok: false, note: '这会儿不知道提醒该跟着哪条会话。' }
 
   const wxSvc = wx ?? service(ctx, 'wx')
-  if (!wxSvc || typeof wxSvc.grantReminder !== 'function') {
-    return { ok: false, note: '这会儿没法往微信发提醒。' }
-  }
-  const sch = schedule ?? service(ctx, 'schedule')
-  if (!sch || typeof sch.create !== 'function') {
-    return { ok: false, note: '这会儿定不了提醒。' }
-  }
+  if (!wxSvc) return { ok: false, note: '这会儿没法往微信发提醒。' }
 
   const target = normalizeChatName(chat)
   if (!target) return { ok: false, note: '还没说是发到哪个会话。' }
@@ -219,6 +226,15 @@ export async function createReminder({
       log?.('remind mechanical create failed', err?.message ?? err)
       return { ok: false, note: '这会儿没定上。' }
     }
+  }
+
+  // 只有回滚到旧宿主调度时才需要许可和 schedule；机械路径在上面已经返回。
+  if (typeof wxSvc.grantReminder !== 'function') {
+    return { ok: false, note: '这会儿没法往微信发提醒。' }
+  }
+  const sch = schedule ?? service(ctx, 'schedule')
+  if (!sch || typeof sch.create !== 'function') {
+    return { ok: false, note: '这会儿定不了提醒。' }
   }
 
   const permit = randomUUID()
@@ -409,11 +425,19 @@ export function registerRemind(ctx, deps = {}) {
       order: 20,
       async fn(hookCtx = {}) {
         const delivery = deliveryService()
-        if (typeof delivery?.takeNotices !== 'function') return { text: '' }
+        if (typeof delivery?.peekNotices !== 'function' || typeof delivery?.ackNotices !== 'function') {
+          return { text: '' }
+        }
         const at = hookCtx.now instanceof Date ? hookCtx.now.getTime() : Number(hookCtx.now)
-        const notices = await delivery.takeNotices({ at: Number.isFinite(at) ? at : Date.now() })
-        const text = (notices ?? []).map((row) => String(row?.text ?? '').trim()).filter(Boolean).join('\n')
-        return { text }
+        const stamp = Number.isFinite(at) ? at : Date.now()
+        const notices = await delivery.peekNotices({ at: stamp })
+        const rows = (notices ?? []).filter((row) => String(row?.text ?? '').trim())
+        if (!rows.length) return { text: '' }
+        return {
+          text: rows.map((row) => String(row.text).trim()).join('\n'),
+          // scheduler 只会在 sc.prompt 成功排队后调用；排队失败时这些通知仍留在盘上。
+          afterPrompt: async () => delivery.ackNotices({ ids: rows.map((row) => String(row.id)), at: stamp }),
+        }
       },
     }))
   }

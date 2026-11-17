@@ -67,7 +67,7 @@ function fakeWx(over = {}) {
 
 function fakeMechanicalWx() {
   const wx = fakeWx()
-  const calls = { create: [], list: [], cancel: [], deliver: [] }
+  const calls = { create: [], list: [], cancel: [], deliver: [], peek: [], ack: [] }
   wx.reminderDelivery = {
     enabled: () => true,
     create(req) {
@@ -86,7 +86,14 @@ function fakeMechanicalWx() {
       calls.deliver.push(req)
       return { processed: 0 }
     },
-    takeNotices() { return [] },
+    peekNotices(req) {
+      calls.peek.push(req)
+      return []
+    },
+    ackNotices(req) {
+      calls.ack.push(req)
+      return { ok: true }
+    },
   }
   wx.mechanicalCalls = calls
   return wx
@@ -308,6 +315,31 @@ test('机械提醒：直接落 durable job，不建宿主定时任务，也不�
   assert.equal(reminderMarks(events).length, 0, '机械任务日志不能改写或污染用户事件流')
 })
 
+test('机械提醒：没有宿主 schedule 和 grantReminder 也能直接落 durable job', async () => {
+  const seen = []
+  const wx = {
+    canSend(chat) { return { ok: true, chat } },
+    reminderDelivery: {
+      enabled: () => true,
+      create(req) {
+        seen.push(req)
+        return { ok: true, job: { id: 'rem-standalone', chat: req.chat, dueAt: req.dueAt, result: 'pending' } }
+      },
+    },
+  }
+  const r = await createReminder({
+    ctx: fakeCtx({ wx }),
+    root: tmp(),
+    sessionId: 'session-wx',
+    chat: '测试群A',
+    text: '到点了，喝水',
+    afterMinutes: 30,
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.id, 'rem-standalone')
+  assert.equal(seen.length, 1)
+})
+
 test('机械提醒：列表只显示未结束任务，取消直接撤销 durable job，不依赖宿主 schedule', async () => {
   const wx = fakeMechanicalWx()
   wx.reminderDelivery.list = (req) => {
@@ -337,22 +369,31 @@ test('机械提醒：列表只显示未结束任务，取消直接撤销 durable
   assert.deepEqual(wx.mechanicalCalls.cancel[0], { id: 'rem-1', sessionId: 's' })
 })
 
-test('核心 tick 驱动到期任务，下一次唤醒只取一次机械提醒世界声', async () => {
+test('核心 tick 驱动到期任务；世界声先 peek，唤醒消息排入后才 ack', async () => {
   const wx = fakeMechanicalWx()
-  wx.reminderDelivery.takeNotices = () => [{ id: 'rem-1', result: 'failed', text: '刚才定的提醒没发出去。' }]
+  wx.reminderDelivery.peekNotices = (req) => {
+    wx.mechanicalCalls.peek.push(req)
+    return [{ id: 'rem-1', result: 'failed', text: '刚才定的提醒没发出去。' }]
+  }
   const ctx = fakeCtx({ wx })
   const hookTable = fakeCoreSchedule()
   const dispose = registerRemind(ctx, { root: tmp(), core: hookTable.core })
 
   assert.equal(hookTable.ticks.length, 1)
   assert.equal(hookTable.ticks[0].id, 'reminder-delivery')
-  await hookTable.ticks[0].fn({ now: new Date(Date.UTC(2026, 10, 18, 5)) })
+  const at = new Date(Date.UTC(2026, 10, 18, 5))
+  await hookTable.ticks[0].fn({ now: at })
   assert.deepEqual(wx.mechanicalCalls.deliver, [{ now: Date.UTC(2026, 10, 18, 5) }])
 
   assert.equal(hookTable.wakes.length, 1)
-  assert.deepEqual(await hookTable.wakes[0].fn({ now: new Date(Date.UTC(2026, 10, 18, 5)) }), {
-    text: '刚才定的提醒没发出去。',
-  })
+  const wake = await hookTable.wakes[0].fn({ now: at })
+  assert.equal(wake.text, '刚才定的提醒没发出去。')
+  assert.equal(typeof wake.afterPrompt, 'function')
+  assert.deepEqual(wx.mechanicalCalls.peek, [{ at: at.getTime() }])
+  assert.deepEqual(wx.mechanicalCalls.ack, [], '提示词还没排进唤醒队列，不能先 ack')
+
+  await wake.afterPrompt()
+  assert.deepEqual(wx.mechanicalCalls.ack, [{ ids: ['rem-1'], at: at.getTime() }])
 
   dispose()
   assert.equal(hookTable.ticks[0].off, true)

@@ -194,19 +194,21 @@ export function createReminderJobStore({ file = REMINDER_JOBS_FILE, now = Date.n
       .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id))
   }
 
-  function claimDue({ now: at = clock(), limit = 20 } = {}) {
+  /** 只领取最早的一条；发送并结算完这一条之后，worker 才会再来领下一条。 */
+  function claimNextDue({ now: at = clock() } = {}) {
     const t = Number(at)
-    const max = Math.max(1, Math.min(100, Number(limit) || 20))
-    const due = [...states.values()]
-      .filter((job) => job.result === 'pending' && job.dueAt <= t)
-      .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id))
-      .slice(0, max)
-    const claimed = []
-    for (const job of due) {
-      const r = commit({ type: 'attempt', id: job.id, at: new Date(t).toISOString() })
-      if (r.ok) claimed.push(snapshot(states.get(job.id)))
-    }
-    return claimed
+    const job = [...states.values()]
+      .filter((item) => item.result === 'pending' && item.dueAt <= t)
+      .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id))[0]
+    if (!job) return null
+    const r = commit({ type: 'attempt', id: job.id, at: new Date(t).toISOString() })
+    return r.ok ? snapshot(states.get(job.id)) : null
+  }
+
+  /** 兼容旧调用：最多领一条，避免一次 tick 把尚未尝试的任务全标成 attempting。 */
+  function claimDue({ now: at = clock() } = {}) {
+    const job = claimNextDue({ now: at })
+    return job ? [job] : []
   }
 
   function get(id) {
@@ -254,22 +256,29 @@ export function createReminderJobStore({ file = REMINDER_JOBS_FILE, now = Date.n
       .map(snapshot)
   }
 
-  function takeNotices({ at = new Date(clock()).toISOString() } = {}) {
+  function ackNotices(ids, { at = new Date(clock()).toISOString() } = {}) {
+    const wanted = new Set((Array.isArray(ids) ? ids : []).map((id) => String(id ?? '').trim()).filter(Boolean))
+    if (!wanted.size) return []
     const delivered = []
     for (const job of pendingNotices()) {
+      if (!wanted.has(job.id)) continue
       const r = commit({ type: 'notice-ack', id: job.id, at: String(at) })
       if (r.ok) delivered.push({ id: job.id, result: job.result })
     }
     return delivered
   }
 
+  function takeNotices({ at = new Date(clock()).toISOString() } = {}) {
+    return ackNotices(pendingNotices().map((job) => job.id), { at })
+  }
+
   return {
-    create, list, get, claimDue, markReturned, settle, cancel, recoverInterrupted,
-    pendingNotices, takeNotices,
+    create, list, get, claimNextDue, claimDue, markReturned, settle, cancel, recoverInterrupted,
+    pendingNotices, ackNotices, takeNotices,
   }
 }
 
-/** 失败 / 未知的世界声只描述结果，不带会话名、原文或内部记号。 */
+/** 成功 / 不确定 / 失败的世界声只描述结果，不带会话名、原文或内部记号。 */
 export function reminderNoticeText(result) {
   if (result === 'confirmed') return '刚才定的提醒已经发了。'
   if (result === 'unconfirmed') return '刚才定的提醒按了发送，但没看清有没有发出去；别再补发。'
@@ -330,54 +339,75 @@ export function createReminderDeliveryWorker({
     return recovered
   }
 
+  let running = false
   async function deliverDue({ now: at = clock(), limit = 20 } = {}) {
-    if (!enabled()) return { ok: true, disabled: true, processed: 0 }
-    const claimed = jobs.claimDue({ now: at, limit })
-    const finish = (job, result, error) => {
-      const settled = jobs.settle(job.id, result, { at: new Date(at).toISOString(), error })
-      if (settled.ok) permits?.retire?.(job.permit)
-      return settled
-    }
-    let processed = 0
-    for (const job of claimed) {
-      const permit = permits?.check?.({ id: job.permit, chat: job.chat, text: job.text })
-      if (!permit?.ok) {
-        finish(job, 'failed', permit?.why || 'permit-invalid')
-        processed += 1
-        continue
+    if (running) return { ok: true, processed: 0, busy: true }
+    running = true
+    try {
+      const max = Math.max(1, Math.min(100, Number(limit) || 20))
+      const finish = (job, result, error) => {
+        const settled = jobs.settle(job.id, result, { at: new Date(at).toISOString(), error })
+        if (settled.ok) permits?.retire?.(job.permit)
+        return settled
       }
+      let processed = 0
+      while (processed < max) {
+        // 开关在每一条之前现读；前一条发送期间回滚，后面的任务必须原样留在盘上。
+        if (!enabled()) return { ok: true, processed, disabled: true }
+        const job = jobs.claimNextDue({ now: at })
+        if (!job) break
 
-      let returned = false
-      try {
-        const sent = await sendReminder({
-          chat: job.chat,
-          text: job.text,
-          permit: job.permit,
-          reminderId: job.id,
-          onReturn: async () => {
-            returned = true
-            jobs.markReturned(job.id, { at: new Date(clock()).toISOString() })
-          },
-        })
-        const result = sent?.sent === 'confirmed' ? 'confirmed' : 'unconfirmed'
-        finish(job, result, sent?.sent ? `send:${sent.sent}` : 'send:unknown')
-      } catch (err) {
-        const current = jobs.get(job.id)
-        const afterReturn = returned || !!current?.returnedAt
-        finish(job, afterReturn ? 'unknown' : 'failed', String(err?.code || err?.message || err || 'send-failed'))
+        const permit = permits?.check?.({ id: job.permit, chat: job.chat, text: job.text })
+        if (!permit?.ok) {
+          finish(job, 'failed', permit?.why || 'permit-invalid')
+          processed += 1
+          continue
+        }
+
+        let returned = false
+        try {
+          const sent = await sendReminder({
+            chat: job.chat,
+            text: job.text,
+            permit: job.permit,
+            reminderId: job.id,
+            onReturn: async () => {
+              returned = true
+              jobs.markReturned(job.id, { at: new Date(clock()).toISOString() })
+            },
+          })
+          const result = sent?.sent === 'confirmed' ? 'confirmed' : 'unconfirmed'
+          finish(job, result, sent?.sent ? `send:${sent.sent}` : 'send:unknown')
+        } catch (err) {
+          const current = jobs.get(job.id)
+          const afterReturn = returned || !!current?.returnedAt
+          finish(job, afterReturn ? 'unknown' : 'failed', String(err?.code || err?.message || err || 'send-failed'))
+        }
+        processed += 1
       }
-      processed += 1
+      return { ok: true, processed }
+    } finally {
+      running = false
     }
-    return { ok: true, processed }
   }
 
-  function takeNotices({ at = new Date(clock()).toISOString() } = {}) {
-    return jobs.takeNotices({ at })
-      .map((row) => ({ ...row, text: reminderNoticeText(row.result) }))
+  function peekNotices() {
+    return jobs.pendingNotices()
+      .map((row) => ({ id: row.id, result: row.result, text: reminderNoticeText(row.result) }))
       .filter((row) => row.text)
   }
 
-  return { enabled, create, list, cancel, recover, deliverDue, takeNotices }
+  function ackNotices({ ids = [], at = new Date(clock()).toISOString() } = {}) {
+    return { ok: true, acked: jobs.ackNotices(ids, { at }) }
+  }
+
+  function takeNotices({ at = new Date(clock()).toISOString() } = {}) {
+    const notices = peekNotices()
+    const acked = new Set(ackNotices({ ids: notices.map((row) => row.id), at }).acked.map((row) => row.id))
+    return notices.filter((row) => acked.has(row.id))
+  }
+
+  return { enabled, create, list, cancel, recover, deliverDue, peekNotices, ackNotices, takeNotices }
 }
 
 /** 生成一个新许可 id。 */

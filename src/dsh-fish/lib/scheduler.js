@@ -407,6 +407,10 @@ async function wake(ctx, root, model, config, decision, dk, log, deps = {}) {
         ac.signal,
       )
     })
+    // 提醒结果等钩子只读一遍；只有这里能证明唤醒消息已排队，才允许 ack。
+    if (typeof look.afterPrompt === 'function') {
+      try { await look.afterPrompt() } catch (err) { log('wake afterPrompt failed', err?.message ?? err) }
+    }
     await appendEvent(
       { type: 'meta', text: `wake:${dk} ${decision.template?.id ?? '?'}` },
       { day: model.day, stage: model.stage, source: 'timer' },

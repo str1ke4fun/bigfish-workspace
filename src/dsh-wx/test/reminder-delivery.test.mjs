@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 import {
   createPermitStore,
@@ -10,6 +11,7 @@ import {
   createReminderJobStore,
   mechanicalReminderDeliveryEnabled,
   pressReturnThenMark,
+  PERMIT_TTL_MS,
 } from '../lib/reminder.js'
 
 const T = Date.UTC(2026, 10, 18, 4, 0, 0)
@@ -246,6 +248,137 @@ test('并发重复 tick 只发一次', async () => {
   release()
   await Promise.all([first, second])
   assert.equal(calls, 1)
+})
+
+test('逐条投递：每个任务前重读开关，首条成功后关闭就留下第二条', async () => {
+  let enabled = true
+  let calls = 0
+  const dir = temp()
+  const jobs = createReminderJobStore({ file: join(dir, 'reminder-jobs.jsonl'), now: () => T, log: () => {} })
+  const permits = createPermitStore({ file: join(dir, 'reminder-permits.json'), now: () => T, log: () => {} })
+  const worker = createReminderDeliveryWorker({
+    jobs,
+    permits,
+    getEnabled: () => enabled,
+    now: () => T,
+    log: () => {},
+    sendReminder: async (req) => {
+      calls += 1
+      enabled = false
+      await req.onReturn()
+      return { sent: 'confirmed' }
+    },
+  })
+  worker.create({ sessionId: 'session-wx', chat: '测试群A', text: '第一条', dueAt: T + 60_000 })
+  worker.create({ sessionId: 'session-wx', chat: '测试群A', text: '第二条', dueAt: T + 60_000 })
+
+  const result = await worker.deliverDue({ now: T + 60_000 })
+  assert.equal(result.processed, 1)
+  assert.equal(calls, 1)
+  const results = jobs.list().map((job) => job.result).sort()
+  assert.deepEqual(results, ['confirmed', 'pending'])
+})
+
+test('两任务重启：第一条结算后进程崩溃，第二条仍未领取并在重启后送达', async () => {
+  const dir = temp()
+  const file = join(dir, 'reminder-jobs.jsonl')
+  const permitFile = join(dir, 'reminder-permits.json')
+  const jobs = createReminderJobStore({ file, now: () => T, log: () => {} })
+  const permits = createPermitStore({ file: permitFile, now: () => T, log: () => {} })
+  for (const [id, text] of [['rem-crash-a', '第一条'], ['rem-crash-b', '第二条']]) {
+    assert.equal(permits.grant({ id: `permit-${id}`, chat: '测试群A', text, dueAt: T + 60_000 }).ok, true)
+    assert.equal(jobs.create({ id, permit: `permit-${id}`, sessionId: 'session-wx', chat: '测试群A', text, dueAt: T + 60_000 }).ok, true)
+  }
+
+  const moduleUrl = new URL('../lib/reminder.js', import.meta.url).href
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { createPermitStore, createReminderJobStore, createReminderDeliveryWorker } from ${JSON.stringify(moduleUrl)}
+    const now = Number(process.env.TASK3_NOW)
+    const jobs = createReminderJobStore({ file: process.env.TASK3_JOBS, now: () => now, log: () => {} })
+    const settleThenCrash = {
+      ...jobs,
+      settle(id, result, opts) {
+        const out = jobs.settle(id, result, opts)
+        if (out.ok) process.exit(23)
+        return out
+      },
+    }
+    const worker = createReminderDeliveryWorker({
+      jobs: settleThenCrash,
+      permits: createPermitStore({ file: process.env.TASK3_PERMITS, now: () => now, log: () => {} }),
+      getEnabled: () => true,
+      now: () => now,
+      log: () => {},
+      sendReminder: async (req) => {
+        console.log('sent:' + req.reminderId)
+        await req.onReturn()
+        return { sent: 'confirmed' }
+      },
+    })
+    await worker.deliverDue({ now })
+    process.exit(24)
+  `], {
+    env: { ...process.env, TASK3_JOBS: file, TASK3_PERMITS: permitFile, TASK3_NOW: String(T + 60_000) },
+    encoding: 'utf8',
+  })
+  assert.equal(child.status, 23, child.stderr || child.stdout)
+
+  const afterCrash = createReminderJobStore({ file, now: () => T + 60_000, log: () => {} })
+  const crashed = Object.fromEntries(afterCrash.list().map((job) => [job.id, job.result]))
+  assert.deepEqual(crashed, { 'rem-crash-a': 'confirmed', 'rem-crash-b': 'pending' })
+
+  let calls = 0
+  const restarted = createReminderDeliveryWorker({
+    jobs: afterCrash,
+    permits: createPermitStore({ file: permitFile, now: () => T + 60_000, log: () => {} }),
+    getEnabled: () => true,
+    now: () => T + 60_000,
+    log: () => {},
+    sendReminder: async (req) => {
+      calls += 1
+      await req.onReturn()
+      return { sent: 'confirmed' }
+    },
+  })
+  restarted.recover()
+  await restarted.deliverDue({ now: T + 60_000 })
+  assert.equal(calls, 1)
+  assert.equal(afterCrash.get('rem-crash-b').result, 'confirmed')
+})
+
+test('过期许可：已领取的到期任务落为失败终态，重启后不再发', async () => {
+  const dir = temp()
+  const file = join(dir, 'reminder-jobs.jsonl')
+  const at = T + 60_000 + PERMIT_TTL_MS + 1
+  const jobs = createReminderJobStore({ file, now: () => T, log: () => {} })
+  const permits = createPermitStore({ file: join(dir, 'reminder-permits.json'), now: () => T, log: () => {} })
+  assert.equal(permits.grant({ id: 'permit-expired', chat: '测试群A', text: '到期了', dueAt: T + 60_000 }).ok, true)
+  assert.equal(jobs.create({ id: 'rem-expired', permit: 'permit-expired', sessionId: 'session-wx', chat: '测试群A', text: '到期了', dueAt: T + 60_000 }).ok, true)
+
+  let calls = 0
+  const worker = createReminderDeliveryWorker({
+    jobs,
+    permits: createPermitStore({ file: join(dir, 'reminder-permits.json'), now: () => at, log: () => {} }),
+    getEnabled: () => true,
+    now: () => at,
+    log: () => {},
+    sendReminder: async () => { calls += 1; return { sent: 'confirmed' } },
+  })
+  await worker.deliverDue({ now: at })
+  assert.equal(calls, 0)
+  assert.equal(jobs.get('rem-expired').result, 'failed')
+
+  const records = readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+  assert.deepEqual(records.at(-1), {
+    v: 1,
+    type: 'result',
+    id: 'rem-expired',
+    result: 'failed',
+    error: '没有这条提醒许可（可能已经用过、过期，或没存下来）。',
+    at: new Date(at).toISOString(),
+  })
+  const reloaded = createReminderJobStore({ file, now: () => at, log: () => {} })
+  assert.equal(reloaded.get('rem-expired').result, 'failed')
 })
 
 test('任务日志只追加：后续状态不会重写已有行', () => {

@@ -239,6 +239,37 @@ test('手动唤醒命中 runWake，携带 forceBrowse 与已读事件；dispose 
   })
 })
 
+test('唤醒钩子的 afterPrompt 只在 prompt 排队成功后执行', async () => {
+  await withRoot(async (root) => {
+    await appendEvent({ type: 'meta', text: 'probe:after-prompt' }, { day: 0, stage: 1, source: 'timer' }, root)
+    const order = []
+    const { ctx, prompts } = fakeCtx()
+    const prompt = ctx.sessionController.prompt
+    ctx.sessionController.prompt = async (payload) => {
+      order.push('prompt')
+      return prompt(payload)
+    }
+    const hooks = {
+      async runTick() { return { changed: false } },
+      async runWake() {
+        return {
+          text: '刚才定的提醒没发出去。',
+          afterPrompt: async () => { order.push('afterPrompt') },
+        }
+      },
+    }
+    const s = startScheduler(ctx, { root, hooks, log: () => {} })
+    try {
+      const result = await wakeNow(ctx, { root, focus: 'browse' })
+      assert.equal(result.ok, true, JSON.stringify(result))
+      assert.equal(prompts.length, 1)
+      assert.deepEqual(order, ['prompt', 'afterPrompt'])
+    } finally {
+      s.dispose()
+    }
+  })
+})
+
 test('dispose 只清自己的 activeHooks，不清后启动的 scheduler 的兜底', async () => {
   await withRoot(async (root) => {
     const calls1 = []

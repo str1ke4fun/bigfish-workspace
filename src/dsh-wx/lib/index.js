@@ -1857,6 +1857,8 @@ export function apply(ctx, config = {}) {
         ? reminderDelivery.cancel(req.id, { sessionId: req.sessionId })
         : { ok: false, why: '定时提醒只能在微信这条会话里取消。' }),
       deliverDue: (req) => reminderDelivery.deliverDue(req),
+      peekNotices: (req) => reminderDelivery.peekNotices(req),
+      ackNotices: (req) => reminderDelivery.ackNotices(req),
       takeNotices: (req) => reminderDelivery.takeNotices(req),
     },
   }

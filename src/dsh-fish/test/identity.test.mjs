@@ -290,6 +290,33 @@ test('registerIdentity：任务摘要从 wx 服务现取', () => {
   assert.match(inbox.text(), /t_9/)
 })
 
+test('registerIdentity：提醒说明按 mechanicalReminderDelivery 现读机械/旧指令', () => {
+  resetIdentityCache()
+  const root = tmp()
+  const herDir = join(root, 'home')
+  fs.mkdirSync(herDir, { recursive: true })
+  fs.writeFileSync(selfDocPath(root), '我是她', 'utf8')
+
+  let mechanical = true
+  let handler = null
+  const ctx = {
+    on: (_evt, fn) => { handler = fn; return () => {} },
+    get: (name) => (name === 'wx'
+      ? { isWxSession: () => true, reminderDelivery: { enabled: () => mechanical } }
+      : undefined),
+  }
+  registerIdentity(ctx, { root, herDir, log: () => {} })
+  const sections = []
+  handler({ agent: { session: { header: { id: 'wx-1', cwd: herDir } }, ctx: { systemPrompt: { section: (o) => sections.push(o) } } } })
+  const remind = sections.find((s) => s.name === REMIND_SECTION)
+  assert.match(remind.text(), /到点时那句话会自己发出去/)
+  assert.doesNotMatch(remind.text(), /把你当时写的那句发出去/)
+
+  mechanical = false
+  assert.match(remind.text(), /到点时把你当时写的那句发出去，一个字不改/)
+  assert.doesNotMatch(remind.text(), /到点时那句话会自己发出去/)
+})
+
 test('registerIdentity：ctx.on 不可用时返回空函数，不抛', () => {
   const off = registerIdentity({}, { root: tmp(), herDir: tmp(), log: () => {} })
   assert.equal(typeof off, 'function')

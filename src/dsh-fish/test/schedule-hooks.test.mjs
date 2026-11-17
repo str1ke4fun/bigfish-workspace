@@ -114,6 +114,32 @@ test('runWake：按 order 合并 text/intro/picks/riskNote，抛错不影响其�
   assert.ok(logs.some((l) => l.includes('bad') && l.includes('wake-boom')))
 })
 
+test('runWake：afterPrompt 只在调度方确认提示词入队后按 order 执行', async () => {
+  const hooks = createScheduleHooks()
+  const order = []
+  hooks.onWake({
+    id: 'later',
+    order: 20,
+    async fn() {
+      return { text: 'later', afterPrompt: async () => { order.push('later') } }
+    },
+  })
+  hooks.onWake({
+    id: 'first',
+    order: 10,
+    async fn() {
+      return { text: 'first', afterPrompt: async () => { order.push('first') } }
+    },
+  })
+
+  const result = await hooks.runWake({})
+  assert.deepEqual(order, [])
+  assert.equal(result.text, 'first\n\nlater')
+  assert.equal(typeof result.afterPrompt, 'function')
+  await result.afterPrompt()
+  assert.deepEqual(order, ['first', 'later'])
+})
+
 test('runWake：都没有返回值时得到空结构', async () => {
   const hooks = createScheduleHooks()
   hooks.onWake({ id: 'a', async fn() { /* 无返回 */ } })

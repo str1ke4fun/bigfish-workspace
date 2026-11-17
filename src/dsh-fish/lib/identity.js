@@ -27,7 +27,7 @@
 import { readFileSync, statSync } from 'node:fs'
 import { ownerDocPath, selfDocPath, presenceDocPath } from './selfdoc.js'
 import { ownerSectionText } from './people-view.js'
-import { REMIND_PROMPT } from './remind.js'
+import { REMIND_PROMPT_LEGACY, REMIND_PROMPT_MECHANICAL } from './remind.js'
 import { isHerAgent } from './restrict.js'
 
 /** 段名与顺序：放在宿主自己的段之后、`complete` 段之前（order 越大越靠后）。 */
@@ -230,14 +230,15 @@ export function resetIdentityCache() {
  * 把身份段挂到某个 agent 的 system prompt 上。
  * @param {object} agent
  * @param {string} root
- * @param {{canRemind?: (agent:object)=>boolean, inboxText?: ()=>string, surfaceOf?: (agent:object)=>string}} [opts]
+ * @param {{canRemind?: (agent:object)=>boolean, remindPrompt?: ()=>string, inboxText?: ()=>string, surfaceOf?: (agent:object)=>string}} [opts]
  *   canRemind：这条会话是不是微信那条。不是的话，提醒说明返回空串——
  *   QQ / 网页里的她看不到「去微信发提醒」这段，免得把通道说明带错地方。
+ *   remindPrompt：按 wx 的机械投递开关现选说明；缺省按当前默认的机械路径。
  *   inboxText：还没回完的微信任务摘要；同样是「不在微信那条会话里就不显示」。
  *   surfaceOf：这次会话在哪个面（web/wx/screen/bili/qq）；`fish:owner` 只在前三个面渲染。
  * @returns {{ ok: boolean, why?: string }}
  */
-export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf, contextOf } = {}) {
+export function attachIdentity(agent, root, { canRemind, remindPrompt, inboxText, surfaceOf, contextOf } = {}) {
   const sp = agent?.ctx?.systemPrompt
   if (!sp || typeof sp.section !== 'function') {
     return { ok: false, why: '宿主的 agent.ctx 上没有 systemPrompt.section（版本不支持）' }
@@ -257,11 +258,18 @@ export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf, c
       // 按会话取：home 和出门会话各自只看到自己的处境。
       text: () => wakeSectionFor(agent),
     })
-    // 定时提醒的工具说明。固定文本，不随配置变；只在微信那条会话里出现。
+    // 定时提醒的工具说明按开关现读；只在微信那条会话里出现。
     sp.section({
       name: REMIND_SECTION,
       order: REMIND_ORDER,
-      text: () => (canRemind && !canRemind(agent) ? '' : REMIND_PROMPT),
+      text: () => {
+        if (canRemind && !canRemind(agent)) return ''
+        try {
+          return String(remindPrompt?.() ?? REMIND_PROMPT_MECHANICAL)
+        } catch {
+          return REMIND_PROMPT_MECHANICAL
+        }
+      },
     })
     // 还没回完的微信任务。没有任务时是空串；同样只在微信那条会话里出现。
     sp.section({
@@ -333,11 +341,23 @@ export function registerIdentity(ctx, { root, herDir, log, surfaceOf, contextOf 
       return ''
     }
   }
+  /** 机械投递开关现读：false 时才把旧宿主调度的逐字发送说明交给她。 */
+  const remindPrompt = () => {
+    try {
+      const wx = ctx.get?.('wx')
+      const enabled = wx?.reminderDelivery?.enabled
+      return typeof enabled === 'function' && enabled() === false
+        ? REMIND_PROMPT_LEGACY
+        : REMIND_PROMPT_MECHANICAL
+    } catch {
+      return REMIND_PROMPT_MECHANICAL
+    }
+  }
   const onCreated = ({ agent } = {}) => {
     try {
       if (!herDir) return
       if (!isHerAgent(agent, herDir)) return
-      const r = attachIdentity(agent, root, { canRemind, inboxText, surfaceOf, contextOf })
+      const r = attachIdentity(agent, root, { canRemind, remindPrompt, inboxText, surfaceOf, contextOf })
       if (r.ok) {
         state.ok = true
         state.applied += 1

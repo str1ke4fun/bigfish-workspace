@@ -132,6 +132,7 @@ export function createScheduleHooks({ log } = {}) {
     const intro = []
     const picks = []
     const riskNote = []
+    const afterPrompt = []
     for (const rec of ordered(wakes)) {
       if (disposed) break
       let r
@@ -146,12 +147,26 @@ export function createScheduleHooks({ log } = {}) {
       if (typeof r.intro === 'string' && r.intro !== '') intro.push(r.intro)
       if (typeof r.riskNote === 'string' && r.riskNote !== '') riskNote.push(r.riskNote)
       if (Array.isArray(r.picks)) picks.push(...r.picks)
+      if (typeof r.afterPrompt === 'function') afterPrompt.push({ id: rec.id, fn: r.afterPrompt })
     }
-    return {
+    const merged = {
       text: text.join('\n\n'),
       intro: intro.join('\n\n'),
       picks,
       riskNote: riskNote.join('\n\n'),
+    }
+    if (!afterPrompt.length) return merged
+    return {
+      ...merged,
+      async afterPrompt() {
+        for (const { id, fn } of afterPrompt) {
+          try {
+            await fn()
+          } catch (err) {
+            try { log?.(`wake afterPrompt failed: ${id}: ${messageOf(err)}`) } catch { /* ignore */ }
+          }
+        }
+      },
     }
   }
 

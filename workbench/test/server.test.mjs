@@ -421,3 +421,41 @@ test('overdueVisibility 关闭时隐藏状态与摘要路由，改回 true 立�
   const onSummary = await fetch(`http://127.0.0.1:${port}/api/wx/task-summary`)
   assert.equal(onSummary.status, 200)
 })
+
+test('微信策略保存保留 mechanicalReminderDelivery:false', async () => {
+  mkdirSync(join(home, '.dsh-wx'), { recursive: true })
+  const policyFile = join(home, '.dsh-wx', 'policy.json')
+  writeFileSync(policyFile, JSON.stringify({
+    enabled: true,
+    allowChats: ['旧群'],
+    mechanicalReminderDelivery: false,
+  }) + '\n')
+
+  const saved = await fetch(`http://127.0.0.1:${port}/api/wx/scope`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      origin: `http://127.0.0.1:${port}`,
+      'sec-fetch-site': 'same-origin',
+    },
+    body: JSON.stringify({
+      enabled: true,
+      allowChats: ['测试群A'],
+      requireMention: true,
+      mentionWindowMinutes: 3,
+      noMentionChats: [],
+      proactivePerDay: 0,
+      proactiveChats: {},
+      watch: true,
+      trigger: ['D33p53Ek'],
+      overdueVisibility: true,
+    }),
+  })
+  assert.equal(saved.status, 200)
+  const onDisk = JSON.parse(readFileSync(policyFile, 'utf8'))
+  assert.equal(onDisk.mechanicalReminderDelivery, false)
+
+  const scope = await fetch(`http://127.0.0.1:${port}/api/wx/scope`)
+  assert.equal(scope.status, 200)
+  assert.equal((await scope.json()).policy.mechanicalReminderDelivery, false)
+})
