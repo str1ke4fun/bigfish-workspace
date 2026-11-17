@@ -193,11 +193,30 @@ test('wx_context 的旧卡片也遵守低置信发言人', () => {
   ].join('\n'))
 })
 
+test('wx_context 旧卡片里发出去的话，低置信或缺置信都还是你', () => {
+  for (const senderConfidence of ['low', undefined]) {
+    const legacy = formatCards([{
+      doc: {
+        chatName: '测试群A', sender: null, senderConfidence, direction: 'out',
+        text: '看情况', at: '2026-11-09 12:01',
+      },
+      score: 1,
+      reasons: ['最近'],
+    }]).text
+    assert.match(legacy, /置信度：低/)
+    assert.equal(projectWxContext(legacy), [
+      '[翻到] 「测试群A」里相关的 1 条：',
+      '你（11/09 12:01）：看情况',
+    ].join('\n'))
+  }
+})
+
 test('wx_context 的多行原话原样穿过世界声投影', () => {
   const world = [
     '[翻到] 「测试群A」里相关的 2 条：',
     '阿明（今天 12:00）：晚上来吗',
-    '后面这句也是同一条原话',
+    '匹配：这是原话的一部分',
+    '置信度：这也是原话',
     '你（今天 12:01）：看情况',
   ].join('\n')
   assert.equal(projectWxContext(world), world)

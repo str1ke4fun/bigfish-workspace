@@ -79,11 +79,10 @@ export function clipPeekBody(text, tail = '', limit = PEEK_LIMIT) {
  * 这些是给维护者看的检索元数据，模型只需要原文和发言人，整行去掉。
  */
 const cleanParty = (value, confidence = 'unknown') => {
-  const certainty = String(confidence ?? 'unknown').toLowerCase()
-  if (!certainty || certainty === 'low' || certainty === 'unknown' || certainty === '低') return '看不出是谁'
   const who = String(value ?? '').trim()
-  if (!who) return '看不出是谁'
   if (/^大肥鱼(?:（发出）)?$/.test(who)) return '你'
+  const certainty = String(confidence ?? 'unknown').toLowerCase()
+  if (!who || !certainty || certainty === 'low' || certainty === 'unknown' || certainty === '低') return '看不出是谁'
   return who
 }
 
@@ -100,15 +99,8 @@ export function projectWxContext(raw) {
   const text = String(raw ?? '').trim()
   if (!text) return '[翻到]\n没有找到。'
 
-  // 新投影已经是世界声；顺手去掉可能混入的旧检索元数据。
-  if (text.startsWith('[翻到]')) {
-    return text
-      .split('\n')
-      .filter((line) => !CONTEXT_META.test(line))
-      .filter((line) => !/^（只查这个任务自己的会话/.test(line.trim()))
-      .join('\n')
-      .trim()
-  }
+  // 新投影已经是世界声；正文里以“匹配/来源/置信度”开头的行也可能是原话。
+  if (text.startsWith('[翻到]')) return text
 
   if (/^[\[{]/.test(text) && !text.startsWith('[上下文')) {
     return '[翻到]\n（这段记录没能显示出来）'
