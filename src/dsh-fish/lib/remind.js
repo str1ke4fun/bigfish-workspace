@@ -156,19 +156,19 @@ export async function createReminder({
   ctx, root = rootDir(), wx, schedule, sessionId, chat, text, afterMinutes, title, signal, log,
 } = {}) {
   const session = String(sessionId ?? '').trim()
-  if (!session) return { ok: false, note: '不知道是哪条会话发起的提醒。' }
+  if (!session) return { ok: false, note: '这会儿不知道提醒该跟着哪条会话。' }
 
   const wxSvc = wx ?? service(ctx, 'wx')
   if (!wxSvc || typeof wxSvc.grantReminder !== 'function') {
-    return { ok: false, note: '微信通道没接上，定不了提醒。' }
+    return { ok: false, note: '这会儿没法往微信发提醒。' }
   }
   const sch = schedule ?? service(ctx, 'schedule')
   if (!sch || typeof sch.create !== 'function') {
-    return { ok: false, note: '宿主没开定时任务，定不了提醒。' }
+    return { ok: false, note: '这会儿定不了提醒。' }
   }
 
   const target = normalizeChatName(chat)
-  if (!target) return { ok: false, note: '没说是哪个微信会话，定不了。' }
+  if (!target) return { ok: false, note: '还没说是发到哪个会话。' }
 
   const mins = parseAfterMinutes(afterMinutes)
   if (!mins.ok) return { ok: false, note: mins.why }
@@ -177,8 +177,11 @@ export async function createReminder({
   if (!clean.ok) return { ok: false, note: clean.why }
 
   // 名单 / 是否刚被叫醒 / 是不是微信会话，全部由 dsh-wx 判；这里只拿它的结论。
-  const can = typeof wxSvc.canSend === 'function' ? wxSvc.canSend(target) : { ok: false, why: '微信通道没接上，定不了提醒。' }
-  if (!can.ok) return { ok: false, note: can.why }
+  const can = typeof wxSvc.canSend === 'function' ? wxSvc.canSend(target) : { ok: false, why: 'canSend unavailable' }
+  if (!can.ok) {
+    log?.('remind canSend failed', can.why)
+    return { ok: false, note: '这会儿不能发到那个会话。' }
+  }
   const targetChat = String(can.chat ?? target)
 
   const permit = randomUUID()
@@ -190,7 +193,10 @@ export async function createReminder({
     sessionId: session,
     dueAt,
   })
-  if (!granted.ok) return { ok: false, note: granted.why }
+  if (!granted.ok) {
+    log?.('remind grant failed', granted.why)
+    return { ok: false, note: '这会儿定不了这条提醒。' }
+  }
 
   const recordTitle = reminderTitle(targetChat, title)
   const prompt = buildReminderPrompt({ chat: targetChat, text: clean.text, permit })
@@ -205,8 +211,7 @@ export async function createReminder({
     // 定时任务没定上，许可作废，免得留一张没有对应提醒的通行证。
     try { wxSvc.revokeReminder?.(permit) } catch { /* ignore */ }
     log?.('remind schedule failed', err?.message ?? err)
-    const why = String(err?.message ?? err).slice(0, 160)
-    return { ok: false, note: `没定上定时任务：${why}` }
+    return { ok: false, note: '这会儿没定上。' }
   }
 
   const scheduleId = String(record?.id ?? '')
@@ -241,9 +246,9 @@ export async function createReminder({
 /** 列出她定的、还没到点的提醒。 */
 export async function listReminders({ ctx, schedule, sessionId, signal, log } = {}) {
   const session = String(sessionId ?? '').trim()
-  if (!session) return { ok: false, note: '不知道是哪条会话。', rows: [] }
+  if (!session) return { ok: false, note: '这会儿不知道要翻哪条会话。', rows: [] }
   const sch = schedule ?? service(ctx, 'schedule')
-  if (!sch || typeof sch.list !== 'function') return { ok: false, note: '宿主没开定时任务。', rows: [] }
+  if (!sch || typeof sch.list !== 'function') return { ok: false, note: '这会儿看不到有哪些提醒。', rows: [] }
   try {
     const all = await sch.list({ sessionId: session }, signal)
     const rows = (all ?? [])
@@ -256,7 +261,7 @@ export async function listReminders({ ctx, schedule, sessionId, signal, log } = 
     return { ok: true, note: '', rows }
   } catch (err) {
     log?.('remind list failed', err?.message ?? err)
-    return { ok: false, note: '没读到提醒列表。', rows: [] }
+    return { ok: false, note: '这会儿看不到有哪些提醒。', rows: [] }
   }
 }
 
@@ -264,22 +269,22 @@ export async function listReminders({ ctx, schedule, sessionId, signal, log } = 
 export async function cancelReminder({ ctx, schedule, sessionId, id, signal, log } = {}) {
   const session = String(sessionId ?? '').trim()
   const want = String(id ?? '').trim()
-  if (!session) return { ok: false, note: '不知道是哪条会话。' }
-  if (!want) return { ok: false, note: '要取消哪一条？id 从 her_reminders 里抄。' }
+  if (!session) return { ok: false, note: '这会儿不知道是哪条会话。' }
+  if (!want) return { ok: false, note: '还没说要放下哪一条。' }
   const sch = schedule ?? service(ctx, 'schedule')
   if (!sch || typeof sch.list !== 'function' || typeof sch.delete !== 'function') {
-    return { ok: false, note: '宿主没开定时任务。' }
+    return { ok: false, note: '这会儿取消不了。' }
   }
   try {
     const all = await sch.list({ sessionId: session }, signal)
     const hit = (all ?? []).find((r) => String(r?.id ?? '') === want && String(r?.title ?? '').startsWith(REMIND_TITLE_PREFIX))
     if (!hit) return { ok: false, note: '没找到这条提醒。' }
     const r = await sch.delete({ sessionId: session, id: want }, signal)
-    if (!r?.deleted) return { ok: false, note: '没取消掉。' }
+    if (!r?.deleted) return { ok: false, note: '这会儿取消不了。' }
     return { ok: true, note: '取消了。' }
   } catch (err) {
     log?.('remind cancel failed', err?.message ?? err)
-    return { ok: false, note: '没取消掉。' }
+    return { ok: false, note: '这会儿取消不了。' }
   }
 }
 

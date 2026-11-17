@@ -94,6 +94,13 @@ function extractReminderPrompt(prompt) {
   }
 }
 
+function assertWorldVoice(text) {
+  assert.doesNotMatch(
+    String(text),
+    /微信通道|宿主|定时任务|任务板|台账|permit|白名单|允许名单|门禁|额度|配额|schema|JSON|Error:|subagent_session|her_reminders|\bid\b/i,
+  )
+}
+
 test('会话名归一：去掉「会话名：」前缀和成对引号', () => {
   assert.equal(normalizeChatName('测试群A'), '测试群A')
   assert.equal(normalizeChatName('  会话名：测试群A  '), '测试群A')
@@ -212,7 +219,13 @@ test('成功定提醒：绑会话、绑原文、after_seconds 用分钟换算、
   assert.equal(c.sessionId, 'session-wx')
   assert.equal(c.req.after_seconds, 30 * 60)
   assert.ok(c.req.title.startsWith(REMIND_TITLE_PREFIX))
-  assert.match(c.req.prompt, new RegExp(g.id))
+  const scheduled = extractReminderPrompt(c.req.prompt)
+  assert.equal(scheduled.chat, g.chat)
+  assert.equal(scheduled.text, g.text)
+  assert.equal(scheduled.permit, g.id)
+  assert.ok(Buffer.from(scheduled.chat).equals(Buffer.from(String(g.chat))))
+  assert.ok(Buffer.from(scheduled.text).equals(Buffer.from(String(g.text))))
+  assert.ok(Buffer.from(scheduled.permit).equals(Buffer.from(String(g.id))))
 
   const { events } = await readEvents(root)
   const marks = reminderMarks(events)
@@ -226,20 +239,23 @@ test('微信通道不支持 / 名单不认 / 定时任务没开：都只回 note
   const root = tmp()
   const noWx = await createReminder({ ctx: fakeCtx(), root, sessionId: 's', chat: '测试群A', text: 'x', afterMinutes: 1 })
   assert.equal(noWx.ok, false)
-  assert.match(noWx.note, /微信通道/)
+  assert.equal(noWx.note, '这会儿没法往微信发提醒。')
+  assertWorldVoice(noWx.note)
 
   const wxNo = fakeWx({ canSend: { ok: false, why: '不在名单' } })
   const denied = await createReminder({
     ctx: fakeCtx({ wx: wxNo, schedule: fakeSchedule() }), root, sessionId: 's', chat: '别的群', text: 'x', afterMinutes: 1,
   })
   assert.equal(denied.ok, false)
-  assert.match(denied.note, /不在名单/)
+  assert.equal(denied.note, '这会儿不能发到那个会话。')
+  assertWorldVoice(denied.note)
 
   const noSchedule = await createReminder({
     ctx: fakeCtx({ wx: fakeWx() }), root, sessionId: 's', chat: '测试群A', text: 'x', afterMinutes: 1,
   })
   assert.equal(noSchedule.ok, false)
-  assert.match(noSchedule.note, /定时任务/)
+  assert.equal(noSchedule.note, '这会儿定不了提醒。')
+  assertWorldVoice(noSchedule.note)
 })
 
 test('许可发不出来就不定；定时任务失败要把许可作废', async () => {
@@ -250,7 +266,8 @@ test('许可发不出来就不定；定时任务失败要把许可作废', async
     ctx: fakeCtx({ wx, schedule }), root, sessionId: 's', chat: '测试群A', text: 'x', afterMinutes: 1,
   })
   assert.equal(r.ok, false)
-  assert.match(r.note, /最近没叫醒过/)
+  assert.equal(r.note, '这会儿定不了这条提醒。')
+  assertWorldVoice(r.note)
   assert.equal(schedule.calls.create.length, 0, '许可没发出来就不该定任务')
 
   const wx2 = fakeWx()
@@ -260,8 +277,84 @@ test('许可发不出来就不定；定时任务失败要把许可作废', async
     ctx: fakeCtx({ wx: wx2, schedule: bad }), root, sessionId: 's', chat: '测试群A', text: 'x', afterMinutes: 1,
   })
   assert.equal(r2.ok, false)
-  assert.match(r2.note, /subagent_session/)
+  assert.equal(r2.note, '这会儿没定上。')
+  assertWorldVoice(r2.note)
   assert.equal(wx2.calls.revoke.length, 1, '定时任务没定上，许可必须回滚')
+})
+
+test('提醒失败的模型投影说人话：缺微信、缺定时能力、缺取消记号', async () => {
+  const exec = { agent: { session: { id: 's' } } }
+
+  const noWxCtx = fakeCtx({ schedule: fakeSchedule() })
+  registerRemind(noWxCtx, { root: tmp() })
+  const noWx = Object.fromEntries(noWxCtx.defs.map((d) => [d.name, d]))
+  const noWxOut = await noWx.her_remind.execute({ chat: '测试群A', text: '到点喝水', after_minutes: 5 }, exec)
+  const noWxText = noWx.her_remind.output.render({}, noWxOut)[0].text
+  assert.equal(noWxText, '[没定：这会儿没法往微信发提醒。]')
+  assertWorldVoice(noWxText)
+
+  const noScheduleCtx = fakeCtx({ wx: fakeWx() })
+  registerRemind(noScheduleCtx, { root: tmp() })
+  const noSchedule = Object.fromEntries(noScheduleCtx.defs.map((d) => [d.name, d]))
+  const createOut = await noSchedule.her_remind.execute({ chat: '测试群A', text: '到点喝水', after_minutes: 5 }, exec)
+  const createText = noSchedule.her_remind.output.render({}, createOut)[0].text
+  assert.equal(createText, '[没定：这会儿定不了提醒。]')
+  assertWorldVoice(createText)
+
+  const listOut = await noSchedule.her_reminders.execute({}, exec)
+  const listText = noSchedule.her_reminders.output.render({}, listOut)[0].text
+  assert.equal(listText, '[没看到：这会儿看不到有哪些提醒。]')
+  assertWorldVoice(listText)
+
+  const cancelCtx = fakeCtx({ schedule: fakeSchedule() })
+  registerRemind(cancelCtx, { root: tmp() })
+  const cancel = Object.fromEntries(cancelCtx.defs.map((d) => [d.name, d]))
+  const cancelOut = await cancel.her_remind_cancel.execute({ id: '' }, exec)
+  const cancelText = cancel.her_remind_cancel.output.render({}, cancelOut)[0].text
+  assert.equal(cancelText, '[没取消：还没说要放下哪一条。]')
+  assertWorldVoice(cancelText)
+})
+
+test('定时能力抛错时模型只看世界声，原始错误只留在日志', async () => {
+  const exec = { agent: { session: { id: 's' } } }
+  const raw = 'subagent_session: raw host stack /secret'
+
+  const logs = []
+  const badCreate = fakeSchedule()
+  badCreate.create = async () => { throw new Error(raw) }
+  const createCtx = fakeCtx({ wx: fakeWx(), schedule: badCreate })
+  registerRemind(createCtx, { root: tmp(), log: (...args) => logs.push(args.join(' ')) })
+  const create = Object.fromEntries(createCtx.defs.map((d) => [d.name, d]))
+  const createOut = await create.her_remind.execute({ chat: '测试群A', text: '到点喝水', after_minutes: 5 }, exec)
+  const createText = create.her_remind.output.render({}, createOut)[0].text
+  assert.equal(createText, '[没定：这会儿没定上。]')
+  assert.equal(createText.includes(raw), false)
+  assertWorldVoice(createText)
+  assert.equal(logs.some((line) => line.includes(raw)), true, '原始错误仍要留在运行日志里')
+
+  const badList = fakeSchedule()
+  badList.list = async () => { throw new Error(raw) }
+  const listCtx = fakeCtx({ schedule: badList })
+  registerRemind(listCtx, { root: tmp(), log: (...args) => logs.push(args.join(' ')) })
+  const list = Object.fromEntries(listCtx.defs.map((d) => [d.name, d]))
+  const listOut = await list.her_reminders.execute({}, exec)
+  const listText = list.her_reminders.output.render({}, listOut)[0].text
+  assert.equal(listText, '[没看到：这会儿看不到有哪些提醒。]')
+  assert.equal(listText.includes(raw), false)
+  assertWorldVoice(listText)
+
+  const badCancel = fakeSchedule()
+  badCancel.active.push({ id: 'schedule-1', title: `${REMIND_TITLE_PREFIX}测试群A`, scheduledAt: '2026-11-03T13:30:00.000Z' })
+  badCancel.delete = async () => { throw new Error(raw) }
+  const cancelCtx = fakeCtx({ schedule: badCancel })
+  registerRemind(cancelCtx, { root: tmp(), log: (...args) => logs.push(args.join(' ')) })
+  const cancel = Object.fromEntries(cancelCtx.defs.map((d) => [d.name, d]))
+  const cancelOut = await cancel.her_remind_cancel.execute({ id: 'schedule-1' }, exec)
+  const cancelText = cancel.her_remind_cancel.output.render({}, cancelOut)[0].text
+  assert.equal(cancelText, '[没取消：这会儿取消不了。]')
+  assert.equal(cancelText.includes(raw), false)
+  assertWorldVoice(cancelText)
+  assert.equal(logs.filter((line) => line.includes(raw)).length >= 2, true, '列表和取消的原始错误也要留在日志里')
 })
 
 test('列表只认带前缀的提醒；取消只删自己那条', async () => {
