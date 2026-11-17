@@ -415,8 +415,11 @@ test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC �
   const main = await loadMainModule()
   const { win, sent } = fakeWindow()
   const catalog: ActionDefinition[] = [
-    registered('swing', '荡秋千', '玩耍'),
-    { id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息' },
+    { ...registered('swing', '荡秋千', '玩耍'), mediaUri: 'pet-asset://local/webm' },
+    {
+      id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息',
+      mediaUri: 'pet-asset://local/skins/rest/webm',
+    },
   ]
 
   main.sendActionMessage(win, { motion: 'waving' })
@@ -426,14 +429,20 @@ test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC �
   assert.deepEqual(sent, [
     ['pet:action', { motion: 'waving' }],
     ['pet:action-catalog', [
-      { id: 'swing', label: '荡秋千', anim: 'swing-anim', loop: false, group: '玩耍' },
-      { id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息' },
+      {
+        id: 'swing', label: '荡秋千', anim: 'swing-anim', loop: false, group: '玩耍',
+        mediaUri: 'pet-asset://local/webm',
+      },
+      {
+        id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息',
+        mediaUri: 'pet-asset://local/skins/rest/webm',
+      },
     ]],
     ['pet:action-stop', undefined],
   ])
 })
 
-test('动作注册表：默认动作与当前皮肤动作合并，皮肤同 id 覆盖且缺少皮肤表仍保留默认', async (t) => {
+test('动作注册表：混合默认与皮肤动作保留各自媒体基地址，皮肤同 id 覆盖来源', async (t) => {
   const main = await loadMainModule()
   const { root, assets } = await actionFixture()
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -456,9 +465,18 @@ test('动作注册表：默认动作与当前皮肤动作合并，皮肤同 id �
   }))
 
   assert.deepEqual(await main.readActionCatalog(assets, 'rest'), [
-    { id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应' },
-    { id: 'nap', label: '新睡觉', anim: 'new', loop: false, group: '休息' },
-    { id: 'sleep', label: '睡觉', anim: 'sleep', loop: true, group: '休息' },
+    {
+      id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应',
+      mediaUri: 'pet-asset://local/webm',
+    },
+    {
+      id: 'nap', label: '新睡觉', anim: 'new', loop: false, group: '休息',
+      mediaUri: 'pet-asset://local/skins/rest/webm',
+    },
+    {
+      id: 'sleep', label: '睡觉', anim: 'sleep', loop: true, group: '休息',
+      mediaUri: 'pet-asset://local/skins/rest/webm',
+    },
   ])
   assert.deepEqual((await main.readActionCatalog(assets, 'missing-skin')).map((action) => action.id), ['wave', 'nap'])
 })
@@ -494,7 +512,10 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
   assert.deepEqual(first.actions, [{ id: 'wave', label: '挥手', group: '回应' }])
   assert.deepEqual(sent.slice(0, 2), [
     ['pet:action-stop', undefined],
-    ['pet:action-catalog', [{ id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应' }]],
+    ['pet:action-catalog', [{
+      id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应',
+      mediaUri: 'pet-asset://local/webm',
+    }]],
   ])
   assert.deepEqual(helloBodies, [{
     version: '0.1.0',
@@ -515,7 +536,10 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
   const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
   assert.ok(getCatalog)
   assert.deepEqual(await getCatalog(), [
-    { id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应' },
+    {
+      id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应',
+      mediaUri: 'pet-asset://local/webm',
+    },
   ])
 })
 

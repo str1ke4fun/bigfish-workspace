@@ -33,6 +33,10 @@ const PET_REQUEST_TIMEOUT_MS = 5000
 const PET_HELLO_INTERVAL_MS = 60_000
 const DEFAULT_SKIN_URI = 'pet-asset://local/webm'
 
+function skinMediaUri(id: string): string {
+  return id === '' ? DEFAULT_SKIN_URI : `pet-asset://local/skins/${id}/webm`
+}
+
 const WORKBENCH_PET_URL = 'http://127.0.0.1:8788/#her/pet'
 const PRESENCE_MODE_URL = 'http://127.0.0.1:8788/api/fish/presence/mode'
 
@@ -352,7 +356,12 @@ function missingFile(error: unknown): boolean {
   return isRecord(error) && error.code === 'ENOENT'
 }
 
-async function readActionRegistry(file: string, mediaDir: string, label: string): Promise<ActionDefinition[]> {
+async function readActionRegistry(
+  file: string,
+  mediaDir: string,
+  mediaUri: string,
+  label: string,
+): Promise<ActionDefinition[]> {
   let source: string
   try {
     source = await readFile(file, 'utf8')
@@ -377,7 +386,11 @@ async function readActionRegistry(file: string, mediaDir: string, label: string)
     exists: existsSync,
     log: (message) => console.warn(`[desktop-pet] ${label}${message}`),
   })
-  return result.actions
+  return result.actions.map((action) => ({
+    ...action,
+    ...(action.seq === undefined ? {} : { seq: [...action.seq] }),
+    mediaUri,
+  }))
 }
 
 /** 读默认 actions.json，再用当前皮肤 actions.json 覆盖同 id 条目。 */
@@ -389,6 +402,7 @@ export async function readActionCatalog(assetsRoot: string, skinId: string): Pro
   const defaults = await readActionRegistry(
     join(assetsRoot, 'actions.json'),
     join(assetsRoot, 'webm'),
+    skinMediaUri(''),
     '默认',
   )
   if (skinId === '') return mergeActionCatalogs(defaults, [])
@@ -397,6 +411,7 @@ export async function readActionCatalog(assetsRoot: string, skinId: string): Pro
   const skinActions = await readActionRegistry(
     join(skinRoot, 'actions.json'),
     join(skinRoot, 'webm'),
+    skinMediaUri(skinId),
     `皮肤 ${skinId} 的`,
   )
   return mergeActionCatalogs(defaults, skinActions)
@@ -543,7 +558,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
       reportSkinError(id, decision.why, win)
       return
     }
-    await applyValidatedSkin(decision.config, `pet-asset://local/skins/${id}/webm`)
+    await applyValidatedSkin(decision.config, skinMediaUri(id))
   } catch (error) {
     if (revision === skinRevision) {
       const why = errorText(error)

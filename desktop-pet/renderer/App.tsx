@@ -23,7 +23,10 @@ import {
 } from './controller'
 import {
   borrowActionConfig,
+  chatThinkingPlan,
   petMotionProp,
+  petUriProp,
+  restoreCompletedEvent,
   restoreActionConfig,
 } from './playback-adapter'
 import type { ChatResult } from './chat'
@@ -218,6 +221,9 @@ function parseActionCatalog(raw: unknown): PlaybackAction[] {
     }
     if (anim !== undefined) action.anim = anim
     if (seq !== undefined) action.seq = seq
+    if (typeof entry.mediaUri === 'string' && entry.mediaUri.trim() !== '') {
+      action.mediaUri = entry.mediaUri.trim()
+    }
     actions.push(action)
     ids.add(id)
   }
@@ -242,6 +248,7 @@ export function App() {
   const activeUri = skin?.uri ?? ASSET_BASE
   const renderedConfig = playbackConfig ?? activeConfig
   const renderedMotion = petMotionProp(playback, steady)
+  const renderedUri = petUriProp(playback, actionCatalog, activeUri)
   const petRef = useRef<PetRef>(null)
   /** 当前/上一个皮肤用 ref 同步记录，事件回调里读到的永远是最新值。 */
   const skinRef = useRef<ActiveSkin | null>(null)
@@ -414,11 +421,13 @@ export function App() {
       petApiRef.current.motion(command.options)
     }
 
+    const restoreCompletion = restoreCompletedEvent(playbackRef.current)
+    if (restoreCompletion !== null) dispatchPlayback(restoreCompletion)
     if (!batch.commands.some((command) => command.type === 'play')) {
       callbackGenerationRef.current = null
     }
     setPendingBatch((current) => current?.id === batch.id ? null : current)
-  }, [pendingBatch, renderedConfig])
+  }, [dispatchPlayback, pendingBatch, renderedConfig])
 
   // 先订阅再主动拉一次，覆盖主进程 catalog 已提交但首推早于 renderer 挂载的竞态。
   useEffect(() => {
@@ -789,7 +798,14 @@ export function App() {
       return
     }
 
-    pet.bubble({ id: CHAT_BUBBLE_ID, title: '正在想…', loading: true, motion: 'thinking' })
+    const thinking = chatThinkingPlan(playbackRef.current)
+    if (thinking.preemptMotion) playLegacyMotion(thinking.preemptMotion)
+    pet.bubble({
+      id: CHAT_BUBBLE_ID,
+      title: '正在想…',
+      loading: true,
+      motion: thinking.bubbleMotion,
+    })
 
     void requestChat(text)
       .then((result) => {
@@ -844,7 +860,7 @@ export function App() {
     <Pet
       ref={petRef}
       config={renderedConfig ?? activeConfig}
-      uri={activeUri}
+      uri={renderedUri}
       size={size}
       motion={renderedMotion}
       dialogue

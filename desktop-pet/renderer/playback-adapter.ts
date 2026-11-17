@@ -1,5 +1,5 @@
 import type { AnimationSlot, DshPetConfig } from 'dsh-pet-component'
-import type { PlaybackAction, PlaybackSlot, PlaybackState, PetMotion } from './controller'
+import type { PlaybackAction, PlaybackEvent, PlaybackSlot, PlaybackState, PetMotion } from './controller'
 
 type BorrowAction = string | Pick<PlaybackAction, 'anim' | 'seq'>
 
@@ -77,4 +77,40 @@ export function petMotionProp(
   latestSteady: PetMotion,
 ): PetMotion {
   return playback?.status === 'holding-loop' ? playback.frozenSteady : latestSteady
+}
+
+/** 播放中的注册表动作使用自己的素材基地址；稳态/恢复继续使用当前皮肤。 */
+export function petUriProp(
+  playback: PlaybackState | null | undefined,
+  actions: readonly PlaybackAction[],
+  activeUri: string,
+): string {
+  if (
+    playback === null
+    || playback === undefined
+    || playback.status === 'idle'
+    || playback.status === 'restoring'
+    || playback.actionId === null
+  ) {
+    return activeUri
+  }
+  return actions.find((action) => action.id === playback.actionId)?.mediaUri ?? activeUri
+}
+
+/** clear-only 批次执行完 `pet.clear()` 后显式收尾，不依赖组件是否补发恢复回调。 */
+export function restoreCompletedEvent(playback: PlaybackState | null | undefined): PlaybackEvent | null {
+  if (playback?.status !== 'restoring') return null
+  return { type: 'restoreCompleted', generation: playback.generation }
+}
+
+export interface ChatThinkingPlan {
+  bubbleMotion?: 'thinking'
+  preemptMotion?: 'thinking'
+}
+
+/** 借用播放占用命令面时先显式抢占；否则保留聊天气泡原有的 thinking 行为。 */
+export function chatThinkingPlan(playback: PlaybackState | null | undefined): ChatThinkingPlan {
+  return playback !== null && playback !== undefined && playback.status !== 'idle'
+    ? { preemptMotion: 'thinking' }
+    : { bubbleMotion: 'thinking' }
 }

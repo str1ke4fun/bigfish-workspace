@@ -113,6 +113,8 @@ export interface PlaybackAction {
   seq?: string[]
   loop: boolean
   group: string
+  /** 注册表所属素材基地址；renderer 在借用槽期间切换 `<Pet uri>`。 */
+  mediaUri?: string
 }
 
 export interface PlaybackState {
@@ -145,6 +147,7 @@ export type PlaybackEvent =
   | { type: 'stopAction' }
   | { type: 'motionChanged'; motion: PetMotion | 'dragging'; generation: number }
   | { type: 'animationChanged'; animation: PlaybackAnimation | null; generation: number }
+  | { type: 'restoreCompleted'; generation: number }
   | { type: 'steadyChanged'; steady?: PetMotion }
   | { type: 'dragStarted' }
   | { type: 'skinChanged' }
@@ -334,6 +337,7 @@ function resolvePlaybackAction(
     ...(action.seq === undefined ? {} : { seq: [...action.seq] }),
     loop: action.loop === true,
     group: action.group,
+    ...(action.mediaUri === undefined ? {} : { mediaUri: action.mediaUri }),
   }
 }
 
@@ -449,6 +453,18 @@ export function reducePlayback(
 
   if (event.type === 'stopAction' || event.type === 'dragStarted' || event.type === 'skinChanged') {
     return stopPlayback(current, steady, context.now)
+  }
+
+  if (event.type === 'restoreCompleted') {
+    if (event.generation !== current.generation) {
+      return { state: current, effects: [] }
+    }
+    return {
+      state: current.status === 'restoring'
+        ? { ...current, status: 'idle', startedAt: context.now }
+        : current,
+      effects: [],
+    }
   }
 
   if (event.type === 'motionChanged') {

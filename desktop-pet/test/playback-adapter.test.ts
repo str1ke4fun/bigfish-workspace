@@ -4,6 +4,9 @@ import type { DshPetConfig } from 'dsh-pet-component'
 import { reducePlayback, PLAYBACK_SLOT, type PlaybackAction } from '../renderer/controller.ts'
 import {
   borrowActionConfig,
+  chatThinkingPlan,
+  restoreCompletedEvent,
+  petUriProp,
   petMotionProp,
   restoreActionConfig,
 } from '../renderer/playback-adapter.ts'
@@ -123,4 +126,103 @@ test('holding-loop 冻结 motion prop，stop 后交给最新 steady', () => {
   })
   assert.equal(stopped.state.status, 'restoring')
   assert.equal(petMotionProp(stopped.state, 'working'), 'working')
+})
+
+test('默认动作借用时切到默认媒体源，恢复后回到当前皮肤媒体源', () => {
+  const defaultWave: PlaybackAction = {
+    id: 'default-wave',
+    label: '默认挥手',
+    anim: 'default-wave-file',
+    loop: false,
+    group: '回应',
+    mediaUri: 'pet-asset://local/webm',
+  }
+  const skinWave: PlaybackAction = {
+    id: 'skin-wave',
+    label: '皮肤挥手',
+    anim: 'skin-wave-file',
+    loop: false,
+    group: '回应',
+    mediaUri: 'pet-asset://local/skins/rest/webm',
+  }
+  const actions = [defaultWave, skinWave]
+  const skinUri = 'pet-asset://local/skins/rest/webm'
+  const options = { actions, steady: 'idle' as const, now: 10 }
+
+  const defaultStarted = reducePlayback(null, {
+    type: 'startAction', actionId: defaultWave.id,
+  }, options)
+  assert.equal(petUriProp(defaultStarted.state, actions, skinUri), 'pet-asset://local/webm')
+
+  const restored = reducePlayback(defaultStarted.state, { type: 'stopAction' }, {
+    ...options,
+    now: 20,
+  })
+  assert.equal(petUriProp(restored.state, actions, skinUri), skinUri)
+
+  const skinStarted = reducePlayback(null, {
+    type: 'startAction', actionId: skinWave.id,
+  }, options)
+  assert.equal(petUriProp(skinStarted.state, actions, skinUri), skinUri)
+})
+
+test('App clear-only 停止路径显式完成 restoring，不依赖组件回调', () => {
+  const action: PlaybackAction = {
+    id: 'loop',
+    label: '循环',
+    anim: 'loop-file',
+    loop: true,
+    group: '测试',
+  }
+  const options = { actions: [action], steady: 'idle' as const, now: 10 }
+  const started = reducePlayback(null, { type: 'startAction', actionId: action.id }, options)
+  const stopped = reducePlayback(started.state, { type: 'stopAction' }, {
+    ...options,
+    steady: 'working',
+    now: 20,
+  })
+
+  assert.equal(stopped.state.status, 'restoring')
+  const completion = restoreCompletedEvent(stopped.state)
+  assert.deepEqual(completion, {
+    type: 'restoreCompleted',
+    generation: stopped.state.generation,
+  })
+
+  const settled = reducePlayback(stopped.state, completion!, {
+    ...options,
+    steady: 'working',
+    now: 30,
+  })
+  assert.equal(settled.state.status, 'idle')
+  assert.equal(settled.state.steady, 'working')
+})
+
+test('聊天 thinking 遇到借用播放时先显式停止，不再用 bubble motion 抢命令面', () => {
+  const action: PlaybackAction = {
+    id: 'loop',
+    label: '循环',
+    anim: 'loop-file',
+    loop: true,
+    group: '测试',
+  }
+  const options = { actions: [action], steady: 'thinking' as const, now: 10 }
+  const started = reducePlayback(null, { type: 'startAction', actionId: action.id }, options)
+
+  assert.deepEqual(chatThinkingPlan(started.state), { preemptMotion: 'thinking' })
+  assert.deepEqual(chatThinkingPlan(null), { bubbleMotion: 'thinking' })
+
+  const stopped = reducePlayback(started.state, { type: 'stopAction' }, {
+    ...options,
+    steady: 'working',
+    now: 20,
+  })
+  const completion = restoreCompletedEvent(stopped.state)
+  const settled = reducePlayback(stopped.state, completion!, {
+    ...options,
+    steady: 'working',
+    now: 30,
+  })
+  assert.equal(settled.state.status, 'idle')
+  assert.equal(settled.state.steady, 'working')
 })

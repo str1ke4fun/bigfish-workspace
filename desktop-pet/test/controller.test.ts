@@ -392,6 +392,32 @@ test('播放器：stop 使用最新 steady，当前 generation 的恢复回调�
   assert.equal(restored.state.status, 'idle')
 })
 
+test('播放器：clear 后 restoreCompleted 只接受当前 restoring generation', () => {
+  const action = { id: 'loop', label: '循环', anim: 'loop-file', loop: true, group: '测试' }
+  const options = { actions: [action], steady: 'idle' as const, now: 10 }
+  const started = controller.reducePlayback(null, { type: 'startAction', actionId: 'loop' }, options)
+  const stopped = controller.reducePlayback(started.state, { type: 'stopAction' }, {
+    ...options,
+    steady: 'working',
+    now: 20,
+  })
+
+  const stale = controller.reducePlayback(stopped.state, {
+    type: 'restoreCompleted',
+    generation: started.state.generation,
+  }, { ...options, steady: 'working', now: 30 })
+  assert.deepEqual(stale.state, stopped.state)
+  assert.deepEqual(stale.effects, [])
+
+  const settled = controller.reducePlayback(stopped.state, {
+    type: 'restoreCompleted',
+    generation: stopped.state.generation,
+  }, { ...options, steady: 'working', now: 40 })
+  assert.equal(settled.state.status, 'idle')
+  assert.equal(settled.state.steady, 'working')
+  assert.deepEqual(settled.effects, [])
+})
+
 test('播放器：拖动和 skin 切换抢占动作并保留最新 steady', () => {
   const action = { id: 'loop', label: '循环', anim: 'loop-file', loop: true, group: '测试' }
   const baseOptions = { actions: [action], steady: 'idle' as const, now: 10 }

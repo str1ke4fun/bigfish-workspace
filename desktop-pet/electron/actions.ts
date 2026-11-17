@@ -17,6 +17,8 @@ export interface ActionDefinition {
   seq?: string[]
   loop: boolean
   group: string
+  /** 内部字段：播放该动作时应使用的素材基地址；hello/菜单不暴露。 */
+  mediaUri?: string
 }
 
 export interface ParseActionsOptions {
@@ -63,6 +65,7 @@ function cloneAction(action: ActionDefinition): ActionDefinition {
   }
   if (action.anim !== undefined) copy.anim = action.anim
   if (action.seq !== undefined) copy.seq = [...action.seq]
+  if (action.mediaUri !== undefined) copy.mediaUri = action.mediaUri
   return copy
 }
 

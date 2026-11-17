@@ -13,6 +13,7 @@ interface PetActionCatalogEntry extends PetActionCatalogMetadata {
   anim?: string
   seq?: string[]
   loop: boolean
+  mediaUri?: string
 }
 
 interface PetActionReloadResult {
