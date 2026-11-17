@@ -404,6 +404,26 @@ test('wx_peek 的 OCR JSON 投影成可读文本，不泄露坐标与置信度',
   assert.equal(text.includes('retcode'), false)
 })
 
+test('微信工具返回文案不把机械词交给她', () => {
+  const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  for (const bad of [
+    "const OFF = '微信通道已关闭。'",
+    '坐标可能是旧的',
+    'OCR cannot verify the active conversation or authorize sending.',
+    '这条用了主动额度',
+    'wx_context: 需要 task_id。',
+    'wx_task_snooze: 需要 task_id。',
+    'wx_task_done: 需要 task_id。',
+    'wx_sticker_tag: id 不能为空。',
+    '[微信·主机] ${poke}',
+    '回执：消息已出现在列表末尾。',
+    "throw new Error('树落后于屏幕",
+    ' 台账：${r.outMsgId}',
+  ]) {
+    assert.equal(src.includes(bad), false, `返回文案仍含机械词：${bad}`)
+  }
+})
+
 test('所有微信工具说明压短，参数集合与 required 集合保持不变', () => {
   const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
   const expectedDescriptions = {

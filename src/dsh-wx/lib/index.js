@@ -178,7 +178,7 @@ const textOut = { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text'
 // 旧渲染路径最多只该给 24k，不能把整段 JSON 塞进上下文。
 const ocrOut = { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: boundedText(v) }] }
 
-const OFF = '微信通道已关闭。'
+const OFF = '微信这会儿没开。'
 
 // ---------------------------------------------------------------- 点谁
 /** wx_peek 里一行会话常被整行贴回来当 label：先抹掉未读数、角标、时间、坐标再比。 */
@@ -310,7 +310,7 @@ function createFreshness(log = () => {}) {
     /** 写进工具返回值的提示。没落后就是空串。 */
     notice(now = Date.now()) {
       if (!stale) return ''
-      return `\n[提示] 屏幕上的会话列表已变化，读到的树没有跟上（自 ${hms(stale.since)}，${Math.round((now - stale.since) / 1000)} 秒）。上面的名字、顺序、坐标可能是旧的。`
+      return `\n[提示] 屏幕上的会话列表已变化，眼前看到的可能不是最新的（自 ${hms(stale.since)}，${Math.round((now - stale.since) / 1000)} 秒）。上面的名字和顺序可能已经变了。`
     },
   }
 }
@@ -675,7 +675,7 @@ export function apply(ctx, config = {}) {
   // 通道隔离：工具名单是全局的，QQ 会话里也看得到 wx_*。QQ 里的对话不该顺手去操作微信，这里在执行层拦住。
   // （主机自己在 web 界面里和她对话时放行，调试要用。）
   const deny = (exec) => {
-    if (String(exec?.agent?.session?.id ?? '').startsWith('onebot-')) throw new Error('微信工具在 QQ 会话里不可用。')
+    if (String(exec?.agent?.session?.id ?? '').startsWith('onebot-')) throw new Error('在这儿碰不到微信。')
   }
 
   // ---- 主机优先（2026-10-30）----
@@ -784,7 +784,7 @@ export function apply(ctx, config = {}) {
   async function ocrRead() {
     const raw = await run(['ocr'], 60_000)
     let data
-    try { data = JSON.parse(raw) } catch { throw new Error('OCR 返回了无效 JSON') }
+    try { data = JSON.parse(raw) } catch { throw new Error('屏幕上的字没读明白。') }
     const parsed = ocrSnapshot(data, { trigger: policy().trigger })
     // 侧栏会把长名字截断（「星晓家园10号楼13...」），OCR 读到的只是前一段。
     // 在名单里能找到唯一全名时改写成全名，免得 @ 戳和发送闸对到两个不同的键。
@@ -1183,10 +1183,10 @@ export function apply(ctx, config = {}) {
     const chatRow = after.parsed.chats.find((c) => sameName(c.name, allowed.chat))
     const inPreview = !!chatRow && chatRow.preview.includes(head.slice(0, 10))
     const receipt = inMsgs
-      ? '回执：消息已出现在列表末尾。'
+      ? '末尾那儿已经出现了。'
       : inPreview
-        ? '回执：会话列表预览已显示该内容，消息列表末尾未见。'
-        : '回执：消息列表末尾和会话预览都没有看到该内容（可能未发出，或树尚未刷新），用 wx_peek 复查。'
+        ? '侧栏里能看到，最后那条消息里还没看见。'
+        : '末尾和侧栏都还没看见；先别当它发出去了。'
     const sent = classifyWxSend({ inMsgs, inPreview })
     // 只有末尾真看见才落台账、写 outbox；侧栏预览和没看见都不算发成功。
     let outMsgId = ''
@@ -1222,7 +1222,7 @@ export function apply(ctx, config = {}) {
     const want = String(chat ?? '').trim()
     const sid = String(id ?? '').trim()
     if (!want) throw new Error('wx_sticker_send: chat 不能为空。')
-    if (!sid) throw new Error('wx_sticker_send: id 不能为空。')
+    if (!sid) throw new Error('还没说是哪张表情。')
 
     const allowed = canSendWithPolicy(p, want)
     if (!allowed.ok) throw new Error(allowed.why)
@@ -1232,7 +1232,7 @@ export function apply(ctx, config = {}) {
 
     let s = await look()
     if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不发送。')
-    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+    if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不发。' + fresh.notice().trim())
 
     if (!sameName(s.parsed.current, allowed.chat)) {
       const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
@@ -1242,7 +1242,7 @@ export function apply(ctx, config = {}) {
       await run(['click', String(target.box.cx), String(target.box.cy), '1'])
       await sleep(700)
       s = await look({ confirm: false })
-      if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不发送。' + fresh.notice().trim())
+      if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不发。' + fresh.notice().trim())
       if (!sameName(s.parsed.current, allowed.chat)) {
         throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不发送。`)
       }
@@ -1255,7 +1255,7 @@ export function apply(ctx, config = {}) {
     await run(['clean'], 30_000).catch(() => '')
     fresh.reset()
     s = await look({ confirm: false })
-    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不发送。' + fresh.notice().trim())
+    if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了现在停在哪儿，先不发。' + fresh.notice().trim())
     if (!sameName(s.parsed.current, allowed.chat)) {
       throw new Error(`当前会话是「${s.parsed.current || '读不到'}」，不是「${allowed.chat}」，不发送。`)
     }
@@ -1308,7 +1308,7 @@ export function apply(ctx, config = {}) {
     const want = String(chat ?? '').trim()
     let s = await look()
     if (!s.parsed.ok) throw new Error('读不到微信窗口，不采集。')
-    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不采集。' + fresh.notice().trim())
+    if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不收。' + fresh.notice().trim())
 
     if (want) {
       const allowed = canSendWithPolicy(p, want)
@@ -1321,7 +1321,7 @@ export function apply(ctx, config = {}) {
         await run(['click', String(target.box.cx), String(target.box.cy), '1'])
         await sleep(700)
         s = await look({ confirm: false })
-        if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不采集。' + fresh.notice().trim())
+        if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不收。' + fresh.notice().trim())
         if (!sameName(s.parsed.current, allowed.chat)) {
           throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不采集。`)
         }
@@ -1356,7 +1356,7 @@ export function apply(ctx, config = {}) {
 
     let s = await look()
     if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不搜索。')
-    if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不搜索。' + fresh.notice().trim())
+    if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不找。' + fresh.notice().trim())
 
     if (!sameName(s.parsed.current, allowed.chat)) {
       const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
@@ -1366,7 +1366,7 @@ export function apply(ctx, config = {}) {
       await run(['click', String(target.box.cx), String(target.box.cy), '1'])
       await sleep(700)
       s = await look({ confirm: false })
-      if (fresh.stale) throw new Error('树落后于屏幕，无法确认会话，不搜索。' + fresh.notice().trim())
+      if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不找。' + fresh.notice().trim())
       if (!sameName(s.parsed.current, allowed.chat)) {
         throw new Error(`点了「${allowed.chat}」，但当前会话是「${s.parsed.current || '读不到'}」，不搜索。`)
       }
@@ -1384,7 +1384,7 @@ export function apply(ctx, config = {}) {
     await run(['clean'], 30_000).catch(() => '')
     fresh.reset()
     s = await look({ confirm: false })
-    if (fresh.stale) throw new Error('树落后于屏幕，无法确认当前会话，不搜索。' + fresh.notice().trim())
+    if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了现在停在哪儿，先不找。' + fresh.notice().trim())
     if (!sameName(s.parsed.current, allowed.chat)) {
       throw new Error(`当前会话是「${s.parsed.current || '读不到'}」，不是「${allowed.chat}」，不搜索。`)
     }
@@ -2142,7 +2142,7 @@ export function apply(ctx, config = {}) {
         saveMentions(grantMentioned(readMentions(), poke, p.allowChats, Date.now()))
         // poke 里点到的允许会话，同样算「最近叫醒过」；她随后说「提醒我」时才有目标。
         noteRecent(p.allowChats.filter((n) => String(poke).includes(n)))
-        await deliver(await ensureWxSession(), `[微信·主机] ${poke}`)
+        await deliver(await ensureWxSession(), `[微信·叫你] ${poke}`)
         console.log('[dsh-wx] 耳朵：主机塞了一句进去 → ' + poke.slice(0, 60))
         return
       }
@@ -2309,7 +2309,7 @@ export function apply(ctx, config = {}) {
       deny(exec)
       if (!policy().enabled) throw new Error(OFF)
       const s = await look()
-      if (s.source === 'ocr') return JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: 'OCR cannot verify the active conversation or authorize sending.' }, null, 2)
+      if (s.source === 'ocr') return JSON.stringify({ source: 'ocr', current: '', currentVerified: false, chats: s.parsed.chats.map(({ name, unread, mention, preview, box, nameConfidence }) => ({ name, unread, mention, preview, box, nameConfidence })), messages: s.parsed.messages.map(({ text, confidence }) => ({ text, confidence, verified: false })), note: '屏幕上的字不足以确认当前会话，也不能据此发送。' }, null, 2)
       // 尾巴（[提示]）比正文更重要：先给它留位置，再截正文。
       return clipPeekBody(s.raw, fresh.notice())
     },
@@ -2351,10 +2351,9 @@ export function apply(ctx, config = {}) {
             // 先过频率闸，再扣额度：频率拒绝时不能白扣一条。
             const g = await gateSend()
             await speechGate(g.chat)
-            const admitted = await gateSend({ consume: true, expected: g.chat })
+            await gateSend({ consume: true, expected: g.chat })
             await run(['key', 'Return'])
-            const pro = admitted.proactive ? `这条用了主动额度，今天「${admitted.chat}」还剩 ${admitted.proactiveLeft} 条。` : ''
-            return '树里没有“发送”按钮，已按回车发送。' + (pro ? ' ' + pro : '') + fresh.notice()
+            return '已经按下回车发送了。' + fresh.notice()
           }
           throw new WxToolError('WX_CLICK_TARGET_NOT_FOUND', '[没做成，过会儿再试]')
         }
@@ -2374,7 +2373,7 @@ export function apply(ctx, config = {}) {
       parts.push(target ? `落点：${target.kind === 'chat' ? '会话' : target.kind === 'control' ? '控件' : '消息'}“${target.name}”` : '落点：无可点击元素')
       const cur = after.parsed.current
       if (target?.kind === 'chat' && !fresh.stale) {
-        parts.push(after.source === 'ocr' ? `Selected conversation: ${target.name}; OCR cannot verify the active conversation.` : sameName(cur, target.name) ? `当前会话：“${cur}”` : `当前会话：“${cur || '读不到'}”，与目标“${target.name}”不一致`)
+        parts.push(after.source === 'ocr' ? `眼前像是「${target.name}」，但还没认准` : sameName(cur, target.name) ? `当前会话：“${cur}”` : `当前会话：“${cur || '读不到'}”，与目标“${target.name}”不一致`)
       } else {
         parts.push(`当前会话：“${cur || '读不到'}”`)
       }
@@ -2510,7 +2509,7 @@ export function apply(ctx, config = {}) {
       deny(exec)
       const a = args || {}
       const taskId = String(a.task_id ?? '').trim()
-      if (!taskId) throw new Error('wx_context: 需要 task_id。')
+      if (!taskId) throw new Error('这儿缺了那件事的记号。')
       const r = await contextStore.contextForTask({
         taskId,
         query: String(a.query ?? ''),
@@ -2568,7 +2567,7 @@ export function apply(ctx, config = {}) {
       deny(exec)
       const a = args || {}
       const taskId = String(a.task_id ?? '').trim()
-      if (!taskId) throw new Error('wx_task_snooze: 需要 task_id。')
+      if (!taskId) throw new Error('这儿缺了那件事的记号。')
       const minutes = Math.max(1, Math.min(24 * 60, Number(a.minutes) || 15))
       const r = contextStore.snooze({ taskId, minutes })
       if (!r?.ok) throw new Error(r?.why || '任务没记上。')
@@ -2593,7 +2592,7 @@ export function apply(ctx, config = {}) {
       deny(exec)
       const a = args || {}
       const taskId = String(a.task_id ?? '').trim()
-      if (!taskId) throw new Error('wx_task_done: 需要 task_id。')
+      if (!taskId) throw new Error('这儿缺了那件事的记号。')
       const r = contextStore.done({ taskId, note: String(a.note ?? '') })
       if (!r?.ok) throw new Error(r?.why || '任务没记上。')
       return projectWxTaskDone()
@@ -2637,9 +2636,8 @@ export function apply(ctx, config = {}) {
         // 回车视同发送：先过频率闸，再扣一次主动额度，频率拒绝时不白扣。
         const g = await gateSend()
         await speechGate(g.chat)
-        const admitted = await gateSend({ consume: true, expected: g.chat })
-        const pro = admitted.proactive ? `这条用了主动额度，今天「${admitted.chat}」还剩 ${admitted.proactiveLeft} 条。` : ''
-        where = `当前会话：“${admitted.chat}”。${pro ? pro : ''}`
+        await gateSend({ consume: true, expected: g.chat })
+        where = `当前会话：“${g.chat}”。`
       }
       await run(['key', keys])
       return `已按 ${keys}。${where}` + fresh.notice()
@@ -2750,7 +2748,7 @@ export function apply(ctx, config = {}) {
       if (!policy().enabled) throw new Error(OFF)
       const a = args || {}
       const id = String(a.id ?? '').trim()
-      if (!id) throw new Error('wx_sticker_tag: id 不能为空。')
+      if (!id) throw new Error('还没说是哪张表情。')
       const patch = {}
       if (a.text != null) patch.text = String(a.text)
       if (a.desc != null) patch.desc = String(a.desc)
@@ -2797,8 +2795,8 @@ export function apply(ctx, config = {}) {
         taskId: String(args?.task_id ?? ''),
       }))
       return r.confirmed
-        ? `已把表情 ${r.id} 发到「${r.chat}」。${r.receipt}${r.outMsgId ? ` 台账：${r.outMsgId}` : ''}`
-        : `表情点击已执行，但没有确认发对了：${r.receipt}先用 wx_peek 看当前会话，别重复点。`
+        ? `[表情发到「${r.chat}」了，末尾看见了]`
+        : '[点下去了，没看见落下去。先看看现在停在哪儿，别急着再点]'
     },
   })
 
@@ -2822,8 +2820,8 @@ export function apply(ctx, config = {}) {
         which: args?.which,
       }))
       return r.confirmed
-        ? `已收藏「${r.chat}」里的这张表情（索引 ${r.id}）。${r.receipt}`
-        : `点了 Add Sticker，但没有确认收藏成功：${r.receipt}`
+        ? '[收进收藏了]'
+        : '[点了收藏，没确认下来]'
     },
   })
 
@@ -2852,8 +2850,8 @@ export function apply(ctx, config = {}) {
         taskId: String(args?.task_id ?? ''),
       }))
       return r.confirmed
-        ? `已把搜索「${r.keyword}」的第 ${r.pick + 1} 个结果发到「${r.chat}」。${r.receipt}${r.outMsgId ? ` 台账：${r.outMsgId}` : ''}`
-        : `点了搜索结果，但没有确认发出去：${r.receipt}`
+        ? `[表情发到「${r.chat}」了，末尾看见了]`
+        : '[点下去了，没看见落下去]'
     },
   })
 

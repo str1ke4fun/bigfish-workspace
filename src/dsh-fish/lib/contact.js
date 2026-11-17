@@ -51,7 +51,7 @@ export function isContactMessage({ event, surface } = {}) {
   const text = textOf(event.data)
   if (text === WAKE_TRIGGER || text === CLOSING_TRIGGER_TEXT) return false
   if (text === BILI_TRIGGER) return false
-  if (text.startsWith('[微信·主机]')) return false
+  if (text.startsWith('[微信·主机]') || text.startsWith('[微信·叫你]')) return false
   return true
 }
 

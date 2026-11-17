@@ -320,6 +320,7 @@ test('没有 sessionController 时明确说"说不了"，不是静默失败', as
     const r = await sayToHer({}, '在吗', { root })
     assert.equal(r.ok, false)
     assert.match(r.note, /说不了/)
+    assert.doesNotMatch(r.note, /宿主/)
   } finally { await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
 })
 

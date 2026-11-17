@@ -310,6 +310,8 @@ test('「想一想」的提示词不要求她总结人生', () => {
   assert.match(p, /这一周/)
   assert.match(p, /不要总结/)
   assert.match(p, /narration/)
+  assert.doesNotMatch(p, /\bid\b/i)
+  assert.match(p, /记号/)
 })
 
 // ---- personaBudget：用量口径必须是「字」不是「字节」（第 11 个静默 bug） ----

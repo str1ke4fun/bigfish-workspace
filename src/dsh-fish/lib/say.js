@@ -210,7 +210,7 @@ export async function sayToHer(ctx, text, deps = {}) {
   }
 
   const sc = (() => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } })()
-  if (!sc?.prompt) return { ok: false, note: '宿主没有会话服务，说不了。', said: [], herReply: '' }
+  if (!sc?.prompt) return { ok: false, note: '这会儿接不上话，说不了。', said: [], herReply: '' }
 
   const { events: firstEvents } = await readEvents(root)
   const { config } = await loadConfig(root)

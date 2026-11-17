@@ -282,6 +282,8 @@ test('growth_commit 说明是世界声，参数键和必填集合不变', async 
     )
     assert.equal(def.parameters.properties.confidence.description, '你有多确定，不确定就写低一点。')
 
+    assert.equal(def.output.schema.properties.id.description, '这条记录的记号，以后改它时要带上')
+
     for (const spec of Object.values(def.parameters.properties)) {
       assert.doesNotMatch(String(spec.description ?? ''), /工具|宿主|状态|设定|schema|JSON|\{|\}|type=|owner|chatId/)
     }

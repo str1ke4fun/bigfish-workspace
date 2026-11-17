@@ -123,7 +123,7 @@ export function registerCapture(ctx, deps = {}) {
           type: 'object',
           properties: {
             ok: { type: 'boolean' },
-            id: { type: 'string', description: '这条记录的 id，以后 revise 要用它' },
+            id: { type: 'string', description: '这条记录的记号，以后改它时要带上' },
             note: { type: 'string' },
           },
           required: ['ok', 'id', 'note'],

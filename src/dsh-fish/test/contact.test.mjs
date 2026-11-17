@@ -58,11 +58,13 @@ test('isContactMessage：各系统 rpcId 前缀都不算（含 fish-）', () => 
   assert.equal(isContactMessage(msg('x', { rpcId: 'rpc-normal' })), true)
 })
 
-test('isContactMessage：三种 trigger 与 [微信·主机] poke 不算', () => {
+test('isContactMessage：三种 trigger 与微信手动叫醒 poke 不算', () => {
   assert.equal(isContactMessage(msg(WAKE_TRIGGER)), false)
   assert.equal(isContactMessage(msg('（收工了。）')), false)
   assert.equal(isContactMessage(msg(BILI_TRIGGER)), false)
   assert.equal(isContactMessage(msg('[微信·主机] poke')), false)
+  assert.equal(isContactMessage(msg('[微信·叫你] poke')), false, '手动叫醒换了标记后仍不算真人来找')
+  assert.equal(isContactMessage(msg('普通消息 [微信·叫你] 不在开头')), true)
   assert.equal(isContactMessage(msg('普通消息 [微信·主机] 不在开头')), true)
 })
 

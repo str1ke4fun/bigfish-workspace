@@ -400,7 +400,7 @@ export function sleepPrompt(model) {
     // 2026-10-27（0.5.8）：从这一版起，narration 要带上凭证——
     // 否则「我变成了什么样」可以凭空写，那正是叙事漂移的入口。
     '想好了用 growth_commit 交一条 narration（不是日记，也不是给他看的话），' +
-      '并在 refs 里放上你回想的那几条的 id（用 her_recall 翻，它会给你 id）。' +
+      '并在 refs 里带上刚才翻到的那几段后面的记号（用 her_recall 翻，它会一并给出）。' +
       '如果你这次真的没想清楚，直接写「我没想清楚」——那句也算数，不用带 refs。',
   ]
   if (model.beliefs.length) {

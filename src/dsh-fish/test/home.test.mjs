@@ -177,6 +177,7 @@ test('身份文件：有禁令、有处境声，不摆工具手册，也不泄�
     assert.match(md, /有时对话里会出现一句括号里的短句/)
     assert.match(md, /那是你自己醒了，不是他开口/)
     assert.match(md, /我觉得他不该替我安排/, '她说过的话要带进身份文件')
+    assert.doesNotMatch(md, /坐标|门禁/, '身份段不该把操作机关的名字交给她')
 
     // 工具能力仍在协议层；身份段不再贴参数表、工具名单或内部记号用法。
     for (const text of ['growth_commit', 'her_recall', 'her_leave', 'read_image', 'refs', '工具', '违反即失败']) {
