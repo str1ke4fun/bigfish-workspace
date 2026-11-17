@@ -469,6 +469,8 @@ export async function reloadRegisteredActions(
     setActionCatalog(nextCatalog, win)
     lastActionError = null
     const published = await enqueueHello(async () => {
+      // 排队期间皮肤可能刚提交；执行时必须用最新 ownership 复核，不能把旧 catalog 补发到新皮肤之后。
+      if (generation !== actionCatalogGeneration || skinId !== activeSkinId) return false
       const ok = await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog))
       if (!ok && generation === actionCatalogGeneration && skinId === activeSkinId) {
         setActionCatalog(previousCatalog, win)
@@ -550,6 +552,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
     const nextCatalog = mergeActionCatalogs(nextActions, [])
     // hello 是候选皮肤/目录的服务端确认点；确认前不推给 renderer，失败或已被替代时 UI 保持原基线。
     const published = await enqueueHello(async () => {
+      if (revision !== skinRevision) return false
       return await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog))
     })
     if (revision !== skinRevision) return false

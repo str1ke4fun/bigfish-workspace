@@ -747,6 +747,78 @@ test('动作重载：旧 reload 在较新皮肤提交后完成也不覆盖新 ca
   )
 })
 
+test('动作重载：皮肤 hello 未完成时排队的旧 catalog 不会在新皮肤提交后补发', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeValidSkin(assets, 'next', '下一张皮肤')
+
+  const helloBodies: Array<{ actions: Array<{ id: string }> }> = []
+  let releaseSkinHello!: () => void
+  let markSkinHelloStarted!: () => void
+  const skinHelloGate = new Promise<void>((resolve) => { releaseSkinHello = resolve })
+  const skinHelloStarted = new Promise<void>((resolve) => { markSkinHelloStarted = resolve })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { actions: Array<{ id: string }> }
+    helloBodies.push(body)
+    if (body.actions.some((action) => action.id === 'next-wave')) {
+      markSkinHelloStarted()
+      await skinHelloGate
+    }
+    return new Response('{"ok":true}', { status: 200 })
+  }
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  const { win, sent } = fakeWindow()
+  const defaultActions = [registered('default-wave', '默认挥手', '回应')]
+  const nextActions = [registered('next-wave', '新皮肤挥手', '回应')]
+  const oldReloadActions = [registered('old-reload-wave', '旧目录挥手', '回应')]
+  assert.equal(await main.applySkin('', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => defaultActions,
+  }), true)
+
+  helloBodies.length = 0
+  sent.length = 0
+  const skin = main.applySkin('next', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => nextActions,
+  })
+  await skinHelloStarted
+
+  const reload = main.reloadRegisteredActions(win, assets, async (_root, skinId) => {
+    assert.equal(skinId, '')
+    return oldReloadActions
+  })
+  await waitFor(() => sent.some(([channel, payload]) => (
+    channel === 'pet:action-catalog'
+    && Array.isArray(payload)
+    && (payload as Array<{ id?: string }>).some((action) => action.id === 'old-reload-wave')
+  )))
+
+  releaseSkinHello()
+  assert.equal(await skin, true)
+  const stale = await reload
+  assert.equal(stale.ok, false)
+  assert.equal(stale.stale, true)
+  assert.deepEqual(helloBodies.map((body) => body.actions.map((action) => action.id)), [
+    ['next-wave'],
+  ])
+
+  const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getCatalog)
+  assert.deepEqual(await getCatalog(), [
+    { id: 'next-wave', label: '新皮肤挥手', anim: 'next-wave-anim', loop: false, group: '回应' },
+  ])
+})
+
 test('皮肤切换：单个事件日志证明 hello 确认后才提交 skin 与 catalog', async (t) => {
   const main = await loadMainModule()
   const { root, assets } = await actionFixture()

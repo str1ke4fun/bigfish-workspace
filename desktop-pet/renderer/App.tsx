@@ -25,13 +25,16 @@ import {
   borrowActionConfig,
   chatReplyPlaybackDecision,
   chatThinkingPlan,
+  createActionErrorOwner,
   createPlaybackCallbackArbiter,
   pendingServerActionAfterPlaybackEvent,
   petErrorTarget,
   petMotionProp,
   petUriProp,
+  retainsActionErrorOwnership,
   restoreCompletedEvent,
   restoreActionConfig,
+  type ActionErrorOwner,
 } from './playback-adapter'
 import type { ChatResult } from './chat'
 import {
@@ -277,8 +280,8 @@ export function App() {
   actionCatalogRef.current = actionCatalog
   const playbackRef = useRef<PlaybackState | null>(playback)
   playbackRef.current = playback
-  /** 动作媒体可能连续报错；restoring 完成前保持动作错误所有权，不能改判皮肤失败。 */
-  const actionErrorOwnedRef = useRef(false)
+  /** 动作媒体可能连续报错；ownership 绑定首次失败的动作 generation/source，恢复完成前不能串给别的动作或皮肤。 */
+  const actionErrorOwnerRef = useRef<ActionErrorOwner | null>(null)
   const playbackConfigRef = useRef<DshPetConfig | null>(playbackConfig)
   playbackConfigRef.current = playbackConfig
   const latestSteadyRef = useRef<PetMotion>(steady)
@@ -336,7 +339,10 @@ export function App() {
         now: Date.now(),
       })
       playbackRef.current = result.state
-      if (result.state.status === 'idle') actionErrorOwnedRef.current = false
+      const errorOwner = actionErrorOwnerRef.current
+      if (errorOwner && !retainsActionErrorOwnership(result.state, errorOwner)) {
+        actionErrorOwnerRef.current = null
+      }
       setPlayback(result.state)
 
       let nextConfig = playbackConfigRef.current
@@ -796,8 +802,9 @@ export function App() {
    * 只有稳态皮肤自身失败才回退到上一个皮肤。
    */
   const handlePetError = (cause: unknown): void => {
-    if (petErrorTarget(playbackRef.current, actionErrorOwnedRef.current) === 'action') {
-      actionErrorOwnedRef.current = true
+    const currentPlayback = playbackRef.current
+    if (petErrorTarget(currentPlayback, actionErrorOwnerRef.current) === 'action') {
+      actionErrorOwnerRef.current = createActionErrorOwner(currentPlayback) ?? actionErrorOwnerRef.current
       dispatchPlayback({ type: 'stopAction' }, { forceBase: true })
       console.warn('[desktop-pet] 动作素材播不了，已停止当前动作', cause)
       pet.bubble({
@@ -810,7 +817,7 @@ export function App() {
       return
     }
 
-    actionErrorOwnedRef.current = false
+    actionErrorOwnerRef.current = null
     const current = skinRef.current
     dispatchPlayback({ type: 'skinChanged' }, { forceBase: true })
     if (!current) return

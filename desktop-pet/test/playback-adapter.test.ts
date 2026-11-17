@@ -6,6 +6,7 @@ import {
   borrowActionConfig,
   chatReplyPlaybackDecision,
   chatThinkingPlan,
+  createActionErrorOwner,
   createPlaybackCallbackArbiter,
   pendingServerActionAfterPlaybackEvent,
   petErrorTarget,
@@ -333,16 +334,61 @@ test('同一动作的重复素材错误在 restoring 完成前仍归动作，不
   const options = { actions: [action], steady: 'idle' as const, now: 10 }
   const started = reducePlayback(null, { type: 'startAction', actionId: action.id }, options)
 
-  assert.equal(petErrorTarget(started.state, false), 'action')
+  const owner = createActionErrorOwner(started.state)
+  assert.deepEqual(owner, {
+    generation: started.state.generation,
+    restoreGeneration: started.state.generation + 1,
+    actionId: action.id,
+    source: 'bad-video-file',
+  })
+  assert.equal(petErrorTarget(started.state, owner), 'action')
   const stopped = reducePlayback(started.state, { type: 'stopAction' }, options)
   assert.equal(stopped.state.status, 'restoring')
-  assert.equal(petErrorTarget(stopped.state, true), 'action')
+  assert.equal(petErrorTarget(stopped.state, owner), 'action')
+  assert.equal(petErrorTarget(stopped.state, owner), 'action')
 
   const completion = restoreCompletedEvent(stopped.state)
   assert.ok(completion)
   const settled = reducePlayback(stopped.state, completion!, options)
   assert.equal(settled.state.status, 'idle')
-  assert.equal(petErrorTarget(settled.state, true), 'skin')
+  assert.equal(petErrorTarget(settled.state, owner), 'skin')
+})
+
+test('A 动作的错误归属不会串到 B 的恢复段', () => {
+  const a: PlaybackAction = {
+    id: 'action-a',
+    label: '动作 A',
+    anim: 'a-file',
+    loop: false,
+    group: '测试',
+  }
+  const b: PlaybackAction = {
+    id: 'action-b',
+    label: '动作 B',
+    anim: 'b-file',
+    loop: true,
+    group: '测试',
+  }
+  const options = { actions: [a, b], steady: 'idle' as const, now: 10 }
+  const aStarted = reducePlayback(null, { type: 'startAction', actionId: a.id }, options).state
+  const ownerA = createActionErrorOwner(aStarted)
+  assert.ok(ownerA)
+  assert.equal(ownerA.actionId, 'action-a')
+  assert.equal(ownerA.source, 'a-file')
+
+  const aStopped = reducePlayback(aStarted, { type: 'stopAction' }, options).state
+  const bStarted = reducePlayback(aStopped, { type: 'startAction', actionId: b.id }, {
+    ...options,
+    now: 20,
+  }).state
+  const bStopped = reducePlayback(bStarted, { type: 'stopAction' }, {
+    ...options,
+    now: 30,
+  }).state
+
+  assert.equal(aStopped.status, 'restoring')
+  assert.equal(bStopped.status, 'restoring')
+  assert.equal(petErrorTarget(bStopped, ownerA), 'skin')
 })
 
 test('停止、拖动、换皮肤和更新动作都会清掉待补目录的服务端动作', () => {

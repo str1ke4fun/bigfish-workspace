@@ -186,19 +186,62 @@ export function createPlaybackCallbackArbiter(): PlaybackCallbackArbiter {
   }
 }
 
+export interface ActionErrorOwner {
+  /** 首次报错的播放 generation；停止动作后 reducer 会把它推进到 restoreGeneration。 */
+  generation: number
+  restoreGeneration: number
+  actionId: string
+  /** 首次报错的动画源；只属于这个动作段，不能借给后来的动作或皮肤。 */
+  source: string | null
+}
+
+/** 只有正在播放的注册表动作才能建立错误所有权；恢复段必须沿用原 owner。 */
+export function createActionErrorOwner(
+  playback: PlaybackState | null | undefined,
+): ActionErrorOwner | null {
+  if (
+    playback === null
+    || playback === undefined
+    || playback.actionId === null
+    || !(
+      playback.status === 'playing-once'
+      || playback.status === 'playing-seq'
+      || playback.status === 'holding-loop'
+    )
+  ) return null
+  return {
+    generation: playback.generation,
+    restoreGeneration: playback.generation + 1,
+    actionId: playback.actionId,
+    source: playback.expectedAnimation,
+  }
+}
+
+export function retainsActionErrorOwnership(
+  playback: PlaybackState | null | undefined,
+  owner: ActionErrorOwner | null | undefined,
+): boolean {
+  if (!playback || !owner || playback.actionId !== owner.actionId) return false
+  if (
+    playback.status === 'playing-once'
+    || playback.status === 'playing-seq'
+    || playback.status === 'holding-loop'
+  ) return playback.generation === owner.generation
+  return playback.status === 'restoring' && playback.generation === owner.restoreGeneration
+}
+
 /**
- * 借用槽正在播放注册表动作时，运行期媒体错误属于动作；restoring 期间保留同一动作的
- * 错误所有权，避免组件重复 onError 被误判成皮肤错误。恢复回 idle 后才重新归皮肤。
+ * 借用槽正在播放注册表动作时，运行期媒体错误属于动作；restoring 期间只保留同一
+ * generation/source 的 owner，避免 A 的全局布尔把 B 或皮肤错误误判成动作错误。
  */
 export function petErrorTarget(
   playback: PlaybackState | null | undefined,
-  actionErrorOwned = false,
+  owner: ActionErrorOwner | null | undefined = null,
 ): 'action' | 'skin' {
-  if (playback === null || playback === undefined || playback.actionId === null) return 'skin'
-  return playback.status === 'playing-once'
-    || playback.status === 'playing-seq'
-    || playback.status === 'holding-loop'
-    || (actionErrorOwned && playback.status === 'restoring')
+  return retainsActionErrorOwnership(playback, owner)
+    || playback?.status === 'playing-once'
+    || playback?.status === 'playing-seq'
+    || playback?.status === 'holding-loop'
     ? 'action'
     : 'skin'
 }

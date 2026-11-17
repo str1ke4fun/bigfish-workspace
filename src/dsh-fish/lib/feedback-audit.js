@@ -517,13 +517,14 @@ const DELIVERY_VERB = /(?:发给|发到|发出(?:去)?|发送|发了|发过|送�
 const DELIVERY_VERB_ALL = new RegExp(DELIVERY_VERB.source, 'g')
 const DELIVERY_COMPLETION = /(?:成功|完成|送达|好了|啦|了)(?:[^，。！？；\n]*)$/
 const ASSERTIVE_MARKER = /(?:已经|已|确实|真的)/
-const NON_ASSERTIVE_PREFIX = /^(?:要不要|该不该|是不是|是否|能不能|会不会|可不可以|有没有|别|不要|不用|没有?|尚未|还没|未|并未|不能|无法|没能|准备|打算|想|要|即将|马上|等下|等会儿|稍后|回头|如果|要是|假如|万一|可能|也许|大概|好像|似乎|应该|试试|试着)/
-const NON_ASSERTIVE_BEFORE_VERB = /(?:准备|打算|想(?:要)?|要|即将|马上|等下|等会儿|稍后|回头|如果|要是|假如|万一|可能|也许|大概|好像|似乎|应该|估计|猜|感觉|不确定|试试|试着)[^，。！？；\n]{0,8}(?:发|送|传|转)/
+const NON_ASSERTIVE_PREFIX = /^(?:要不要|该不该|是不是|是否|能不能|会不会|可不可以|有没有|别|不要|不用|没有?|尚未|还没|未|并未|不能|无法|没能|准备|打算|想|要|即将|马上|等下|等会儿|稍后|回头|如果|要是|假如|万一|可能|也许|大概|好像|似乎|看起来|看上去|像是|仿佛|应该|试试|试着)/
+const NON_ASSERTIVE_BEFORE_VERB = /(?:准备|打算|想(?:要)?|要|即将|马上|等下|等会儿|稍后|回头|如果|要是|假如|万一|可能|也许|大概|好像|似乎|看起来|看上去|像是|仿佛|应该|估计|猜|感觉|不确定|试试|试着)[^，。！？；\n]{0,8}(?:发|送|传|转)/
 const NEGATED_DELIVERY = /(?:没有?|尚未|还没|未|并未|不能|无法|没能|不|别|不要|不用)[^，。！？；\n]{0,8}(?:发|送|传|转)/
 const PARTIAL_OR_FAILED = /(?:一半|中途|途中|中断|没发完|未发完|正在|开始发|失败|没(?:有)?成功|未成功|不成功)/
 const IMMINENT_OR_INCOMPLETE = /(?:快(?:要|一点)?(?=发|送|传|转)|差一点|差点|几乎|险些|差不多)/
 const STAGED_DESTINATION = /^(?:了)?(?:(?:到|进|往|在))?(?:草稿(?:箱|里|里面)?|输入框(?:里|里面)?|输入里|入框)/
 const BUTTON_BEFORE_DELIVERY = /(?:点(?:击)?(?:了|下)?|按(?:下|了)?|碰(?:了|下)?)$/
+const BUTTON_ACTION = /(?:(?:点(?:击)?|按(?:下)?|碰)(?:了|一下|下|过)*(?:发送|送出)(?:按钮|键|回车)?|(?:发送|送出)(?:按钮|键)[^，。！？；\n]{0,4}(?:点(?:击)?|按(?:下)?|碰)(?:了|一下|下|过)*)/g
 const QUESTION_TAIL = /(?:[?？]|吗|呢|吧|没有?|哪|怎么|为什么|为何)\s*$/
 
 function recordsOf(records) {
@@ -603,9 +604,11 @@ function hasStagedDeliveryDestination(part) {
 }
 
 function hasActualDeliveryVerb(part) {
-  for (const match of part.matchAll(DELIVERY_VERB_ALL)) {
+  // 「按了发送键」只证明碰过控件，不证明消息送达；先把这类按钮动作从句子里挖掉。
+  const deliveryText = part.replace(BUTTON_ACTION, '')
+  for (const match of deliveryText.matchAll(DELIVERY_VERB_ALL)) {
     const at = match.index ?? 0
-    const before = part.slice(Math.max(0, at - 4), at)
+    const before = deliveryText.slice(Math.max(0, at - 4), at)
     if (!BUTTON_BEFORE_DELIVERY.test(before)) return true
   }
   return false

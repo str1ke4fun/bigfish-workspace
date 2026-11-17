@@ -52,6 +52,7 @@ import { sendSticker, targetEntry } from './sticker-send.js'
 import { collectSticker } from './sticker-collect.js'
 import { normalizeKeyword, searchSticker } from './sticker-search.js'
 import { WxToolError, registerWxToolErrorAdapter } from './tool-error.js'
+import { createSendGate } from './send-gate.js'
 import {
   applyWxSendBookkeeping,
   boundedText,
@@ -988,52 +989,23 @@ export function apply(ctx, config = {}) {
   // ---- 发送前的闸 ----
   // 以前是 `tree.includes(名单里的名字)`：会话列表里永远有那个群，所以不管当前开着谁都放行。
   // 现在只认「当前会话」这一个字段，并且要求树没落后（落后时当前会话可能是旧的）。
-  async function gateSend({ consume = false, expected = '' } = {}) {
-    const p = policy()
-    if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
-    if (hostBlocksSend()) {
-      throw new WxToolError('WX_HOST_BLOCKED', '[这句是在这儿说的，不是发到微信]')
-    }
-    const s = await look()
-    if (!s.parsed.ok) throw new WxToolError('WX_WINDOW_UNAVAILABLE', '[没看清。屏幕可能慢半拍]')
-    if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
-    if (!s.parsed.current) throw new WxToolError('WX_CHAT_UNKNOWN', '[没看清。屏幕可能慢半拍]')
-    // 「这些会话不用 @」是最高权限：既不用等 @，也不用先进允许名单——它自己就是白名单。
-    const exempt = p.noMentionChats.find((n) => sameName(n, s.parsed.current)) ?? null
-    const hit = allowedCurrent(s.parsed, p.allowChats) || exempt
-    if (!hit) {
-      if (p.allowChats.length === 0) throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]')
-      throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]')
-    }
-    // 调用方知道目标会话时必须在这里复核：频率闸等待期间窗口可能被切走，
-    // 不能在切换后的会话上扣掉另一群/另一个人的主动额度。
-    if (expected && !sameName(hit, expected)) {
-      throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
-    }
-    // @ 才回：只有最近被 @ 过的会话才开口（QQ 那边是同一条规矩，按条判；微信只能按会话判）。
-    // 没被 @ 时还可以用当天主动额度，由 proactive.js 统一判定。
-    const verdict = p.requireMention && !exempt
-      ? canSpeak(readMentions(), hit, Date.now(), p.mentionWindowMinutes)
-      : { ok: true }
-    const state = loadState()
-    const dec = decideProactive({ policy: p, state, chat: hit, mention: verdict, exempt, now: Date.now() })
-    if (!dec.ok) {
-      if (dec.why === '主动额度状态读不出来') {
-        throw new WxToolError('WX_PROACTIVE_STATE', '[没做成，过会儿再试]')
-      }
-      throw new WxToolError('WX_PROACTIVE_LIMIT', '[这个群今天先不主动开口]')
-    }
-    let left = dec.left
-    if (dec.proactive && consume) {
-      // 一次发送只在这里扣一次：前面的 gateSend 都只是检查，避免一道闸扣三次额度。
-      // 记不下来就不发：否则每轮都读到“今天用了 0 条”，额度等于无限。
-      const next = consumeProactive(p, state, hit)
-      if (!saveState(next.state)) throw new WxToolError('WX_PROACTIVE_STATE', '[没做成，过会儿再试]')
-      left = next.left
-      logInbound({ type: 'proactive-send', chat: hit, remaining: left })
-    }
-    return { chat: hit, snap: s, proactive: dec.proactive, proactiveLeft: left }
-  }
+  const gateSend = createSendGate({
+    policy,
+    hostBlocksSend,
+    look,
+    isStale: () => Boolean(fresh.stale),
+    staleDetail: () => fresh.notice(),
+    allowedCurrent,
+    sameName,
+    canSpeak,
+    readMentions,
+    loadState,
+    decideProactive,
+    consumeProactive,
+    saveState,
+    logInbound,
+    now: Date.now,
+  })
 
   // ---- @ 才回：谁最近被 @ 过 ----
   // 耳朵看见侧栏有人 @ 她 → 盖戳；发送前查这里。手动 poke 也会盖。
@@ -1118,14 +1090,24 @@ export function apply(ctx, config = {}) {
       s = await look({ confirm: false })
       if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
       if (!sameName(s.parsed.current, allowed.chat)) {
-        throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
+        throw new WxToolError(
+          'WX_CHAT_CHANGED',
+          '[没做成，过会儿再试]',
+          `切到目标会话后 expected=${allowed.chat}；actual=${s.parsed.current || '读不到'}`,
+        )
       }
     }
 
     if (!token) {
       // 许可只免 @ / 主机两道闸；频率和名单仍然要过（频率在回车前只记一次）。
       const g = await gateSend()
-      if (!sameName(g.chat, allowed.chat)) throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
+      if (!sameName(g.chat, allowed.chat)) {
+        throw new WxToolError(
+          'WX_CHAT_CHANGED',
+          '[没做成，过会儿再试]',
+          `发送闸复核 expected=${allowed.chat}；actual=${g.chat}`,
+        )
+      }
     }
 
     // 清浮层再重新读一次坐标：点开会话后布局可能变了。
@@ -1134,7 +1116,11 @@ export function apply(ctx, config = {}) {
     s = await look({ confirm: false })
     if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
     if (!sameName(s.parsed.current, allowed.chat)) {
-      throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
+      throw new WxToolError(
+        'WX_CHAT_CHANGED',
+        '[没做成，过会儿再试]',
+        `清浮层后 expected=${allowed.chat}；actual=${s.parsed.current || '读不到'}`,
+      )
     }
     const focus = findInputBox(s.parsed)
     if (!focus) throw new WxToolError('WX_INPUT_NOT_FOUND', '[没做成，过会儿再试]')
@@ -1149,11 +1135,21 @@ export function apply(ctx, config = {}) {
       if (!again.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
       const now = await look({ confirm: false })
       if (!sameName(now.parsed.current, allowed.chat)) {
-        throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
+        throw new WxToolError(
+          'WX_CHAT_CHANGED',
+          '[没做成，过会儿再试]',
+          `回车前许可复核 expected=${allowed.chat}；actual=${now.parsed.current || '读不到'}`,
+        )
       }
     } else {
       const g = await gateSend()
-      if (!sameName(g.chat, allowed.chat)) throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
+      if (!sameName(g.chat, allowed.chat)) {
+        throw new WxToolError(
+          'WX_CHAT_CHANGED',
+          '[没做成，过会儿再试]',
+          `回车前发送闸复核 expected=${allowed.chat}；actual=${g.chat}`,
+        )
+      }
     }
     // 频率闸只在这里记一次：前面两次核对都不占额度。
     await speechGate(allowed.chat)
@@ -1165,14 +1161,24 @@ export function apply(ctx, config = {}) {
       if (!still.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
       const last = await look({ confirm: false })
       if (!sameName(last.parsed.current, allowed.chat)) {
-        throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
+        throw new WxToolError(
+          'WX_CHAT_CHANGED',
+          '[没做成，过会儿再试]',
+          `频率闸后许可复核 expected=${allowed.chat}；actual=${last.parsed.current || '读不到'}`,
+        )
       }
     } else {
       // 最后一道闸：真正回车前才扣主动额度，一次发送只扣一次。
       const last = await gateSend({ consume: true, expected: allowed.chat })
       proactive = last.proactive
       proactiveLeft = last.proactiveLeft
-      if (!sameName(last.chat, allowed.chat)) throw new WxToolError('WX_CHAT_CHANGED', '[没做成，过会儿再试]')
+      if (!sameName(last.chat, allowed.chat)) {
+        throw new WxToolError(
+          'WX_CHAT_CHANGED',
+          '[没做成，过会儿再试]',
+          `扣主动额度后 expected=${allowed.chat}；actual=${last.chat}`,
+        )
+      }
     }
 
     await run(['key', 'Return'])
