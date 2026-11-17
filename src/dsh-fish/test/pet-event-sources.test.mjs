@@ -55,6 +55,17 @@ function fakeCtx() {
 }
 
 
+function failingMemory(why) {
+  return {
+    calls: 0,
+    async append() {
+      this.calls += 1
+      return { ok: false, why }
+    },
+  }
+}
+
+
 test('growth_commit 的真实持久 utterance 会生成 petView speak cue', async () => {
   const root = await mkdtemp(join(tmpdir(), 'fish-pet-writer-'))
   try {
@@ -88,6 +99,39 @@ test('growth_commit 的真实持久 utterance 会生成 petView speak cue', asyn
     }])
 
     wiring.dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+
+test('growth_commit 把 memory.append 失败收成安全人话', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-pet-capture-failure-'))
+  try {
+    const cases = [
+      {
+        why: 'TOO_LONG: /private/dsh-fish/events.jsonl',
+        note: '太长了，写短一点。',
+      },
+      {
+        why: "EACCES: permission denied, open '/private/dsh-fish/events.jsonl'",
+        note: '这次没写下来，等会儿再试。',
+      },
+    ]
+
+    for (const item of cases) {
+      const ctx = fakeCtx()
+      const memory = failingMemory(item.why)
+      registerCapture(ctx, { root, memory })
+
+      const out = await ctx.toolsByName.get('growth_commit').execute(
+        { type: 'utterance', text: '这条会写失败' },
+        { agent: { session: { header: { id: 'web-write-failure' } } } },
+      )
+
+      assert.deepEqual(out, { ok: false, id: '', note: item.note })
+      assert.equal(memory.calls, 1, '真实写入仍必须经过 memory.append')
+    }
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
@@ -129,6 +173,39 @@ test('her_leave 的真实持久 utterance 也会生成 petView speak cue', async
     }])
 
     wiring.dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+
+test('her_leave 把 memory.append 失败收成安全人话', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-pet-letter-failure-'))
+  try {
+    const cases = [
+      {
+        why: 'TOO_LONG: /private/dsh-fish/events.jsonl',
+        note: '太长了，写短一点。',
+      },
+      {
+        why: "EACCES: permission denied, open '/private/dsh-fish/events.jsonl'",
+        note: '这次没写下来，等会儿再试。',
+      },
+    ]
+
+    for (const item of cases) {
+      const ctx = fakeCtx()
+      const memory = failingMemory(item.why)
+      registerLetter(ctx, { root, memory })
+
+      const out = await ctx.toolsByName.get('her_leave').execute(
+        { text: '这句会留失败' },
+        { agent: { session: { header: { id: 'web-write-failure' } } } },
+      )
+
+      assert.deepEqual(out, { ok: false, note: item.note })
+      assert.equal(memory.calls, 1, '真实写入仍必须经过 memory.append')
+    }
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }

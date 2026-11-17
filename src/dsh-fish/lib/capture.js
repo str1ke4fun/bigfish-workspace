@@ -24,24 +24,19 @@ import { toJsonSchema } from './toolschema.js'
 import { inWake } from './wakewin.js'
 import { refreshSelfDoc } from './selfdoc.js'
 import { registerTool } from './tool-result.js'
-
-function writeFailure(result) {
-  const why = String(result?.why ?? 'WRITE_FAILED')
-  const message = why === 'NOT_HER_TYPE' ? '这一类内容不能写。' : why
-  throw new Reject(why.split(':')[0], message)
-}
+import { rejectMemoryWriteFailure } from './write-failure.js'
 
 async function appendViaMemory(memory, raw, opts, root) {
   if (typeof memory?.append !== 'function') return appendEvent(raw, opts, root)
   const result = await memory.append(raw, opts)
-  if (!result?.ok) writeFailure(result)
+  if (!result?.ok) rejectMemoryWriteFailure(result)
   return result.event
 }
 
 async function appendSystemViaMemory(memory, type, text, opts, root) {
   if (typeof memory?.appendSystem !== 'function') return appendEvent({ type, text }, opts, root)
   const result = await memory.appendSystem(type, text, opts)
-  if (!result?.ok) writeFailure(result)
+  if (!result?.ok) rejectMemoryWriteFailure(result)
   return result.event
 }
 
