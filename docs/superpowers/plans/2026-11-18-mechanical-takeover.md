@@ -53,7 +53,7 @@
 
 **Files:** `src/dsh-fish/lib/remind.js`, `schedule-hooks.js`, `src/dsh-wx/lib/reminder.js`, `index.js`, tests.
 
-**Interfaces:** durable due record links id/chat/text/permit/dueAt/attempt/result; core schedule tick drives due jobs; at-most-once after pressed Return; failure/unknown surfaced next turn.
+**Interfaces:** durable due record links id/chat/text/permit/dueAt/attempt/result; core schedule tick drives due jobs; at-most-once after pressed Return; confirmed/unconfirmed/failed/unknown surfaced next turn.
 
 - [x] 写失败测试：due time, restart recovery, duplicate tick, unconfirmed send, revoke, feature switch.
 - [x] 实现 plugin-owned delivery worker using schedule-hooks/core tick; no host prompt for new mechanical jobs.
@@ -61,6 +61,8 @@
 - [x] 跑 fish/wx/host-shaped tests，提交。
 
 **Evidence (2026-11-18):** 新增只追加的 `~/.dsh-wx/reminder-jobs.jsonl` 与核心 tick worker；新任务不再创建宿主 prompt，Return 后确认/未确认/异常均终态，重启中的半截 attempted 记 unknown 且不再发。`mechanicalReminderDelivery:false` 回滚到旧 schedule 路径，旧记录与旧许可保留。`src/dsh-fish`: `node --test` → 1150 pass / 0 fail；`src/dsh-wx`: `node --test` → 137 pass / 0 fail；`workbench`: `node --test` → 124 pass / 0 fail。未部署、未重启服务、未做真机微信发送。
+
+**Review fix evidence (2026-11-18, `a0eacbf`):** 机械投递改为逐条 claim → send → settle，每条前重读开关；新增两任务进程崩溃恢复与过期许可终态测试。workbench 保存保留 `mechanicalReminderDelivery:false`；系统提示按开关选择机械/旧指令；提醒世界声改为先 peek，`sc.prompt` 成功排队后才 ack；机械创建不再依赖宿主 `schedule` / `grantReminder`。`src/dsh-fish`: `node --test` → 1154 pass / 0 fail；`src/dsh-wx`: `node --test` → 140 pass / 0 fail；`workbench`: `node --test` → 125 pass / 0 fail。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未推送、未部署、未重启服务、未做真机微信发送。
 
 ### Task 4: Quota tiering
 
