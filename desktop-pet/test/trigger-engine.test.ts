@@ -447,6 +447,71 @@ test('ambient 被 activity 打断后重新武装，且 activity 高于 ambient',
   })
 })
 
+test('idle cue 播放完成后重新武装 ambient', () => {
+  const idle = state()
+  const cue = {
+    id: 'cue-fresh',
+    kind: 'speak' as const,
+    text: '过来说一句',
+    at: 100,
+    ttlMs: 15_000,
+  }
+  const input = {
+    triggers: [
+      trigger('speak', ['cue-once']),
+      trigger('ambient', ['ambient-once']),
+    ],
+    actions: [action('cue-once'), action('ambient-once')],
+    now: 200,
+    manualBusy: false,
+    rng: () => 0,
+  }
+
+  const firstAmbient = reduceTriggers({ ...input, state: idle, seen: emptyTriggerSeen() })
+  assert.deepEqual(firstAmbient.action, {
+    type: 'startAction', actionId: 'ambient-once', loop: false,
+  })
+  assert.equal(firstAmbient.seen.ambientConsumed, true)
+
+  const queued = reduceTriggers({
+    ...input,
+    state: { ...idle, cues: [cue] },
+    seen: firstAmbient.seen,
+    actionBusy: true,
+  })
+  assert.equal(queued.action, undefined)
+  assert.equal(queued.seen.ambientConsumed, true)
+
+  const cued = reduceTriggers({
+    ...input,
+    state: { ...idle, cues: [cue] },
+    seen: queued.seen,
+    actionBusy: false,
+  })
+  assert.deepEqual(cued.action, { type: 'startAction', actionId: 'cue-once', loop: false })
+  assert.deepEqual(cued.bubble, { id: 'cue-fresh', text: '过来说一句' })
+  assert.equal(cued.seen.ambientConsumed, false)
+
+  const cueBusy = reduceTriggers({
+    ...input,
+    state: { ...idle, cues: [cue] },
+    seen: cued.seen,
+    actionBusy: true,
+  })
+  assert.equal(cueBusy.action, undefined)
+
+  const completed = reduceTriggers({
+    ...input,
+    state: { ...idle, cues: [cue] },
+    seen: cueBusy.seen,
+    actionBusy: false,
+  })
+  assert.deepEqual(completed.action, {
+    type: 'startAction', actionId: 'ambient-once', loop: false,
+  })
+  assert.equal(completed.steady, 'idle')
+})
+
 test('过期 cue 不播放、不阻塞 ambient，并记入有界已消费游标', () => {
   const current = state({
     cues: [{ id: 'cue-stale', kind: 'speak', text: '早就过期', at: 1000, ttlMs: 1000 }],

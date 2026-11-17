@@ -172,6 +172,7 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
       continue
     }
 
+    seen.ambientConsumed = false
     rememberCue(seen, id)
     const action = when === null ? null : selectAction(when, input.triggers, input.actions, rng)
     if (action !== null) seen.sceneLoopActive = false
