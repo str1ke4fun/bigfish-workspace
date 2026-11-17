@@ -1,6 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 type Unsubscribe = () => void
+type PetActionMessage = { motion: string } | { action: string }
+
+interface PetActionCatalogEntry {
+  id: string
+  label: string
+  group: string
+}
+
+interface PetActionReloadResult {
+  ok: boolean
+  actions: PetActionCatalogEntry[]
+  error?: string
+}
 
 const bridge = {
   onState(handler: (state: unknown) => void): Unsubscribe {
@@ -11,12 +24,47 @@ const bridge = {
     }
   },
 
-  onAction(handler: (motion: string) => void): Unsubscribe {
-    const listener = (_event: Electron.IpcRendererEvent, motion: string): void => handler(motion)
+  /** 新主进程发 union；旧主进程/调用方仍可能发纯 motion 字符串。 */
+  onAction(handler: (payload: PetActionMessage | string) => void): Unsubscribe {
+    const listener = (_event: Electron.IpcRendererEvent, payload: PetActionMessage | string): void => handler(payload)
     ipcRenderer.on('pet:action', listener)
     return () => {
       ipcRenderer.removeListener('pet:action', listener)
     }
+  },
+
+  /** 主进程从磁盘载入/重载后的动作目录；启动早于订阅时用 getActionCatalog 主动拉。 */
+  onActionCatalog(handler: (catalog: PetActionCatalogEntry[]) => void): Unsubscribe {
+    const listener = (_event: Electron.IpcRendererEvent, catalog: PetActionCatalogEntry[]): void => handler(catalog)
+    ipcRenderer.on('pet:action-catalog', listener)
+    return () => {
+      ipcRenderer.removeListener('pet:action-catalog', listener)
+    }
+  },
+
+  getActionCatalog(): Promise<PetActionCatalogEntry[]> {
+    return ipcRenderer.invoke('pet:get-action-catalog')
+  },
+
+  /** 菜单 stop、重新载入或 skin 切换时，主进程要求当前播放 generation 失效。 */
+  onActionStop(handler: () => void): Unsubscribe {
+    const listener = (): void => handler()
+    ipcRenderer.on('pet:action-stop', listener)
+    return () => {
+      ipcRenderer.removeListener('pet:action-stop', listener)
+    }
+  },
+
+  onActionError(handler: (error: { why: string }) => void): Unsubscribe {
+    const listener = (_event: Electron.IpcRendererEvent, error: { why: string }): void => handler(error)
+    ipcRenderer.on('pet:action-error', listener)
+    return () => {
+      ipcRenderer.removeListener('pet:action-error', listener)
+    }
+  },
+
+  reloadActions(): Promise<PetActionReloadResult> {
+    return ipcRenderer.invoke('pet:actions-reload')
   },
 
   setIgnoreMouse(ignore: boolean): void {
@@ -28,8 +76,8 @@ const bridge = {
     ipcRenderer.send('pet:ready')
   },
 
-  requestAction(motion: string): void {
-    ipcRenderer.send('pet:action-request', motion)
+  requestAction(payload: PetActionMessage | string): void {
+    ipcRenderer.send('pet:action-request', payload)
   },
 
   /** 当前宠物尺寸（身体宽度 px），用于首帧渲染。 */

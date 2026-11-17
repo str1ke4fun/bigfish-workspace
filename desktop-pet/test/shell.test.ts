@@ -1,8 +1,144 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { registerHooks } from 'node:module'
+import { tmpdir } from 'node:os'
+import { extname, join } from 'node:path'
 import { noteLocalLook, resolveRemoteLook, readRemoteLook } from '../electron/look.ts'
 import type { ActionDefinition } from '../electron/actions.ts'
 import { buildMenuModel, type MenuCallbacks, type MenuState } from '../electron/menu-model.ts'
+
+type ElectronMock = {
+  appPath: string
+  exposed: Record<string, unknown>
+  ipcHandled: Map<string, (...args: unknown[]) => unknown>
+  ipcListeners: Map<string, Array<(...args: unknown[]) => void>>
+  rendererListeners: Map<string, Array<(...args: unknown[]) => void>>
+  rendererSends: Array<[string, unknown]>
+  rendererInvokes: string[]
+  windowFromContents: unknown
+}
+
+const electronMock: ElectronMock = {
+  appPath: '/tmp/bigfish-desktop-pet-test-missing',
+  exposed: {},
+  ipcHandled: new Map(),
+  ipcListeners: new Map(),
+  rendererListeners: new Map(),
+  rendererSends: [],
+  rendererInvokes: [],
+  windowFromContents: null,
+}
+
+;(globalThis as typeof globalThis & { __petElectronMock?: ElectronMock }).__petElectronMock = electronMock
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === 'electron') return { url: 'mock:electron', shortCircuit: true }
+    try {
+      return nextResolve(specifier, context)
+    } catch (error) {
+      if (specifier.startsWith('.') && extname(specifier) === '') {
+        try {
+          return nextResolve(`${specifier}.ts`, context)
+        } catch {
+          // Re-throw the original resolution failure below.
+        }
+      }
+      throw error
+    }
+  },
+  load(url, context, nextLoad) {
+    if (url === 'mock:electron') {
+      return {
+        format: 'module',
+        shortCircuit: true,
+        source: `
+          const mock = globalThis.__petElectronMock
+          const on = (map, channel, listener) => {
+            const listeners = map.get(channel) ?? []
+            listeners.push(listener)
+            map.set(channel, listeners)
+          }
+          export const app = {
+            requestSingleInstanceLock: () => false,
+            quit() {},
+            on() {},
+            whenReady: () => ({ then: () => ({ catch: () => {} }) }),
+            getAppPath: () => mock.appPath,
+            getVersion: () => '0.1.0',
+            getPath: () => '/tmp/bigfish-desktop-pet-test-runtime',
+            setAsDefaultProtocolClient: () => true,
+          }
+          export const BrowserWindow = class {
+            static fromWebContents() { return mock.windowFromContents }
+          }
+          export const ipcMain = {
+            on: (channel, listener) => on(mock.ipcListeners, channel, listener),
+            handle: (channel, listener) => mock.ipcHandled.set(channel, listener),
+          }
+          export const Menu = { buildFromTemplate: () => ({ popup() {} }) }
+          export const nativeImage = { createFromPath: () => ({ resize: () => ({}) }) }
+          export const protocol = { registerSchemesAsPrivileged() {}, handle() {} }
+          export const screen = {
+            getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+            getPrimaryDisplay: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1080 } }),
+            getAllDisplays: () => [],
+            on() {},
+            removeListener() {},
+          }
+          export const shell = { openExternal() {} }
+          export const Tray = class {}
+          export const contextBridge = {
+            exposeInMainWorld: (name, bridge) => { mock.exposed[name] = bridge },
+          }
+          export const ipcRenderer = {
+            on: (channel, listener) => on(mock.rendererListeners, channel, listener),
+            removeListener() {},
+            send: (channel, payload) => mock.rendererSends.push([channel, payload]),
+            invoke: (channel) => {
+              mock.rendererInvokes.push(channel)
+              return channel === 'pet:get-action-catalog'
+                ? Promise.resolve([{ id: 'wave', label: '挥手', group: '回应' }])
+                : Promise.resolve({ ok: true, actions: [] })
+            },
+          }
+        `,
+      }
+    }
+    return nextLoad(url, context)
+  },
+})
+
+type MainModule = typeof import('../electron/main.ts')
+type PetWindow = Parameters<MainModule['sendActionMessage']>[0]
+let mainModulePromise: Promise<MainModule> | null = null
+
+function loadMainModule(): Promise<MainModule> {
+  mainModulePromise ??= import('../electron/main.ts')
+  return mainModulePromise
+}
+
+function fakeWindow(): { win: PetWindow; sent: Array<[string, unknown]> } {
+  const sent: Array<[string, unknown]> = []
+  return {
+    win: {
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel: string, payload?: unknown) => sent.push([channel, payload]),
+      },
+    } as unknown as PetWindow,
+    sent,
+  }
+}
+
+async function actionFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'bigfish-pet-actions-'))
+  const assets = join(root, 'assets')
+  await mkdir(join(assets, 'webm'), { recursive: true })
+  await mkdir(join(assets, 'skins', 'rest', 'webm'), { recursive: true })
+  return { root, assets }
+}
 
 test('读远端外观：缺字段/非法值给 null，合法值夹取', () => {
   assert.equal(readRemoteLook({ settings: {} }), null)
@@ -201,6 +337,174 @@ test('动作菜单：停下当前动作和重新载入动作分别走 stop/reloa
   find(menu, '停下当前动作').click!()
   find(menu, '重新载入动作').click!()
   assert.deepEqual(log, ['stop', 'reload'])
+})
+
+test('动作桥：菜单动作发新 union，旧 motion 字符串仍归一成 { motion }', async () => {
+  const main = await loadMainModule()
+  const messages: Array<{ motion: string } | { action: string }> = []
+  const bridgeCallbacks = callbacks([])
+  bridgeCallbacks.motion = (motion) => messages.push(main.toActionMessage('motion', motion))
+  bridgeCallbacks.action = (id) => messages.push(main.toActionMessage('action', id))
+
+  const menu = find(
+    buildMenuModel(baseState, [registered('swing', '荡秋千', '玩耍')], bridgeCallbacks, 'context'),
+    '演一个动作',
+  ).submenu!
+  find(menu, '常用').submenu!.find((item) => item.label === '挥手')!.click!()
+  find(menu, '玩耍').submenu![0].click!()
+
+  assert.deepEqual(messages, [
+    { motion: 'waving' },
+    { action: 'swing' },
+  ])
+  assert.deepEqual(main.normalizeActionMessage('waving'), { motion: 'waving' })
+  assert.deepEqual(main.normalizeActionMessage({ action: 'swing' }), { action: 'swing' })
+  assert.equal(main.normalizeActionMessage({ motion: 'waving', action: 'swing' }), null)
+  assert.equal(main.normalizeActionMessage(''), null)
+})
+
+test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC 频道', async () => {
+  const main = await loadMainModule()
+  const { win, sent } = fakeWindow()
+  const catalog = [registered('swing', '荡秋千', '玩耍')]
+
+  main.sendActionMessage(win, { motion: 'waving' })
+  main.sendActionCatalog(win, catalog)
+  main.sendActionStop(win)
+
+  assert.deepEqual(sent, [
+    ['pet:action', { motion: 'waving' }],
+    ['pet:action-catalog', [{ id: 'swing', label: '荡秋千', group: '玩耍' }]],
+    ['pet:action-stop', undefined],
+  ])
+})
+
+test('动作注册表：默认动作与当前皮肤动作合并，皮肤同 id 覆盖且缺少皮肤表仍保留默认', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  await writeFile(join(assets, 'webm', 'wave.webm'), '')
+  await writeFile(join(assets, 'webm', 'old.webm'), '')
+  await writeFile(join(assets, 'skins', 'rest', 'webm', 'sleep.webm'), '')
+  await writeFile(join(assets, 'skins', 'rest', 'webm', 'new.webm'), '')
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [
+      { id: 'wave', label: '挥手', anim: 'wave', group: '回应' },
+      { id: 'nap', label: '旧睡觉', anim: 'old', group: '休息' },
+    ],
+  }))
+  await writeFile(join(assets, 'skins', 'rest', 'actions.json'), JSON.stringify({
+    actions: [
+      { id: 'sleep', label: '睡觉', anim: 'sleep', loop: true, group: '休息' },
+      { id: 'nap', label: '新睡觉', anim: 'new', group: '休息' },
+    ],
+  }))
+
+  assert.deepEqual(await main.readActionCatalog(assets, 'rest'), [
+    { id: 'wave', label: '挥手', anim: 'wave', loop: false, group: '回应' },
+    { id: 'nap', label: '新睡觉', anim: 'new', loop: false, group: '休息' },
+    { id: 'sleep', label: '睡觉', anim: 'sleep', loop: true, group: '休息' },
+  ])
+  assert.deepEqual((await main.readActionCatalog(assets, 'missing-skin')).map((action) => action.id), ['wave', 'nap'])
+})
+
+test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败保留旧 catalog 并报错', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+
+  await writeFile(join(assets, 'webm', 'wave.webm'), '')
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'wave', label: '挥手', anim: 'wave', group: '回应' }],
+  }))
+
+  const helloBodies: unknown[] = []
+  const warnings: string[] = []
+  const originalFetch = globalThis.fetch
+  const originalWarn = console.warn
+  globalThis.fetch = async (_input, init) => {
+    helloBodies.push(JSON.parse(String(init?.body)))
+    return new Response('{"ok":true}', { status: 200 })
+  }
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '))
+  t.after(() => {
+    globalThis.fetch = originalFetch
+    console.warn = originalWarn
+  })
+
+  const { win, sent } = fakeWindow()
+  const first = await main.reloadRegisteredActions(win, assets)
+  assert.equal(first.ok, true)
+  assert.deepEqual(first.actions, [{ id: 'wave', label: '挥手', group: '回应' }])
+  assert.deepEqual(sent.slice(0, 2), [
+    ['pet:action-stop', undefined],
+    ['pet:action-catalog', [{ id: 'wave', label: '挥手', group: '回应' }]],
+  ])
+  assert.deepEqual(helloBodies, [{
+    version: '0.1.0',
+    skins: [{ id: '', name: '默认' }],
+    actions: [{ id: 'wave', label: '挥手', group: '回应' }],
+  }])
+
+  await writeFile(join(assets, 'actions.json'), '{ nope')
+  const second = await main.reloadRegisteredActions(win, assets)
+  assert.equal(second.ok, false)
+  assert.deepEqual(second.actions, [{ id: 'wave', label: '挥手', group: '回应' }])
+  assert.match(second.error ?? '', /JSON|json|动作注册表/)
+  assert.equal(sent.filter(([channel]) => channel === 'pet:action-catalog').length, 1)
+  assert.equal(sent.at(-1)?.[0], 'pet:action-error')
+  assert.equal(helloBodies.length, 1)
+  assert.match(warnings.join('\n'), /动作没重新载入/)
+
+  const getCatalog = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getCatalog)
+  assert.deepEqual(await getCatalog(), [{ id: 'wave', label: '挥手', group: '回应' }])
+})
+
+test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载荷', async () => {
+  await loadMainModule()
+  await import('../electron/preload.ts')
+  const bridge = electronMock.exposed.petBridge as {
+    onAction(handler: (payload: unknown) => void): () => void
+    onActionCatalog(handler: (catalog: unknown) => void): () => void
+    onActionStop(handler: () => void): () => void
+    onActionError(handler: (error: unknown) => void): () => void
+    getActionCatalog(): Promise<unknown>
+    reloadActions(): Promise<unknown>
+    requestAction(payload: unknown): void
+  }
+
+  const actions: unknown[] = []
+  const catalogs: unknown[] = []
+  let stops = 0
+  const errors: unknown[] = []
+  bridge.onAction((payload) => actions.push(payload))
+  bridge.onActionCatalog((catalog) => catalogs.push(catalog))
+  bridge.onActionStop(() => { stops += 1 })
+  bridge.onActionError((error) => errors.push(error))
+
+  electronMock.rendererListeners.get('pet:action')![0]({}, { motion: 'waving' })
+  electronMock.rendererListeners.get('pet:action')![0]({}, 'thinking')
+  electronMock.rendererListeners.get('pet:action-catalog')![0]({}, [{ id: 'wave', label: '挥手', group: '回应' }])
+  electronMock.rendererListeners.get('pet:action-stop')![0]({})
+  electronMock.rendererListeners.get('pet:action-error')![0]({}, { why: '坏了' })
+
+  assert.deepEqual(actions, [{ motion: 'waving' }, 'thinking'])
+  assert.deepEqual(catalogs, [[{ id: 'wave', label: '挥手', group: '回应' }]])
+  assert.equal(stops, 1)
+  assert.deepEqual(errors, [{ why: '坏了' }])
+  assert.deepEqual(await bridge.getActionCatalog(), [{ id: 'wave', label: '挥手', group: '回应' }])
+  assert.deepEqual(await bridge.reloadActions(), { ok: true, actions: [] })
+  assert.deepEqual(electronMock.rendererInvokes, ['pet:get-action-catalog', 'pet:actions-reload'])
+
+  bridge.requestAction('waving')
+  bridge.requestAction({ action: 'wave' })
+  assert.deepEqual(electronMock.rendererSends, [
+    ['pet:action-request', 'waving'],
+    ['pet:action-request', { action: 'wave' }],
+  ])
 })
 
 test('打开链接：命令行带 bigfishpet:// 才算，大小写不敏感', async () => {

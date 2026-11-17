@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray, type MenuItemConstructorOptions } from 'electron'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize, resolve, sep } from 'node:path'
+import { mergeActionCatalogs, parseActions, type ActionDefinition } from './actions'
 import { createPoller, createStateForwarder, type Poller } from './poller'
 import { sendChat } from '../renderer/chat'
 import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition, resetPetPosition, resizePetWindow } from './window'
@@ -34,6 +36,20 @@ const DEFAULT_SKIN_URI = 'pet-asset://local/webm'
 const WORKBENCH_PET_URL = 'http://127.0.0.1:8788/#her/pet'
 const PRESENCE_MODE_URL = 'http://127.0.0.1:8788/api/fish/presence/mode'
 
+export type PetActionMessage = { motion: string } | { action: string }
+
+export interface PetActionCatalogEntry {
+  id: string
+  label: string
+  group: string
+}
+
+export interface PetActionReloadResult {
+  ok: boolean
+  actions: PetActionCatalogEntry[]
+  error?: string
+}
+
 let petPoller: Poller | null = null
 let petWindow: BrowserWindow | null = null
 let petSize = 400
@@ -54,6 +70,9 @@ let petHidden = false
 let tray: Tray | null = null
 /** 最近一次 `/pet/state` 里的陪看状态，托盘菜单用。 */
 let lastPresence: { on: boolean; mode: string | null } | null = null
+/** 当前默认注册表 + 当前皮肤覆盖后的完整动作；菜单、渲染进程与 hello 共用。 */
+let actionCatalog: ActionDefinition[] = []
+let lastActionError: string | null = null
 
 /**
  * 皮肤推送缓存：首推可能早于渲染进程注册 `onSkin`（和 `pet:state` 同样的竞态）。
@@ -141,8 +160,74 @@ function registerAssetProtocol(): void {
   })
 }
 
-function sendAction(win: BrowserWindow, motion: string): void {
-  if (!win.isDestroyed()) win.webContents.send('pet:action', motion)
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function toActionMessage(kind: 'motion' | 'action', value: string): PetActionMessage {
+  return kind === 'motion' ? { motion: value } : { action: value }
+}
+
+/** 旧版 preload/renderer 仍可能发纯 motion 字符串；入站时统一成新 union。 */
+export function normalizeActionMessage(value: unknown): PetActionMessage | null {
+  if (typeof value === 'string') {
+    const motion = value.trim()
+    return motion === '' ? null : { motion }
+  }
+  if (!isRecord(value)) return null
+
+  const hasMotion = Object.hasOwn(value, 'motion')
+  const hasAction = Object.hasOwn(value, 'action')
+  if (hasMotion === hasAction) return null
+
+  const field = hasMotion ? 'motion' : 'action'
+  const raw = value[field]
+  if (typeof raw !== 'string') return null
+  const id = raw.trim()
+  if (id === '') return null
+  return field === 'motion' ? { motion: id } : { action: id }
+}
+
+export function actionCatalogEntries(actions: readonly ActionDefinition[]): PetActionCatalogEntry[] {
+  return actions.map(({ id, label, group }) => ({ id, label, group }))
+}
+
+export function toHelloPayload(
+  version: string,
+  skins: readonly ScannedSkin[],
+  actions: readonly ActionDefinition[],
+): {
+  version: string
+  skins: Array<{ id: string; name: string }>
+  actions: PetActionCatalogEntry[]
+} {
+  return {
+    version,
+    skins: skins.map(({ id, name }) => ({ id, name })),
+    actions: actionCatalogEntries(actions),
+  }
+}
+
+export function sendActionMessage(win: BrowserWindow | null, payload: PetActionMessage): void {
+  if (win && !win.isDestroyed()) win.webContents.send('pet:action', payload)
+}
+
+export function sendActionCatalog(win: BrowserWindow | null, actions: readonly ActionDefinition[]): void {
+  if (win && !win.isDestroyed()) win.webContents.send('pet:action-catalog', actionCatalogEntries(actions))
+}
+
+export function sendActionStop(win: BrowserWindow | null): void {
+  if (win && !win.isDestroyed()) win.webContents.send('pet:action-stop')
+}
+
+function sendActionError(win: BrowserWindow | null, error: { why: string }): void {
+  if (win && !win.isDestroyed()) win.webContents.send('pet:action-error', error)
+}
+
+function reportActionError(why: string, win: BrowserWindow | null = petWindow): void {
+  lastActionError = why
+  console.warn(`[desktop-pet] ${why}`)
+  sendActionError(win, { why })
 }
 
 /**
@@ -214,10 +299,7 @@ async function sendHello(): Promise<void> {
     const response = await fetch(PET_HELLO_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        version: app.getVersion(),
-        skins: skinCatalog.map(({ id, name }) => ({ id, name })),
-      }),
+      body: JSON.stringify(toHelloPayload(app.getVersion(), skinCatalog, actionCatalog)),
       signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -258,6 +340,88 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function missingFile(error: unknown): boolean {
+  return isRecord(error) && error.code === 'ENOENT'
+}
+
+async function readActionRegistry(file: string, mediaDir: string, label: string): Promise<ActionDefinition[]> {
+  let source: string
+  try {
+    source = await readFile(file, 'utf8')
+  } catch (error) {
+    // 动作表是可选扩展；还没登记任何动作时不需要把它当成启动失败。
+    if (missingFile(error)) return []
+    throw new Error(`${label}动作注册表读不了：${errorText(error)}`)
+  }
+
+  let raw: unknown
+  try {
+    raw = JSON.parse(source)
+  } catch (error) {
+    throw new Error(`${label}动作注册表 JSON 不合法：${errorText(error)}`)
+  }
+  if (!isRecord(raw) || !Array.isArray(raw.actions)) {
+    throw new Error(`${label}动作注册表必须是包含 actions 数组的对象。`)
+  }
+
+  const result = parseActions(raw, {
+    mediaDir,
+    exists: existsSync,
+    log: (message) => console.warn(`[desktop-pet] ${label}${message}`),
+  })
+  return result.actions
+}
+
+/** 读默认 actions.json，再用当前皮肤 actions.json 覆盖同 id 条目。 */
+export async function readActionCatalog(assetsRoot: string, skinId: string): Promise<ActionDefinition[]> {
+  if (skinId !== '' && !SIMPLE_SKIN_ID.test(skinId)) {
+    throw new Error('皮肤 id 不合法，无法读取动作注册表。')
+  }
+
+  const defaults = await readActionRegistry(
+    join(assetsRoot, 'actions.json'),
+    join(assetsRoot, 'webm'),
+    '默认',
+  )
+  if (skinId === '') return mergeActionCatalogs(defaults, [])
+
+  const skinRoot = join(assetsRoot, 'skins', skinId)
+  const skinActions = await readActionRegistry(
+    join(skinRoot, 'actions.json'),
+    join(skinRoot, 'webm'),
+    `皮肤 ${skinId} 的`,
+  )
+  return mergeActionCatalogs(defaults, skinActions)
+}
+
+function setActionCatalog(actions: readonly ActionDefinition[], win: BrowserWindow | null = petWindow): void {
+  actionCatalog = mergeActionCatalogs(actions, [])
+  // 右键/托盘菜单每次打开都从 actionCatalog 现建，更新这里就是菜单重建。
+  sendActionCatalog(win, actionCatalog)
+}
+
+/**
+ * 手动重载只读磁盘一次。失败时保留上一份 catalog，播放器收到 stop，
+ * 并把可读原因送到 renderer；成功才推 catalog、立即 hello。
+ */
+export async function reloadRegisteredActions(
+  win: BrowserWindow | null = petWindow,
+  assetsRoot: string = appFile('assets'),
+): Promise<PetActionReloadResult> {
+  sendActionStop(win)
+  try {
+    const next = await readActionCatalog(assetsRoot, petSettings.skin)
+    setActionCatalog(next, win)
+    lastActionError = null
+    void sendHello()
+    return { ok: true, actions: actionCatalogEntries(actionCatalog) }
+  } catch (error) {
+    const why = `动作没重新载入，继续用上一份：${errorText(error)}`
+    reportActionError(why, win)
+    return { ok: false, actions: actionCatalogEntries(actionCatalog), error: why }
+  }
+}
+
 /**
  * 皮肤被拒绝：保留当前皮肤，并把原因送到渲染进程。
  *
@@ -282,18 +446,41 @@ function reportSkinError(id: string, why: string): void {
 async function applySkin(id: string): Promise<void> {
   const revision = ++skinRevision
   petSettings = { ...petSettings, skin: id }
+  const assetsRoot = appFile('assets')
+
+  async function applyValidatedSkin(config: unknown, uri: string): Promise<void> {
+    let nextActions: ActionDefinition[]
+    try {
+      nextActions = await readActionCatalog(assetsRoot, id)
+    } catch (error) {
+      throw new Error(`动作注册表没载入：${errorText(error)}`)
+    }
+    if (revision !== skinRevision) return
+
+    // 新皮肤会替换全部动画映射；先让播放器结束旧 generation 的借用槽。
+    sendActionStop(petWindow)
+    lastSkinError = null
+    lastActionError = null
+    skinForwarder.onSkin({ id, revision, config, uri })
+    setActionCatalog(nextActions)
+    // 皮肤与动作目录都在同一成功点生效，随后马上刷新服务端可接受的 action id。
+    void sendHello()
+  }
 
   if (id === '') {
+    let config: unknown
     try {
-      const config: unknown = JSON.parse(await readFile(appFile('assets', 'config.json'), 'utf8'))
-      if (revision === skinRevision) {
-        lastSkinError = null
-        skinForwarder.onSkin({ id, revision, config, uri: DEFAULT_SKIN_URI })
-      }
+      config = JSON.parse(await readFile(join(assetsRoot, 'config.json'), 'utf8'))
     } catch (error) {
       if (revision === skinRevision) {
         reportSkinError('', `默认皮肤配置没载入：${errorText(error)}`)
       }
+      return
+    }
+    try {
+      await applyValidatedSkin(config, DEFAULT_SKIN_URI)
+    } catch (error) {
+      if (revision === skinRevision) reportSkinError('', errorText(error))
     }
     return
   }
@@ -303,7 +490,6 @@ async function applySkin(id: string): Promise<void> {
     return
   }
 
-  const assetsRoot = appFile('assets')
   const skinDir = join(assetsRoot, 'skins', id)
   const file = normalize(join(skinDir, 'skin.json'))
   if (!isInside(assetsRoot, file)) {
@@ -319,16 +505,11 @@ async function applySkin(id: string): Promise<void> {
       reportSkinError(id, decision.why)
       return
     }
-    lastSkinError = null
-    skinForwarder.onSkin({
-      id,
-      revision,
-      config: decision.config,
-      uri: `pet-asset://local/skins/${id}/webm`,
-    })
+    await applyValidatedSkin(decision.config, `pet-asset://local/skins/${id}/webm`)
   } catch (error) {
     if (revision === skinRevision) {
-      reportSkinError(id, `读不了 skin.json：${errorText(error)}`)
+      const why = errorText(error)
+      reportSkinError(id, why.startsWith('动作注册表') ? why : `读不了 skin.json：${why}`)
     }
   }
 }
@@ -407,8 +588,12 @@ function buildMenu(kind: 'context' | 'tray'): Menu {
   const win = petWindow
   const model = buildMenuModel(
     { size: petSize, opacity: petLook.opacity, width: petLook.width, hidden: petHidden, presence: lastPresence },
+    actionCatalog,
     {
-      motion: (motion) => win && sendAction(win, motion),
+      motion: (motion) => sendActionMessage(win, toActionMessage('motion', motion)),
+      action: (id) => sendActionMessage(win, toActionMessage('action', id)),
+      stop: () => sendActionStop(win),
+      reload: () => void reloadRegisteredActions(win),
       size: (size) => win && changePetSize(win, size),
       opacity: (opacity) => win && changePetLook(win, { ...petLook, opacity }),
       width: (width) => win && changePetLook(win, { ...petLook, width }),
@@ -462,16 +647,28 @@ ipcMain.on('pet:ready', () => {
   stateForwarder.resend()
   // 皮肤可能早于渲染进程订阅就绪：就绪后补发最近一份。
   skinForwarder.ready()
+  sendActionCatalog(petWindow, actionCatalog)
   if (lastSkinError && petWindow && !petWindow.isDestroyed()) {
     petWindow.webContents.send('pet:skin-error', lastSkinError)
   }
+  if (lastActionError) sendActionError(petWindow, { why: lastActionError })
 })
 
 ipcMain.handle('pet:get-size', () => petSize)
 ipcMain.handle('pet:get-look', () => petLook)
+ipcMain.handle('pet:get-action-catalog', () => actionCatalogEntries(actionCatalog))
+ipcMain.handle('pet:actions-reload', () => reloadRegisteredActions())
 
 /** 渲染进程挂载时主动拉取最近皮肤，避免首推丢失后一直停在默认皮肤。 */
 ipcMain.handle('pet:get-skin', () => skinForwarder.get())
+
+// 旧 renderer 可能仍通过 requestAction(string) 回送动作；按新 union 转发给同一播放桥。
+ipcMain.on('pet:action-request', (event, raw: unknown) => {
+  const message = normalizeActionMessage(raw)
+  if (!message) return
+  if ('action' in message && !actionCatalog.some((action) => action.id === message.action)) return
+  sendActionMessage(BrowserWindow.fromWebContents(event.sender), message)
+})
 
 ipcMain.on('pet:ignore-mouse', (event, ignore: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
@@ -590,13 +787,19 @@ else app.on('second-instance', () => showPet())
 
 if (gotInstanceLock) app
   .whenReady()
-  .then(() => {
+  .then(async () => {
     petSize = readPetSize()
     petSettings = { size: petSize, skin: '' }
     sizeSync = { current: petSize, pending: null }
     registerAssetProtocol()
     registerOpenProtocol()
     skinCatalog = scanSkins(appFile('assets'))
+    try {
+      actionCatalog = mergeActionCatalogs(await readActionCatalog(appFile('assets'), petSettings.skin), [])
+    } catch (error) {
+      // 动作表坏了不拦桌宠启动；菜单先空着，手动重载可保留/恢复上一份。
+      reportActionError(`启动时动作没载入：${errorText(error)}`, null)
+    }
     startPetWindow()
     createPetTray()
     // 窗口先建好再报到，服务端的 online 才真的代表「窗口起来了」。
