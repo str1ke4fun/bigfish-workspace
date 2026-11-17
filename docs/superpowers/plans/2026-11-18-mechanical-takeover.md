@@ -77,6 +77,8 @@
 
 **Evidence (2026-11-18, `fc70f40`):** 保留 `proactivePerDay` / `proactiveChats` 作为软上限，新增 `hardBreaker`（默认和上限 50）及 `softLimit` 读兼容别名；超过软上限但未到硬熔断仍放行，显式 0 仍静音，@/免 @/名单/主机/permit/长度/speech 闸未放宽。`inbound.jsonl` 的 `proactive-send` / `proactive-breaker` 记录完整 `used` / `softLimit` / `hardBreaker` / `overSoftLimit` / `atHardBreaker` 审计标记。坏 `proactive.json` 状态失败关闭主动路径，文件路径与 `{ day, used }` 形状未迁移；workbench 表单和状态卡接入软/硬阈值，prompt-removal 回归仍不含额度数字。`src/dsh-wx`: `node --test` → 149 pass / 0 fail；`workbench`: `node --test` → 128 pass / 0 fail；`src/dsh-fish`: `node --test` → 1154 pass / 0 fail。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未推送、未部署、未重启服务、未做真机微信发送。
 
+**Review fix evidence (2026-11-18, `a0bc228`):** workbench `/api/wx/scope` 改为直接读取 `proactive.json` 并复用运行时状态形状解析；缺失、不可读、坏 JSON、缺 `used`、`used` 非对象、非法/负数计数都置 `proactiveStateOk:false`，`speaking.ok:false`，页面不能渲染「现在能说」。HTTP 全量 scope 回归同时确认软上限后的允许区仍在、硬熔断仍拒绝；@/免 @/名单/主机/permit/长度/speech 等硬闸与 `proactive-send` / `proactive-breaker` 审计路径未改。`src/dsh-wx`: `node --test` → 149 pass / 0 fail；`workbench`: `node --test` → 129 pass / 0 fail；聚焦状态/配额测试 → 9 pass / 0 fail。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未推送、未部署、未重启服务、未做真机微信发送。
+
 ### Task 5: WeChat return envelopes
 
 **Files:** `src/dsh-wx/lib/index.js`, `tool-error.js`, `project.js`, `src/dsh-fish/lib/tool-result.js`, `tool-ledger.js`, tests.
