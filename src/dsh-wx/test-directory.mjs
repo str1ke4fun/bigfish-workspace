@@ -11,6 +11,11 @@ import { chatIdFor } from './lib/ledger.js'
 let n = 0
 const t = async (name, fn) => { await fn(); n++; console.log('  ✓ ' + name) }
 const file = () => join(mkdtempSync(join(tmpdir(), 'dsh-wx-dir-')), 'directory.json')
+const seeded = (chats) => {
+  const f = file()
+  writeFileSync(f, JSON.stringify({ version: 1, chats }, null, 2), 'utf8')
+  return f
+}
 const T = Date.UTC(2026, 10, 3, 4, 0, 0)
 
 console.log('名字')
@@ -63,6 +68,46 @@ await t('私聊名单标记 kind=dm；群聊按预览猜 kind', async () => {
   d.merge({ chats: [{ name: '大白饭', preview: '吃了吗' }, { name: '测试群A', preview: '甲: 在吗' }], directNames: ['大白饭'] })
   assert.equal(d.entry('大白饭').kind, 'dm')
   assert.equal(d.entry('测试群A').kind, 'group')
+})
+
+console.log('发送目标')
+await t('exact 名字给出规范名和目录里的稳定 id', async () => {
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({ chats: [{ name: '测试群A' }] })
+  const target = d.sendableTarget('测试群A')
+  assert.deepEqual(target, { chatName: '测试群A', chatId: d.entry('测试群A').chatId })
+})
+await t('resolved 截断名给出全名和目录 id', async () => {
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({ chats: [{ name: '星晓家园10号楼13...' }], knownNames: ['星晓家园10号楼1301'] })
+  const target = d.sendableTarget('星晓家园10号楼13...')
+  assert.deepEqual(target, { chatName: '星晓家园10号楼1301', chatId: d.entry('星晓家园10号楼13...').chatId })
+  assert.equal(d.entry('星晓家园10号楼13...').nameConfidence, 'resolved')
+})
+await t('unknown 名字不生成可绑定的聊天 id', async () => {
+  const d = createDirectory({ file: file(), now: () => T })
+  assert.equal(d.sendableTarget('没见过的群'), null)
+})
+await t('ambiguous 名字不猜发送目标', async () => {
+  const d = createDirectory({
+    file: seeded([{
+      chatId: 'c_ambiguous', displayName: '星晓', fullName: '星晓', aliases: [],
+      nameConfidence: 'ambiguous', firstSeenAt: new Date(T).toISOString(),
+    }]),
+    now: () => T,
+  })
+  assert.equal(d.sendableTarget('星晓'), null)
+})
+await t('改名后的旧名字仍指向新规范名和同一个 id', async () => {
+  const d = createDirectory({
+    file: seeded([{
+      chatId: 'c_renamed', displayName: '新群名', fullName: '新群名', aliases: ['旧群名'],
+      nameConfidence: 'exact', firstSeenAt: new Date(T).toISOString(),
+    }]),
+    now: () => T,
+  })
+  assert.deepEqual(d.sendableTarget('旧群名'), { chatName: '新群名', chatId: 'c_renamed' })
+  assert.deepEqual(d.sendableTarget('新群名'), { chatName: '新群名', chatId: 'c_renamed' })
 })
 await t('忽略会话只更新元数据，不写预览正文', async () => {
   const d = createDirectory({ file: file(), now: () => T })

@@ -195,6 +195,15 @@ await t('发送成功挂到任务上：replying，不自动 done', async () => {
   assert.equal(c.board.get(a.task.taskId).status, 'done')
   assert.equal(c.summary(), '')
 })
+await t('同一出站 msgId 重放不重复记账', async () => {
+  const c = make()
+  const a = c.ingest({ chat: '测试群A', preview: '在吗', why: '@' })
+  c.recordReply({ taskId: a.task.taskId, msgId: 'm_out' })
+  const replay = c.recordReply({ taskId: a.task.taskId, msgId: 'm_out' })
+  assert.equal(replay.ok, true)
+  assert.equal(replay.duplicate, true)
+  assert.equal(c.board.get(a.task.taskId).replyCount, 1)
+})
 
 console.log('B 档失败与越界')
 await t('向量侧车抛错 → 退回 A 档，照常出结果', async () => {

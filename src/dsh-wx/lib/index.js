@@ -65,6 +65,7 @@ import {
   projectWxSend,
   projectWxTaskDone,
   projectWxTaskSnooze,
+  resolveWxSendTask,
   shouldBookWxSend,
 } from './project.js'
 
@@ -148,6 +149,8 @@ function policy() {
       // 关键词搜索点下去就是发送；用户把“用不用”交给大肥鱼自己决定，
       // 所以默认开着，只受白名单和发送闸约束；工作台可写 false 关掉。
       stickerSearch: raw.stickerSearch !== false,
+      // 旧调用仍可显式带 task_id；显式 false 时不再按会话名自动绑定。
+      implicitTaskBinding: raw.implicitTaskBinding !== false,
     }
   } catch {
     return {
@@ -156,6 +159,7 @@ function policy() {
       ignoreChats: DEFAULT_IGNORE_CHATS,
       capture: captureSettings({}),
       stickerSearch: false,
+      implicitTaskBinding: true,
     }
   }
 }
@@ -357,19 +361,15 @@ const earPreview = (preview, who) => {
   return text.slice(0, 120)
 }
 
-// 耳朵只递会话、谁、预览和下一步要抄的记号。
-export function formatEarNote(hits, _allowChats = [], tasks = null, extra = {}) {
-  const taskOf = (chat) => (tasks instanceof Map ? tasks.get(chat) : null)
+// 耳朵只递会话、谁和预览；任务由机械侧按会话绑定。
+export function formatEarNote(hits, _allowChats = [], _tasks = null, extra = {}) {
   const whoOf = (chat) => (extra?.requester instanceof Map ? extra.requester.get(chat) : null)
   const body = hits.map((h) => {
     const who = whoOf(h.chat)
-    const lines = [
+    return [
       `「${h.chat}」里，${requesterName(who)}说：${earPreview(h.preview, who)}`,
       '这句是侧栏上的预览，不一定是全文。',
-    ]
-    const task = taskOf(h.chat)
-    if (task?.taskId) lines.push(`〔${task.taskId}〕`)
-    return lines.join('\n')
+    ].join('\n')
   })
   return ['[有人找你]', body.join('\n\n')].join('\n')
 }
@@ -384,7 +384,6 @@ export function formatOverdueNote(task, level = 1, fallbackChat = '') {
     `「${chat}」里，${who}的那句还在：${preview}`,
     '搁了有一会儿了。',
   ]
-  if (task?.taskId) lines.push(`〔${task.taskId}〕`)
   return lines.join('\n')
 }
 
@@ -2208,7 +2207,6 @@ export function apply(ctx, config = {}) {
       lastAt = Date.now()
       // 先入池、再叫醒：投递失败下一轮还会重投，任务按预览去重，不会越积越多。
       // 每个群各自投到自己那个会话；主会话管第一个群，其余按 chatId 分配 worker。
-      const tasks = new Map()
       const reqs = new Map()
       const recents = new Map()
       const ids = new Map()
@@ -2221,8 +2219,7 @@ export function apply(ctx, config = {}) {
         const who = requesterOf({ chat, isDM: isDM === true, preview: h.preview })
         if (who?.name) reqs.set(chat, who)
         try {
-          const r = contextStore.ingest({ chat, chatId, preview: h.preview, why: h.why, isDM, ignoreChats: p.ignoreChats })
-          if (r.ok && r.task) tasks.set(chat, r.task)
+          contextStore.ingest({ chat, chatId, preview: h.preview, why: h.why, isDM, ignoreChats: p.ignoreChats })
         } catch (err) {
           console.log('[dsh-wx] 入池失败（不影响这次投递）：' + String(err?.message ?? err).slice(0, 120))
         }
@@ -2236,7 +2233,7 @@ export function apply(ctx, config = {}) {
       for (const h of hits) {
         const chat = canonicalName(h.chat)
         const chatId = ids.get(h.key)
-        const note = formatEarNote([{ ...h, chat }], p.allowChats, tasks, { requester: reqs, recent: recents })
+        const note = formatEarNote([{ ...h, chat }], p.allowChats, null, { requester: reqs, recent: recents })
         try {
           const sid = await deliverToChat(chat, chatId, note, { contact: isContactWhy(h.why) })
           sentChats.push(chat)
@@ -2478,19 +2475,23 @@ export function apply(ctx, config = {}) {
     isConcurrencySafe: () => false,
     execute: async (args, exec) => {
       deny(exec)
-      if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
+      const p = policy()
+      if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       const a = args || {}
-      const taskId = String(a.task_id ?? '').trim()
-      let task = null
-      if (taskId) {
-        task = contextStore.board.get(taskId)
-        if (!task) throw new WxToolError('WX_TASK_NOT_FOUND', '[没做成，过会儿再试]')
-        if (!sameName(task.chatName, a.chat)) {
-          throw new WxToolError('WX_TASK_CHAT_MISMATCH', '[没做成，过会儿再试]')
-        }
-      }
-      const r = await withSendLock(() => sendToChat({
+      const binding = resolveWxSendTask({
         chat: a.chat,
+        taskId: a.task_id,
+        directory,
+        board: contextStore.board,
+        implicitTaskBinding: p.implicitTaskBinding !== false,
+      })
+      if (!binding.ok) {
+        throw new WxToolError(binding.code, '[没做成，过会儿再试]')
+      }
+      const task = binding.task
+      const taskId = task?.taskId ?? ''
+      const r = await withSendLock(() => sendToChat({
+        chat: binding.chatName,
         text: a.text,
         permit: String(a.permit ?? '').trim(),
         taskId,

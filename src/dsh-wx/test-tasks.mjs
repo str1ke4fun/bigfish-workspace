@@ -83,6 +83,24 @@ t('reply → replying、replyCount+1；final 不等于 done', () => {
   assert.equal(t1.final, true)
   assert.equal(t1.status === 'done', false)
 })
+t('同一 reply msgId 重放不重复计数，也不覆盖最新出站消息', () => {
+  const b = make()
+  const { task } = seed(b)
+  const first = b.reply(task.taskId, { msgId: 'out1', at: at(2) })
+  assert.equal(first.ok, true)
+  assert.equal(first.duplicate, undefined)
+  const replay = b.reply(task.taskId, { msgId: 'out1', at: at(3) })
+  assert.equal(replay.ok, true)
+  assert.equal(replay.duplicate, true)
+  assert.equal(b.get(task.taskId).replyCount, 1)
+  assert.equal(b.get(task.taskId).lastOutboundMsgId, 'out1')
+
+  b.reply(task.taskId, { msgId: 'out2', at: at(4) })
+  const olderReplay = b.reply(task.taskId, { msgId: 'out1', at: at(5) })
+  assert.equal(olderReplay.duplicate, true)
+  assert.equal(b.get(task.taskId).replyCount, 2)
+  assert.equal(b.get(task.taskId).lastOutboundMsgId, 'out2')
+})
 t('done → 结束；之后同会话新消息会开新任务', () => {
   const b = make()
   const a = seed(b)
@@ -163,6 +181,19 @@ t('摘要里用世界声说还搁着', () => {
 })
 
 console.log('持久化')
+t('重放同一 reply msgId 的两条旧记录也只算一次', () => {
+  const f = file()
+  const events = [
+    { v: 1, type: 'create', taskId: 't_replay', chatId: 'c1', chatName: '测试群A', at: at(0) },
+    { v: 1, type: 'reply', taskId: 't_replay', msgId: 'out1', at: at(1) },
+    { v: 1, type: 'reply', taskId: 't_replay', msgId: 'out1', at: at(2) },
+  ]
+  writeFileSync(f, events.map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8')
+  const board = createTaskBoard({ file: f, now: () => T, log: () => {} })
+  assert.equal(board.get('t_replay').replyCount, 1)
+  assert.deepEqual(board.get('t_replay').outboundMsgIds, ['out1'])
+})
+
 t('重开一个实例 → 状态原样重放', () => {
   const f = file()
   const b1 = createTaskBoard({ file: f, now: () => T, log: () => {} })

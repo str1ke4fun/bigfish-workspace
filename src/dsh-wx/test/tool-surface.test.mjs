@@ -14,11 +14,32 @@ import {
   projectWxSend,
   projectWxTaskDone,
   projectWxTaskSnooze,
+  resolveWxSendTask,
   shouldBookWxSend,
   shouldNoteWxEcho,
 } from '../lib/project.js'
 import { formatCards } from '../lib/retrieval.js'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { createDirectory } from '../lib/directory.js'
+import { createTaskBoard } from '../lib/tasks.js'
+
+const T = Date.UTC(2026, 10, 3, 4, 0, 0)
+const tempFile = (name) => join(mkdtempSync(join(tmpdir(), 'dsh-wx-binding-')), name)
+
+function bindingFixture({ chat = '测试群A', directoryFile = '', taskChatId = '' } = {}) {
+  const directory = createDirectory({ file: directoryFile || tempFile('directory.json'), now: () => T })
+  if (!directoryFile) directory.merge({ chats: [{ name: chat }] })
+  const target = directory.sendableTarget(chat)
+  const chatId = taskChatId || target?.chatId
+  const chatName = target?.chatName || chat
+  const board = createTaskBoard({ file: tempFile('tasks.jsonl'), now: () => T })
+  const made = board.create({
+    chatId, chatName, inboundMsgId: 'm1', text: '在吗', at: new Date(T).toISOString(),
+  })
+  return { directory, board, task: made.task, target }
+}
 
 function objectBodyAfter(source, key) {
   const match = new RegExp(`${key}:\\s*\\{`).exec(source)
@@ -123,6 +144,126 @@ test('预览发送写回声凭据，但不写历史也不记任务回复', () =>
   })
   assert.deepEqual(calls, [['outbox', '测试群A', '晚上见'], ['task-reply', 'm_out']])
   assert.equal(confirmed.outMsgId, 'm_out')
+})
+test('unconfirmed 发送不写回声凭据、不记历史，也不记任务回复', () => {
+  const calls = []
+  const result = applyWxSendBookkeeping({
+    sent: 'unconfirmed',
+    chat: '测试群A',
+    text: '晚上见',
+    noteOutbox: (...args) => calls.push(['outbox', ...args]),
+    capture: () => calls.push(['history']),
+    replyTask: (...args) => calls.push(['task-reply', ...args]),
+  })
+  assert.deepEqual(calls, [])
+  assert.equal(result.outMsgId, '')
+})
+
+test('implicit task binding 只把规范会话名对应到唯一活动任务', () => {
+  const exact = bindingFixture()
+  const exactResult = resolveWxSendTask({ chat: '测试群A', directory: exact.directory, board: exact.board })
+  assert.equal(exactResult.ok, true)
+  assert.equal(exactResult.source, 'implicit')
+  assert.equal(exactResult.chatName, '测试群A')
+  assert.equal(exactResult.chatId, exact.target.chatId)
+  assert.equal(exactResult.task.taskId, exact.task.taskId)
+
+  const resolvedDirectory = createDirectory({ file: tempFile('resolved-directory.json'), now: () => T })
+  resolvedDirectory.merge({ chats: [{ name: '星晓家园10号楼13...' }], knownNames: ['星晓家园10号楼1301'] })
+  const resolvedTarget = resolvedDirectory.sendableTarget('星晓家园10号楼13...')
+  const resolvedBoard = createTaskBoard({ file: tempFile('resolved-tasks.jsonl'), now: () => T })
+  const resolvedTask = resolvedBoard.create({
+    chatId: resolvedTarget.chatId, chatName: resolvedTarget.chatName,
+    inboundMsgId: 'm_resolved', text: '在吗', at: new Date(T).toISOString(),
+  }).task
+  const resolved = resolveWxSendTask({ chat: '星晓家园10号楼13...', directory: resolvedDirectory, board: resolvedBoard })
+  assert.equal(resolved.source, 'implicit')
+  assert.equal(resolved.chatName, '星晓家园10号楼1301')
+  assert.equal(resolved.task.taskId, resolvedTask.taskId)
+
+  const unknown = resolveWxSendTask({ chat: '没见过的群', directory: exact.directory, board: exact.board })
+  assert.equal(unknown.ok, true)
+  assert.equal(unknown.source, 'unresolved')
+  assert.equal(unknown.task, null)
+})
+
+test('implicit task binding 不猜歧义名，改名别名仍走同一个目录 id', () => {
+  const ambiguousFile = tempFile('ambiguous-directory.json')
+  writeFileSync(ambiguousFile, JSON.stringify({ version: 1, chats: [{
+    chatId: 'c_ambiguous', displayName: '星晓', fullName: '星晓', aliases: [],
+    nameConfidence: 'ambiguous', firstSeenAt: new Date(T).toISOString(),
+  }] }), 'utf8')
+  const ambiguous = bindingFixture({ chat: '星晓', directoryFile: ambiguousFile, taskChatId: 'c_ambiguous' })
+  const ambiguousResult = resolveWxSendTask({ chat: '星晓', directory: ambiguous.directory, board: ambiguous.board })
+  assert.equal(ambiguousResult.source, 'unresolved')
+  assert.equal(ambiguousResult.task, null)
+
+  const renamedFile = tempFile('renamed-directory.json')
+  writeFileSync(renamedFile, JSON.stringify({ version: 1, chats: [{
+    chatId: 'c_renamed', displayName: '新群名', fullName: '新群名', aliases: ['旧群名'],
+    nameConfidence: 'exact', firstSeenAt: new Date(T).toISOString(),
+  }] }), 'utf8')
+  const renamed = bindingFixture({ chat: '新群名', directoryFile: renamedFile })
+  const byOldName = resolveWxSendTask({ chat: '旧群名', directory: renamed.directory, board: renamed.board })
+  assert.equal(byOldName.source, 'implicit')
+  assert.equal(byOldName.chatName, '新群名')
+  assert.equal(byOldName.chatId, 'c_renamed')
+  assert.equal(byOldName.task.taskId, renamed.task.taskId)
+})
+
+test('implicit task binding 默认开，可显式关；显式 task_id 仍可回退', () => {
+  const fixture = bindingFixture()
+  const explicit = resolveWxSendTask({
+    chat: '测试群A', taskId: fixture.task.taskId,
+    directory: fixture.directory, board: fixture.board, implicitTaskBinding: false,
+  })
+  assert.equal(explicit.ok, true)
+  assert.equal(explicit.source, 'explicit')
+  assert.equal(explicit.task.taskId, fixture.task.taskId)
+
+  const disabled = resolveWxSendTask({
+    chat: '测试群A', directory: fixture.directory, board: fixture.board, implicitTaskBinding: false,
+  })
+  assert.equal(disabled.ok, true)
+  assert.equal(disabled.source, 'disabled')
+  assert.equal(disabled.task, null)
+
+  const unresolvedDirectory = createDirectory({ file: tempFile('unresolved-directory.json'), now: () => T })
+  const unresolvedBoard = createTaskBoard({ file: tempFile('unresolved-tasks.jsonl'), now: () => T })
+  const unresolvedTask = unresolvedBoard.create({
+    chatId: 'c_unresolved', chatName: '目录还没见过', inboundMsgId: 'm_unresolved',
+    text: '在吗', at: new Date(T).toISOString(),
+  }).task
+  const fallback = resolveWxSendTask({
+    chat: '目录还没见过', taskId: unresolvedTask.taskId,
+    directory: unresolvedDirectory, board: unresolvedBoard,
+  })
+  assert.equal(fallback.source, 'explicit')
+  assert.equal(fallback.task.taskId, unresolvedTask.taskId)
+})
+
+test('显式 task_id 不存在时明确拒绝', () => {
+  const fixture = bindingFixture()
+  const missing = resolveWxSendTask({
+    chat: '测试群A', taskId: 't_missing', directory: fixture.directory, board: fixture.board,
+  })
+  assert.deepEqual(missing, {
+    ok: false, code: 'WX_TASK_NOT_FOUND', source: 'explicit',
+    chatName: '测试群A', chatId: fixture.target.chatId,
+  })
+})
+
+test('显式 task_id 指到别的会话时拒绝绑定', () => {
+  const first = bindingFixture()
+  const second = bindingFixture({ chat: '测试群B' })
+  const wrong = resolveWxSendTask({
+    chat: '测试群B', taskId: first.task.taskId,
+    directory: second.directory, board: first.board,
+  })
+  assert.deepEqual(wrong, {
+    ok: false, code: 'WX_TASK_CHAT_MISMATCH', source: 'explicit',
+    chatName: '测试群B', chatId: second.target.chatId,
+  })
 })
 
 test('wx_task_snooze / wx_task_done 的状态句不带内部任务号', () => {

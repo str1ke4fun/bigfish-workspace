@@ -10,6 +10,7 @@
  *   1. 只追加。tasks.jsonl 一行一次状态迁移，启动时重放得到当前状态。
  *   2. 同一会话同一时刻最多一个活动任务；新消息追加到它，不另开一份。
  *   3. 入站去重靠 dedupeKey。同一条消息不会生成两个任务。
+ *   4. 出站回执按 msgId 去重；重放不会多算一次回复。
  *
  * 这里不发送、不读屏、不管 GUI；只负责「有什么要回、回到哪了」。
  */
@@ -57,6 +58,7 @@ function blank() {
     firstInboundMsgId: '',
     lastInboundMsgId: '',
     lastOutboundMsgId: '',
+    outboundMsgIds: [],
     lastText: '',
     inboundCount: 0,
     replyCount: 0,
@@ -142,9 +144,14 @@ function apply(state, rec) {
     return
   }
   if (type === 'reply') {
+    const msgId = str(rec.msgId)
+    if (msgId && (t.outboundMsgIds ?? []).includes(msgId)) return
     t.status = 'replying'
     t.replyCount += 1
-    t.lastOutboundMsgId = str(rec.msgId) || t.lastOutboundMsgId
+    if (msgId) {
+      t.outboundMsgIds.push(msgId)
+      t.lastOutboundMsgId = msgId
+    }
     if (rec.final === true) t.final = true
     if (rec.nextCheckAt) t.nextCheckAt = str(rec.nextCheckAt)
     return
@@ -348,9 +355,13 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
   function reply(taskId, { msgId = '', final = false, nextCheckAt = '', at } = {}) {
     const t = states.get(str(taskId))
     if (!t) return { ok: false, why: '没有这个任务。' }
+    const cleanMsgId = str(msgId)
+    if (cleanMsgId && t.outboundMsgIds.includes(cleanMsgId)) {
+      return { ok: true, duplicate: true, task: get(t.taskId) }
+    }
     if (t.status === 'done') return { ok: false, why: '这个任务已经结束了。' }
     const check = str(nextCheckAt) || new Date(now() + DEFAULT_CHECK_MS).toISOString()
-    const r = transition(t.taskId, 'reply', { msgId: str(msgId), final: final === true, nextCheckAt: check, at })
+    const r = transition(t.taskId, 'reply', { msgId: cleanMsgId, final: final === true, nextCheckAt: check, at })
     if (!r.ok) return r
     return { ok: true, task: states.get(t.taskId) }
   }
@@ -413,7 +424,10 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
 
   function get(taskId) {
     const t = states.get(str(taskId))
-    return t ? { ...t, requester: { ...t.requester }, notes: [...t.notes], dedupeKeys: [...t.dedupeKeys] } : null
+    return t ? {
+      ...t, requester: { ...t.requester }, notes: [...t.notes], dedupeKeys: [...t.dedupeKeys],
+      outboundMsgIds: [...t.outboundMsgIds],
+    } : null
   }
 
   /** 所有没结束的任务，优先级高的、等得久的在前。 */

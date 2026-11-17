@@ -36,6 +36,43 @@ export function shouldNoteWxEcho(sent) {
   return sent === 'confirmed' || sent === 'preview'
 }
 
+/** 会话名比较只用于显式 task_id 的兼容回退；能进目录时以稳定 chatId 为准。 */
+const sameChatName = (a, b) => String(a ?? '').trim().replace(/\s+/g, ' ') ===
+  String(b ?? '').trim().replace(/\s+/g, ' ')
+
+/**
+ * wx_send 的任务绑定：优先认显式 task_id；没给时才走
+ * 规范会话名 → 目录 chatId → 该会话唯一活动任务。未知/歧义名不猜。
+ */
+export function resolveWxSendTask({
+  chat = '', taskId = '', directory = null, board = null, implicitTaskBinding = true,
+} = {}) {
+  const requestedChat = String(chat ?? '').trim()
+  const target = directory?.sendableTarget?.(requestedChat) ?? null
+  const chatName = target?.chatName || requestedChat
+  const chatId = target?.chatId || ''
+  const explicitTaskId = String(taskId ?? '').trim()
+
+  if (explicitTaskId) {
+    const task = board?.get?.(explicitTaskId) ?? null
+    if (!task) {
+      return { ok: false, code: 'WX_TASK_NOT_FOUND', source: 'explicit', chatName, chatId }
+    }
+    const matches = target
+      ? task.chatId === target.chatId
+      : sameChatName(task.chatName, requestedChat)
+    if (!matches) {
+      return { ok: false, code: 'WX_TASK_CHAT_MISMATCH', source: 'explicit', chatName, chatId }
+    }
+    return { ok: true, source: 'explicit', chatName, chatId: task.chatId, task }
+  }
+
+  if (implicitTaskBinding === false) return { ok: true, source: 'disabled', chatName, chatId, task: null }
+  if (!target) return { ok: true, source: 'unresolved', chatName, chatId, task: null }
+  const task = board?.activeForChat?.(chatId) ?? null
+  return { ok: true, source: task ? 'implicit' : 'none', chatName, chatId, task }
+}
+
 /** 发送后的调用点统一按三态处理回声、历史和任务回复，避免几处闸再次绑在一起。 */
 export function applyWxSendBookkeeping({
   sent,

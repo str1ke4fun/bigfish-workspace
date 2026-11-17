@@ -251,6 +251,14 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
     return e.fullName || e.displayName || ''
   }
 
+  /** exact / resolved 名字的发送目标：规范名 + 稳定 chatId；其余不猜。 */
+  function sendableTarget(name) {
+    const chatName = sendableName(name)
+    if (!chatName) return null
+    const chatId = idFor(chatName)
+    return chatId ? { chatName, chatId } : null
+  }
+
   /** 截断名 → 全名（只做已知名字的唯一前缀；不做包含）。 */
   function resolveName(name) {
     const e = findByName(name)
@@ -291,7 +299,7 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
   }
 
   return {
-    file, merge, idFor, sendableName, resolveName, entry, all, snapshot, stats, save, reset,
+    file, merge, idFor, sendableName, sendableTarget, resolveName, entry, all, snapshot, stats, save, reset,
   }
 }
 
