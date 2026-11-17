@@ -48,9 +48,14 @@ function skinMediaUri(id: string): string {
 const WORKBENCH_PET_URL = 'http://127.0.0.1:8788/#her/pet'
 const PRESENCE_MODE_URL = 'http://127.0.0.1:8788/api/fish/presence/mode'
 
+export interface PetRestScene {
+  kind: 'rest' | 'out'
+  at: number
+}
+
 export type PetActionMessage =
   | { motion: string }
-  | { action: string; rest?: PetRestAction; scene?: 'rest' | 'out' | null }
+  | { action: string; rest?: PetRestAction; scene?: PetRestScene | null; intentAt?: number }
 
 export interface PetActionCatalogEntry {
   id: string
@@ -255,6 +260,18 @@ export function sendTriggerCatalog(win: BrowserWindow | null, triggers: readonly
 
 export function sendActionStop(win: BrowserWindow | null): void {
   if (win && !win.isDestroyed()) win.webContents.send('pet:action-stop')
+}
+
+/** 首拍补发必须让 renderer 先拿到可解析的动作/触发目录，再归约状态。 */
+export function sendPetReadySnapshot(
+  win: BrowserWindow | null,
+  actions: readonly ActionDefinition[],
+  triggers: readonly TriggerDefinition[],
+  resendState: () => void,
+): void {
+  sendActionCatalog(win, actions)
+  sendTriggerCatalog(win, triggers)
+  resendState()
 }
 
 function sendActionError(win: BrowserWindow | null, error: { why: string }): void {
@@ -787,12 +804,14 @@ async function setPresence(mode: 'off' | 'event' | 'ambient' | 'work'): Promise<
 
 export interface PetRestActionResult {
   ok: boolean
-  scene: 'rest' | 'out' | null
+  scene: PetRestScene | null
 }
 
-function sceneKindFrom(value: unknown): 'rest' | 'out' | null {
+function sceneFrom(value: unknown): PetRestScene | null {
   if (!isRecord(value)) return null
-  return value.kind === 'rest' || value.kind === 'out' ? value.kind : null
+  const kind = value.kind === 'rest' || value.kind === 'out' ? value.kind : null
+  const at = value.at
+  return kind !== null && typeof at === 'number' && Number.isFinite(at) ? { kind, at } : null
 }
 
 /**
@@ -816,8 +835,8 @@ export async function runRestAction(
     const body: unknown = await response.json().catch(() => null)
     if (!isRecord(body) || body.ok !== true) return { ok: false, scene: null }
 
-    const scene = sceneKindFrom(body.scene)
-    sendActionMessage(win, { action: actionId, rest: action, scene })
+    const scene = sceneFrom(body.scene)
+    sendActionMessage(win, { action: actionId, rest: action, scene, intentAt: Date.now() })
     return { ok: true, scene }
   } catch {
     return { ok: false, scene: null }
@@ -893,11 +912,9 @@ const stateForwarder = createStateForwarder((state) => {
 })
 
 ipcMain.on('pet:ready', () => {
-  stateForwarder.resend()
   // 皮肤可能早于渲染进程订阅就绪：就绪后补发最近一份。
   skinForwarder.ready()
-  sendActionCatalog(petWindow, actionCatalog)
-  sendTriggerCatalog(petWindow, triggerCatalog.triggers)
+  sendPetReadySnapshot(petWindow, actionCatalog, triggerCatalog.triggers, () => stateForwarder.resend())
   if (lastSkinError && petWindow && !petWindow.isDestroyed()) {
     petWindow.webContents.send('pet:skin-error', lastSkinError)
   }

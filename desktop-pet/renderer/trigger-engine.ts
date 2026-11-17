@@ -27,6 +27,8 @@ export interface TriggerSeen {
   lastSceneKind: 'rest' | 'out' | null
   sceneLoopActionId: string | null
   sceneLoopActive: boolean
+  /** 旧 playback 已丢失/被打断；恢复前必须按当前 trigger 目录重新选择。 */
+  sceneLoopNeedsRevalidation: boolean
   ambientConsumed: boolean
 }
 
@@ -66,6 +68,7 @@ export function emptyTriggerSeen(): TriggerSeen {
     lastSceneKind: null,
     sceneLoopActionId: null,
     sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: false,
     ambientConsumed: false,
   }
 }
@@ -90,6 +93,7 @@ function cloneSeen(seen: TriggerSeen): TriggerSeen {
       : null,
     sceneLoopActionId: typeof seen?.sceneLoopActionId === 'string' ? seen.sceneLoopActionId : null,
     sceneLoopActive: seen?.sceneLoopActive === true,
+    sceneLoopNeedsRevalidation: seen?.sceneLoopNeedsRevalidation === true,
     ambientConsumed: seen?.ambientConsumed === true,
   }
 }
@@ -232,10 +236,12 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
       seen.lastSceneKind = null
       seen.sceneLoopActionId = null
       seen.sceneLoopActive = false
+      seen.sceneLoopNeedsRevalidation = false
     } else {
       seen.lastSceneKind = sceneKind
       seen.sceneLoopActionId = action !== null && action.loop ? action.id : null
       seen.sceneLoopActive = action !== null && action.loop
+      seen.sceneLoopNeedsRevalidation = false
     }
     // scene 压住 activity：记住它但不让低优先级 transition 抢占 scene 动作。
     seen.lastActivityState = activityState
@@ -266,10 +272,15 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     && seen.sceneLoopActionId !== null
     && !seen.sceneLoopActive
   ) {
-    const action = input.actions.find((entry) => entry.id === seen.sceneLoopActionId) ?? null
-    if (action === null) {
+    const action = seen.sceneLoopNeedsRevalidation
+      ? selectAction(`scene:${sceneKind}:enter`, input.triggers, input.actions, rng)
+      : input.actions.find((entry) => entry.id === seen.sceneLoopActionId) ?? null
+    seen.sceneLoopNeedsRevalidation = false
+    if (action === null || !action.loop) {
       seen.sceneLoopActionId = null
+      seen.sceneLoopActive = false
     } else {
+      seen.sceneLoopActionId = action.id
       seen.sceneLoopActive = true
       return {
         steady,

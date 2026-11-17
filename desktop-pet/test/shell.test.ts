@@ -496,7 +496,7 @@ test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC �
   ])
 })
 
-test('休息菜单：先 POST /pet/rest，再带 scene 结果播放对应注册动作', async () => {
+test('休息菜单：先 POST /pet/rest，再保留返回 scene 与时间戳播放注册动作', async () => {
   const main = await loadMainModule()
   const { win, sent } = fakeWindow()
   const requests: Array<{ url: string; body: unknown }> = []
@@ -505,21 +505,30 @@ test('休息菜单：先 POST /pet/rest，再带 scene 结果播放对应注册�
     return new Response(JSON.stringify({
       ok: true,
       action: 'sleep',
-      scene: { kind: 'rest', at: 100 },
+      scene: { kind: 'out', at: 100 },
     }), { status: 200 })
   }
 
   const result = await main.runRestAction(win, 'sleep', 'sleep', fetchImpl)
 
-  assert.deepEqual(result, { ok: true, scene: 'rest' })
+  assert.deepEqual(result, { ok: true, scene: { kind: 'out', at: 100 } })
   assert.deepEqual(requests, [{
     url: 'http://127.0.0.1:8788/api/fish/pet/rest',
     body: { action: 'sleep' },
   }])
-  assert.deepEqual(sent, [[
-    'pet:action',
-    { action: 'sleep', rest: 'sleep', scene: 'rest' },
-  ]])
+  assert.equal(sent.length, 1)
+  const [channel, rawPayload] = sent[0]
+  const payload = rawPayload as {
+    action: string
+    rest: string
+    scene: { kind: string; at: number }
+    intentAt: number
+  }
+  assert.equal(channel, 'pet:action')
+  assert.equal(payload.action, 'sleep')
+  assert.equal(payload.rest, 'sleep')
+  assert.deepEqual(payload.scene, { kind: 'out', at: 100 })
+  assert.equal(Number.isFinite(payload.intentAt), true)
 })
 
 test('触发桥：trigger catalog 走独立推送频道', async () => {
@@ -537,6 +546,30 @@ test('触发桥：trigger catalog 走独立推送频道', async () => {
   main.sendTriggerCatalog(win, catalog)
 
   assert.deepEqual(sent, [['pet:trigger-catalog', catalog]])
+})
+
+test('pet:ready 启动补发先给 action/trigger catalog，再给缓存 state', async () => {
+  const main = await loadMainModule()
+  const { win, sent } = fakeWindow()
+  const actions: ActionDefinition[] = [registered('swing', '荡秋千', '玩耍')]
+  const triggers: TriggerDefinition[] = [{
+    when: 'scene:rest:enter',
+    pool: ['swing'],
+    w: [1],
+    once: false,
+    minGapSec: 0,
+    inAmbient: false,
+  }]
+
+  main.sendPetReadySnapshot(win, actions, triggers, () => {
+    sent.push(['pet:state', { at: 123 }])
+  })
+
+  assert.deepEqual(sent.map(([channel]) => channel), [
+    'pet:action-catalog',
+    'pet:trigger-catalog',
+    'pet:state',
+  ])
 })
 
 test('动作注册表：混合默认与皮肤动作保留各自媒体基地址，皮肤同 id 覆盖来源', async (t) => {

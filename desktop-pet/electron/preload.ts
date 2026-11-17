@@ -2,7 +2,14 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { TriggerDefinition } from './triggers'
 
 type Unsubscribe = () => void
-type PetActionMessage = { motion: string } | { action: string }
+type PetActionMessage =
+  | { motion: string }
+  | {
+      action: string
+      rest?: 'sleep' | 'wake'
+      scene?: { kind: 'rest' | 'out'; at: number } | null
+      intentAt?: number
+    }
 
 interface PetActionCatalogMetadata {
   id: string

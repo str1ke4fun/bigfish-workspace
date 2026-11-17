@@ -147,6 +147,7 @@ export function emptyPetSeen(): PetSeen {
     lastSceneKind: null,
     sceneLoopActionId: null,
     sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: false,
     ambientConsumed: false,
   }
 }
@@ -155,6 +156,7 @@ export function emptyPetSeen(): PetSeen {
 export function parsePetSeen(raw: unknown): PetSeen {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return emptyPetSeen()
   const record = raw as Record<string, unknown>
+  const sceneLoopActionId = typeof record.sceneLoopActionId === 'string' ? record.sceneLoopActionId : null
   return {
     lastActionId: typeof record.lastActionId === 'string' ? record.lastActionId : '',
     lastCommentAt: typeof record.lastCommentAt === 'string' ? record.lastCommentAt : '',
@@ -164,8 +166,10 @@ export function parsePetSeen(raw: unknown): PetSeen {
     lastSceneKind: record.lastSceneKind === 'rest' || record.lastSceneKind === 'out'
       ? record.lastSceneKind
       : null,
-    sceneLoopActionId: typeof record.sceneLoopActionId === 'string' ? record.sceneLoopActionId : null,
-    sceneLoopActive: record.sceneLoopActive === true,
+    sceneLoopActionId,
+    // playback 进程内的 state 不落盘；冷启动只能把旧 loop 交给下一拍重新恢复。
+    sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: sceneLoopActionId !== null,
     ambientConsumed: record.ambientConsumed === true,
   }
 }
@@ -186,7 +190,15 @@ export function interruptSceneLoop<T extends TriggerSeen>(seen: T): T {
     ...seen,
     cueIds: boundedKeys(seen.cueIds),
     sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: true,
   } as T
+}
+
+export type ManualRestScene = 'rest' | 'out' | { kind: 'rest' | 'out'; at: number } | null
+
+function manualRestSceneKind(scene: ManualRestScene): 'rest' | 'out' | null {
+  if (typeof scene === 'string') return scene
+  return scene?.kind ?? null
 }
 
 /** 菜单 sleep/wake 已代表本次 scene transition，避免随后 scene trigger 再播一遍。 */
@@ -194,16 +206,26 @@ export function applyManualRestIntent<T extends TriggerSeen>(
   seen: T,
   action: 'sleep' | 'wake',
   _actionId: string,
-  scene: 'rest' | 'out' | null,
+  scene: ManualRestScene,
 ): T {
   return {
     ...seen,
     cueIds: boundedKeys(seen.cueIds),
-    lastSceneKind: action === 'sleep' ? 'rest' : scene,
+    // 服务端以 out > rest 决定 scene；手动意图只能消费它返回的事实，不能覆盖成 sleep。
+    lastSceneKind: manualRestSceneKind(scene),
     // 手动动作本身就是这次表现；不留下 loop 游标，避免它结束后再补播同一 scene trigger。
     sceneLoopActionId: null,
     sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: false,
   } as T
+}
+
+/** state 轮询可能早于手动 REST 发出、晚于回执到达；只接受不早于意图的 snapshot。 */
+export function petStateSnapshotIsStale(state: PetState | null, intentAt: number): boolean {
+  return state !== null
+    && Number.isFinite(state.at)
+    && Number.isFinite(intentAt)
+    && state.at < intentAt
 }
 
 /** reducer 归约与真正下发之间状态可能换拍；cue 动作/气泡下发前再核一次当前 TTL。 */
@@ -216,7 +238,7 @@ export function cueDispatchIsFresh(state: PetState | null, cueId: string, now: n
     && now - cue.at < cue.ttlMs
 }
 
-/** 二期 cue 已取代 presence.recent 的同类挥手；旧路径只继续处理显式 action/steady。 */
+/** 二期把 cue 作为唯一评论表现面；裁定整体忽略 legacy presence.recent，避免过期后补播。 */
 export function withoutPresenceComments(state: PetState | null): PetState | null {
   if (!state?.presence || !Array.isArray(state.presence.recent) || state.presence.recent.length === 0) {
     return state
@@ -250,6 +272,43 @@ export type PlaybackSource = 'manual' | 'trigger' | 'scene' | null
 export interface TriggerBusyFlags {
   manualBusy: boolean
   actionBusy: boolean
+}
+
+export const MANUAL_MOTION_LEASE_MS = 15_000
+
+/** 直接 `pet.motion()` 不经过 PlaybackState；用短 lease 把它也纳入手动优先级。 */
+export interface ManualMotionLease {
+  motion: PetMotion
+  started: boolean
+  expiresAt: number
+}
+
+export function startManualMotionLease(
+  motion: PetMotion,
+  now: number,
+  durationMs = MANUAL_MOTION_LEASE_MS,
+): ManualMotionLease {
+  return {
+    motion,
+    started: false,
+    expiresAt: now + Math.max(1, durationMs),
+  }
+}
+
+/** 组件确认起动后再收到别的 motion（通常回 idle）即释放；兜底仍受 lease 到期限制。 */
+export function noteManualMotionChange(
+  lease: ManualMotionLease | null,
+  motion: PetMotion | 'dragging',
+  now: number,
+): ManualMotionLease | null {
+  if (lease === null || !Number.isFinite(now) || now >= lease.expiresAt) return null
+  if (motion === lease.motion) return { ...lease, started: true }
+  if (lease.started || motion === 'dragging') return null
+  return lease
+}
+
+export function manualMotionLeaseBusy(lease: ManualMotionLease | null, now: number): boolean {
+  return lease !== null && Number.isFinite(now) && now < lease.expiresAt
 }
 
 /** trigger 一次性动作与 scene/manual 分开计账；scene loop 不得被 actionBusy 永久压住。 */

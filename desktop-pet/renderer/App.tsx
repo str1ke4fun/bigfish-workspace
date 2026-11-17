@@ -32,20 +32,25 @@ import {
   interruptSceneLoop,
   isPetDragGesture,
   legacySeen,
+  manualMotionLeaseBusy,
   mergePetSeen,
+  noteManualMotionChange,
   parsePetSeen,
   pendingServerActionAfterPlaybackEvent,
   petErrorTarget,
   petMotionProp,
+  petStateSnapshotIsStale,
   petUriProp,
   restClickBubble,
   retainsActionErrorOwnership,
   restoreCompletedEvent,
   restoreActionConfig,
   shouldOpenPetDialogue,
+  startManualMotionLease,
   triggerPlaybackBusy,
   withoutPresenceComments,
   type ActionErrorOwner,
+  type ManualMotionLease,
   type PetSeen,
   type PlaybackSource,
 } from './playback-adapter'
@@ -70,7 +75,8 @@ declare global {
       } | {
         action: string
         rest?: 'sleep' | 'wake'
-        scene?: 'rest' | 'out' | null
+        scene?: { kind: 'rest' | 'out'; at: number } | 'rest' | 'out' | null
+        intentAt?: number
       } | string) => void): () => void
       onActionCatalog?(handler: (catalog: unknown) => void): () => void
       getActionCatalog?(): Promise<unknown>
@@ -210,7 +216,8 @@ interface ParsedActionMessage {
   kind: 'motion' | 'action'
   value: string
   rest?: 'sleep' | 'wake'
-  scene?: 'rest' | 'out' | null
+  scene?: { kind: 'rest' | 'out'; at: number } | 'rest' | 'out' | null
+  intentAt?: number
 }
 
 function parseActionMessage(raw: unknown): ParsedActionMessage | null {
@@ -230,8 +237,17 @@ function parseActionMessage(raw: unknown): ParsedActionMessage | null {
   if (kind === 'action') {
     if (message.rest === 'sleep' || message.rest === 'wake') parsed.rest = message.rest
     if (Object.hasOwn(message, 'scene')) {
-      parsed.scene = message.scene === 'rest' || message.scene === 'out' ? message.scene : null
+      const scene = message.scene
+      if (scene === 'rest' || scene === 'out') parsed.scene = scene
+      else if (scene && typeof scene === 'object' && !Array.isArray(scene)) {
+        const entry = scene as Record<string, unknown>
+        const kind = entry.kind === 'rest' || entry.kind === 'out' ? entry.kind : null
+        const at = entry.at
+        parsed.scene = kind !== null && typeof at === 'number' && Number.isFinite(at) ? { kind, at } : null
+      } else parsed.scene = null
     }
+    const intentAt = Number(message.intentAt)
+    if (Number.isFinite(intentAt)) parsed.intentAt = intentAt
   }
   return parsed
 }
@@ -327,6 +343,8 @@ export function App() {
   /** 借出 waving 时使用的 config 克隆；null = 直接使用当前皮肤 config。 */
   const [playbackConfig, setPlaybackConfig] = useState<DshPetConfig | null>(null)
   const [pendingBatch, setPendingBatch] = useState<PendingPlaybackBatch | null>(null)
+  /** 首拍 state 必须等两份目录都完成该轮加载后再归约；就绪后换一代重新订阅并补发。 */
+  const [catalogEpoch, setCatalogEpoch] = useState(0)
   const activeConfig = skin?.config ?? config
   const activeUri = skin?.uri ?? ASSET_BASE
   const renderedConfig = playbackConfig ?? activeConfig
@@ -351,8 +369,12 @@ export function App() {
   playbackRef.current = playback
   /** 当前命令面动作是谁发起的；trigger 一次性动作与手动/skin loop 必须分开计忙。 */
   const playbackSourceRef = useRef<PlaybackSource>(null)
+  /** 不经过 PlaybackState 的直接 motion 也要在生命周期内压住自动 trigger。 */
+  const manualMotionLeaseRef = useRef<ManualMotionLease | null>(null)
   /** 最近一拍 /pet/state：点击与迟到回调同步读取，不依赖 React commit。 */
   const latestStateRef = useRef<PetState | null>(null)
+  /** 手动 REST 意图之后，所有更早生成的 state snapshot 都不得再改 trigger 游标。 */
+  const manualStateFloorRef = useRef(0)
   const seenRef = useRef<PetSeen | null>(null)
   if (seenRef.current === null) seenRef.current = loadSeen()
   /** 动作媒体可能连续报错；ownership 绑定首次失败的动作 generation/source，恢复完成前不能串给别的动作或皮肤。 */
@@ -366,6 +388,8 @@ export function App() {
   const playLegacyMotionRef = useRef<(value: string) => void>(() => {})
   /** state 可能早于 catalog 到达；等目录补上同一 id 后再启动，不丢 `/pet/act` 动作。 */
   const pendingServerActionRef = useRef<string | null>(null)
+  const actionCatalogReadyRef = useRef(false)
+  const triggerCatalogReadyRef = useRef(false)
   /** 迟到的对话请求不得关闭/抢占更新请求的气泡与动作。 */
   const chatRequestGenerationRef = useRef(0)
   const batchIdRef = useRef(0)
@@ -473,6 +497,7 @@ export function App() {
     (value: string): void => {
       const options = performedMotion(value)
       if (!options) return
+      manualMotionLeaseRef.current = startManualMotionLease(options.type, Date.now())
       playbackSourceRef.current = 'manual'
       const current = playbackRef.current
       if (current !== null && current.status !== 'idle') {
@@ -492,6 +517,11 @@ export function App() {
 
   const handleMotionChange = useCallback(
     (motion: PetMotion | 'dragging'): void => {
+      manualMotionLeaseRef.current = noteManualMotionChange(
+        manualMotionLeaseRef.current,
+        motion,
+        Date.now(),
+      )
       const event = playbackCallbacks.motionChanged(motion)
       if (event !== null) dispatchPlayback(event)
     },
@@ -553,7 +583,14 @@ export function App() {
     let cancelled = false
     let unsubscribe: (() => void) | undefined
 
+    const markReady = (): void => {
+      const wasReady = actionCatalogReadyRef.current && triggerCatalogReadyRef.current
+      actionCatalogReadyRef.current = true
+      if (!wasReady && triggerCatalogReadyRef.current) setCatalogEpoch((value) => value + 1)
+    }
+
     const receive = (raw: unknown): void => {
+      markReady()
       const next = parseActionCatalog(raw)
       actionCatalogRef.current = next
       setActionCatalog(next)
@@ -584,8 +621,10 @@ export function App() {
         if (!cancelled) receive(raw)
       })
       .catch(() => {
+        if (!cancelled) markReady()
         // 老 preload 没有 catalog API：现有 motion 菜单仍按旧路径播放。
       })
+    if (!window.petBridge?.onActionCatalog && !window.petBridge?.getActionCatalog) markReady()
 
     return () => {
       cancelled = true
@@ -598,7 +637,14 @@ export function App() {
     let cancelled = false
     let unsubscribe: (() => void) | undefined
 
+    const markReady = (): void => {
+      const wasReady = actionCatalogReadyRef.current && triggerCatalogReadyRef.current
+      triggerCatalogReadyRef.current = true
+      if (!wasReady && actionCatalogReadyRef.current) setCatalogEpoch((value) => value + 1)
+    }
+
     const receive = (raw: unknown): void => {
+      markReady()
       const next = parseTriggerCatalog(raw)
       triggerCatalogRef.current = next
       setTriggerCatalog(next)
@@ -615,8 +661,10 @@ export function App() {
         if (!cancelled) receive(raw)
       })
       .catch(() => {
+        if (!cancelled) markReady()
         // 老 preload 没有 trigger API：保持空表，现有手动动作不受影响。
       })
+    if (!window.petBridge?.onTriggerCatalog && !window.petBridge?.getTriggerCatalog) markReady()
 
     return () => {
       cancelled = true
@@ -628,6 +676,7 @@ export function App() {
     let unsubscribe: (() => void) | undefined
     try {
       unsubscribe = window.petBridge?.onActionStop?.(() => {
+        manualMotionLeaseRef.current = null
         dispatchPlayback({ type: 'stopAction' }, { forceBase: true })
       })
     } catch {
@@ -647,6 +696,8 @@ export function App() {
           return
         }
         if (message.rest) {
+          const intentAt = message.intentAt ?? Date.now()
+          manualStateFloorRef.current = Math.max(manualStateFloorRef.current, intentAt)
           const scene = message.scene === undefined
             ? message.rest === 'sleep' ? 'rest' : null
             : message.scene
@@ -654,6 +705,7 @@ export function App() {
           seenRef.current = applyManualRestIntent(seen, message.rest, message.value, scene)
           saveSeen(seenRef.current)
         }
+        manualMotionLeaseRef.current = null
         playbackSourceRef.current = 'manual'
         dispatchPlayback({ type: 'startAction', actionId: message.value })
       })
@@ -815,6 +867,9 @@ export function App() {
     try {
       unsubscribe = window.petBridge?.onState((raw) => {
         const state = raw as WirePetState | null
+        // 目录未就绪时先不消费 scene/cue；就绪后的 catalogEpoch 会触发 ready 补发。
+        if (!actionCatalogReadyRef.current || !triggerCatalogReadyRef.current) return
+        if (petStateSnapshotIsStale(state as PetState | null, manualStateFloorRef.current)) return
         const now = Date.now()
         latestStateRef.current = state as PetState | null
         const previous = seenRef.current ?? emptyPetSeen()
@@ -832,6 +887,7 @@ export function App() {
           && Number.isFinite(action.ttlMs)
           && now - action.at < action.ttlMs
         const busy = triggerPlaybackBusy(playbackRef.current, playbackSourceRef.current)
+        const legacyMotionWillPlay = effect.motion !== undefined || effect.bubble?.motion !== undefined
         const triggerEffect = reduceTriggers({
           state: state as PetState | null,
           triggers: triggerCatalogRef.current,
@@ -839,7 +895,10 @@ export function App() {
           seen: previous,
           now,
           // 服务端显式 action 与用户动作同级：先占住播放器，cue/scene 留到下一拍。
-          manualBusy: busy.manualBusy || actionAlive,
+          manualBusy: busy.manualBusy
+            || manualMotionLeaseBusy(manualMotionLeaseRef.current, now)
+            || legacyMotionWillPlay
+            || actionAlive,
           actionBusy: busy.actionBusy,
         })
         const nextSeen = mergePetSeen({
@@ -900,7 +959,7 @@ export function App() {
     return () => {
       unsubscribe?.()
     }
-  }, [activeConfig, dispatchPlayback, pet, playLegacyMotion])
+  }, [activeConfig, catalogEpoch, dispatchPlayback, pet, playLegacyMotion])
 
   // 点击穿透：默认整窗穿透，指针落到身体/UI 上才翻成可交互。
   useEffect(() => {
