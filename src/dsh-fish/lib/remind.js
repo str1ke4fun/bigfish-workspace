@@ -375,9 +375,11 @@ export function registerRemind(ctx, deps = {}) {
         })
         if (!r.ok) return { ok: false, text: r.note }
         if (!r.rows.length) return { ok: true, text: '现在没有定时提醒。' }
+        const rows = r.rows.map((x, index) => `${index + 1}. ${nowText(x.dueAt)}｜${x.chat}`)
+        const marks = r.rows.map((x, index) => `〔${index + 1} ${x.id}〕`).join('')
         return {
           ok: true,
-          text: ['现在还有这些提醒：', ...r.rows.map((x) => `- ${nowText(x.dueAt)}｜${x.chat}（${x.id}）`)].join('\n'),
+          text: ['现在还有这些提醒：', ...rows, marks].join('\n'),
         }
       },
     }),

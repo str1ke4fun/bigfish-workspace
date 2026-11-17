@@ -1,5 +1,6 @@
 const PREFIX = 'WXTOOL|'
 const VALID_CODE = /^[A-Z0-9_]+$/
+const RAW_PREFIX = 'r1.'
 
 function assertCode(code) {
   if (typeof code !== 'string' || !VALID_CODE.test(code)) {
@@ -8,12 +9,25 @@ function assertCode(code) {
 }
 
 export class WxToolError extends Error {
-  constructor(code, modelText) {
+  constructor(code, modelText, rawDetail = '') {
     assertCode(code)
     if (typeof modelText !== 'string') throw new TypeError('WxToolError modelText must be a string')
-    super(`${PREFIX}${code}|${modelText}`)
+    const detail = String(rawDetail ?? '')
+    super(`${PREFIX}${code}|${RAW_PREFIX}${Buffer.from(detail, 'utf8').toString('base64url')}|${modelText}`)
     this.name = 'WxToolError'
     this.code = code
+    this.rawDetail = detail
+  }
+}
+
+function decodeRawDetail(segment) {
+  if (typeof segment !== 'string' || !segment.startsWith(RAW_PREFIX)) return null
+  const encoded = segment.slice(RAW_PREFIX.length)
+  try {
+    const text = Buffer.from(encoded, 'base64url').toString('utf8')
+    return Buffer.from(text, 'utf8').toString('base64url') === encoded ? text : null
+  } catch {
+    return null
   }
 }
 
@@ -24,9 +38,22 @@ export function parseWxToolError(message) {
   if (first < 0) return null
   const code = text.slice(PREFIX.length, first)
   if (!VALID_CODE.test(code)) return null
+  const remainder = text.slice(first + 1)
+  const second = remainder.indexOf('|')
+  if (second >= 0) {
+    const rawDetail = decodeRawDetail(remainder.slice(0, second))
+    if (rawDetail !== null) {
+      return {
+        code,
+        modelText: remainder.slice(second + 1),
+        rawDetail,
+      }
+    }
+  }
   return {
     code,
-    modelText: text.slice(first + 1),
+    modelText: remainder,
+    rawDetail: '',
   }
 }
 

@@ -31,6 +31,34 @@ export function shouldBookWxSend(sent) {
   return sent === 'confirmed'
 }
 
+/** 回声保护要认出「已确认」和「只在侧栏看见」，但只有前者算真正入账。 */
+export function shouldNoteWxEcho(sent) {
+  return sent === 'confirmed' || sent === 'preview'
+}
+
+/** 发送后的调用点统一按三态处理回声、历史和任务回复，避免几处闸再次绑在一起。 */
+export function applyWxSendBookkeeping({
+  sent,
+  chat = '',
+  text = '',
+  noteOutbox,
+  capture,
+  replyTask,
+} = {}) {
+  if (shouldNoteWxEcho(sent) && typeof noteOutbox === 'function') noteOutbox(chat, text)
+  if (!shouldBookWxSend(sent)) return { outMsgId: '' }
+
+  let outMsgId = ''
+  try {
+    const captured = typeof capture === 'function' ? capture() : null
+    outMsgId = captured?.records?.at(-1)?.msgId ?? ''
+  } catch {
+    // 历史没记下，不影响已经确认发出的消息。
+  }
+  if (typeof replyTask === 'function') replyTask(outMsgId)
+  return { outMsgId }
+}
+
 /** wx_send / wx_type 回车后的三句世界声。 */
 export function projectWxSend({ chat = '', sent = 'unconfirmed' } = {}) {
   const target = String(chat ?? '').trim() || '那个会话'

@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  applyWxSendBookkeeping,
   boundedText,
   classifyWxSend,
   clipPeekBody,
@@ -14,6 +15,7 @@ import {
   projectWxTaskDone,
   projectWxTaskSnooze,
   shouldBookWxSend,
+  shouldNoteWxEcho,
 } from '../lib/project.js'
 import { formatCards } from '../lib/retrieval.js'
 import { readFileSync } from 'node:fs'
@@ -89,11 +91,38 @@ test('wx_send / wx_type 的 confirmed、preview、unconfirmed 是三句不同世
   }
 })
 
-test('只有 confirmed 才写成功回执或自动记任务', () => {
+test('预览发送写回声凭据，但不写历史也不记任务回复', () => {
+  assert.equal(shouldNoteWxEcho('confirmed'), true)
+  assert.equal(shouldNoteWxEcho('preview'), true)
+  assert.equal(shouldNoteWxEcho('unconfirmed'), false)
   assert.equal(shouldBookWxSend('confirmed'), true)
   assert.equal(shouldBookWxSend('preview'), false)
   assert.equal(shouldBookWxSend('unconfirmed'), false)
   assert.equal(shouldBookWxSend('anything-else'), false)
+
+  const calls = []
+  const preview = applyWxSendBookkeeping({
+    sent: 'preview',
+    chat: '测试群A',
+    text: '晚上见',
+    noteOutbox: (...args) => calls.push(['outbox', ...args]),
+    capture: () => calls.push(['history']),
+    replyTask: () => calls.push(['task-reply']),
+  })
+  assert.deepEqual(calls, [['outbox', '测试群A', '晚上见']])
+  assert.equal(preview.outMsgId, '')
+
+  calls.length = 0
+  const confirmed = applyWxSendBookkeeping({
+    sent: 'confirmed',
+    chat: '测试群A',
+    text: '晚上见',
+    noteOutbox: (...args) => calls.push(['outbox', ...args]),
+    capture: () => ({ records: [{ msgId: 'm_out' }] }),
+    replyTask: (msgId) => calls.push(['task-reply', msgId]),
+  })
+  assert.deepEqual(calls, [['outbox', '测试群A', '晚上见'], ['task-reply', 'm_out']])
+  assert.equal(confirmed.outMsgId, 'm_out')
 })
 
 test('wx_task_snooze / wx_task_done 的状态句不带内部任务号', () => {

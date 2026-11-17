@@ -263,8 +263,11 @@ test('her_recall 的模型投影以 [翻到] / [没翻到] 开头，不另给 ha
   await appendEvent({ type: 'utterance', text: '那天雨很大，我在窗边站了很久。' }, { day: 1, stage: 1, source: 'tool' }, root)
   const hit = await def.execute({ query: '雨很大' }, {})
   const text = def.output.render({}, hit)[0].text
+  const lines = text.trimEnd().split('\n')
   assert.match(text, /^\[翻到\]/)
   assert.ok(text.includes('那天雨很大'), '投影要把翻到的那句带上')
+  assert.match(lines.at(-1), /^〔1 ev_[0-9A-Z]{26}〕$/)
+  assert.equal(lines.slice(0, -1).join('\n').includes('ev_'), false, '正文里不再内联 id')
   assert.doesNotMatch(text, /编号/, '结果里没有 id 列表，不该造 handle')
 }))
 

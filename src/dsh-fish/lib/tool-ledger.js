@@ -62,8 +62,28 @@ function wxToolErrorOf(result) {
   if (result?.isError !== true) return null
   const text = errorTextOf(result)
   if (typeof text !== 'string') return null
-  const match = /^WXTOOL\|([A-Z0-9_]+)\|([\s\S]*)$/.exec(text)
-  return match ? { code: match[1], text: match[2] } : null
+  const prefix = 'WXTOOL|'
+  if (!text.startsWith(prefix)) return null
+  const first = text.indexOf('|', prefix.length)
+  if (first < 0) return null
+  const code = text.slice(prefix.length, first)
+  if (!/^[A-Z0-9_]+$/.test(code)) return null
+
+  const remainder = text.slice(first + 1)
+  const second = remainder.indexOf('|')
+  if (second >= 0) {
+    const segment = remainder.slice(0, second)
+    if (segment.startsWith('r1.')) {
+      try {
+        const encoded = segment.slice(3)
+        const rawDetail = Buffer.from(encoded, 'base64url').toString('utf8')
+        if (Buffer.from(rawDetail, 'utf8').toString('base64url') === encoded) {
+          return { code, text: remainder.slice(second + 1), rawDetail }
+        }
+      } catch { /* 旧格式或坏编码按旧格式处理 */ }
+    }
+  }
+  return { code, text: remainder, rawDetail: '' }
 }
 
 /**
@@ -174,7 +194,10 @@ export function createToolLedger({
       ? sanitize(wxToolError.code, redactState)
       : value?.code ?? sanitize(result?.error?.info?.code ?? '', redactState)
     const code = rawCode == null ? '' : String(rawCode)
-    const error = isError ? sanitize(wxToolError?.text ?? errorTextOf(result), redactState) : null
+    const rawError = wxToolError
+      ? (wxToolError.rawDetail || wxToolError.text)
+      : errorTextOf(result)
+    const error = isError ? sanitize(rawError, redactState) : null
 
     const handles = sanitize(rawValue?.handles ?? [], redactState)
     const refs = sanitize(rawValue?.refs ?? {}, redactState)

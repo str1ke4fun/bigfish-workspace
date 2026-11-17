@@ -12,6 +12,7 @@ import { join } from 'node:path'
 
 import { apply } from '../lib/index.js'
 import { renderMaterial } from '../lib/browse.js'
+import { lookOnce } from '../lib/look.js'
 import * as watchModule from '../lib/watch.js'
 import { fakeCore, fakeHost, fakeSessions, fakeWorkspaces } from './helpers.mjs'
 
@@ -147,6 +148,15 @@ test('bili_speak 文本不一致只说不一样，不复述实际文本', async 
   } finally { handle.dispose() }
 })
 
+test('bili_speak 失败也用方括号世界状态', async () => {
+  const { ctx, handle } = await boot()
+  try {
+    const speak = registered(ctx, 'bili_speak')
+    const blocks = speak.output.render({}, { ok: false, said: '', note: '现在不方便说。' })
+    assert.equal(blocks[0].text, '[没说：现在不方便说。]')
+  } finally { handle.dispose() }
+})
+
 test('bili_look 失败投影是方括号世界状态', async () => {
   const { ctx, handle } = await boot({ config: { browse: { enabled: false } } })
   try {
@@ -155,6 +165,23 @@ test('bili_look 失败投影是方括号世界状态', async () => {
     const blocks = look.output.render({ what: 'home' }, out)
     assert.equal(blocks[0].text, '[没翻到：现在打不开]')
     assert.equal(blocks[0].text.includes('这次没看到什么'), false)
+  } finally { handle.dispose() }
+})
+
+test('bili_look 未识别错误码不进入模型投影', async () => {
+  const { ctx, handle } = await boot()
+  try {
+    const look = registered(ctx, 'bili_look')
+    const out = await lookOnce({
+      what: 'search',
+      keyword: '钟',
+      cfg: { browse: { topN: 4 } },
+      client: { search: async () => ({ ok: false, code: 'UNEXPECTED_CODE', message: 'internal failure' }) },
+      events: [],
+    })
+    const blocks = look.output.render({ what: 'search', keyword: '钟' }, out)
+    assert.equal(blocks[0].text, '[没翻到：打不开，过会儿再看]')
+    assert.equal(blocks[0].text.includes('UNEXPECTED_CODE'), false)
   } finally { handle.dispose() }
 })
 

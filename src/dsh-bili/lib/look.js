@@ -135,7 +135,7 @@ function describeErr(r) {
   if (code === 'COOLDOWN') return 'B 站这会儿不让我看了，过一会儿再说。'
   if (code === 'NO_WBI') return '连不上。等等再试。'
   if (code === 'NETWORK') return '网断了。'
-  return `打不开（${code}）。`
+  return '打不开，过会儿再看。'
 }
 
 function lookFailure(note) {

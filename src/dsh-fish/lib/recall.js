@@ -103,12 +103,12 @@ export function searchEvents(events, query, o = {}) {
 export function renderRecall(rows) {
   if (!rows?.length) return '你翻了，没翻到。'
   const lines = ['你翻到的：']
-  for (const r of rows) {
-    // id 用小括号挂在最后：她要 revise / narration 时原样抄进来。
-    // 没写 id 的老调用方（测试里的手写 fixture）就不显示括号，别凭空造一个。
-    const mark = r.id ? `（${r.id}）` : ''
-    lines.push(`- ${r.date}｜${r.text}${mark}`)
+  const marks = []
+  for (const [index, r] of rows.entries()) {
+    lines.push(`${index + 1}. ${r.date}｜${r.text}`)
+    if (r.id) marks.push(`〔${index + 1} ${r.id}〕`)
   }
+  if (marks.length) lines.push(marks.join(''))
   return lines.join('\n')
 }
 

@@ -53,6 +53,7 @@ import { collectSticker } from './sticker-collect.js'
 import { normalizeKeyword, searchSticker } from './sticker-search.js'
 import { WxToolError, registerWxToolErrorAdapter } from './tool-error.js'
 import {
+  applyWxSendBookkeeping,
   boundedText,
   classifyWxSend,
   clipPeekBody,
@@ -74,6 +75,14 @@ export const inject = ['tools', 'systemPrompt', 'agents']
 // 给自测用
 export { parseTree, mentionHits, ocrMentionHits, contentDigest, sameName, allowedCurrent, sidebarRegion, ocrSnapshot, reconcileChatName, treeHealth, treeAction, treeMatchesOcr }
 export { resolveLabel, hitTest, createFreshness }
+
+/** QQ 等别的面看得见全局工具名单，但执行层必须拒绝微信动作。 */
+export function denyWxSurface(exec) {
+  const sessionId = String(exec?.agent?.session?.id ?? '')
+  if (sessionId.startsWith('onebot-')) {
+    throw new WxToolError('WX_WRONG_SURFACE', '[这儿动不了微信]', `cross-surface deny: session=${sessionId}`)
+  }
+}
 
 const SH = fileURLToPath(new URL('./wx.sh', import.meta.url))
 const SHOT_DIR = '/home/str1k3/.dsh-fish/home/.wx'
@@ -674,9 +683,7 @@ export function apply(ctx, config = {}) {
 
   // 通道隔离：工具名单是全局的，QQ 会话里也看得到 wx_*。QQ 里的对话不该顺手去操作微信，这里在执行层拦住。
   // （主机自己在 web 界面里和她对话时放行，调试要用。）
-  const deny = (exec) => {
-    if (String(exec?.agent?.session?.id ?? '').startsWith('onebot-')) throw new Error('在这儿碰不到微信。')
-  }
+  const deny = (exec) => denyWxSurface(exec)
 
   // ---- 主机优先（2026-10-30）----
   // 主机在对话框里问她事，和微信通知落在同一个会话里。以前她会在答主机的半路被微信通知拽走，
@@ -1077,24 +1084,24 @@ export function apply(ctx, config = {}) {
    * 把一句话发到指定会话。永不自己吞错：发不出去就抛，让调用方如实说。
    * permit 存在时只绕过 @ / 主机闸；允许名单、说话频率、当前会话核对都照走。
    */
-  async function sendToChat({ chat, text, permit = '', taskId = '' } = {}) {
+  async function sendToChat({ chat, text, permit = '', taskId = '', replyTask = null } = {}) {
     const p = policy()
-    if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
+    if (!p.enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]', '微信通道已关闭。')
     const want = String(chat ?? '').trim()
     const body = String(text ?? '')
-    if (!want) throw new WxToolError('WX_MISSING_CHAT', '[没做成，过会儿再试]')
-    if (!body) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
-    if (/[\r\n]/.test(body)) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
-    if ([...body].length > 500) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]')
+    if (!want) throw new WxToolError('WX_MISSING_CHAT', '[没做成，过会儿再试]', '没有指定要发到哪个会话。')
+    if (!body) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]', '要发送的正文为空。')
+    if (/[\r\n]/.test(body)) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]', '要发送的正文含换行。')
+    if ([...body].length > 500) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]', `要发送的正文过长：${[...body].length} 字。`)
 
     const allowed = canSendWithPolicy(p, want)
-    if (!allowed.ok) throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]')
+    if (!allowed.ok) throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]', allowed.why)
 
     const token = String(permit ?? '').trim()
     if (token) {
       // 到点提醒：许可绑定会话 + 原文 + 一次性。这里只查，不消费。
       const v = permitStore.check({ id: token, chat: allowed.chat, text: body })
-      if (!v.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
+      if (!v.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]', v.why)
     }
 
     let s = await look()
@@ -1188,12 +1195,13 @@ export function apply(ctx, config = {}) {
         ? '侧栏里能看到，最后那条消息里还没看见。'
         : '末尾和侧栏都还没看见；先别当它发出去了。'
     const sent = classifyWxSend({ inMsgs, inPreview })
-    // 只有末尾真看见才落台账、写 outbox；侧栏预览和没看见都不算发成功。
-    let outMsgId = ''
-    if (shouldBookWxSend(sent)) {
-      noteOutbox(allowed.chat, body)
-      try {
-        const captured = contextStore.capture({
+    // 侧栏预览也要进回声保护；只有末尾真看见才写历史、任务回复。
+    const booked = applyWxSendBookkeeping({
+      sent,
+      chat: allowed.chat,
+      text: body,
+      noteOutbox,
+      capture: () => contextStore.capture({
           chat: allowed.chat,
           source: 'sent',
           taskId,
@@ -1202,13 +1210,12 @@ export function apply(ctx, config = {}) {
             sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
             text: body, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
           }],
-        })
-        outMsgId = captured.records?.at(-1)?.msgId ?? ''
-      } catch { /* 台账记不下不影响已经发出的消息 */ }
-    }
+      }),
+      replyTask,
+    })
     // 发送本身也算一次活动：给后台采集留出静默期，别紧接着点开会话。
     quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-    return { ok: true, chat: allowed.chat, receipt, sent, outMsgId, proactive, proactiveLeft }
+    return { ok: true, chat: allowed.chat, receipt, sent, outMsgId: booked.outMsgId, proactive, proactiveLeft }
   }
 
   /**
@@ -2429,10 +2436,12 @@ export function apply(ctx, config = {}) {
       const chatRow = after.parsed.chats.find((c) => sameName(c.name, second.chat))
       const inPreview = !!chatRow && chatRow.preview.includes(head.slice(0, 10))
       const sent = classifyWxSend({ inMsgs, inPreview })
-      if (shouldBookWxSend(sent)) {
-        noteOutbox(second.chat, text)
-        try {
-          contextStore.capture({
+      applyWxSendBookkeeping({
+        sent,
+        chat: second.chat,
+        text,
+        noteOutbox,
+        capture: () => contextStore.capture({
             chat: second.chat,
             source: 'sent',
             ignoreChats: policy().ignoreChats,
@@ -2440,9 +2449,8 @@ export function apply(ctx, config = {}) {
               sender: null, senderConfidence: 'unknown', direction: 'out', kind: 'text',
               text, at: new Date().toISOString(), atConfidence: 'medium', source: 'sent',
             }],
-          })
-        } catch { /* 台账记不下不影响已经发出的消息 */ }
-      }
+        }),
+      })
       return projectWxSend({ chat: second.chat, sent })
     },
   })
@@ -2480,11 +2488,13 @@ export function apply(ctx, config = {}) {
         text: a.text,
         permit: String(a.permit ?? '').trim(),
         taskId,
+        replyTask: task
+          ? (outMsgId) => {
+              const rep = contextStore.recordReply({ taskId, msgId: outMsgId })
+              if (!rep.ok) console.log('[dsh-wx] 回复已发出，任务没记上：' + String(rep.why ?? 'unknown'))
+            }
+          : null,
       }))
-      if (task && shouldBookWxSend(r.sent)) {
-        const rep = contextStore.recordReply({ taskId, msgId: r.outMsgId })
-        if (!rep.ok) console.log('[dsh-wx] 回复已发出，任务没记上：' + String(rep.why ?? 'unknown'))
-      }
       return projectWxSend(r)
     },
   })

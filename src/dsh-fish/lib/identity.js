@@ -270,7 +270,7 @@ export function attachIdentity(agent, root, { canRemind, inboxText, surfaceOf, c
       text: () => {
         if (canRemind && !canRemind(agent)) return ''
         const body = String(inboxText?.() ?? '').trim()
-        return body ? '## 微信里还没回完的任务\n\n' + body : ''
+        return body ? '## 还没回完的\n\n' + body : ''
       },
     })
     // 哪些名字是他。只在 web / wx / screen 出现；没有 owner 文档时是空串。

@@ -119,8 +119,7 @@ test('attachIdentity：挂五段——身份 + 处境 + 提醒说明 + 任务摘
   assert.equal(inbox.name, INBOX_SECTION)
   assert.equal(inbox.order, INBOX_ORDER)
   assert.equal(typeof inbox.text, 'function')
-  assert.match(inbox.text(), /t_1/)
-  assert.match(inbox.text(), /还没回完/)
+  assert.equal(inbox.text(), '## 还没回完的\n\nt_1｜测试群A｜未回')
 
   // 第五段：关于他（owner 身份事实）。没有「关于他.md」时也是空串。
   const owner = calls[4]

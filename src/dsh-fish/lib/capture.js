@@ -129,12 +129,10 @@ export function registerCapture(ctx, deps = {}) {
           required: ['ok', 'id', 'note'],
         },
       },
-      // 模型投影：回执只描述机器状态，不写成她能复述的句子，也不回显她的原话。
-      // 单条写操作把 id 内联在正文里（revise 要用），不再另给 handle，
-      // 否则页脚会把同一个 id 重复一遍。
+      // 模型投影：回执只描述机器状态；下一步要用的 id 单独放末行记号。
       project: (out) =>
         out?.ok
-          ? { text: `[已记下 · ${out.id}]` }
+          ? { text: `[已记下]\n〔${out.id}〕` }
           : { text: `[没记下：${out?.note ?? ''}]` },
       async execute(args, exec) {
         // 算当前的 day / stage —— 但**只用于写信封**，绝不回传给模型

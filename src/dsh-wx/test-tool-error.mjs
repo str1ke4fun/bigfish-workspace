@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { WxToolError, parseWxToolError, registerWxToolErrorAdapter } from './lib/tool-error.js'
+import { denyWxSurface } from './lib/index.js'
 
 test('WxToolError 只接受 A-Z0-9_ 组成的 code', () => {
   for (const code of ['', 'WX-lower', 'WX SPACE', 'WX_TOOL_中文']) {
@@ -11,8 +12,21 @@ test('WxToolError 只接受 A-Z0-9_ 组成的 code', () => {
   assert.throws(() => new WxToolError('WX|INJECT', '[没做成]'), TypeError)
   assert.deepEqual(
     parseWxToolError('WXTOOL|WX_OK|第一段|第二段|第三段'),
-    { code: 'WX_OK', modelText: '第一段|第二段|第三段' },
+    { code: 'WX_OK', modelText: '第一段|第二段|第三段', rawDetail: '' },
   )
+})
+
+test('WxToolError 把原始原因和世界声分开编码', () => {
+  const error = new WxToolError(
+    'WX_NOT_ALLOWED',
+    '[这个会话现在说不了]',
+    'canSendWithPolicy：「测试群B」不在允许发送的会话里。',
+  )
+  assert.deepEqual(parseWxToolError(error.message), {
+    code: 'WX_NOT_ALLOWED',
+    modelText: '[这个会话现在说不了]',
+    rawDetail: 'canSendWithPolicy：「测试群B」不在允许发送的会话里。',
+  })
 })
 
 test('WxToolError 的 modelText 必须是字符串', () => {
@@ -33,7 +47,11 @@ test('微信预期错误只替换模型内容，普通错误原样透传', async
   assert.equal(listeners.length, 1)
 
   const listener = listeners[0]
-  const error = new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]')
+  const error = new WxToolError(
+    'WX_NOT_ALLOWED',
+    '[这个会话现在说不了]',
+    'canSendWithPolicy：这个会话不在允许发送的会话里。',
+  )
   const result = { isError: true, error, content: [{ type: 'text', text: `Error: ${error.message}` }] }
   const decision = await listener(
     { name: 'wx_send', arguments: {} },
@@ -61,6 +79,40 @@ test('微信预期错误只替换模型内容，普通错误原样透传', async
 
   off()
   assert.equal(listeners.length, 0)
+})
+
+test('跨面拒绝的原始抛错经过 post-execute 后仍是世界声', async () => {
+  const listeners = []
+  registerWxToolErrorAdapter({
+    on(event, listener) {
+      assert.equal(event, 'tools/post-execute')
+      listeners.push(listener)
+      return () => {}
+    },
+  })
+  const listener = listeners[0]
+
+  let thrown = null
+  try {
+    denyWxSurface({ agent: { session: { id: 'onebot-群聊-1' } } })
+  } catch (error) {
+    thrown = error
+  }
+  assert.ok(thrown instanceof WxToolError)
+  assert.equal(thrown.code, 'WX_WRONG_SURFACE')
+
+  const postExecuteResult = {
+    isError: true,
+    error: thrown,
+    content: [{ type: 'text', text: `Error: ${thrown.message}` }],
+  }
+  const decision = await listener(
+    { name: 'wx_send', arguments: { chat: '测试群A', text: '在吗' } },
+    postExecuteResult,
+    () => Promise.resolve({ kind: 'accept', content: postExecuteResult.content }),
+  )
+  assert.deepEqual(decision, { kind: 'accept', content: [{ type: 'text', text: '[这儿动不了微信]' }] })
+  assert.equal(postExecuteResult.isError, true)
 })
 
 test('适配器只接管微信错误，监听器异常也放行', async () => {

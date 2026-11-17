@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createToolLedger } from '../lib/tool-ledger.js'
+import { WxToolError } from '../../dsh-wx/lib/tool-error.js'
 
 const guard = { looksLikeSecret: (s) => ({ hit: /sk-|cookie|token/i.test(String(s ?? '')), why: '' }) }
 
@@ -41,13 +42,18 @@ test('失败调用也写台账，error 进 error 字段', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('微信业务错误拆出 code，error 只留人话且仍记失败', async () => {
+test('微信业务错误拆出 code，error 留原始原因，模型文本仍是世界声', async () => {
   const root = await tmpRoot()
   try {
     const ledger = createToolLedger({ root, guard })
+    const error = new WxToolError(
+      'WX_NOT_ALLOWED',
+      '[这个会话现在说不了]',
+      'canSendWithPolicy：「测试群B」不在允许发送的会话里。',
+    )
     const result = {
       isError: true,
-      error: { message: 'WXTOOL|WX_NOT_ALLOWED|[这个会话现在说不了]' },
+      error,
       content: [{ type: 'text', text: '[这个会话现在说不了]' }],
     }
     const entry = await ledger.record(
@@ -57,10 +63,30 @@ test('微信业务错误拆出 code，error 只留人话且仍记失败', async 
     )
     assert.equal(entry.ok, false)
     assert.equal(entry.code, 'WX_NOT_ALLOWED')
-    assert.equal(entry.error, '[这个会话现在说不了]')
+    assert.equal(entry.error, 'canSendWithPolicy：「测试群B」不在允许发送的会话里。')
     assert.equal(entry.modelText, '[这个会话现在说不了]')
     assert.equal(JSON.stringify(entry).includes('WXTOOL|'), false)
     assert.equal(result.isError, true)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('微信业务错误的原始原因也经过脱敏', async () => {
+  const root = await tmpRoot()
+  try {
+    const ledger = createToolLedger({ root, guard })
+    const error = new WxToolError(
+      'WX_NOT_ALLOWED',
+      '[这个会话现在说不了]',
+      'canSendWithPolicy failed with token=sk-abcdefabcdef',
+    )
+    const entry = await ledger.record(
+      { name: 'wx_send', arguments: {}, agent: { session: { header: { id: 's1' } } } },
+      { isError: true, error, content: [{ type: 'text', text: '[这个会话现在说不了]' }] },
+      { surface: 'wx' },
+    )
+    assert.equal(entry.error, '[redacted]')
+    assert.equal(entry.redacted, true)
+    assert.equal(JSON.stringify(entry).includes('sk-abcdefabcdef'), false)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

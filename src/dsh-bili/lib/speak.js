@@ -135,7 +135,7 @@ export function registerSpeak(ctx, deps = {}) {
         // render 必须返回 ContentBlock 数组，签名 (args, value)。返回裸字符串她会收到
         // "content.some is not a function"，然后以为没发出去、反复重试同一句。
         render: (args, out) => {
-          if (!out.ok) return [{ type: 'text', text: `没说：${out.note}` }]
+          if (!out.ok) return [{ type: 'text', text: `[没说：${out.note}]` }]
           const written = String(args?.text ?? '').trim()
           const same = written === String(out.said ?? '')
           return [{ type: 'text', text: same ? '[发出去了]' : '[发出去的和你写的不完全一样]' }]

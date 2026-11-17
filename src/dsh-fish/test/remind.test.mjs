@@ -425,8 +425,10 @@ test('三个提醒工具的模型投影都是方括号状态，不回显提醒�
   schedule.active.push({ id: 'schedule-1', title: `${REMIND_TITLE_PREFIX}测试群A`, scheduledAt: '2026-11-03T13:30:00.000Z' })
   const list = await byName.her_reminders.execute({}, exec)
   const listText = byName.her_reminders.output.render({}, list)[0].text
+  const listLines = listText.trimEnd().split('\n')
   assert.match(listText, /^\[提醒\] /)
-  assert.ok(listText.includes('schedule-1'), '列表里的 id 要能让模型接着取消')
+  assert.equal(listLines.at(-1), '〔1 schedule-1〕', '列表里的 id 只放在末行记号')
+  assert.equal(listLines.slice(0, -1).join('\n').includes('schedule-1'), false, '正文里不再内联 id')
 
   const cancel = await byName.her_remind_cancel.execute({ id: 'schedule-1' }, exec)
   assert.equal(byName.her_remind_cancel.output.render({}, cancel)[0].text, '[已取消]')

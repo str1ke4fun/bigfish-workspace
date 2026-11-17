@@ -171,15 +171,18 @@ test('坏 JSON 行不阻塞读取，只计数', async () => {
   })
 })
 
-test('growth_commit 的模型投影是方括号状态 + 内联 id，不是她的原话', async () => {
+test('growth_commit 的模型投影把 id 放在末行记号，不回显她的原话', async () => {
   await withRoot(async (root) => {
     const ctx = fakeCtx()
     registerCapture(ctx, { root })
     const def = ctx.regs.get('growth_commit')
     const out = await def.execute({ type: 'utterance', text: '今天有点累' }, {})
     const text = def.output.render({}, out)[0].text
-    // 单条写操作把 id 内联在正文里，不再给 handle（否则页脚会重复一次 id）
-    assert.match(text, /^\[已记下 · ev_/)
+    const lines = text.split('\n')
+    assert.equal(lines[0], '[已记下]')
+    assert.match(lines[1], /^〔ev_[0-9A-Z]{26}〕$/)
+    assert.equal(lines.length, 2)
+    assert.equal(lines[0].includes('ev_'), false)
     assert.equal(text.includes('今天有点累'), false, '投影不能回显她的原话')
     assert.doesNotMatch(text, /编号/)
   })
