@@ -85,9 +85,11 @@
 
 **Interfaces:** all wx registrations return object envelope; expected failures `{ok:false,code,message}`, unexpected throws remain errors; one registration-level switch.
 
-- [ ] 重新统计并分类 throw sites；写契约测试覆盖所有 wx tools.
-- [ ] 迁移 success/failure/callers atomically; ledger full result + model projection.
-- [ ] 跑 wx/fish tests，提交。
+- [x] 重新统计并分类 throw sites；写契约测试覆盖所有 wx tools.
+- [x] 迁移 success/failure/callers atomically; ledger full result + model projection.
+- [x] 跑 wx/fish tests，提交。
+
+**Evidence (2026-11-18, `d626190`):** 18 个微信工具注册全部经单一 `reg()` → `wrapWxTool()` 边界改为对象信封；预期 `WxToolError` 转 `{ok:false,code,message}`（带可选审计 `detail` 和工具自有字段），普通异常仍走错误路径。成功结果保留完整对象，模型只读 `text`/`message`；台账保留完整 `value`、`code`、原始原因与 `modelText`。`sendReminder`、逾期投递、`wx_type`/`wx_send`、表情发送/收藏/搜索、机械提醒 worker 均检查 `ok`。`returnEnvelopes:false` 为注册级回滚，回到旧字符串与 `WxToolError` 抛出路径，工作台保存会保留该键。throw 复核：基线 163 处（`index.js` 96 处），迁移后 162 处（`index.js` 90 处）；工具注册区剩 19 处显式 `WxToolError`（边界转信封）和 2 处意外异常 rethrow，发送/表情 helper 中 30 处普通操作错误由包装器统一转信封，内部不变量继续抛错。聚焦：wx 71 pass / 0 fail，fish 33 pass / 0 fail；全量：wx 161 pass / 0 fail，fish 1155 pass / 0 fail，workbench 129 pass / 0 fail。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未部署、未重启服务、未做真机微信发送。
 
 ### Task 6: Parameter surface closure
 
