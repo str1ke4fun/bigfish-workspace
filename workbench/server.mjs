@@ -10,6 +10,7 @@ import { qqState, tailLines } from './qq-watch.mjs'
 import { createHost } from './host/index.mjs'
 import { createFishBff } from './fish/bff.mjs'
 import { createTaskBoard, overdueVisibilityEnabled } from '../src/dsh-wx/lib/tasks.js'
+import { parseState as parseWxProactiveState } from '../src/dsh-wx/lib/proactive.js'
 
 const PORT = Number(process.env.WORKBENCH_PORT || 8788)
 const VERSION = process.env.WORKBENCH_VERSION || '0.1.0'
@@ -413,20 +414,15 @@ async function wxScope() {
   try { mentions = JSON.parse(String(m.out).trim() || '{}') } catch { mentions = {} }
   const last = Number(mentions[current]) || 0
   // 今天的主动额度：状态文件是 dsh-wx 写的；坏文件只关主动路径，@/免 @ 照常展示。
-  const ps = await asHer(`cat ${H}/.dsh-wx/proactive.json 2>/dev/null || echo '{}'`)
-  let pstate = {}
-  let proactiveStateOk = true
+  // 直接读文件而不是 `cat || echo '{}'`，否则缺失/无权限会被伪装成合法空账本。
+  let pstate = { ok: false, day: localDateKey(), used: {} }
   try {
-    pstate = JSON.parse(String(ps.out).trim() || '{}')
-    if (!pstate || typeof pstate !== 'object' || Array.isArray(pstate)) proactiveStateOk = false
-    if (pstate?.used !== undefined && (!pstate.used || typeof pstate.used !== 'object' || Array.isArray(pstate.used))) {
-      proactiveStateOk = false
-    }
+    pstate = parseWxProactiveState(JSON.parse(await readFile(`${H}/.dsh-wx/proactive.json`, 'utf8')))
   } catch {
-    pstate = {}
-    proactiveStateOk = false
+    pstate = { ok: false, day: localDateKey(), used: {} }
   }
-  const proactiveUsed = pstate?.day === localDateKey() && pstate.used && typeof pstate.used === 'object' ? { ...pstate.used } : {}
+  const proactiveStateOk = pstate.ok === true
+  const proactiveUsed = proactiveStateOk ? { ...pstate.used } : {}
   const speaking = wxSpeakingState({
     policy,
     current,

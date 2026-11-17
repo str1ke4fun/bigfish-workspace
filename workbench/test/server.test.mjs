@@ -105,6 +105,16 @@ function rawRequest(path, { method = 'GET', headers = {}, body = '' } = {}) {
   })
 }
 
+function fixtureWxChats(current) {
+  const dir = join(home, 'dsh-plugins', 'dsh-wx', 'lib')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'wx.sh'), [
+    '#!/bin/sh',
+    `printf '%s\\n' '${JSON.stringify({ ok: true, current, chats: [{ name: current }] })}'`,
+    '',
+  ].join('\n'), { mode: 0o755 })
+}
+
 test('通过符号链接启动也算入口（systemd 的 /opt/fish/workbench 用法）', async () => {
   const dir = mkdtempSync(join(tmp, 'link-'))
   const link = join(dir, 'server.mjs')
@@ -462,4 +472,72 @@ test('微信策略保存保留 mechanicalReminderDelivery:false 与已有硬熔�
   const scopePolicy = (await scope.json()).policy
   assert.equal(scopePolicy.mechanicalReminderDelivery, false)
   assert.equal(scopePolicy.hardBreaker, 12)
+})
+
+test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上限/熔断展示', async () => {
+  const current = '测试群A'
+  const ledger = join(home, '.dsh-wx', 'proactive.json')
+  const today = serverModule.localDateKey()
+  mkdirSync(join(home, '.dsh-wx'), { recursive: true })
+  fixtureWxChats(current)
+  writeFileSync(join(home, '.dsh-wx', 'policy.json'), JSON.stringify({
+    enabled: true,
+    allowChats: [current],
+    noMentionChats: [],
+    requireMention: true,
+    mentionWindowMinutes: 3,
+    proactivePerDay: 2,
+    proactiveChats: {},
+    hardBreaker: 4,
+  }) + '\n')
+
+  const readScope = async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/wx/scope`)
+    assert.equal(response.status, 200)
+    return response.json()
+  }
+  const putLedger = (value) => {
+    rmSync(ledger, { recursive: true, force: true })
+    if (typeof value === 'string') writeFileSync(ledger, value)
+    else if (value === 'directory') mkdirSync(ledger)
+  }
+
+  putLedger(JSON.stringify({ day: today, used: { [current]: 2 } }))
+  const overSoft = await readScope()
+  assert.equal(overSoft.ok, true)
+  assert.equal(overSoft.current, current)
+  assert.deepEqual(overSoft.labels, [current])
+  assert.equal(overSoft.policy.proactivePerDay, 2)
+  assert.equal(overSoft.policy.hardBreaker, 4)
+  assert.deepEqual(overSoft.proactiveUsed, { [current]: 2 })
+  assert.equal(overSoft.proactiveStateOk, true)
+  assert.equal(overSoft.speaking.ok, true)
+  assert.match(overSoft.speaking.why, /软上限/)
+
+  putLedger(JSON.stringify({ day: today, used: { [current]: 4 } }))
+  const breaker = await readScope()
+  assert.equal(breaker.proactiveStateOk, true)
+  assert.equal(breaker.speaking.ok, false)
+  assert.match(breaker.speaking.why, /熔断/)
+
+  const bad = [
+    ['missing file', undefined],
+    ['unreadable file', 'directory'],
+    ['malformed JSON', '{not json'],
+    ['missing used', JSON.stringify({ day: today })],
+    ['used array', JSON.stringify({ day: today, used: [] })],
+    ['invalid count', JSON.stringify({ day: today, used: { [current]: '2' } })],
+    ['negative count', JSON.stringify({ day: today, used: { [current]: -1 } })],
+  ]
+  for (const [name, value] of bad) {
+    putLedger(value)
+    const scope = await readScope()
+    assert.equal(scope.ok, true, name)
+    assert.equal(scope.current, current, name)
+    assert.equal(scope.proactiveStateOk, false, name)
+    assert.deepEqual(scope.proactiveUsed, {}, name)
+    assert.equal(scope.speaking.ok, false, name)
+    assert.match(scope.speaking.why, /状态读不出来/, name)
+    assert.equal(JSON.stringify(scope.speaking).includes('现在能说'), false, name)
+  }
 })

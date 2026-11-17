@@ -78,6 +78,24 @@ export function hardBreakerFor(policy) {
 
 const empty = (day, ok = true) => ({ ok, day, used: {} })
 
+/** 解析状态对象；形状、日期和计数任一不可信都返回 `ok:false`。 */
+export function parseState(raw, now = Date.now()) {
+  const today = dateKey(now)
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty(today, false)
+  if (raw.day !== today) {
+    return typeof raw.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.day)
+      ? empty(today)
+      : empty(today, false)
+  }
+  if (!raw.used || typeof raw.used !== 'object' || Array.isArray(raw.used)) return empty(today, false)
+  const used = {}
+  for (const [k, v] of Object.entries(raw.used)) {
+    if (!k || typeof v !== 'number' || !Number.isInteger(v) || v < 0) return empty(today, false)
+    if (v > 0) used[k] = v
+  }
+  return { ok: true, day: today, used }
+}
+
 /**
  * 读状态。ENOENT 是第一天，按空账本；坏 JSON/权限/形状不对返回 `ok:false`，
  * 由发送闸拒绝主动发言——宁可少说，也不因为文件坏了把额度重置成满额。
@@ -85,20 +103,7 @@ const empty = (day, ok = true) => ({ ok, day, used: {} })
 export function loadState(file = STATE_FILE, now = Date.now()) {
   const today = dateKey(now)
   try {
-    const raw = JSON.parse(readFileSync(file, 'utf8'))
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty(today, false)
-    if (raw.day !== today) {
-      return typeof raw.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.day)
-        ? empty(today)
-        : empty(today, false)
-    }
-    if (!raw.used || typeof raw.used !== 'object' || Array.isArray(raw.used)) return empty(today, false)
-    const used = {}
-    for (const [k, v] of Object.entries(raw.used)) {
-      if (!k || typeof v !== 'number' || !Number.isInteger(v) || v < 0) return empty(today, false)
-      if (v > 0) used[k] = v
-    }
-    return { ok: true, day: today, used }
+    return parseState(JSON.parse(readFileSync(file, 'utf8')), now)
   } catch (err) {
     if (err?.code === 'ENOENT') return empty(today)
     return empty(today, false)
