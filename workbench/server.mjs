@@ -9,7 +9,7 @@ import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { qqState, tailLines } from './qq-watch.mjs'
 import { createHost } from './host/index.mjs'
 import { createFishBff } from './fish/bff.mjs'
-import { createTaskBoard } from '../src/dsh-wx/lib/tasks.js'
+import { createTaskBoard, overdueVisibilityEnabled } from '../src/dsh-wx/lib/tasks.js'
 
 const PORT = Number(process.env.WORKBENCH_PORT || 8788)
 const VERSION = process.env.WORKBENCH_VERSION || '0.1.0'
@@ -51,8 +51,15 @@ function wxTaskBoard(file = WX_TASKS) {
   return wxTaskBoardCache.board
 }
 
-export function wxTaskSummary({ file = WX_TASKS, at = Date.now() } = {}) {
+export function wxTaskSummary({ file = WX_TASKS, at = Date.now(), enabled = true } = {}) {
+  if (!enabled) return { ok: false, code: 'disabled' }
   const board = wxTaskBoard(file)
+  let readable = board.readStatus()
+  if (!readable.ok) {
+    board.reload()
+    readable = board.readStatus()
+  }
+  if (!readable.ok) return { ok: false, code: 'unavailable' }
   const active = board.active()
   const blocked = active.filter((t) => t.status === 'blocked').length
   const overdue = board.overdue(at).filter((t) => t.status !== 'blocked').length
@@ -320,9 +327,10 @@ async function wxPolicy() {
       // 以前这里重写整个文件，把 watch 丢了（默认变 true），把自定义 trigger 也丢了。
       watch: j.watch !== false,
       trigger: Array.isArray(j.trigger) ? j.trigger.map((s) => String(s)) : [],
+      overdueVisibility: overdueVisibilityEnabled(j),
     }
   } catch {
-    return { enabled: false, allowChats: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [], ...normalizeWxProactive(), watch: true, trigger: [] }
+    return { enabled: false, allowChats: [], requireMention: true, mentionWindowMinutes: 3, noMentionChats: [], ...normalizeWxProactive(), watch: true, trigger: [], overdueVisibility: true }
   }
 }
 
@@ -401,6 +409,7 @@ async function saveWxScope(body) {
     ...pro,
     watch: typeof body.watch === 'boolean' ? body.watch : before.watch,
     trigger: clean(body.trigger).length ? clean(body.trigger) : before.trigger,
+    overdueVisibility: typeof body.overdueVisibility === 'boolean' ? body.overdueVisibility : before.overdueVisibility,
   }
   const payload = Buffer.from(JSON.stringify(next, null, 2) + '\n', 'utf8').toString('base64')
   const r = await asHer(`
@@ -542,6 +551,9 @@ done
 `
 
 async function wxStatus() {
+  const policy = await wxPolicy()
+  const tasksEnabled = policy.overdueVisibility
+  const tasks = tasksEnabled ? wxTaskSummary({ enabled: true }) : null
   const r = await asHer(`${WX_PICK}
     n=$(pgrep -c -x wechat 2>/dev/null || true); n=\${n:-0}
     x=$(pgrep -c -x Xvfb 2>/dev/null || true); x=\${x:-0}
@@ -574,7 +586,8 @@ async function wxStatus() {
     extra,
     geom: { x: Number(v.x) || 0, y: Number(v.y) || 0, w: Number(v.w) || 0, h: Number(v.h) || 0 },
     health: { at: health.at || '', stale: health.stale || null, tree: health.tree || null },
-    tasks: wxTaskSummary(),
+    tasksEnabled,
+    ...(tasks ? { tasks } : {}),
     // 微信窗口本来就没有标题（xdotool 读到的名字是空的），所以按「有没有窗口」判，别按名字判，
     // 否则界面会一直显示「进程在，没窗口」，看着像微信挂了
     label: running ? (count > 0 ? '在线' + (v.win ? `（${v.win}）` : '') : '进程在，没窗口') : '没在跑',
@@ -1012,8 +1025,11 @@ export const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/wx/task-summary') {
+      const policy = await wxPolicy()
+      if (!policy.overdueVisibility) return send(res, 404, { ok: false, code: 'disabled' })
       if (req.method !== 'GET') return send(res, 405, { error: '只读摘要不接受写请求' })
-      return send(res, 200, wxTaskSummary())
+      const summary = wxTaskSummary()
+      return send(res, summary.ok ? 200 : 503, summary.code === 'unavailable' ? { ...summary, error: 'unavailable' } : summary)
     }
 
     if (p === '/api/wx/scope' && req.method !== 'POST') {

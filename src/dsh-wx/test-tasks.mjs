@@ -1,7 +1,7 @@
 // 任务板：node test-tasks.mjs
 // 只测纯逻辑（临时文件），不启动微信、不碰 CUA。
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -18,6 +18,14 @@ const seed = (b, over = {}) => b.create({
   chatId: 'c1', chatName: '测试群A', requester: { name: '甲', kind: 'group-member', confidence: 'high' },
   reason: '@', inboundMsgId: 'm1', text: '@你 在吗', at: at(0), ...over,
 })
+const remind = (b, taskId, over = {}) => {
+  const task = b.get(taskId)
+  return b.markReminded(taskId, {
+    expectedVersion: task.version,
+    expectedOverdueCount: task.overdueCount,
+    ...over,
+  })
+}
 
 console.log('建任务')
 t('新建 → new，摘要里有会话、谁、最后一句', () => {
@@ -153,7 +161,7 @@ t('到点才提醒；提醒后 overdueCount+1、下次检查时间推后', () =>
   const { task } = seed(b)
   assert.equal(b.overdueReminders({ at: T + 14 * 60_000 }).length, 0)
   assert.equal(b.overdueReminders({ at: T + 16 * 60_000 }).length, 1)
-  const r = b.markReminded(task.taskId, { level: 1, nextCheckAt: at(61), note: '第一次' })
+  const r = remind(b, task.taskId, { level: 1, nextCheckAt: at(61), note: '第一次' })
   assert.equal(r.ok, true)
   assert.equal(b.get(task.taskId).overdueCount, 1)
   assert.equal(b.get(task.taskId).lastRemindedAt, new Date(T).toISOString())
@@ -163,16 +171,16 @@ t('到点才提醒；提醒后 overdueCount+1、下次检查时间推后', () =>
 t('第三次提醒后直接 block，不再返回第四次', () => {
   const b = make()
   const { task } = seed(b)
-  b.markReminded(task.taskId, { level: 1, nextCheckAt: at(30) })
-  b.markReminded(task.taskId, { level: 2, nextCheckAt: at(60) })
-  const third = b.markReminded(task.taskId, { level: 3, nextCheckAt: at(90) })
+  remind(b, task.taskId, { level: 1, nextCheckAt: at(30) })
+  remind(b, task.taskId, { level: 2, nextCheckAt: at(60) })
+  const third = remind(b, task.taskId, { level: 3, nextCheckAt: at(90) })
   assert.equal(third.ok, true)
   assert.equal(b.get(task.taskId).overdueCount, 3)
   assert.equal(b.get(task.taskId).status, 'blocked')
   assert.match(b.get(task.taskId).blockedWhy, /连续多次逾期/)
   assert.equal(b.overdueReminders({ at: T + 200 * 60_000 }).length, 0)
 
-  const fourth = b.markReminded(task.taskId, { level: 4, nextCheckAt: at(120) })
+  const fourth = remind(b, task.taskId, { level: 4, nextCheckAt: at(120) })
   assert.equal(fourth.ok, false)
   assert.match(fourth.why, /不再自动提醒/)
   assert.equal(b.get(task.taskId).overdueCount, 3)
@@ -181,7 +189,7 @@ t('第三次提醒后直接 block，不再返回第四次', () => {
 t('blocked 任务收到新入站：保留 blocked、记下新消息，但不重开催办', () => {
   const b = make()
   const { task } = seed(b)
-  b.markReminded(task.taskId, { level: 1, nextCheckAt: at(30) })
+  remind(b, task.taskId, { level: 1, nextCheckAt: at(30) })
   b.block(task.taskId, { why: '等人工处理', at: at(31) })
   const r = b.create({
     chatId: 'c1', chatName: '测试群A', inboundMsgId: 'm_blocked_new',
@@ -203,13 +211,116 @@ t('blocked 任务收到新入站：保留 blocked、记下新消息，但不重�
   assert.equal(b.get(task.taskId).lastText, '补充一句')
   assert.equal(b.get(task.taskId).nextCheckAt, at(76))
 })
+t('提醒缺少版本/计数前置条件时拒绝落盘', () => {
+  const b = make()
+  const { task } = seed(b)
+  const r = b.markReminded(task.taskId, { level: 1, nextCheckAt: at(30) })
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'precondition-required')
+  assert.equal(b.get(task.taskId).overdueCount, 0)
+})
+t('旧提醒快照不能覆盖投递期间的新入站', () => {
+  const b = make()
+  const { task } = seed(b)
+  const snapshot = b.get(task.taskId)
+  const inbound = b.create({ chatId: 'c1', inboundMsgId: 'm_race', text: '新消息', at: at(1) })
+  assert.equal(inbound.ok, true)
+  const r = b.markReminded(task.taskId, {
+    level: 1,
+    nextCheckAt: at(30),
+    expectedVersion: snapshot.version,
+    expectedOverdueCount: snapshot.overdueCount,
+  })
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'stale')
+  const now = b.get(task.taskId)
+  assert.equal(now.overdueCount, 0)
+  assert.equal(now.lastRemindedAt, '')
+  assert.equal(now.lastText, '新消息')
+})
+t('提醒落盘失败时返回失败，失败期间状态不变，恢复后可重试', () => {
+  const filePath = file()
+  let failWrites = false
+  const b = createTaskBoard({
+    file: filePath,
+    now: () => T,
+    log: () => {},
+    append: (...args) => {
+      if (failWrites) throw new Error('disk full')
+      return appendFileSync(...args)
+    },
+  })
+  const { task } = seed(b)
+  const snapshot = b.get(task.taskId)
+  failWrites = true
+  const failed = b.markReminded(task.taskId, {
+    level: 1,
+    nextCheckAt: at(30),
+    expectedVersion: snapshot.version,
+    expectedOverdueCount: snapshot.overdueCount,
+  })
+  assert.equal(failed.ok, false)
+  assert.equal(failed.code, 'persistence')
+  assert.equal(b.get(task.taskId).overdueCount, 0)
+  assert.equal(b.get(task.taskId).lastRemindedAt, '')
+
+  failWrites = false
+  const retried = b.markReminded(task.taskId, {
+    level: 1,
+    nextCheckAt: at(30),
+    expectedVersion: snapshot.version,
+    expectedOverdueCount: snapshot.overdueCount,
+  })
+  assert.equal(retried.ok, true)
+  assert.equal(b.get(task.taskId).overdueCount, 1)
+})
+t('第三次提醒和 block 一次落盘，不再依赖第二次 block 写盘', () => {
+  const filePath = file()
+  const records = []
+  const b = createTaskBoard({
+    file: filePath,
+    now: () => T,
+    log: () => {},
+    append: (target, data, opts) => {
+      const rec = JSON.parse(data)
+      records.push(rec)
+      if (rec.type === 'block') throw new Error('block write failed')
+      return appendFileSync(target, data, opts)
+    },
+  })
+  const { task } = seed(b)
+  let snapshot = b.get(task.taskId)
+  assert.equal(b.markReminded(task.taskId, {
+    level: 1,
+    nextCheckAt: at(30),
+    expectedVersion: snapshot.version,
+    expectedOverdueCount: snapshot.overdueCount,
+  }).ok, true)
+  snapshot = b.get(task.taskId)
+  assert.equal(b.markReminded(task.taskId, {
+    level: 2,
+    nextCheckAt: at(60),
+    expectedVersion: snapshot.version,
+    expectedOverdueCount: snapshot.overdueCount,
+  }).ok, true)
+  snapshot = b.get(task.taskId)
+  const third = b.markReminded(task.taskId, {
+    level: 3,
+    nextCheckAt: at(90),
+    expectedVersion: snapshot.version,
+    expectedOverdueCount: snapshot.overdueCount,
+  })
+  assert.equal(third.ok, true)
+  assert.equal(third.task.status, 'blocked')
+  assert.equal(records.filter((r) => r.type === 'block').length, 0)
+})
 t('blocked / done 不催；对方又说话会重置提醒计数', () => {
   const b = make()
   const a = seed(b)
   b.block(a.task.taskId, { why: '等人工', at: at(1) })
   assert.equal(b.overdueReminders({ at: T + 60 * 60_000 }).length, 0)
   b.unblock(a.task.taskId, { at: at(2) })
-  b.markReminded(a.task.taskId, { level: 2, nextCheckAt: at(3) })
+  remind(b, a.task.taskId, { level: 2, nextCheckAt: at(3) })
   assert.equal(b.get(a.task.taskId).overdueCount, 2)
   b.create({ chatId: 'c1', inboundMsgId: 'm5', text: '我又来了', at: at(4) })
   assert.equal(b.get(a.task.taskId).overdueCount, 0)

@@ -16,6 +16,7 @@ let entry
 let workbench
 let port
 let upstreamWrites = 0
+let serverModule
 
 async function listen(handler) {
   const server = http.createServer(handler)
@@ -78,6 +79,7 @@ before(async () => {
   process.env.FISH_WEB_ORIGIN = web.origin
 
   const mod = await import('../server.mjs')
+  serverModule = mod
   workbench = mod.server
   await mod.start(0)
   port = workbench.address().port
@@ -384,4 +386,38 @@ test('/api/wx/task-summary 是只读接口', async () => {
     body: '{}',
   })
   assert.equal(r.status, 405)
+})
+
+test('任务摘要读不到时返回 unavailable，不伪装成零计数', () => {
+  const unreadable = mkdtempSync(join(tmp, 'unreadable-tasks-'))
+  const r = serverModule.wxTaskSummary({ file: unreadable, at: Date.now() })
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'unavailable')
+  assert.equal('active' in r, false)
+  assert.equal('overdue' in r, false)
+  assert.equal('blocked' in r, false)
+})
+
+test('overdueVisibility 关闭时隐藏状态与摘要路由，改回 true 立即恢复', async () => {
+  mkdirSync(join(home, '.dsh-wx'), { recursive: true })
+  const policyFile = join(home, '.dsh-wx', 'policy.json')
+  writeFileSync(policyFile, JSON.stringify({ enabled: true, overdueVisibility: false }) + '\n')
+
+  const offSummary = await fetch(`http://127.0.0.1:${port}/api/wx/task-summary`)
+  assert.equal(offSummary.status, 404)
+  assert.deepEqual(await offSummary.json(), { ok: false, code: 'disabled' })
+
+  const offStatus = await fetch(`http://127.0.0.1:${port}/api/status`)
+  assert.equal(offStatus.status, 200)
+  const offBody = await offStatus.json()
+  assert.equal(offBody.channels.wx.tasksEnabled, false)
+  assert.equal('tasks' in offBody.channels.wx, false)
+
+  writeFileSync(policyFile, JSON.stringify({ enabled: true, overdueVisibility: true }) + '\n')
+  const onStatus = await fetch(`http://127.0.0.1:${port}/api/status`)
+  const onBody = await onStatus.json()
+  assert.equal(onBody.channels.wx.tasksEnabled, true)
+  assert.equal(onBody.channels.wx.tasks.ok, true)
+  const onSummary = await fetch(`http://127.0.0.1:${port}/api/wx/task-summary`)
+  assert.equal(onSummary.status, 200)
 })

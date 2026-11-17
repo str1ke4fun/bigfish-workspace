@@ -38,6 +38,8 @@ import { captureSettings, DEFAULT_IGNORE_CHATS, isIgnoredChat, pauseReason, prev
 import { createCaptureQueue } from './capture-queue.js'
 import { captureEvidenceKey, runCapture } from './capture-run.js'
 import { createContextStore } from './context.js'
+import { overdueVisibilityEnabled } from './tasks.js'
+import { createReminderBackoff, runOverdueReminderPass } from './overdue.js'
 import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
 import { createPeople } from './people.js'
 import { normalizeMessages } from './transcript.js'
@@ -152,6 +154,7 @@ function policy() {
       stickerSearch: raw.stickerSearch !== false,
       // 旧调用仍可显式带 task_id；显式 false 时不再按会话名自动绑定。
       implicitTaskBinding: raw.implicitTaskBinding !== false,
+      overdueVisibility: overdueVisibilityEnabled(raw),
     }
   } catch {
     return {
@@ -161,6 +164,7 @@ function policy() {
       capture: captureSettings({}),
       stickerSearch: false,
       implicitTaskBinding: true,
+      overdueVisibility: true,
     }
   }
 }
@@ -1704,38 +1708,43 @@ export function apply(ctx, config = {}) {
   // 逾期提醒节奏：建任务后 15 分钟第一次，之后 +45 分钟、+3 小时；第三次后卡住等人工。
   const REMIND_NEXT_MS = { 1: 45 * 60_000, 2: 3 * 3600_000, 3: 60_000 }
   let reminderBusy = false
+  const reminderBackoff = createReminderBackoff()
   let lastMaintainAt = 0
   const overdueText = (t, level) => formatOverdueNote(t, level, chatNameOfId(t.chatId))
 
   /**
-   * 逾期泵：每分钟看一次。只催她，不替她发；投递失败不记提醒，下一分钟再来。
+   * 逾期泵：每分钟看一次。只催她，不替她发；投递失败不记提醒。
+   * 任务板写不进去时先探测可写性并按任务退避，避免同一句话重复投递。
    */
   const reminderPump = async () => {
     if (reminderBusy || hostBusy()) return
     const p = policy()
     if (!p.enabled || p.watch === false) return
-    const due = contextStore.board.overdueReminders({ maxLevel: 3 })
-    if (!due.length) return
     reminderBusy = true
     try {
-      for (const t of due) {
-        const chat = canonicalName(t.chatName || chatNameOfId(t.chatId))
-        if (!chat) continue
-        const level = Math.min(3, (Number(t.overdueCount) || 0) + 1)
-        try {
+      await runOverdueReminderPass({
+        board: contextStore.board,
+        at: Date.now(),
+        maxLevel: 3,
+        finalBlock: p.overdueVisibility,
+        backoff: reminderBackoff,
+        log: (m) => console.log('[dsh-wx] 逾期：' + String(m ?? '').slice(0, 300)),
+        deliver: async (t, level) => {
+          const chat = canonicalName(t.chatName || chatNameOfId(t.chatId))
+          if (!chat) throw new Error('会话名当前解析不到')
           await deliverToChat(chat, t.chatId, overdueText(t, level))
-        } catch (err) {
-          console.log('[dsh-wx] 逾期提醒投不进去（' + chat + '）：' + String(err?.message ?? err).slice(0, 120))
-          continue
-        }
-        // 提醒本身也算叫了她一次：这个会话的 @ 窗口重新打开，才允许回。
-        saveMentions(grant(readMentions(), chat, Date.now()))
-        noteRecent([chat])
-        const next = new Date(Date.now() + (REMIND_NEXT_MS[level] ?? REMIND_NEXT_MS[3])).toISOString()
-        contextStore.board.markReminded(t.taskId, { level, nextCheckAt: next, note: `第 ${level} 次逾期提醒` })
-        console.log(`[dsh-wx] 逾期提醒 ${level}/3 → ${chat}（${t.taskId}）`)
-        logInbound({ type: 'overdue-reminded', taskId: t.taskId, chatId: t.chatId, chat, level })
-      }
+          // 提醒本身也算叫了她一次：这个会话的 @ 窗口重新打开，才允许回。
+          saveMentions(grant(readMentions(), chat, Date.now()))
+          noteRecent([chat])
+          return chat
+        },
+        nextCheckAt: (_t, level) => new Date(Date.now() + (REMIND_NEXT_MS[level] ?? REMIND_NEXT_MS[3])).toISOString(),
+        note: (_t, level) => `第 ${level} 次逾期提醒`,
+        onPersisted: ({ task, level, chat }) => {
+          console.log(`[dsh-wx] 逾期提醒 ${level}/3 → ${chat}（${task.taskId}）`)
+          logInbound({ type: 'overdue-reminded', taskId: task.taskId, chatId: task.chatId, chat, level })
+        },
+      })
     } finally {
       reminderBusy = false
     }

@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 export const TASKS_FILE = '/home/str1k3/.dsh-wx/tasks.jsonl'
@@ -38,6 +38,11 @@ const timeOf = (iso, fallback = 0) => {
 
 const addMinutes = (iso, ms) => new Date(timeOf(iso, Date.now()) + ms).toISOString()
 
+/** 逾期封顶、blocked 视图和工作台摘要共用同一个运行期开关；缺省开启。 */
+export function overdueVisibilityEnabled(raw) {
+  return raw?.overdueVisibility !== false
+}
+
 /** 新建任务时把入站消息变成一个稳定的去重键。 */
 export function inboundKey(chatId, msgId) {
   return `in:${str(chatId)}:${str(msgId)}`
@@ -47,6 +52,7 @@ export function inboundKey(chatId, msgId) {
 function blank() {
   return {
     taskId: '',
+    version: 0,
     chatId: '',
     chatName: '',
     requester: { name: null, kind: 'unknown', confidence: 'unknown' },
@@ -84,6 +90,7 @@ function apply(state, rec) {
     if (state.has(id)) return // 同一个 id 只认第一次 create
     const t = blank()
     t.taskId = id
+    t.version = 1
     t.chatId = str(rec.chatId)
     t.chatName = str(rec.chatName)
     t.requester = {
@@ -107,8 +114,13 @@ function apply(state, rec) {
   }
 
   const t = state.get(id)
-  if (!t) return
+  if (!t) return false
   const at = str(rec.at)
+  const expectedVersion = Number(rec.expectedVersion)
+  if (Number.isFinite(expectedVersion) && t.version !== expectedVersion) return false
+  const expectedOverdueCount = Number(rec.expectedOverdueCount)
+  if (Number.isFinite(expectedOverdueCount) && t.overdueCount !== expectedOverdueCount) return false
+  t.version += 1
 
   if (type === 'inbound') {
     if (rec.dedupeKey && t.dedupeKeys.includes(str(rec.dedupeKey))) return
@@ -204,13 +216,24 @@ function apply(state, rec) {
       t.notes.push(str(rec.note).slice(0, 500))
       if (t.notes.length > 20) t.notes.splice(0, t.notes.length - 20)
     }
+    if (rec.finalBlock === true) {
+      t.status = 'blocked'
+      t.lease = null
+      t.blockedWhy = str(rec.why).slice(0, 500)
+      t.uncertain = rec.uncertain === true
+    }
     return
   }
 }
 
 function readRecords(file, log) {
   let raw = ''
-  try { raw = readFileSync(file, 'utf8') } catch { return [] }
+  try {
+    raw = readFileSync(file, 'utf8')
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { records: [], error: null }
+    return { records: [], error: String(err?.message ?? err).slice(0, 160) }
+  }
   const out = []
   for (const line of raw.split('\n')) {
     const s = line.trim()
@@ -223,7 +246,7 @@ function readRecords(file, log) {
       log?.(`任务板跳过坏行：${file}`)
     }
   }
-  return out
+  return { records: out, error: null }
 }
 
 /**
@@ -232,16 +255,19 @@ function readRecords(file, log) {
  * @param {() => number} [opts.now]
  * @param {(msg:string, err?:unknown)=>void} [opts.log]
  */
-export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {}) {
+export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log, append = appendFileSync, probe } = {}) {
   let states = new Map()
   let dedupe = new Map() // dedupeKey -> taskId
+  let loadError = ''
 
   const rebuild = () => {
     states = new Map()
     dedupe = new Map()
-    for (const rec of readRecords(file, log)) {
-      apply(states, rec)
-      if (rec?.type === 'create' || rec?.type === 'inbound') {
+    const loaded = readRecords(file, log)
+    loadError = loaded.error || ''
+    for (const rec of loaded.records) {
+      const applied = apply(states, rec)
+      if (applied !== false && (rec?.type === 'create' || rec?.type === 'inbound')) {
         const key = str(rec.dedupeKey)
         if (key) dedupe.set(key, str(rec.taskId))
       }
@@ -254,15 +280,39 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
   const commit = (rec) => {
     try {
       mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-      appendFileSync(file, JSON.stringify({ v: TASK_SCHEMA_VERSION, ...rec }) + '\n', { mode: 0o600 })
+      append(file, JSON.stringify({ v: TASK_SCHEMA_VERSION, ...rec }) + '\n', { mode: 0o600 })
     } catch (err) {
       log?.('任务板写盘失败', err)
-      return { ok: false, why: String(err?.message ?? err).slice(0, 160) }
+      return { ok: false, code: 'persistence', why: String(err?.message ?? err).slice(0, 160) }
     }
     apply(states, rec)
     const key = str(rec.dedupeKey)
     if (key && (rec.type === 'create' || rec.type === 'inbound')) dedupe.set(key, str(rec.taskId))
     return { ok: true }
+  }
+
+  function probeWritable() {
+    try {
+      if (typeof probe === 'function') {
+        const r = probe(file)
+        if (r === false) return { ok: false, code: 'persistence', why: '任务板当前不可写。' }
+        if (r && typeof r === 'object') return r
+        return { ok: true }
+      }
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+      const fd = openSync(file, 'a', 0o600)
+      closeSync(fd)
+      return { ok: true }
+    } catch (err) {
+      log?.('任务板写盘探测失败', err)
+      return { ok: false, code: 'persistence', why: String(err?.message ?? err).slice(0, 160) }
+    }
+  }
+
+  function readStatus() {
+    return loadError
+      ? { ok: false, code: 'unavailable', why: loadError }
+      : { ok: true }
   }
 
   /** 同一会话当前还没结束的任务。 */
@@ -382,8 +432,10 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
     return transition(t.taskId, 'snooze', { nextCheckAt, at })
   }
 
-  function block(taskId, { why = '', uncertain = false, at } = {}) {
-    return transition(taskId, 'block', { why: str(why).slice(0, 500), uncertain: uncertain === true, at })
+  function block(taskId, { why = '', uncertain = false, expectedVersion, expectedOverdueCount, at } = {}) {
+    return transition(taskId, 'block', {
+      why: str(why).slice(0, 500), uncertain: uncertain === true, expectedVersion, expectedOverdueCount, at,
+    })
   }
 
   function unblock(taskId, { at } = {}) {
@@ -402,10 +454,23 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
    * 记一次逾期提醒，并把下次检查时间往后推。
    * 第三次提醒是最后一响：同一批落 remind + block，之后不再接第四次。
    */
-  function markReminded(taskId, { level = 1, nextCheckAt = '', note = '', maxLevel = 3, at } = {}) {
+  function markReminded(taskId, { level = 1, nextCheckAt = '', note = '', maxLevel = 3, finalBlock = true, expectedVersion, expectedOverdueCount, at } = {}) {
     const t = states.get(str(taskId))
     if (!t) return { ok: false, why: '没有这个任务。' }
+    const versionCheck = Number(expectedVersion)
+    const countCheck = Number(expectedOverdueCount)
+    if (!Number.isInteger(versionCheck) || versionCheck < 0 || !Number.isInteger(countCheck) || countCheck < 0) {
+      return { ok: false, code: 'precondition-required', why: '提醒必须带上任务版本和逾期计数。', task: get(t.taskId) }
+    }
     if (t.status === 'done') return { ok: false, why: '这个任务已经结束了。' }
+    expectedVersion = versionCheck
+    expectedOverdueCount = countCheck
+    if (Number.isFinite(expectedVersion) && t.version !== expectedVersion) {
+      return { ok: false, code: 'stale', why: '任务在提醒投递期间已经变了，旧提醒不记。', task: get(t.taskId) }
+    }
+    if (Number.isFinite(expectedOverdueCount) && t.overdueCount !== expectedOverdueCount) {
+      return { ok: false, code: 'stale', why: '任务提醒计数已经变了，旧提醒不记。', task: get(t.taskId) }
+    }
     if (t.status === 'blocked') {
       return { ok: false, why: '这个任务已经卡住了，不再自动提醒。', task: get(t.taskId) }
     }
@@ -413,24 +478,50 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
     const current = Math.max(0, Number(t.overdueCount) || 0)
     if (current >= cap) {
       const blocked = transition(t.taskId, 'block', {
-        why: '连续多次逾期提醒后仍未处理', uncertain: true, at,
+        why: '连续多次逾期提醒后仍未处理', uncertain: true, expectedVersion, expectedOverdueCount, at,
       })
       if (!blocked.ok) return blocked
       return { ok: false, why: '提醒次数已满，不再自动提醒。', task: get(t.taskId) }
     }
     const nextLevel = Math.min(cap, Math.max(1, Number(level) || current + 1))
     const next = str(nextCheckAt) || new Date(now() + DEFAULT_CHECK_MS).toISOString()
+    const embedBlock = finalBlock !== false && nextLevel >= cap
     const r = transition(t.taskId, 'remind', {
-      level: nextLevel, nextCheckAt: next, note: str(note).slice(0, 500), at,
+      level: nextLevel,
+      nextCheckAt: next,
+      note: str(note).slice(0, 500),
+      expectedVersion,
+      expectedOverdueCount,
+      finalBlock: embedBlock,
+      why: embedBlock ? '连续多次逾期提醒后仍未处理' : '',
+      uncertain: embedBlock,
+      at,
     })
     if (!r.ok) return r
-    if (nextLevel >= cap) {
-      const blocked = transition(t.taskId, 'block', {
-        why: '连续多次逾期提醒后仍未处理', uncertain: true, at,
-      })
-      if (!blocked.ok) return blocked
-    }
     return { ok: true, task: get(t.taskId) }
+  }
+
+  /** 旧记录里「提醒已到上限、block 没落盘」的任务；下一轮只补 block，不重投提醒。 */
+  function reminderBlocksNeedingRepair({ maxLevel = 3 } = {}) {
+    const cap = Math.max(1, Number(maxLevel) || 3)
+    return active().filter((t) => t.status !== 'blocked' && Number(t.overdueCount) >= cap)
+  }
+
+  function reconcileReminderBlock(taskId, {
+    maxLevel = 3, expectedVersion, expectedOverdueCount, at,
+  } = {}) {
+    const t = states.get(str(taskId))
+    if (!t) return { ok: false, why: '没有这个任务。' }
+    const cap = Math.max(1, Number(maxLevel) || 3)
+    if (t.status === 'blocked') return { ok: true, noop: true, task: get(t.taskId) }
+    if (Number(t.overdueCount) < cap) return { ok: false, code: 'not-needed', why: '还没到封顶。', task: get(t.taskId) }
+    return transition(t.taskId, 'block', {
+      why: '连续多次逾期提醒后仍未处理',
+      uncertain: true,
+      expectedVersion,
+      expectedOverdueCount,
+      at,
+    })
   }
 
   /** 到点还没处理、还没提醒满的任务（blocked 不催）。 */
@@ -511,7 +602,9 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
 
   function reload() {
     rebuild()
-    return { ok: true, count: states.size }
+    return loadError
+      ? { ok: false, code: 'unavailable', why: loadError, count: states.size }
+      : { ok: true, count: states.size }
   }
 
   function stats() {
@@ -531,7 +624,8 @@ export function createTaskBoard({ file = TASKS_FILE, now = Date.now, log } = {})
 
   return {
     file, create, claim, release, reply, done, snooze, block, unblock, note, checkAt,
-    markReminded, overdueReminders,
+    markReminded, overdueReminders, reminderBlocksNeedingRepair, reconcileReminderBlock,
+    probeWritable, readStatus,
     get, active, overdue, byChat, summary, stats, reload, activeForChat,
   }
 }

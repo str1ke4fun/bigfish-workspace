@@ -41,13 +41,30 @@ test('微信摘要显示待回、逾期和需人工处理的计数', () => {
   const out = wx.summary({
     running: true,
     label: '在线',
-    tasks: { active: 3, overdue: 2, blocked: 1 },
+    tasksEnabled: true,
+    tasks: { ok: true, active: 3, overdue: 2, blocked: 1 },
   }, {})
   assert.ok(out.lines.includes('3 件还没收尾'))
   assert.ok(out.lines.includes('2 件逾期'))
   assert.ok(out.lines.includes('1 件需要人工处理'))
 })
 
+test('微信待回摘要只在开关打开时显示', () => {
+  const off = wx.summary({
+    running: true,
+    label: '在线',
+    tasksEnabled: false,
+    tasks: { ok: true, active: 3, overdue: 2, blocked: 1 },
+  }, {})
+  assert.equal(off.lines.includes('3 件还没收尾'), false)
+  assert.equal(off.lines.includes('2 件逾期'), false)
+  assert.equal(off.lines.includes('1 件需要人工处理'), false)
+
+  const s = readFileSync(new URL('../assets/channels/wx.js', import.meta.url), 'utf8')
+  assert.match(s, /tasksEnabled/)
+  assert.match(s, /seg\.setVisible\(\s*'tasks'|seg\.setVisible\("tasks"/)
+  assert.match(s, /SPEC\.tasks\.root\.hidden\s*=\s*!enabled/)
+})
 import { CHANNELS } from '../assets/channels/registry.js'
 
 test('通道注册表按 order 排序', () => {

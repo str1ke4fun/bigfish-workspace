@@ -220,8 +220,17 @@ export function segment(items, { value, onChange, label = '' } = {}) {
     buttons.set(item.id, btn)
     root.append(btn)
   }
+  const setVisible = (id, visible) => {
+    const btn = buttons.get(id)
+    if (!btn) return
+    btn.hidden = !visible
+    if (!visible && btn.getAttribute('aria-selected') === 'true') {
+      btn.setAttribute('aria-selected', 'false')
+      btn.className = 'tab'
+    }
+  }
   set(value ?? items[0]?.id)
-  return { root, set }
+  return { root, set, setVisible }
 }
 
 /** 空态：一句话说明“还没有 / 这是起点，不是故障”。 */

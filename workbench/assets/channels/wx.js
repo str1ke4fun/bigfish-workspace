@@ -12,7 +12,7 @@ const SECTIONS = [
   { id: 'maint', label: '维护' },
 ]
 
-const SPEC = { section: 'live', timer: null, wx: null, scope: null, frames: [] }
+const SPEC = { section: 'live', timer: null, wx: null, scope: null, frames: [], tasksEnabled: false }
 
 // ---------- 骨架 ----------
 
@@ -22,6 +22,7 @@ function build(root, ctx) {
   SPEC.built = true
 
   SPEC.seg = segment(SECTIONS, { value: SPEC.section, label: '微信分段', onChange: (id) => show(id) })
+  SPEC.seg.setVisible('tasks', false)
 
   // 实时画面
   SPEC.live = card('实时画面', { note: '约一秒一帧；点画面等于在原位置点一下（人工代操作）。' })
@@ -110,6 +111,7 @@ function build(root, ctx) {
   )
 
   SPEC.sections = { live: SPEC.live.root, tasks: SPEC.tasks.root, scope: SPEC.scope.root, maint: SPEC.maint.root }
+  SPEC.tasks.root.hidden = true
   root.append(SPEC.seg.root, ...Object.values(SPEC.sections))
   show(SPEC.section)
 
@@ -122,8 +124,10 @@ function subscribe(ctx) {
 }
 
 function show(id) {
+  if (id === 'tasks' && !SPEC.tasksEnabled) id = 'live'
   SPEC.section = id
   for (const [key, node] of Object.entries(SPEC.sections)) node.hidden = key !== id
+  SPEC.tasks.root.hidden = !SPEC.tasksEnabled || id !== 'tasks'
   SPEC.seg.set(id)
   if (id === 'live') startFrames()
   else stopFrames()
@@ -149,7 +153,18 @@ function applyStatus(status) {
   const tree = x.health?.tree
   if (tree && tree.status !== 'ok') bits.push(`无障碍树 ${tree.status}（元素 ${tree.elements ?? '—'}、会话 ${tree.chats ?? '—'}）`)
   SPEC.liveMeta.textContent = bits.join(' · ')
-  if (x.tasks) renderTaskSummary(x.tasks)
+  const enabled = x.tasksEnabled === true
+  SPEC.tasksEnabled = enabled
+  SPEC.seg.setVisible('tasks', enabled)
+  SPEC.tasks.root.hidden = !enabled
+  if (!enabled) {
+    if (SPEC.section === 'tasks') show('live')
+    SPEC.taskCounts.textContent = ''
+    SPEC.tasksMsg.textContent = ''
+  } else {
+    if (SPEC.section !== 'tasks') SPEC.tasks.root.hidden = true
+    if (x.tasks) renderTaskSummary(x.tasks)
+  }
   SPEC.extraBtn.hidden = !(x.extra > 0)
   if (!x.running) {
     stopFrames()
@@ -237,6 +252,12 @@ async function pressKey(key) {
 // ---------- 待回摘要 ----------
 
 function renderTaskSummary(d) {
+  if (d?.ok === false) {
+    SPEC.taskCounts.textContent = '摘要暂时读不到'
+    SPEC.taskCounts.className = 'meta bad'
+    SPEC.tasksMsg.textContent = d.code === 'unavailable' ? '任务板读不出来' : '摘要没读成'
+    return
+  }
   const count = (v) => {
     const n = Number(v)
     return Number.isFinite(n) && n > 0 ? Math.round(n) : 0
@@ -257,6 +278,8 @@ async function loadTaskSummary() {
   SPEC.tasksMsg.textContent = '读摘要中…'
   const r = await local('/api/wx/task-summary')
   if (!r.ok) {
+    SPEC.taskCounts.textContent = '摘要暂时读不到'
+    SPEC.taskCounts.className = 'meta bad'
     SPEC.tasksMsg.textContent = errorText(r)
     return
   }
@@ -457,12 +480,18 @@ export const wx = {
       const tree = status.health?.tree
       if (tree && tree.status !== 'ok') lines.push(`无障碍树 ${tree.status}（元素 ${tree.elements ?? '—'}）`)
       if (status.extra > 0) lines.push(`${status.extra} 个多余界面`)
-      const active = Math.max(0, Math.round(Number(status.tasks?.active) || 0))
-      const overdue = Math.max(0, Math.round(Number(status.tasks?.overdue) || 0))
-      const blocked = Math.max(0, Math.round(Number(status.tasks?.blocked) || 0))
-      if (active > 0) lines.push(`${active} 件还没收尾`)
-      if (overdue > 0) lines.push(`${overdue} 件逾期`)
-      if (blocked > 0) lines.push(`${blocked} 件需要人工处理`)
+      if (status.tasksEnabled === true) {
+        if (status.tasks?.ok === false) {
+          lines.push(status.tasks.code === 'unavailable' ? '待回摘要暂时读不到' : '待回摘要未开启')
+        } else {
+          const active = Math.max(0, Math.round(Number(status.tasks?.active) || 0))
+          const overdue = Math.max(0, Math.round(Number(status.tasks?.overdue) || 0))
+          const blocked = Math.max(0, Math.round(Number(status.tasks?.blocked) || 0))
+          if (active > 0) lines.push(`${active} 件还没收尾`)
+          if (overdue > 0) lines.push(`${overdue} 件逾期`)
+          if (blocked > 0) lines.push(`${blocked} 件需要人工处理`)
+        }
+      }
     }
     return {
       lines,
