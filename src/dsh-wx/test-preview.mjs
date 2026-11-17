@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 
 import { createContextStore } from './lib/context.js'
 import { DEFAULT_IGNORE_CHATS } from './lib/capture.js'
+import { scanFeedbackLiterals } from '../dsh-fish/lib/feedback-audit.js'
 
 let n = 0
 const t = async (name, fn) => { await fn(); n++; console.log('  ✓ ' + name) }
@@ -189,6 +190,14 @@ await t('无 query 取最近；有 query 走词法；hours 按采集时间截断
   assert.match(h.text, /收到/)
   assert.doesNotMatch(h.text, /明天九点开会/)
 })
+await t('wx_history 的返回正文不含反馈禁词', async () => {
+  const c = make()
+  c.capturePreview({ chat: '群A', preview: '张三: 明天九点开会', time: '10:00' })
+  const h = c.historyForChat({ chat: '群A', query: '开会' })
+  const source = `const historyOutput = ${JSON.stringify(h.text)}`
+  assert.deepEqual(scanFeedbackLiterals(source, { file: 'wx-history-output.js' }), [])
+})
+
 await t('limit 切最近几条，1–20 截断', async () => {
   const c = make()
   c.capturePreview({ chat: '群A', preview: '甲: 第一条', time: '10:00' })
@@ -202,7 +211,7 @@ await t('limit 切最近几条，1–20 截断', async () => {
   for (let i = 0; i < 25; i++) c.capturePreview({ chat: '群A', preview: `甲: 第${i}条`, time: '13:00' })
   const capped = c.historyForChat({ chat: '群A', limit: 999 })
   // 卡片受总字数预算限制，但候选窗口本身要按 20 截断。
-  assert.match(capped.text, /\[上下文 1\/20\]/)
+  assert.match(capped.text, /\[翻到\].*群A.*最近的话/)
   assert.ok(capped.shown <= 20)
 })
 await t('没有记录 / 没有命中：如实说，不硬凑', async () => {

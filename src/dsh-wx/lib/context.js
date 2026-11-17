@@ -360,7 +360,7 @@ export function createContextStore({
       rows = searchLexical(docs, q, { now: now(), limit: CANDIDATE_MAX }).slice(0, n)
       if (!rows.length) return { ok: true, chatId, text: '没有找到相关的上下文。', cards: [], shown: 0 }
     }
-    const out = formatCards(rows, { max: n, sanitize })
+    const out = formatCards(rows, { max: n, sanitize, world: true, now: now() })
     return { ok: true, chatId, ...out }
   }
 

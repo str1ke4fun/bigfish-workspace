@@ -42,6 +42,14 @@ test('注释、正则和模板插值里的禁词不算静态文案', () => {
   assert.deepEqual(scan(source), [])
 })
 
+test('控制语句后的正则字面量不会被当成除法', () => {
+  const quotedRegex = 'if (ready) /[\'"]模型[\'"]/.test(text)'
+  const regexThenString = "if (ready) /'模型/; const after = '台账'"
+
+  assert.deepEqual(scan(quotedRegex), [], '正则里的引号和禁词都不是字符串文案')
+  assert.deepEqual(terms(scan(regexThenString)), ['台账'], '正则之后的真实字符串仍要扫描到')
+})
+
 test('变量素材本身不产生静态命中', () => {
   const source = [
     'const material = loadMaterial()',
@@ -216,4 +224,31 @@ test('基线 allowlist 每项都带理由，并且仍按文件和完整字面量
   const source = "const a = 'id'\nconst b = 'id suffix'"
   assert.deepEqual(terms(scanFeedbackLiterals(source, { file: sample.file, allowlist: [sample] })), ['id'])
   assert.deepEqual(terms(scanFeedbackLiterals(source, { file: 'src/other.js', allowlist: [sample] })), ['id', 'id'])
+})
+
+test('falseSuccessRate 只认明确完成的送达表述', () => {
+  const rate = (reply) => falseSuccessRate([{ toolStatus: 'unconfirmed', reply }])
+
+  for (const reply of [
+    '要不要发到群里？',
+    '别发到群里。',
+    '不要发到群里。',
+    '还没发出去。',
+    '我准备发到群里。',
+    '我想发到群里。',
+    '等会儿发到群里。',
+    '发到一半就停了。',
+  ]) {
+    assert.equal(rate(reply), 0, reply)
+  }
+
+  for (const reply of [
+    '消息已经送达。',
+    '已经传过去了。',
+    '消息已经发到群里了。',
+    '发送成功了。',
+    '已经转达给他了。',
+  ]) {
+    assert.equal(rate(reply), 1, reply)
+  }
 })

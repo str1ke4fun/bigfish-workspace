@@ -222,10 +222,14 @@ const REGEX_PREFIX_KEYWORDS = new Set([
   'return', 'throw', 'typeof', 'void', 'yield',
 ])
 
+const CONTROL_HEADERS = new Set(['catch', 'for', 'if', 'switch', 'while', 'with'])
+
 function skipTemplateExpression(source, start) {
   let i = start
   let depth = 1
   let regexAllowed = true
+  let pendingControl = false
+  const parenStack = []
   while (i < source.length) {
     const ch = source[i]
     if (/\s/.test(ch)) {
@@ -243,21 +247,25 @@ function skipTemplateExpression(source, start) {
     if (ch === "'" || ch === '"') {
       i = skipQuoted(source, i, ch)
       regexAllowed = false
+      pendingControl = false
       continue
     }
     if (ch === '`') {
       i = skipTemplateLiteral(source, i)
       regexAllowed = false
+      pendingControl = false
       continue
     }
     if (ch === '/' && regexAllowed) {
       i = skipRegex(source, i)
       regexAllowed = false
+      pendingControl = false
       continue
     }
     const ident = identifierAt(source, i)
     if (ident) {
       i += ident.length
+      pendingControl = CONTROL_HEADERS.has(ident) || (pendingControl && ident === 'await')
       regexAllowed = REGEX_PREFIX_KEYWORDS.has(ident)
       continue
     }
@@ -265,16 +273,24 @@ function skipTemplateExpression(source, start) {
       i++
       while (i < source.length && /[A-Za-z0-9_.]/.test(source[i])) i++
       regexAllowed = false
+      pendingControl = false
       continue
     }
-    if (ch === '{') {
+    if (ch === '(') {
+      parenStack.push(pendingControl)
+      pendingControl = false
+      regexAllowed = true
+    } else if (ch === ')') {
+      regexAllowed = parenStack.pop() === true
+      pendingControl = false
+    } else if (ch === '{') {
       depth++
       regexAllowed = true
     } else if (ch === '}') {
       depth--
       if (depth === 0) return i + 1
       regexAllowed = false
-    } else if (ch === ')' || ch === ']') {
+    } else if (ch === ']') {
       regexAllowed = false
     } else if (ch === '.' || ch === '?' && source[i + 1] === '.') {
       regexAllowed = false
@@ -289,6 +305,7 @@ function skipTemplateExpression(source, start) {
     } else {
       regexAllowed = true
     }
+    pendingControl = false
     i++
   }
   return source.length
@@ -398,6 +415,8 @@ export function scanFeedbackLiterals(source, { file = '', allowlist = [] } = {})
 
   let i = 0
   let regexAllowed = true
+  let pendingControl = false
+  const parenStack = []
   while (i < source.length) {
     const ch = source[i]
     if (/\s/.test(ch)) {
@@ -417,23 +436,27 @@ export function scanFeedbackLiterals(source, { file = '', allowlist = [] } = {})
       const closed = source[end - 1] === ch
       emit(source.slice(i + 1, closed ? end - 1 : end), i + 1)
       regexAllowed = false
+      pendingControl = false
       i = end
       continue
     }
     if (ch === '`') {
       i = readTemplate(source, i, emit)
       regexAllowed = false
+      pendingControl = false
       continue
     }
     if (ch === '/' && regexAllowed) {
       i = skipRegex(source, i)
       regexAllowed = false
+      pendingControl = false
       continue
     }
 
     const ident = identifierAt(source, i)
     if (ident) {
       i += ident.length
+      pendingControl = CONTROL_HEADERS.has(ident) || (pendingControl && ident === 'await')
       regexAllowed = REGEX_PREFIX_KEYWORDS.has(ident)
       continue
     }
@@ -441,9 +464,17 @@ export function scanFeedbackLiterals(source, { file = '', allowlist = [] } = {})
       i++
       while (i < source.length && /[A-Za-z0-9_.]/.test(source[i])) i++
       regexAllowed = false
+      pendingControl = false
       continue
     }
-    if (ch === ')' || ch === ']' || ch === '}') {
+    if (ch === '(') {
+      parenStack.push(pendingControl)
+      pendingControl = false
+      regexAllowed = true
+    } else if (ch === ')') {
+      regexAllowed = parenStack.pop() === true
+      pendingControl = false
+    } else if (ch === ']' || ch === '}') {
       regexAllowed = false
     } else if (ch === '+' && source[i + 1] === '+') {
       i++
@@ -458,6 +489,7 @@ export function scanFeedbackLiterals(source, { file = '', allowlist = [] } = {})
     } else {
       regexAllowed = true
     }
+    pendingControl = false
     i++
   }
 
@@ -481,8 +513,14 @@ const FAILED_OR_UNCONFIRMED = new Set(['preview', 'unconfirmed', 'error', 'rejec
 const GATE_REJECTIONS = new Set([
   'at_window', 'at-window', 'mention_window', 'quota', 'allowance', 'frequency', 'rate',
 ])
-const SUCCESS_CLAIM = /(?:已经|成功|确实|真的)?(?:发到|发出去|发送成功|送出去|送到)[^，。！？；\n]*(?:了|成功|好了|啦)?$/
-const NEGATED_CLAIM = /(?:没有?|尚未|还没|未|不能|无法)[^，。！？；\n]{0,8}(?:发到|发出去|发送成功|送出去|送到)/
+const DELIVERY_VERB = /(?:发到|发出(?:去)?|发送|发了|发过|送到|送出去|送达|传到|传过去|转达|转过去)/
+const DELIVERY_COMPLETION = /(?:成功|完成|送达|好了|啦|了)(?:[^，。！？；\n]*)$/
+const ASSERTIVE_MARKER = /(?:已经|已|确实|真的)/
+const NON_ASSERTIVE_PREFIX = /^(?:要不要|该不该|是不是|是否|能不能|会不会|可不可以|有没有|别|不要|不用|没有?|尚未|还没|未|并未|不能|无法|没能|准备|打算|想|要|即将|马上|等下|等会儿|稍后|回头|如果|要是|假如|万一|可能|也许|大概|好像|似乎|应该|试试|试着)/
+const NON_ASSERTIVE_BEFORE_VERB = /(?:准备|打算|想(?:要)?|要|即将|马上|等下|等会儿|稍后|回头|如果|要是|假如|万一|可能|也许|大概|好像|似乎|应该|试试|试着)[^，。！？；\n]{0,8}(?:发|送|传|转)/
+const NEGATED_DELIVERY = /(?:没有?|尚未|还没|未|并未|不能|无法|没能|不|别|不要|不用)[^，。！？；\n]{0,8}(?:发|送|传|转)/
+const PARTIAL_OR_FAILED = /(?:一半|中途|途中|中断|没发完|未发完|正在|开始发|失败|没(?:有)?成功|未成功|不成功)/
+const QUESTION_TAIL = /(?:[?？]|吗|呢|吧|没有?|哪|怎么|为什么|为何)\s*$/
 
 function recordsOf(records) {
   return Array.isArray(records) ? records : []
@@ -554,10 +592,14 @@ function hasToolEcho(projection, reply) {
 
 function claimsSuccess(reply) {
   const text = String(reply).normalize('NFKC')
-  for (const clause of text.split(/[，。！？；\n]+/)) {
-    const part = clause.trim()
-    if (!part || NEGATED_CLAIM.test(part)) continue
-    if (SUCCESS_CLAIM.test(part)) return true
+  for (const match of text.matchAll(/[^，。！？；\n]+[，。！？；\n]?/g)) {
+    const raw = match[0].trim()
+    const part = raw.replace(/[，。！？；\n]+$/, '').trim()
+    if (!part || !DELIVERY_VERB.test(part)) continue
+    if (QUESTION_TAIL.test(raw) || NON_ASSERTIVE_PREFIX.test(part)) continue
+    if (NON_ASSERTIVE_BEFORE_VERB.test(part) || NEGATED_DELIVERY.test(part)) continue
+    if (PARTIAL_OR_FAILED.test(part)) continue
+    if (DELIVERY_COMPLETION.test(part) || ASSERTIVE_MARKER.test(part)) return true
   }
   return false
 }
@@ -830,7 +872,7 @@ const ALLOWLIST_GROUPS = [
   },
   {
     file: "src/dsh-wx/lib/retrieval.js",
-    reason: "非 world 旧卡片分支或解析错误，生产投影走 world 分支",
+    reason: "兼容旧卡片的 world:false 分支或解析错误；所有生产调用点均显式使用 world:true",
     literals: [
       "context.json 不是合法 JSON",
       "台账 ",
