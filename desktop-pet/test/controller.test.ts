@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { decideEffects, emptySeen, performedMotion } from '../renderer/controller.ts'
 import * as controller from '../renderer/controller.ts'
 
-const base = { at: 1, presence: null, activity: null, action: null }
+const base = { at: 1, presence: null, activity: null, action: null, scene: null, cues: [] }
 
 function commentState(event = 'scene_change', at = '2026-11-14T08:00:00Z') {
   return {
@@ -471,5 +471,31 @@ test('播放器：animationChanged 只在目标动画 once:true 出现后认可�
   assert.deepEqual(endedByMotion.effects, [
     { type: 'clear-motion' },
     { type: 'restore-slot', slot: 'waving', steady: 'idle' },
+  ])
+})
+
+test('播放器：trigger 可用 loop override 强制一次性或循环，不依赖动作原始定义', () => {
+  const onceAction = { id: 'once', label: '一次性', anim: 'once-file', loop: false, group: '测试' }
+  const loopAction = { id: 'loop', label: '循环', anim: 'loop-file', loop: true, group: '测试' }
+  const actions = [onceAction, loopAction]
+
+  const forcedLoop = controller.reducePlayback(null, {
+    type: 'startAction', actionId: 'once', loop: true,
+  }, { actions, steady: 'idle', now: 10 })
+  assert.equal(forcedLoop.state.status, 'holding-loop')
+  assert.equal(forcedLoop.state.loop, true)
+  assert.deepEqual(forcedLoop.effects, [
+    { type: 'bind-slot', slot: 'waving', animation: 'once-file' },
+    { type: 'play-motion', motion: 'waving', loop: true, replay: true },
+  ])
+
+  const forcedOnce = controller.reducePlayback(null, {
+    type: 'startAction', actionId: 'loop', loop: false,
+  }, { actions, steady: 'idle', now: 20 })
+  assert.equal(forcedOnce.state.status, 'playing-once')
+  assert.equal(forcedOnce.state.loop, false)
+  assert.deepEqual(forcedOnce.effects, [
+    { type: 'bind-slot', slot: 'waving', animation: 'loop-file' },
+    { type: 'play-motion', motion: 'waving', loop: false, replay: true },
   ])
 })

@@ -7,6 +7,7 @@ import { extname, join } from 'node:path'
 import { noteLocalLook, resolveRemoteLook, readRemoteLook } from '../electron/look.ts'
 import type { ActionDefinition } from '../electron/actions.ts'
 import { buildMenuModel, type MenuCallbacks, type MenuState } from '../electron/menu-model.ts'
+import type { TriggerDefinition } from '../electron/triggers.ts'
 
 type ElectronMock = {
   appPath: string
@@ -102,6 +103,10 @@ registerHooks({
                 ? Promise.resolve([{
                     id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应',
                   }])
+                : channel === 'pet:get-trigger-catalog'
+                  ? Promise.resolve([{
+                      when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+                    }])
                 : Promise.resolve({ ok: true, actions: [] })
             },
           }
@@ -145,6 +150,7 @@ async function actionFixture() {
   const assets = join(root, 'assets')
   await mkdir(join(assets, 'webm'), { recursive: true })
   await mkdir(join(assets, 'skins', 'rest', 'webm'), { recursive: true })
+  await writeFile(join(assets, 'triggers.json'), '{"triggers":[]}')
   return { root, assets }
 }
 
@@ -241,6 +247,7 @@ function callbacks(log: string[]): MenuCallbacks {
     width: (n) => log.push(`width:${n}`),
     toggleHidden: () => log.push('toggle'),
     resetPosition: () => log.push('reset'),
+    rest: (id, action) => log.push(`rest:${action}:${id}`),
     presence: (mode) => log.push(`presence:${mode}`),
     openWorkbench: () => log.push('workbench'),
     quit: () => log.push('quit'),
@@ -249,6 +256,18 @@ function callbacks(log: string[]): MenuCallbacks {
 
 function registered(id: string, label: string, group: string): ActionDefinition {
   return { id, label, anim: `${id}-anim`, loop: false, group }
+}
+
+function assertTriggerPoolsSubset(
+  actions: readonly { id: string }[],
+  triggers: readonly TriggerDefinition[],
+): void {
+  const actionIds = new Set(actions.map((action) => action.id))
+  for (const trigger of triggers) {
+    for (const actionId of trigger.pool) {
+      assert.ok(actionIds.has(actionId), `${trigger.when} 的池包含当前目录不存在的动作 ${actionId}`)
+    }
+  }
 }
 
 const baseState: MenuState = {
@@ -367,6 +386,27 @@ test('注册表动作按 group 建二级菜单，组和动作顺序稳定', () =
   assert.deepEqual(log, ['action:swing'])
 })
 
+test('休息组里的睡觉/起来改走 rest 回调，普通注册动作仍走 action', () => {
+  const log: string[] = []
+  const catalog = [
+    registered('sleep-action', '睡觉', '休息'),
+    registered('wake-action', '起来', '休息'),
+    registered('swing', '荡秋千', '玩耍'),
+  ]
+  const menu = find(buildMenuModel(baseState, catalog, callbacks(log), 'context'), '演一个动作').submenu!
+
+  const rest = find(menu, '休息').submenu!
+  rest.find((item) => item.label === '睡觉')!.click!()
+  rest.find((item) => item.label === '起来')!.click!()
+  find(menu, '玩耍').submenu![0].click!()
+
+  assert.deepEqual(log, [
+    'rest:sleep:sleep-action',
+    'rest:wake:wake-action',
+    'action:swing',
+  ])
+})
+
 test('空白 group 落到其他，不生成空标题菜单', () => {
   const menu = find(
     buildMenuModel(baseState, [registered('misc', '随手动作', '   ')], callbacks([]), 'context'),
@@ -453,6 +493,82 @@ test('动作桥：catalog 推送、单动作推送和停止通知走固定 IPC �
       },
     ]],
     ['pet:action-stop', undefined],
+  ])
+})
+
+test('休息菜单：先 POST /pet/rest，再保留返回 scene 与时间戳播放注册动作', async () => {
+  const main = await loadMainModule()
+  const { win, sent } = fakeWindow()
+  const requests: Array<{ url: string; body: unknown }> = []
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    requests.push({ url: String(input), body: JSON.parse(String(init?.body)) })
+    return new Response(JSON.stringify({
+      ok: true,
+      action: 'sleep',
+      scene: { kind: 'out', at: 100 },
+    }), { status: 200 })
+  }
+
+  const result = await main.runRestAction(win, 'sleep', 'sleep', fetchImpl)
+
+  assert.deepEqual(result, { ok: true, scene: { kind: 'out', at: 100 } })
+  assert.deepEqual(requests, [{
+    url: 'http://127.0.0.1:8788/api/fish/pet/rest',
+    body: { action: 'sleep' },
+  }])
+  assert.equal(sent.length, 1)
+  const [channel, rawPayload] = sent[0]
+  const payload = rawPayload as {
+    action: string
+    rest: string
+    scene: { kind: string; at: number }
+    intentAt: number
+  }
+  assert.equal(channel, 'pet:action')
+  assert.equal(payload.action, 'sleep')
+  assert.equal(payload.rest, 'sleep')
+  assert.deepEqual(payload.scene, { kind: 'out', at: 100 })
+  assert.equal(Number.isFinite(payload.intentAt), true)
+})
+
+test('触发桥：trigger catalog 走独立推送频道', async () => {
+  const main = await loadMainModule()
+  const { win, sent } = fakeWindow()
+  const catalog: TriggerDefinition[] = [{
+    when: 'speak',
+    pool: ['swing'],
+    w: [1],
+    once: false,
+    minGapSec: 0,
+    inAmbient: false,
+  }]
+
+  main.sendTriggerCatalog(win, catalog)
+
+  assert.deepEqual(sent, [['pet:trigger-catalog', catalog]])
+})
+
+test('pet:ready 启动补发先给 action/trigger catalog，再给缓存 state', async () => {
+  const main = await loadMainModule()
+  const { win, sent } = fakeWindow()
+  const actions: ActionDefinition[] = [registered('swing', '荡秋千', '玩耍')]
+  const triggers: TriggerDefinition[] = [{
+    when: 'scene:rest:enter',
+    pool: ['swing'],
+    w: [1],
+    once: false,
+    minGapSec: 0,
+    inAmbient: false,
+  }]
+
+  main.sendPetReadySnapshot(win, actions, triggers, () => {
+    sent.push(['pet:state', { at: 123 }])
+  })
+
+  assert.deepEqual(sent.map(([channel]) => channel), [
+    'pet:action-catalog',
+    'pet:trigger-catalog',
+    'pet:state',
   ])
 })
 
@@ -555,6 +671,160 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
       mediaUri: 'pet-asset://local/webm',
     },
   ])
+})
+
+test('触发表加载失败：回退池按新动作目录过滤，手动动作目录仍正常重载', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  captureHello(t)
+  const warnings = captureWarnings(t)
+
+  await writeFile(join(assets, 'webm', 'wave.webm'), '')
+  await writeFile(join(assets, 'webm', 'new.webm'), '')
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [
+      { id: 'wave', label: '旧挥手', anim: 'wave', group: '回应' },
+      { id: 'new', label: '保留动作', anim: 'new', group: '回应' },
+    ],
+  }))
+  await writeFile(join(assets, 'triggers.json'), JSON.stringify({
+    triggers: [{ when: 'speak', pool: ['wave', 'new'], w: [3, 1] }],
+  }))
+
+  const { win, sent } = fakeWindow()
+  assert.equal(await main.applySkin('', { win, assetsRoot: assets }), true)
+  const getTriggers = electronMock.ipcHandled.get('pet:get-trigger-catalog')
+  assert.ok(getTriggers)
+  assert.deepEqual(await getTriggers(), [{
+    when: 'speak', pool: ['wave', 'new'], w: [3, 1], once: false, minGapSec: 0, inAmbient: false,
+  }])
+
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'new', label: '新动作', anim: 'new', group: '回应' }],
+  }))
+  await writeFile(join(assets, 'triggers.json'), '{ nope')
+  sent.length = 0
+
+  const result = await main.reloadRegisteredActions(win, assets)
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.actions, [{ id: 'new', label: '新动作', group: '回应' }])
+  const getActions = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getActions)
+  assert.deepEqual(await getActions(), [{
+    id: 'new', label: '新动作', anim: 'new', loop: false, group: '回应',
+    mediaUri: 'pet-asset://local/webm',
+  }])
+  assert.deepEqual(await getTriggers(), [{
+    when: 'speak', pool: ['new'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
+  assertTriggerPoolsSubset(
+    await getActions() as Array<{ id: string }>,
+    await getTriggers() as TriggerDefinition[],
+  )
+  assert.match(warnings.join('\n'), /触发表/)
+})
+
+test('皮肤切换：新皮肤触发表损坏时只回退默认 trigger，不复用旧皮肤覆盖', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  captureHello(t)
+  const warnings = captureWarnings(t)
+
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeValidSkin(assets, 'old', '旧皮肤')
+  await writeValidSkin(assets, 'next', '新皮肤')
+  await writeFile(join(assets, 'triggers.json'), JSON.stringify({
+    triggers: [{ when: 'ambient', pool: ['shared-wave'] }],
+  }))
+  await writeFile(join(assets, 'skins', 'old', 'triggers.json'), JSON.stringify({
+    triggers: [{ when: 'scene:rest:enter', pool: ['shared-wave'] }],
+  }))
+  await writeFile(join(assets, 'skins', 'next', 'triggers.json'), '{ nope')
+
+  const { win, sent } = fakeWindow()
+  const actions = [registered('shared-wave', '共同动作', '回应')]
+  assert.equal(await main.applySkin('old', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => actions,
+  }), true)
+
+  const getTriggers = electronMock.ipcHandled.get('pet:get-trigger-catalog')
+  assert.ok(getTriggers)
+  assert.deepEqual(await getTriggers(), [
+    {
+      when: 'ambient', pool: ['shared-wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+    },
+    {
+      when: 'scene:rest:enter', pool: ['shared-wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+    },
+  ])
+  sent.length = 0
+
+  assert.equal(await main.applySkin('next', {
+    win,
+    assetsRoot: assets,
+    readCatalog: async () => actions,
+  }), true)
+
+  const getActions = electronMock.ipcHandled.get('pet:get-action-catalog')
+  assert.ok(getActions)
+  assert.deepEqual(await getTriggers(), [{
+    when: 'ambient', pool: ['shared-wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
+  assertTriggerPoolsSubset(
+    await getActions() as Array<{ id: string }>,
+    await getTriggers() as TriggerDefinition[],
+  )
+  assert.match(warnings.join('\n'), /触发表/)
+})
+
+test('getTriggerCatalog：动作移除后的池始终是 getActionCatalog 子集', async (t) => {
+  const main = await loadMainModule()
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  captureHello(t)
+  captureWarnings(t)
+
+  await writeFile(join(assets, 'webm', 'wave.webm'), '')
+  await writeFile(join(assets, 'webm', 'new.webm'), '')
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [
+      { id: 'wave', label: '旧挥手', anim: 'wave', group: '回应' },
+      { id: 'new', label: '保留动作', anim: 'new', group: '回应' },
+    ],
+  }))
+  await writeFile(join(assets, 'triggers.json'), JSON.stringify({
+    triggers: [{ when: 'speak', pool: ['wave', 'new'], w: [1, 2] }],
+  }))
+
+  const { win } = fakeWindow()
+  assert.equal(await main.applySkin('', { win, assetsRoot: assets }), true)
+
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'new', label: '新动作', anim: 'new', group: '回应' }],
+  }))
+  await writeFile(join(assets, 'triggers.json'), '{ nope')
+  assert.equal((await main.reloadRegisteredActions(win, assets)).ok, true)
+
+  const getActions = electronMock.ipcHandled.get('pet:get-action-catalog')
+  const getTriggers = electronMock.ipcHandled.get('pet:get-trigger-catalog')
+  assert.ok(getActions)
+  assert.ok(getTriggers)
+  const actions = await getActions() as Array<{ id: string }>
+  const triggers = await getTriggers() as TriggerDefinition[]
+  assertTriggerPoolsSubset(actions, triggers)
+  assert.deepEqual(triggers, [{
+    when: 'speak', pool: ['new'], w: [2], once: false, minGapSec: 0, inAmbient: false,
+  }])
 })
 
 test('动作重载：hello 未确认成功时不报成功并恢复旧 catalog', async (t) => {
@@ -1029,25 +1299,29 @@ test('皮肤切换：两次重叠失败都只停留最后确认的基线，不�
   assert.match(warnings.join('\n'), /hello|报到|上传/)
 })
 
-test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载荷', async () => {
+test('preload 暴露 action/trigger catalog API，并兼容旧 motion 字符串载荷', async () => {
   await loadMainModule()
   await import('../electron/preload.ts')
   const bridge = electronMock.exposed.petBridge as {
     onAction(handler: (payload: unknown) => void): () => void
     onActionCatalog(handler: (catalog: unknown) => void): () => void
+    onTriggerCatalog(handler: (catalog: unknown) => void): () => void
     onActionStop(handler: () => void): () => void
     onActionError(handler: (error: unknown) => void): () => void
     getActionCatalog(): Promise<unknown>
+    getTriggerCatalog(): Promise<unknown>
     reloadActions(): Promise<unknown>
     requestAction(payload: unknown): void
   }
 
   const actions: unknown[] = []
   const catalogs: unknown[] = []
+  const triggerCatalogs: unknown[] = []
   let stops = 0
   const errors: unknown[] = []
   bridge.onAction((payload) => actions.push(payload))
   bridge.onActionCatalog((catalog) => catalogs.push(catalog))
+  bridge.onTriggerCatalog((catalog) => triggerCatalogs.push(catalog))
   bridge.onActionStop(() => { stops += 1 })
   bridge.onActionError((error) => errors.push(error))
 
@@ -1056,6 +1330,9 @@ test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载�
   electronMock.rendererListeners.get('pet:action-catalog')![0]({}, [
     { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
   ])
+  electronMock.rendererListeners.get('pet:trigger-catalog')![0]({}, [{
+    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
   electronMock.rendererListeners.get('pet:action-stop')![0]({})
   electronMock.rendererListeners.get('pet:action-error')![0]({}, { why: '坏了' })
 
@@ -1063,13 +1340,23 @@ test('preload 暴露 catalog/stop/reload API，并兼容旧 motion 字符串载�
   assert.deepEqual(catalogs, [[
     { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
   ]])
+  assert.deepEqual(triggerCatalogs, [[{
+    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }]])
   assert.equal(stops, 1)
   assert.deepEqual(errors, [{ why: '坏了' }])
   assert.deepEqual(await bridge.getActionCatalog(), [
     { id: 'wave', label: '挥手', anim: 'wave-file', loop: false, group: '回应' },
   ])
+  assert.deepEqual(await bridge.getTriggerCatalog(), [{
+    when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
+  }])
   assert.deepEqual(await bridge.reloadActions(), { ok: true, actions: [] })
-  assert.deepEqual(electronMock.rendererInvokes, ['pet:get-action-catalog', 'pet:actions-reload'])
+  assert.deepEqual(electronMock.rendererInvokes, [
+    'pet:get-action-catalog',
+    'pet:get-trigger-catalog',
+    'pet:actions-reload',
+  ])
 
   bridge.requestAction('waving')
   bridge.requestAction({ action: 'wave' })

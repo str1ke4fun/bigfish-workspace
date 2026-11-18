@@ -4,10 +4,17 @@ import { readFile } from 'node:fs/promises'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { mergeActionCatalogs, parseActions, type ActionDefinition } from './actions'
 import { createPoller, createStateForwarder, type Poller } from './poller'
+import {
+  filterTriggerCatalog,
+  mergeTriggers,
+  readTriggerCatalog,
+  type ReadTriggerCatalog,
+  type TriggerDefinition,
+} from './triggers'
 import { sendChat } from '../renderer/chat'
 import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition, resetPetPosition, resizePetWindow } from './window'
 import { DEFAULT_LOOK, noteLocalLook, readRemoteLook, resolveRemoteLook, type BubbleLook, type LookSyncState } from './look'
-import { buildMenuModel, type MenuItemModel } from './menu-model'
+import { buildMenuModel, type MenuItemModel, type PetRestAction } from './menu-model'
 import { OPEN_PROTOCOL, protocolTarget } from './open-link'
 import { readPetSize, savePetSize } from './settings'
 import { clampPetSize } from './size'
@@ -28,6 +35,7 @@ import {
 const PET_STATE_URL = 'http://127.0.0.1:8788/api/fish/pet/state'
 const PET_CONFIG_URL = 'http://127.0.0.1:8788/api/fish/pet/config'
 const PET_HELLO_URL = 'http://127.0.0.1:8788/api/fish/pet/hello'
+const PET_REST_URL = 'http://127.0.0.1:8788/api/fish/pet/rest'
 const PET_POLL_INTERVAL_MS = 2000
 const PET_REQUEST_TIMEOUT_MS = 5000
 const PET_HELLO_INTERVAL_MS = 60_000
@@ -40,7 +48,14 @@ function skinMediaUri(id: string): string {
 const WORKBENCH_PET_URL = 'http://127.0.0.1:8788/#her/pet'
 const PRESENCE_MODE_URL = 'http://127.0.0.1:8788/api/fish/presence/mode'
 
-export type PetActionMessage = { motion: string } | { action: string }
+export interface PetRestScene {
+  kind: 'rest' | 'out'
+  at: number
+}
+
+export type PetActionMessage =
+  | { motion: string }
+  | { action: string; rest?: PetRestAction; scene?: PetRestScene | null; intentAt?: number }
 
 export interface PetActionCatalogEntry {
   id: string
@@ -84,6 +99,13 @@ let actionCatalog: ActionDefinition[] = []
 let lastActionError: string | null = null
 /** 每次 reload 争用所有权、每次皮肤提交完成时递增；旧异步任务不得再提交。 */
 let actionCatalogGeneration = 0
+interface TriggerCatalogState {
+  triggers: TriggerDefinition[]
+  ownerSkinId: string
+  ownerRevision: number
+}
+/** 与动作目录分开保存，并记录归属皮肤/加载序号；触发表损坏不能阻塞手动动作。 */
+let triggerCatalog: TriggerCatalogState = { triggers: [], ownerSkinId: '', ownerRevision: -1 }
 
 /**
  * 皮肤推送缓存：首推可能早于渲染进程注册 `onSkin`（和 `pet:state` 同样的竞态）。
@@ -230,8 +252,26 @@ export function sendActionCatalog(win: BrowserWindow | null, actions: readonly A
   }
 }
 
+export function sendTriggerCatalog(win: BrowserWindow | null, triggers: readonly TriggerDefinition[]): void {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('pet:trigger-catalog', mergeTriggers(triggers, []))
+  }
+}
+
 export function sendActionStop(win: BrowserWindow | null): void {
   if (win && !win.isDestroyed()) win.webContents.send('pet:action-stop')
+}
+
+/** 首拍补发必须让 renderer 先拿到可解析的动作/触发目录，再归约状态。 */
+export function sendPetReadySnapshot(
+  win: BrowserWindow | null,
+  actions: readonly ActionDefinition[],
+  triggers: readonly TriggerDefinition[],
+  resendState: () => void,
+): void {
+  sendActionCatalog(win, actions)
+  sendTriggerCatalog(win, triggers)
+  resendState()
 }
 
 function sendActionError(win: BrowserWindow | null, error: { why: string }): void {
@@ -442,6 +482,70 @@ function setActionCatalog(actions: readonly ActionDefinition[], win: BrowserWind
   sendActionCatalog(win, actionCatalog)
 }
 
+function sameTriggerCatalog(left: readonly TriggerDefinition[], right: readonly TriggerDefinition[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function setTriggerCatalog(catalog: TriggerCatalogState, win: BrowserWindow | null = petWindow): void {
+  const next = filterTriggerCatalog(catalog.triggers, triggerActionIds(actionCatalog))
+  const changed = !sameTriggerCatalog(triggerCatalog.triggers, next)
+  triggerCatalog = {
+    triggers: next,
+    ownerSkinId: catalog.ownerSkinId,
+    ownerRevision: catalog.ownerRevision,
+  }
+  if (changed) sendTriggerCatalog(win, next)
+}
+
+function triggerActionIds(actions: readonly ActionDefinition[]): Set<string> {
+  return new Set(actions.map((action) => action.id))
+}
+
+/**
+ * 读取候选触发表；整份文件损坏时只回退同一皮肤/序号下的上一份，
+ * 跨皮肤或新序号只重读默认表，避免复用旧皮肤的覆盖项。
+ * 触发表错误绝不能冒泡到动作/皮肤提交路径。
+ */
+async function loadTriggerCandidate(
+  assetsRoot: string,
+  skinId: string,
+  revision: number,
+  actions: readonly ActionDefinition[],
+  readTriggers: ReadTriggerCatalog = readTriggerCatalog,
+): Promise<TriggerCatalogState> {
+  const actionIds = triggerActionIds(actions)
+  try {
+    return {
+      triggers: filterTriggerCatalog(await readTriggers(assetsRoot, skinId, actionIds), actionIds),
+      ownerSkinId: skinId,
+      ownerRevision: revision,
+    }
+  } catch (error) {
+    console.warn(`[desktop-pet] 触发表没载入，按当前动作目录回退：${errorText(error)}`)
+    if (triggerCatalog.ownerSkinId === skinId && triggerCatalog.ownerRevision === revision) {
+      return {
+        triggers: filterTriggerCatalog(triggerCatalog.triggers, actionIds),
+        ownerSkinId: skinId,
+        ownerRevision: revision,
+      }
+    }
+
+    let defaults: TriggerDefinition[] = []
+    if (skinId !== '') {
+      try {
+        defaults = await readTriggers(assetsRoot, '', actionIds)
+      } catch (fallbackError) {
+        console.warn(`[desktop-pet] 默认触发表回退也没载入：${errorText(fallbackError)}`)
+      }
+    }
+    return {
+      triggers: filterTriggerCatalog(defaults, actionIds),
+      ownerSkinId: skinId,
+      ownerRevision: revision,
+    }
+  }
+}
+
 /**
  * 手动重载只读磁盘一次。失败时保留上一份 catalog，播放器收到 stop，
  * 并把可读原因送到 renderer；成功才推 catalog、立即 hello。
@@ -450,13 +554,24 @@ export async function reloadRegisteredActions(
   win: BrowserWindow | null = petWindow,
   assetsRoot: string = appFile('assets'),
   readCatalog: ReadActionCatalog = readActionCatalog,
+  readTriggers: ReadTriggerCatalog = readTriggerCatalog,
 ): Promise<PetActionReloadResult> {
   const skinId = activeSkinId
+  const triggerRevision = triggerCatalog.ownerSkinId === skinId ? triggerCatalog.ownerRevision : -1
   const generation = ++actionCatalogGeneration
   const previousCatalog = actionCatalog
   sendActionStop(win)
   try {
     const next = await readCatalog(assetsRoot, skinId)
+    if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
+      return {
+        ok: false,
+        stale: true,
+        actions: actionCatalogEntries(actionCatalog),
+        error: '动作目录已被更新的重载或皮肤切换替代，未提交旧结果。',
+      }
+    }
+    const nextTriggers = await loadTriggerCandidate(assetsRoot, skinId, triggerRevision, next, readTriggers)
     if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
       return {
         ok: false,
@@ -490,6 +605,7 @@ export async function reloadRegisteredActions(
       reportActionError(why, win)
       return { ok: false, actions: actionCatalogEntries(actionCatalog), error: why }
     }
+    setTriggerCatalog(nextTriggers, win)
     return { ok: true, actions: actionCatalogEntries(actionCatalog) }
   } catch (error) {
     if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
@@ -529,6 +645,7 @@ export interface ApplySkinOptions {
   win?: BrowserWindow | null
   assetsRoot?: string
   readCatalog?: ReadActionCatalog
+  readTriggers?: ReadTriggerCatalog
 }
 
 export async function applySkin(id: string, options: ApplySkinOptions = {}): Promise<boolean> {
@@ -537,6 +654,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
   const win = options.win === undefined ? petWindow : options.win
   const assetsRoot = options.assetsRoot ?? appFile('assets')
   const loadCatalog = options.readCatalog ?? readActionCatalog
+  const loadTriggers = options.readTriggers ?? readTriggerCatalog
 
   async function applyValidatedSkin(config: unknown, uri: string): Promise<boolean> {
     let nextActions: ActionDefinition[]
@@ -545,6 +663,8 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
     } catch (error) {
       throw new Error(`动作注册表没载入：${errorText(error)}`)
     }
+    if (revision !== skinRevision) return false
+    const nextTriggers = await loadTriggerCandidate(assetsRoot, id, revision, nextActions, loadTriggers)
     if (revision !== skinRevision) return false
 
     // 新皮肤会替换全部动画映射；先让播放器结束旧 generation 的借用槽。
@@ -566,6 +686,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
     lastActionError = null
     skinForwarder.onSkin({ id, revision, config, uri })
     setActionCatalog(nextCatalog, win)
+    setTriggerCatalog(nextTriggers, win)
     activeSkinId = id
     actionCatalogGeneration += 1
     return true
@@ -681,6 +802,47 @@ async function setPresence(mode: 'off' | 'event' | 'ambient' | 'work'): Promise<
   }
 }
 
+export interface PetRestActionResult {
+  ok: boolean
+  scene: PetRestScene | null
+}
+
+function sceneFrom(value: unknown): PetRestScene | null {
+  if (!isRecord(value)) return null
+  const kind = value.kind === 'rest' || value.kind === 'out' ? value.kind : null
+  const at = value.at
+  return kind !== null && typeof at === 'number' && Number.isFinite(at) ? { kind, at } : null
+}
+
+/**
+ * 菜单显式休息：先让服务端提交手动覆盖，再把同一个 action 交给渲染进程。
+ * 附带回执 scene 让 trigger seen 直接记下这次 transition，避免 scene trigger 再播一遍。
+ */
+export async function runRestAction(
+  win: BrowserWindow | null,
+  actionId: string,
+  action: PetRestAction,
+  fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response> = fetch,
+): Promise<PetRestActionResult> {
+  try {
+    const response = await fetchImpl(PET_REST_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action }),
+      signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) return { ok: false, scene: null }
+    const body: unknown = await response.json().catch(() => null)
+    if (!isRecord(body) || body.ok !== true) return { ok: false, scene: null }
+
+    const scene = sceneFrom(body.scene)
+    sendActionMessage(win, { action: actionId, rest: action, scene, intentAt: Date.now() })
+    return { ok: true, scene }
+  } catch {
+    return { ok: false, scene: null }
+  }
+}
+
 function setPetHidden(hidden: boolean): void {
   petHidden = hidden
   const win = petWindow
@@ -697,6 +859,7 @@ function buildMenu(kind: 'context' | 'tray'): Menu {
     {
       motion: (motion) => sendActionMessage(win, toActionMessage('motion', motion)),
       action: (id) => sendActionMessage(win, toActionMessage('action', id)),
+      rest: (id, action) => void runRestAction(win, id, action),
       stop: () => sendActionStop(win),
       reload: () => void reloadRegisteredActions(win),
       size: (size) => win && changePetSize(win, size),
@@ -749,10 +912,9 @@ const stateForwarder = createStateForwarder((state) => {
 })
 
 ipcMain.on('pet:ready', () => {
-  stateForwarder.resend()
   // 皮肤可能早于渲染进程订阅就绪：就绪后补发最近一份。
   skinForwarder.ready()
-  sendActionCatalog(petWindow, actionCatalog)
+  sendPetReadySnapshot(petWindow, actionCatalog, triggerCatalog.triggers, () => stateForwarder.resend())
   if (lastSkinError && petWindow && !petWindow.isDestroyed()) {
     petWindow.webContents.send('pet:skin-error', lastSkinError)
   }
@@ -762,6 +924,9 @@ ipcMain.on('pet:ready', () => {
 ipcMain.handle('pet:get-size', () => petSize)
 ipcMain.handle('pet:get-look', () => petLook)
 ipcMain.handle('pet:get-action-catalog', () => mergeActionCatalogs(actionCatalog, []))
+ipcMain.handle('pet:get-trigger-catalog', () => (
+  mergeTriggers(filterTriggerCatalog(triggerCatalog.triggers, triggerActionIds(actionCatalog)), [])
+))
 ipcMain.handle('pet:actions-reload', () => reloadRegisteredActions())
 
 /** 渲染进程挂载时主动拉取最近皮肤，避免首推丢失后一直停在默认皮肤。 */
@@ -906,6 +1071,13 @@ if (gotInstanceLock) app
       // 动作表坏了不拦桌宠启动；菜单先空着，手动重载可保留/恢复上一份。
       reportActionError(`启动时动作没载入：${errorText(error)}`, null)
     }
+    triggerCatalog = await loadTriggerCandidate(
+      appFile('assets'),
+      activeSkinId,
+      0,
+      actionCatalog,
+      readTriggerCatalog,
+    )
     startPetWindow()
     createPetTray()
     // 窗口先建好再报到，服务端的 online 才真的代表「窗口起来了」。

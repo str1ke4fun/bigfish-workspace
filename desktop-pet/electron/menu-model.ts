@@ -18,6 +18,8 @@ export interface MenuState {
 export interface MenuCallbacks {
   motion: (motion: string) => void
   action: (id: string) => void
+  /** 休息动作先改服务端 scene，再播放同一个注册动作。 */
+  rest: (id: string, action: PetRestAction) => void
   stop: () => void
   reload: () => void
   size: (size: number) => void
@@ -29,6 +31,8 @@ export interface MenuCallbacks {
   openWorkbench: () => void
   quit: () => void
 }
+
+export type PetRestAction = 'sleep' | 'wake'
 
 export interface MenuItemModel {
   label?: string
@@ -65,6 +69,18 @@ const PRESENCE_MODES: ReadonlyArray<[string, 'event' | 'ambient' | 'work']> = [
   ['工作', 'work'],
 ]
 
+/** 默认素材与用户皮肤都可能改 action id；休息组内的语义文案仍是稳定的 UI 契约。 */
+export function petRestAction(action: ActionDefinition): PetRestAction | null {
+  if (action.id === 'sleep' || action.id === 'asset-091') return 'sleep'
+  if (action.id === 'wake' || action.id === 'asset-093') return 'wake'
+  if (action.group.trim() !== '休息') return null
+
+  const label = action.label.trim()
+  if (label.includes('起来') || label.includes('醒')) return 'wake'
+  if (label.includes('睡') || label.includes('眠')) return 'sleep'
+  return null
+}
+
 export function buildMenuModel(
   state: MenuState,
   actions: readonly ActionDefinition[],
@@ -87,7 +103,13 @@ export function buildMenuModel(
       groupItems = []
       registeredGroups.set(group, groupItems)
     }
-    groupItems.push({ label: action.label, click: () => callbacks.action(action.id) })
+    const restAction = petRestAction(action)
+    groupItems.push({
+      label: action.label,
+      click: () => restAction === null
+        ? callbacks.action(action.id)
+        : callbacks.rest(action.id, restAction),
+    })
   }
 
   items.push({

@@ -24,6 +24,21 @@ import { toJsonSchema } from './toolschema.js'
 import { inWake } from './wakewin.js'
 import { refreshSelfDoc } from './selfdoc.js'
 import { registerTool } from './tool-result.js'
+import { rejectMemoryWriteFailure } from './write-failure.js'
+
+async function appendViaMemory(memory, raw, opts, root) {
+  if (typeof memory?.append !== 'function') return appendEvent(raw, opts, root)
+  const result = await memory.append(raw, opts)
+  if (!result?.ok) rejectMemoryWriteFailure(result)
+  return result.event
+}
+
+async function appendSystemViaMemory(memory, type, text, opts, root) {
+  if (typeof memory?.appendSystem !== 'function') return appendEvent({ type, text }, opts, root)
+  const result = await memory.appendSystem(type, text, opts)
+  if (!result?.ok) rejectMemoryWriteFailure(result)
+  return result.event
+}
 
 /**
  * 防注入：把不可信的第三方文本包成"素材"。
@@ -52,6 +67,7 @@ export function debrief(text, kind = '素材') {
  */
 export function registerCapture(ctx, deps = {}) {
   const root = deps.root ?? rootDir()
+  const memory = deps.memory ?? deps.core?.memory ?? null
 
   return registerTool(
     ctx,
@@ -154,8 +170,10 @@ export function registerCapture(ctx, deps = {}) {
             const file = await writeDaily('diaryDir', dk, text, root)
             // source 必须是 system：schema 规定 tool 只能写 HER_TYPES，
             // meta 写错成 'tool' 会被 NOT_HER_TYPE 拒掉 —— 日记就会变成"写下了但没标记"。
-            await appendEvent(
-              { type: 'meta', text: `diary:${dk}` },
+            await appendSystemViaMemory(
+              memory,
+              'meta',
+              `diary:${dk}`,
               { day: model.day, stage: model.stage, source: 'system' },
               root,
             )
@@ -178,21 +196,24 @@ export function registerCapture(ctx, deps = {}) {
             }
           }
 
-          const ev = await appendEvent(
-            {
-              type: args?.type,
-              channel: channelOfAgent(exec?.agent),
-              text: args?.text,
-              refs: args?.refs,
-              verdict: args?.verdict,
-              confidence: args?.confidence,
-              // v4：只有 person_note 会保留这些字段；其它类型由 schema 丢掉。
-              person: args?.person,
-              supersedes: args?.supersedes,
-              revokes: args?.revokes,
-              flags: args?.flags,
-            },
-            { day: model.day, stage: model.stage, source: 'tool' },
+          const raw = {
+            type: args?.type,
+            text: args?.text,
+            refs: args?.refs,
+            verdict: args?.verdict,
+            confidence: args?.confidence,
+            // v4：只有 person_note 会保留这些字段；其它类型由 schema 丢掉。
+            person: args?.person,
+            supersedes: args?.supersedes,
+            revokes: args?.revokes,
+            flags: args?.flags,
+          }
+          // 旧的无 memory 单测仍保留原来的通道推断；生产路径由 fishCore 统一落面。
+          if (typeof memory?.append !== 'function') raw.channel = channelOfAgent(exec?.agent)
+          const ev = await appendViaMemory(
+            memory,
+            raw,
+            { day: model.day, stage: model.stage, source: 'tool', agent: exec?.agent },
             root,
           )
 

@@ -10,7 +10,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, appendFile } from 'node:fs/promises'
+import { mkdtemp, rm, appendFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -151,6 +151,94 @@ test('append：source:tool 只能写 HER_TYPES；系统侧类型返回 NOT_HER_T
     assert.equal(good.event.source, 'tool')
   })
 })
+
+test('onAppend：成功写入后通知一次，观察器改事件不污染返回值或磁盘；卸载后不再通知', async () => {
+  await withRoot(async (root) => {
+    const m = mem(root)
+    const seen = []
+
+    m.onAppend(() => { throw new Error('坏观察器') })
+    const off = m.onAppend((event) => {
+      seen.push(event.id)
+      event.text = '被观察器改掉'
+    })
+
+    const r = await m.append({ type: 'utterance', text: '她真正写下的那句' })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(r.event.text, '她真正写下的那句', '观察器不能改 append 的返回值')
+    assert.deepEqual(seen, [r.event.id], '一个观察器抛错不能挡住后面的观察器')
+
+    const [stored] = await diskEvents(root)
+    assert.equal(stored.text, '她真正写下的那句', '观察器不能改已经落盘的事实')
+
+    off()
+    await m.append({ type: 'utterance', text: '卸载之后' })
+    assert.deepEqual(seen, [r.event.id], 'off 之后不能再收到事件')
+  })
+})
+
+test('onAppend：校验失败或磁盘写入失败都不通知', async () => {
+  await withRoot(async (root) => {
+    const m = mem(root)
+    let calls = 0
+    m.onAppend(() => { calls += 1 })
+
+    const invalid = await m.append({ type: 'nope', text: 'x' })
+    assert.equal(invalid.ok, false)
+    assert.equal(calls, 0, '没通过校验就不能通知')
+
+    const blocked = join(root, 'not-a-directory')
+    await writeFile(blocked, 'x', 'utf8')
+    const unwritable = mem(blocked)
+    unwritable.onAppend(() => { calls += 1 })
+    const failed = await unwritable.append({ type: 'utterance', text: '写不进去' })
+    assert.equal(failed.ok, false)
+    assert.equal(calls, 0, 'appendEvent 失败就不能通知')
+  })
+})
+
+test('onAppend：异步观察器在 append 返回前结束，拒绝不挡住其它观察器', async () => {
+  await withRoot(async (root) => {
+    const m = mem(root)
+    let firstDone = false
+    let secondDone = false
+    m.onAppend(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      firstDone = true
+      throw new Error('异步坏观察器')
+    })
+    m.onAppend(async () => { secondDone = true })
+
+    const r = await m.append({ type: 'utterance', text: '异步观察器不影响写入' })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(firstDone, true)
+    assert.equal(secondDone, true)
+  })
+})
+
+test('onAppend：永不结束的观察器不能无限阻塞 append 返回', async () => {
+  await withRoot(async (root) => {
+    const m = mem(root)
+    let secondDone = false
+    m.onAppend(() => new Promise(() => {}))
+    m.onAppend(async () => { secondDone = true })
+
+    let timer
+    const result = await Promise.race([
+      m.append({ type: 'utterance', text: '事件已经落盘，不能被观察器扣住' }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('append blocked by observer')), 500)
+      }),
+    ]).finally(() => clearTimeout(timer))
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(secondDone, true, '一个不结束的观察器不能挡住其它观察器')
+
+    const [stored] = await diskEvents(root)
+    assert.equal(stored.id, result.event.id)
+    assert.equal(stored.text, '事件已经落盘，不能被观察器扣住')
+  })
+}, { timeout: 2_000 })
 
 // ---------------------------------------------------------------- commit / appendSystem
 
@@ -476,7 +564,7 @@ test('provideFishCore：在同一个 core 对象上挂 memory，并转发 refres
       assert.equal(ctx.get('fishCore'), core)
       assert.ok(core.memory, 'core.memory 必须挂上')
       for (const name of [
-        'append', 'commit', 'appendSystem', 'validate', 'read',
+        'append', 'onAppend', 'commit', 'appendSystem', 'validate', 'read',
         'derive', 'refreshSelfDoc', 'similarity', 'findEcho', 'eventById',
       ]) {
         assert.equal(typeof core.memory[name], 'function', name)

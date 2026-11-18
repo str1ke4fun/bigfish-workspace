@@ -275,6 +275,8 @@
 
 稳态完整优先级为：`waiting > scene(rest/out) > 其他 activity > presence:on → thinking > idle`。这保留了现有 presence thinking 行为；如果 presence 与 rest 同时存在，rest 优先。一次性 cue 和手动动作叠加在稳态上，播完回落到当时最新的稳态。休息期间点击显示固定短句，聊天 cue 仍可播放配置动作，但不改变 `scene`。
 
+**实现裁定（2026-11-18）：** 二期的播放路径整体忽略 `presence.recent`，而不是只按文本筛掉与 cue 重复的条目。`presence` 仍保留 `on → thinking` 稳态；她会说什么、被回复什么只认 cue。这样 cue 过期后旧的 `presence.recent` 不会再把同一事实补播一次。代价是未接入 cue 的旧 presence 动作/气泡也不再由桌宠播放；以后若确需这类表现，应新增明确的 cue 类型，而不是恢复整表兜底。
+
 ### 4.4 协议增量
 
 `/pet/state` 增量扩展，旧字段不动：

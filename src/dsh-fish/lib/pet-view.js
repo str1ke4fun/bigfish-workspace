@@ -21,6 +21,8 @@ export const PET_ACTION_MOTIONS = Object.freeze(PET_MOTIONS.filter((m) => m !== 
 
 export const PET_TEXT_LIMIT = 120
 export const PET_ACTION_TTL_MS = 15_000
+export const PET_CUE_LIMIT = 8
+export const PET_CUE_TTL_MS = 15_000
 
 const PET_ACTION_TTL_MIN_MS = 1_000
 const PET_ACTION_TTL_MAX_MS = 60_000
@@ -29,6 +31,8 @@ const PET_ACTION_ID_RE = /^[a-z0-9-]{1,32}$/
 
 const PET_SURFACES = new Set(['web', 'screen'])
 const PET_ACTION_MOTION_SET = new Set(PET_ACTION_MOTIONS)
+const PET_CUE_KINDS = new Set(['speak', 'replied'])
+const PET_REST_OVERRIDES = new Set(['auto', 'sleep', 'wake'])
 
 /** dsh-pet 的优先级：数值越大越优先；同档由 pickActivity 取更大 seq。 */
 const ACTIVITY_PRIORITY = Object.freeze({
@@ -135,6 +139,13 @@ export function createPetView({ now = Date.now, log } = {}) {
   let version = ''
   let skins = []
   let actionCatalog = new Map()
+  let cues = []
+  let scheduleRest = false
+  let scheduleRestAt = null
+  let outingActive = false
+  let outingAt = null
+  let restOverride = 'auto'
+  let restOverrideAt = null
 
   /**
    * 记录她的一条会话事件。只接受 web/screen 面。
@@ -192,6 +203,67 @@ export function createPetView({ now = Date.now, log } = {}) {
     return { ok: true, action: { ...action } }
   }
 
+  /** 剔除已经超过自身 TTL 的 cue；过期 cue 不会在重连后补播。 */
+  function pruneCues(nowMs) {
+    cues = cues.filter((cue) => nowMs - cue.at < cue.ttlMs)
+  }
+
+  /**
+   * 记录一条已经发生的事实 cue。id 只在当前环形缓冲内去重；文本是
+   * 对外展示的摘要，统一裁到 PET_TEXT_LIMIT 字。
+   */
+  function noteCue({ id, kind, text, at, ttlMs } = {}) {
+    if (typeof id !== 'string' || id.trim() === '') return false
+    if (!PET_CUE_KINDS.has(kind)) return false
+    if (typeof text !== 'string') return false
+    const cleanText = text.trim().slice(0, PET_TEXT_LIMIT)
+    if (!cleanText) return false
+
+    const nowMs = now()
+    pruneCues(nowMs)
+    const cueId = id.trim()
+    if (cues.some((cue) => cue.id === cueId)) return false
+
+    const n = Number(ttlMs)
+    const ttl = ttlMs === undefined || ttlMs === null || !Number.isFinite(n) || n <= 0
+      ? PET_CUE_TTL_MS
+      : n
+    const nAt = Number(at)
+    const cueAt = at === undefined || at === null || !Number.isFinite(nAt) ? nowMs : nAt
+    cues.push({ id: cueId, kind, text: cleanText, at: cueAt, ttlMs: ttl })
+    if (cues.length > PET_CUE_LIMIT) cues = cues.slice(-PET_CUE_LIMIT)
+    return true
+  }
+
+  /** 更新日程窗口给出的默认休息状态。 */
+  function setScheduleRest({ rest, at } = {}) {
+    if (typeof rest !== 'boolean') return false
+    const n = Number(at)
+    scheduleRest = rest
+    scheduleRestAt = at === undefined || at === null || !Number.isFinite(n) ? now() : n
+    // 日程进入下一次 tick 后重新接管；用户手动覆盖只保留到这一刻。
+    restOverride = 'auto'
+    restOverrideAt = null
+    return true
+  }
+
+  /** 更新 B 站出门场景；出门与休息互斥时始终由出门优先。 */
+  function setOuting({ active, at } = {}) {
+    if (typeof active !== 'boolean') return false
+    const n = Number(at)
+    outingActive = active
+    outingAt = at === undefined || at === null || !Number.isFinite(n) ? now() : n
+    return true
+  }
+
+  /** 用户手动覆盖休息；auto 清除覆盖并回到日程窗口。 */
+  function setRestOverride(value) {
+    if (!PET_REST_OVERRIDES.has(value)) return false
+    restOverride = value
+    restOverrideAt = value === 'auto' ? null : now()
+    return true
+  }
+
   /** 桌宠窗口轮询一次；只刷新 lastPollAt。 */
   function markPolled(at = now()) {
     lastPollAt = Number(at)
@@ -242,14 +314,27 @@ export function createPetView({ now = Date.now, log } = {}) {
     }
   }
 
-  /** @returns {{activity:{state:string, at:number, sessionId:string}|null, action:{id:string, motion?:string, action?:string, text?:string, at:number, ttlMs:number}|null}} */
+  /**
+   * @returns {{activity:{state:string, at:number, sessionId:string}|null,
+   *   action:{id:string, motion?:string, action?:string, text?:string, at:number, ttlMs:number}|null,
+   *   scene:{kind:'rest'|'out', at:number}|null,
+   *   cues:Array<{id:string, kind:'speak'|'replied', text:string, at:number, ttlMs:number}>}}
+   */
   function snapshot() {
     const nowMs = now()
     pruneExpired(nowMs)
+    pruneCues(nowMs)
     const picked = pickActivity([...sessions.values()])
     const activity = picked
       ? { state: picked.state, at: picked.at, sessionId: picked.sessionId }
       : null
+
+    let scene = null
+    if (outingActive) {
+      scene = { kind: 'out', at: outingAt }
+    } else if (restOverride === 'sleep' || (restOverride === 'auto' && scheduleRest)) {
+      scene = { kind: 'rest', at: restOverride === 'sleep' ? restOverrideAt : scheduleRestAt }
+    }
 
     let currentAction = null
     if (action) {
@@ -263,6 +348,8 @@ export function createPetView({ now = Date.now, log } = {}) {
       helloAt,
       version,
       skins: skins.map((x) => ({ ...x })),
+      scene,
+      cues: cues.map((cue) => ({ ...cue })),
     }
   }
 
@@ -275,7 +362,17 @@ export function createPetView({ now = Date.now, log } = {}) {
     version = ''
     skins = []
     actionCatalog.clear()
+    cues = []
+    scheduleRest = false
+    scheduleRestAt = null
+    outingActive = false
+    outingAt = null
+    restOverride = 'auto'
+    restOverrideAt = null
   }
 
-  return { noteSessionEvent, act, markPolled, noteHello, snapshot, clear }
+  return {
+    noteSessionEvent, act, markPolled, noteHello, noteCue,
+    setScheduleRest, setOuting, setRestOverride, snapshot, clear,
+  }
 }

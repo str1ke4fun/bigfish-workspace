@@ -6,7 +6,18 @@ import type {
   PlaybackSlot,
   PlaybackState,
   PetMotion,
+  PetState,
+  Seen,
 } from './controller'
+import type { TriggerSeen } from './trigger-engine'
+
+export const PET_SEEN_LIMIT = 64
+
+/** localStorage 里同时保存一期去重游标和二期 trigger 游标。 */
+export interface PetSeen extends TriggerSeen {
+  lastActionId: string
+  lastCommentAt: string
+}
 
 type BorrowAction = string | Pick<PlaybackAction, 'anim' | 'seq'>
 
@@ -108,6 +119,231 @@ export function petUriProp(
 export function restoreCompletedEvent(playback: PlaybackState | null | undefined): PlaybackEvent | null {
   if (playback?.status !== 'restoring') return null
   return { type: 'restoreCompleted', generation: playback.generation }
+}
+
+function boundedKeys(values: unknown): string[] {
+  if (!Array.isArray(values)) return []
+  const unique: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const key = value.trim()
+    if (key === '' || seen.has(key)) continue
+    seen.add(key)
+    unique.push(key)
+  }
+  return unique.slice(-PET_SEEN_LIMIT)
+}
+
+export function emptyPetSeen(): PetSeen {
+  return {
+    lastActionId: '',
+    lastCommentAt: '',
+    cueIds: [],
+    occurrenceKeys: [],
+    lastActivityState: null,
+    lastSceneKind: null,
+    sceneLoopActionId: null,
+    sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: false,
+    ambientConsumed: false,
+  }
+}
+
+/** 旧版本只有一期字段；缺失/损坏的二游标按空值恢复，绝不无限增长。 */
+export function parsePetSeen(raw: unknown): PetSeen {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return emptyPetSeen()
+  const record = raw as Record<string, unknown>
+  const sceneLoopActionId = typeof record.sceneLoopActionId === 'string' ? record.sceneLoopActionId : null
+  return {
+    lastActionId: typeof record.lastActionId === 'string' ? record.lastActionId : '',
+    lastCommentAt: typeof record.lastCommentAt === 'string' ? record.lastCommentAt : '',
+    cueIds: boundedKeys(record.cueIds),
+    occurrenceKeys: boundedKeys(record.occurrenceKeys),
+    lastActivityState: typeof record.lastActivityState === 'string' ? record.lastActivityState : null,
+    lastSceneKind: record.lastSceneKind === 'rest' || record.lastSceneKind === 'out'
+      ? record.lastSceneKind
+      : null,
+    sceneLoopActionId,
+    // playback 进程内的 state 不落盘；冷启动只能把旧 loop 交给下一拍重新恢复。
+    sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: sceneLoopActionId !== null,
+    ambientConsumed: record.ambientConsumed === true,
+  }
+}
+
+/** trigger reducer 只拥有自己的游标；合并时保留一期字段和 occurrence 键。 */
+export function mergePetSeen(previous: PetSeen, next: TriggerSeen): PetSeen {
+  return {
+    ...previous,
+    ...next,
+    cueIds: boundedKeys(next.cueIds),
+    occurrenceKeys: boundedKeys(next.occurrenceKeys ?? previous.occurrenceKeys),
+  }
+}
+
+/** 皮肤切换会停掉当前播放；下一次状态拍允许用新目录恢复同一 scene loop，但不重放 enter trigger。 */
+export function interruptSceneLoop<T extends TriggerSeen>(seen: T): T {
+  return {
+    ...seen,
+    cueIds: boundedKeys(seen.cueIds),
+    sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: true,
+  } as T
+}
+
+export type ManualRestScene = 'rest' | 'out' | { kind: 'rest' | 'out'; at: number } | null
+
+function manualRestSceneKind(scene: ManualRestScene): 'rest' | 'out' | null {
+  if (typeof scene === 'string') return scene
+  return scene?.kind ?? null
+}
+
+/** 循环睡觉动作属于当前 scene；其他休息动作仍是普通手动动作。 */
+export function manualRestPlaybackSource(
+  action: 'sleep' | 'wake',
+  loops: boolean,
+  scene: ManualRestScene,
+): PlaybackSource {
+  return action === 'sleep' && loops && manualRestSceneKind(scene) !== null
+    ? 'scene'
+    : 'manual'
+}
+
+/** 菜单 sleep/wake 已代表本次 scene transition，避免随后 scene trigger 再播一遍。 */
+export function applyManualRestIntent<T extends TriggerSeen>(
+  seen: T,
+  action: 'sleep' | 'wake',
+  actionId: string,
+  scene: ManualRestScene,
+  ownsSceneLoop = false,
+): T {
+  const sceneKind = manualRestSceneKind(scene)
+  const sceneLoopOwned = ownsSceneLoop && action === 'sleep' && sceneKind !== null
+  return {
+    ...seen,
+    cueIds: boundedKeys(seen.cueIds),
+    // 服务端以 out > rest 决定 scene；手动意图只能消费它返回的事实，不能覆盖成 sleep。
+    lastSceneKind: sceneKind,
+    // 循环睡觉动作接管当前 scene：cue 可以暂时覆盖，播完后仍回到同一个 loop。
+    // 非循环/起来动作不留下游标，避免动作结束后再补播同一 scene trigger。
+    sceneLoopActionId: sceneLoopOwned ? actionId : null,
+    sceneLoopActive: sceneLoopOwned,
+    sceneLoopNeedsRevalidation: false,
+  } as T
+}
+
+/** state 轮询可能早于手动 REST 发出、晚于回执到达；只接受不早于意图的 snapshot。 */
+export function petStateSnapshotIsStale(state: PetState | null, intentAt: number): boolean {
+  return state !== null
+    && Number.isFinite(state.at)
+    && Number.isFinite(intentAt)
+    && state.at < intentAt
+}
+
+/** reducer 归约与真正下发之间状态可能换拍；cue 动作/气泡下发前再核一次当前 TTL。 */
+export function cueDispatchIsFresh(state: PetState | null, cueId: string, now: number): boolean {
+  const cue = state?.cues?.find((entry) => entry?.id === cueId)
+  if (!cue) return false
+  return Number.isFinite(cue.at)
+    && Number.isFinite(cue.ttlMs)
+    && cue.ttlMs > 0
+    && now - cue.at < cue.ttlMs
+}
+
+/** 二期把 cue 作为唯一评论表现面；裁定整体忽略 legacy presence.recent，避免过期后补播。 */
+export function withoutPresenceComments(state: PetState | null): PetState | null {
+  if (!state?.presence || !Array.isArray(state.presence.recent) || state.presence.recent.length === 0) {
+    return state
+  }
+  return {
+    ...state,
+    presence: { ...state.presence, recent: [] },
+  }
+}
+
+export function isPetDragGesture(
+  start: { x: number; y: number },
+  current: { x: number; y: number },
+  threshold = 4,
+): boolean {
+  const dx = current.x - start.x
+  const dy = current.y - start.y
+  return dx * dx + dy * dy >= threshold * threshold
+}
+
+export function restClickBubble(): { id: string; title: '在休息' } {
+  return { id: 'resting', title: '在休息' }
+}
+
+export function shouldOpenPetDialogue(state: PetState | null): boolean {
+  return state?.scene?.kind !== 'rest'
+}
+
+export type PlaybackSource = 'manual' | 'trigger' | 'scene' | null
+
+export interface TriggerBusyFlags {
+  manualBusy: boolean
+  actionBusy: boolean
+}
+
+export const MANUAL_MOTION_LEASE_MS = 15_000
+
+/** 直接 `pet.motion()` 不经过 PlaybackState；用短 lease 把它也纳入手动优先级。 */
+export interface ManualMotionLease {
+  motion: PetMotion
+  started: boolean
+  expiresAt: number
+}
+
+export function startManualMotionLease(
+  motion: PetMotion,
+  now: number,
+  durationMs = MANUAL_MOTION_LEASE_MS,
+): ManualMotionLease {
+  return {
+    motion,
+    started: false,
+    expiresAt: now + Math.max(1, durationMs),
+  }
+}
+
+/** 组件确认起动后再收到别的 motion（通常回 idle）即释放；兜底仍受 lease 到期限制。 */
+export function noteManualMotionChange(
+  lease: ManualMotionLease | null,
+  motion: PetMotion | 'dragging',
+  now: number,
+): ManualMotionLease | null {
+  if (lease === null || !Number.isFinite(now) || now >= lease.expiresAt) return null
+  if (motion === lease.motion) return { ...lease, started: true }
+  if (lease.started || motion === 'dragging') return null
+  return lease
+}
+
+export function manualMotionLeaseBusy(lease: ManualMotionLease | null, now: number): boolean {
+  return lease !== null && Number.isFinite(now) && now < lease.expiresAt
+}
+
+/** trigger 一次性动作与 scene/manual 分开计账；scene loop 不得被 actionBusy 永久压住。 */
+export function triggerPlaybackBusy(
+  playback: PlaybackState | null | undefined,
+  source: PlaybackSource,
+): TriggerBusyFlags {
+  const busy = playback !== null && playback !== undefined && playback.status !== 'idle'
+  if (!busy) return { manualBusy: false, actionBusy: false }
+  if (source === 'scene') {
+    // 皮肤切换后的 clear/restore 尚未收尾时先别抢回 loop；holding-loop 本身不算忙。
+    return playback.status === 'restoring'
+      ? { manualBusy: true, actionBusy: false }
+      : { manualBusy: false, actionBusy: false }
+  }
+  if (source === 'trigger') return { manualBusy: false, actionBusy: true }
+  return { manualBusy: true, actionBusy: false }
+}
+
+/** 一期 decideEffects 仍需自己的两个游标；从合并 Seen 中窄化出来。 */
+export function legacySeen(seen: PetSeen): Seen {
+  return { lastActionId: seen.lastActionId, lastCommentAt: seen.lastCommentAt }
 }
 
 /** 主进程写入 config 的动画名最终会被组件解码成这个目录式资源地址。 */

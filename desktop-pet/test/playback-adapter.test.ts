@@ -1,20 +1,44 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { DshPetConfig } from 'dsh-pet-component'
-import { reducePlayback, PLAYBACK_SLOT, type PlaybackAction } from '../renderer/controller.ts'
 import {
+  decideEffects,
+  emptySeen,
+  reducePlayback,
+  PLAYBACK_SLOT,
+  type PetState,
+  type PlaybackAction,
+} from '../renderer/controller.ts'
+import {
+  applyManualRestIntent,
   borrowActionConfig,
   chatReplyPlaybackDecision,
   chatThinkingPlan,
+  cueDispatchIsFresh,
   createActionErrorOwner,
   createPlaybackCallbackArbiter,
+  emptyPetSeen,
+  interruptSceneLoop,
+  isPetDragGesture,
+  manualRestPlaybackSource,
+  manualMotionLeaseBusy,
+  mergePetSeen,
+  noteManualMotionChange,
+  parsePetSeen,
   pendingServerActionAfterPlaybackEvent,
   petErrorTarget,
+  petStateSnapshotIsStale,
+  restClickBubble,
   restoreCompletedEvent,
   petUriProp,
   petMotionProp,
   restoreActionConfig,
+  shouldOpenPetDialogue,
+  startManualMotionLease,
+  triggerPlaybackBusy,
+  withoutPresenceComments,
 } from '../renderer/playback-adapter.ts'
+import { emptyTriggerSeen, reduceTriggers, type TriggerDefinition } from '../renderer/trigger-engine.ts'
 
 const wave: PlaybackAction = {
   id: 'wave',
@@ -22,6 +46,22 @@ const wave: PlaybackAction = {
   anim: 'wave-file',
   loop: false,
   group: '回应',
+}
+
+function petState(overrides: Partial<PetState> = {}): PetState {
+  return {
+    at: 1,
+    presence: null,
+    activity: null,
+    action: null,
+    scene: null,
+    cues: [],
+    ...overrides,
+  }
+}
+
+function trigger(when: string, pool: string[]): TriggerDefinition {
+  return { when, pool, w: pool.map(() => 1), once: false, minGapSec: 0, inAmbient: false }
 }
 
 function borrowedFixture(): DshPetConfig {
@@ -436,4 +476,383 @@ test('延迟回复只在自己仍是当前请求且动作代次未变时才播�
     playbackGeneration: newerLoop.generation,
     playback: newerLoop,
   }), { current: true, motion: 'waving' })
+})
+
+test('持久化 Seen 兼容旧记录，并把 cue/occurrence 游标限制为有界数组', () => {
+  const cueIds = Array.from({ length: 70 }, (_, index) => `cue-${index}`)
+  const occurrenceKeys = Array.from({ length: 70 }, (_, index) => `occurrence-${index}`)
+  const seen = parsePetSeen({
+    lastActionId: 'action-7',
+    lastCommentAt: '2026-11-18T08:00:00Z',
+    cueIds,
+    occurrenceKeys,
+  })
+
+  assert.equal(seen.lastActionId, 'action-7')
+  assert.equal(seen.lastCommentAt, '2026-11-18T08:00:00Z')
+  assert.deepEqual(seen.cueIds, cueIds.slice(-64))
+  assert.deepEqual(seen.occurrenceKeys, occurrenceKeys.slice(-64))
+  assert.deepEqual(parsePetSeen(null), emptyPetSeen())
+})
+
+test('mergePetSeen 写回 reducer 产生的 date/ambient occurrence 游标', () => {
+  const previous = { ...emptyPetSeen(), occurrenceKeys: ['fire|ambient|1000'] }
+  const next = {
+    ...emptyTriggerSeen(),
+    occurrenceKeys: ['fire|ambient|2000', 'date|date:12-25|2026-12-25'],
+  }
+
+  const merged = mergePetSeen(previous, next)
+
+  assert.deepEqual(merged.occurrenceKeys, [
+    'fire|ambient|2000',
+    'date|date:12-25|2026-12-25',
+  ])
+})
+
+test('冷启动把持久化 scene loop 标成待恢复，不把旧进程的 active 当成仍在播放', () => {
+  const loopAction: PlaybackAction = {
+    id: 'rest-loop', label: '休息循环', anim: 'rest-loop-file', loop: true, group: '休息',
+  }
+  const seen = parsePetSeen({
+    lastSceneKind: 'rest',
+    sceneLoopActionId: loopAction.id,
+    sceneLoopActive: true,
+  })
+
+  assert.equal(seen.lastSceneKind, 'rest')
+  assert.equal(seen.sceneLoopActionId, loopAction.id)
+  assert.equal(seen.sceneLoopActive, false)
+
+  const restarted = reduceTriggers({
+    state: petState({ scene: { kind: 'rest', at: 20 } }),
+    triggers: [trigger('scene:rest:enter', [loopAction.id])],
+    actions: [loopAction],
+    seen,
+    now: 30,
+    manualBusy: false,
+  })
+  assert.deepEqual(restarted.action, { type: 'startAction', actionId: loopAction.id, loop: true })
+})
+
+test('cue dispatch 前再次核对当前状态里的 TTL', () => {
+  const state = petState({
+    cues: [{ id: 'cue-stale', kind: 'speak', text: '过期了', at: 1000, ttlMs: 1000 }],
+  })
+
+  assert.equal(cueDispatchIsFresh(state, 'cue-stale', 1999), true)
+  assert.equal(cueDispatchIsFresh(state, 'cue-stale', 2000), false)
+  assert.equal(cueDispatchIsFresh(state, 'cue-missing', 1200), false)
+})
+
+test('presence.recent 不再绕过 cue 链独立触发 waving', () => {
+  const state = petState({
+    cues: [{ id: 'cue-speak', kind: 'speak', text: '她刚说的话', at: 100, ttlMs: 15_000 }],
+    presence: {
+      on: true,
+      mode: 'event',
+      busy: false,
+      snapshot: null,
+      recent: [{ at: '2026-11-18T08:00:00Z', mode: 'event', event: 'scene_change', text: '同一句话' }],
+    },
+  })
+  const legacyOnly = decideEffects(emptySeen(), withoutPresenceComments(state), 200)
+
+  assert.equal(legacyOnly.bubble, undefined)
+  assert.equal(legacyOnly.motion, undefined)
+  assert.equal(legacyOnly.steady, 'thinking')
+})
+
+test('休息点击只显示固定短句并拦住对话；拖动阈值后仍按拖动处理', () => {
+  assert.deepEqual(restClickBubble(), { id: 'resting', title: '在休息' })
+  assert.equal(shouldOpenPetDialogue(petState({ scene: { kind: 'rest', at: 1 } })), false)
+  assert.equal(shouldOpenPetDialogue(petState()), true)
+  assert.equal(isPetDragGesture({ x: 10, y: 10 }, { x: 13, y: 12 }), false)
+  assert.equal(isPetDragGesture({ x: 10, y: 10 }, { x: 16, y: 10 }), true)
+})
+
+test('manual sleep/wake 标记对应 scene 已消费，不再次触发 scene transition', () => {
+  const sleepAction: PlaybackAction = {
+    id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息',
+  }
+  const wakeAction: PlaybackAction = {
+    id: 'wake', label: '起来', anim: 'wake-file', loop: false, group: '休息',
+  }
+  const triggers = [
+    trigger('scene:rest:enter', [sleepAction.id]),
+    trigger('scene:rest:exit', [wakeAction.id]),
+  ]
+
+  const sleptSeen = applyManualRestIntent(emptyPetSeen(), 'sleep', sleepAction.id, 'rest')
+  const slept = reduceTriggers({
+    state: petState({ scene: { kind: 'rest', at: 20 } }),
+    triggers,
+    actions: [sleepAction, wakeAction],
+    seen: sleptSeen,
+    now: 30,
+    manualBusy: false,
+  })
+  assert.equal(slept.action, undefined)
+
+  const wokeSeen = applyManualRestIntent(sleptSeen, 'wake', wakeAction.id, null)
+  const woke = reduceTriggers({
+    state: petState(),
+    triggers,
+    actions: [sleepAction, wakeAction],
+    seen: wokeSeen,
+    now: 40,
+    manualBusy: false,
+  })
+  assert.equal(woke.action, undefined)
+  assert.equal(woke.seen.lastSceneKind, null)
+})
+
+test('手动睡觉的循环 seq 作为可恢复 scene owner，cue 覆盖后恢复同一 loop', () => {
+  const sleepAction: PlaybackAction = {
+    id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息',
+  }
+  const cueAction: PlaybackAction = {
+    id: 'talk', label: '说一句', anim: 'talk-file', loop: false, group: '回应',
+  }
+  const restScene = { kind: 'rest' as const, at: 20 }
+  const triggers = [
+    trigger('scene:rest:enter', [sleepAction.id]),
+    trigger('speak', [cueAction.id]),
+  ]
+
+  const sleptSeen = applyManualRestIntent(emptyPetSeen(), 'sleep', sleepAction.id, restScene, true)
+  assert.equal(sleptSeen.lastSceneKind, 'rest')
+  assert.equal(sleptSeen.sceneLoopActionId, sleepAction.id)
+  assert.equal(sleptSeen.sceneLoopActive, true)
+
+  const intro = reducePlayback(null, { type: 'startAction', actionId: sleepAction.id }, {
+    actions: [sleepAction], steady: 'idle', now: 30,
+  }).state
+  assert.equal(intro.status, 'playing-seq')
+  // The intro section of a looping sequence belongs to the scene, not a generic manual lease.
+  assert.deepEqual(triggerPlaybackBusy(intro, 'scene'), { manualBusy: false, actionBusy: false })
+
+  const cuedState = petState({
+    scene: restScene,
+    cues: [{ id: 'cue-rest', kind: 'speak', text: '睡着也应听见', at: 31, ttlMs: 15_000 }],
+  })
+  const cued = reduceTriggers({
+    state: cuedState,
+    triggers,
+    actions: [sleepAction, cueAction],
+    seen: sleptSeen,
+    now: 32,
+    manualBusy: false,
+  })
+  assert.deepEqual(cued.action, { type: 'startAction', actionId: cueAction.id, loop: false })
+  assert.deepEqual(cued.bubble, { id: 'cue-rest', text: '睡着也应听见' })
+  assert.equal(cued.seen.sceneLoopActionId, sleepAction.id)
+  assert.equal(cued.seen.sceneLoopActive, false)
+
+  const resumed = reduceTriggers({
+    state: cuedState,
+    triggers,
+    actions: [sleepAction, cueAction],
+    seen: cued.seen,
+    now: 33,
+    manualBusy: false,
+  })
+  assert.deepEqual(resumed.action, { type: 'startAction', actionId: sleepAction.id, loop: true })
+  assert.equal(resumed.seen.sceneLoopActionId, sleepAction.id)
+  assert.equal(resumed.seen.sceneLoopActive, true)
+})
+
+test('循环手动睡觉归入 scene 播放源，普通手动动作仍占用 manual 闸', () => {
+  const rest = { kind: 'rest' as const, at: 20 }
+
+  assert.equal(manualRestPlaybackSource('sleep', true, rest), 'scene')
+  assert.equal(manualRestPlaybackSource('sleep', false, rest), 'manual')
+  assert.equal(manualRestPlaybackSource('wake', false, null), 'manual')
+  assert.equal(manualRestPlaybackSource('sleep', true, null), 'manual')
+})
+
+test('出门时手动睡觉保留服务端返回的 out scene，不伪造 rest 退出', () => {
+  const sleepAction: PlaybackAction = {
+    id: 'sleep', label: '睡觉', seq: ['sleep-start', 'sleep-loop'], loop: true, group: '休息',
+  }
+  const wakeAction: PlaybackAction = {
+    id: 'wake', label: '起来', anim: 'wake-file', loop: false, group: '休息',
+  }
+  const outScene = { kind: 'out' as const, at: 90 }
+  const sleptSeen = applyManualRestIntent(emptyPetSeen(), 'sleep', sleepAction.id, outScene)
+  const next = reduceTriggers({
+    state: petState({ scene: outScene }),
+    triggers: [
+      trigger('scene:rest:exit', [wakeAction.id]),
+      trigger('scene:out:enter', [wakeAction.id]),
+    ],
+    actions: [sleepAction, wakeAction],
+    seen: sleptSeen,
+    now: 100,
+    manualBusy: false,
+  })
+
+  assert.equal(sleptSeen.lastSceneKind, 'out')
+  assert.equal(sleptSeen.sceneLoopActive, false)
+  assert.equal(next.action, undefined)
+  assert.equal(next.seen.lastSceneKind, 'out')
+})
+
+test('手动变更之后到达的旧 state snapshot 被拒绝，新 snapshot 才允许归约', () => {
+  const intentAt = 200
+  const stale = petState({ at: 199, scene: null })
+  const sameTick = petState({ at: 200, scene: null })
+  const fresh = petState({ at: 201, scene: { kind: 'rest', at: 201 } })
+
+  assert.equal(petStateSnapshotIsStale(stale, intentAt), true)
+  assert.equal(petStateSnapshotIsStale(sameTick, intentAt), false)
+  assert.equal(petStateSnapshotIsStale(fresh, intentAt), false)
+  assert.equal(petStateSnapshotIsStale(null, intentAt), false)
+})
+
+test('trigger 的一次性动作完成前 actionBusy，scene loop 与手动动作分别走各自闸', () => {
+  const action: PlaybackAction = {
+    id: 'once', label: '一次', anim: 'once-file', loop: false, group: '测试',
+  }
+  const options = { actions: [action], steady: 'idle' as const, now: 10 }
+  const once = reducePlayback(null, { type: 'startAction', actionId: action.id }, options).state
+  const loopAction: PlaybackAction = {
+    id: 'loop', label: '循环', anim: 'loop-file', loop: true, group: '测试',
+  }
+  const loop = reducePlayback(null, { type: 'startAction', actionId: loopAction.id }, {
+    actions: [loopAction], steady: 'idle', now: 10,
+  }).state
+
+  assert.deepEqual(triggerPlaybackBusy(once, 'trigger'), { manualBusy: false, actionBusy: true })
+  assert.deepEqual(triggerPlaybackBusy(loop, 'scene'), { manualBusy: false, actionBusy: false })
+  const restoring = reducePlayback(loop, { type: 'skinChanged' }, {
+    actions: [loopAction], steady: 'idle', now: 20,
+  }).state
+  assert.deepEqual(triggerPlaybackBusy(restoring, 'scene'), { manualBusy: true, actionBusy: false })
+  assert.deepEqual(triggerPlaybackBusy(loop, 'manual'), { manualBusy: true, actionBusy: false })
+})
+
+test('直接下发的 legacy motion 在完成前占用 manualBusy，cue 不会被自动触发抢占', () => {
+  const cueAction: PlaybackAction = {
+    id: 'cue-wave', label: '回应', anim: 'cue-wave-file', loop: false, group: '回应',
+  }
+  const current = petState({
+    cues: [{ id: 'cue-1', kind: 'speak', text: '她刚说话', at: 100, ttlMs: 15_000 }],
+  })
+  const input = {
+    state: current,
+    triggers: [trigger('speak', [cueAction.id])],
+    actions: [cueAction],
+    seen: emptyTriggerSeen(),
+    now: 200,
+    manualBusy: false,
+  }
+  const lease = startManualMotionLease('waving', 100, 1000)
+
+  const held = reduceTriggers({ ...input, manualBusy: manualMotionLeaseBusy(lease, 200) })
+  const confirmed = noteManualMotionChange(lease, 'waving', 300)
+  const completed = noteManualMotionChange(confirmed, 'idle', 400)
+  const released = reduceTriggers({ ...input, seen: held.seen, manualBusy: false })
+
+  assert.equal(manualMotionLeaseBusy(lease, 200), true)
+  assert.equal(held.action, undefined)
+  assert.equal(held.bubble, undefined)
+  assert.deepEqual(held.seen.cueIds, [])
+  assert.equal(manualMotionLeaseBusy(completed, 400), false)
+  assert.deepEqual(released.action, { type: 'startAction', actionId: cueAction.id, loop: false })
+  assert.deepEqual(released.bubble, { id: 'cue-1', text: '她刚说话' })
+})
+
+test('皮肤切换后 scene loop 按新 trigger 重新选择动作', () => {
+  const oldAction: PlaybackAction = {
+    id: 'old-rest-loop', label: '旧休息', anim: 'old-rest', loop: true, group: '休息',
+  }
+  const newAction: PlaybackAction = {
+    id: 'new-rest-loop', label: '新休息', anim: 'new-rest', loop: true, group: '休息',
+  }
+  const triggers = [trigger('scene:rest:enter', [oldAction.id])]
+  const resting = petState({ scene: { kind: 'rest', at: 20 } })
+  const entered = reduceTriggers({
+    state: resting,
+    triggers,
+    actions: [oldAction],
+    seen: emptyTriggerSeen(),
+    now: 30,
+    manualBusy: false,
+  })
+  assert.deepEqual(entered.action, { type: 'startAction', actionId: oldAction.id, loop: true })
+
+  const interrupted = interruptSceneLoop(entered.seen)
+  assert.equal(interrupted.sceneLoopActive, false)
+  assert.equal(interrupted.lastSceneKind, 'rest')
+
+  const switched = reduceTriggers({
+    state: resting,
+    triggers: [trigger('scene:rest:enter', [newAction.id])],
+    actions: [oldAction, newAction],
+    seen: interrupted,
+    now: 40,
+    manualBusy: false,
+  })
+  assert.deepEqual(switched.action, { type: 'startAction', actionId: newAction.id, loop: true })
+  assert.equal(switched.seen.sceneLoopActionId, newAction.id)
+  assert.equal(switched.seen.sceneLoopActive, true)
+  assert.equal(switched.seen.lastSceneKind, 'rest')
+})
+
+test('皮肤移除旧 scene loop 动作后不恢复已经不存在的 owner', () => {
+  const oldAction: PlaybackAction = {
+    id: 'removed-rest-loop', label: '旧休息', anim: 'old-rest', loop: true, group: '休息',
+  }
+  const resting = petState({ scene: { kind: 'rest', at: 20 } })
+  const entered = reduceTriggers({
+    state: resting,
+    triggers: [trigger('scene:rest:enter', [oldAction.id])],
+    actions: [oldAction],
+    seen: emptyTriggerSeen(),
+    now: 30,
+    manualBusy: false,
+  })
+
+  const switched = reduceTriggers({
+    state: resting,
+    triggers: [],
+    actions: [],
+    seen: interruptSceneLoop(entered.seen),
+    now: 40,
+    manualBusy: false,
+  })
+
+  assert.equal(switched.action, undefined)
+  assert.equal(switched.seen.sceneLoopActionId, null)
+  assert.equal(switched.seen.sceneLoopActive, false)
+})
+
+test('同一 scene action 改成一次性后不再按旧 loop 语义恢复', () => {
+  const loopAction: PlaybackAction = {
+    id: 'rest-action', label: '休息', anim: 'rest-loop', loop: true, group: '休息',
+  }
+  const oneShotAction: PlaybackAction = { ...loopAction, loop: false }
+  const resting = petState({ scene: { kind: 'rest', at: 20 } })
+  const entered = reduceTriggers({
+    state: resting,
+    triggers: [trigger('scene:rest:enter', [loopAction.id])],
+    actions: [loopAction],
+    seen: emptyTriggerSeen(),
+    now: 30,
+    manualBusy: false,
+  })
+
+  const switched = reduceTriggers({
+    state: resting,
+    triggers: [trigger('scene:rest:enter', [oneShotAction.id])],
+    actions: [oneShotAction],
+    seen: interruptSceneLoop(entered.seen),
+    now: 40,
+    manualBusy: false,
+  })
+
+  assert.equal(switched.action, undefined)
+  assert.equal(switched.seen.sceneLoopActionId, null)
+  assert.equal(switched.seen.sceneLoopActive, false)
 })

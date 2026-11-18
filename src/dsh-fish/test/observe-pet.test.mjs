@@ -1,14 +1,17 @@
 /**
- * observe-pet.test.mjs —— 桌宠薄壳的 BFF 路由（/pet/state、/pet/act）
+ * observe-pet.test.mjs —— 桌宠薄壳的 BFF 路由（/pet/state、/pet/act、/pet/rest）
  *
  * 桌宠窗口不直连事件流：状态走 `/pet/state`（活动 + 动作 + 屏幕陪伴只读快照），
- * 用户点一下走 `/pet/act`（写单槽动作）。两条路由都是用户面，不碰模型，
+ * 用户点一下走 `/pet/act`（写单槽动作）或 `/pet/rest`（写休息覆盖）。三条路由都是用户面，不碰模型，
  * 也不写 events.jsonl——这里从 HTTP 路由层确认它们只是 petView 的薄包装。
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { registerObserve } from '../lib/observe.js'
 import { createPetView } from '../lib/pet-view.js'
@@ -30,6 +33,7 @@ function fakeCtx() {
   return {
     routes,
     cfg,
+    fishCore,
     get: (k) => (k === 'connection' ? cfg.connection : k === 'webServer' ? webServer : k === 'fishCore' ? fishCore : undefined),
     webServer,
     tools: { register: () => {} },
@@ -68,6 +72,7 @@ test('/pet/state 聚合活动、动作与屏幕陪伴快照', async () => {
   const petView = createPetView({ now: () => 1000 })
   petView.noteSessionEvent({ sessionId: 's1', surface: 'web' }, { type: 'turn/start' })
   petView.act({ motion: 'waving', text: '你好' })
+  petView.noteCue({ id: 'cue-1', kind: 'speak', text: '刚说过的话', at: 900, ttlMs: 5000 })
   const screen = {
     status: () => ({
       on: true,
@@ -84,6 +89,8 @@ test('/pet/state 聚合活动、动作与屏幕陪伴快照', async () => {
   assert.equal(s.body.activity.state, 'thinking')
   assert.equal(s.body.action.motion, 'waving')
   assert.equal(s.body.action.text, '你好')
+  assert.equal(s.body.scene, null)
+  assert.deepEqual(s.body.cues, [{ id: 'cue-1', kind: 'speak', text: '刚说过的话', at: 900, ttlMs: 5000 }])
   assert.equal(s.body.presence.on, true)
   assert.equal(s.body.presence.recent[0].text, '这一下有点意思。')
   assert.equal(typeof s.body.at, 'number')
@@ -169,6 +176,61 @@ test('/pet/act 同时给 motion 和 action 或两者都不给时返回 400', asy
   assert.equal(neither.body.ok, false)
 })
 
+test('/pet/rest 只把用户显式操作写进易失 scene，不写事件流', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  petView.setScheduleRest({ rest: true, at: 900 })
+  const root = join(tmpdir(), `fish-pet-rest-${process.pid}-${Date.now()}`)
+  registerObserve(ctx, { root, petView })
+
+  const wake = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'wake' })
+  assert.equal(wake.status, 200)
+  assert.equal(wake.body.ok, true)
+  assert.equal(wake.body.action, 'wake')
+  assert.equal((await callRoute(ctx.routes, '/pet/state', 'GET')).body.scene, null)
+
+  const auto = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'auto' })
+  assert.equal(auto.status, 200)
+  assert.deepEqual((await callRoute(ctx.routes, '/pet/state', 'GET')).body.scene, { kind: 'rest', at: 900 })
+
+  const invalid = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'nap' })
+  assert.equal(invalid.status, 400)
+  assert.equal(invalid.body.ok, false)
+  assert.equal((await callRoute(ctx.routes, '/pet/rest', 'GET')).status, 405)
+  assert.equal(existsSync(join(root, 'events.jsonl')), false)
+})
+
+test('/pet/state 的顶层 at 跟随 snapshot 时刻，不因等待 config 而跨过之后的 rest 操作', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 500 })
+  let releaseConfig
+  let markConfigStarted
+  const configStarted = new Promise((resolve) => { markConfigStarted = resolve })
+  const configGate = new Promise((resolve) => { releaseConfig = resolve })
+  ctx.fishCore.config.get = async () => {
+    markConfigStarted()
+    await configGate
+    return {}
+  }
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const pending = callRoute(ctx.routes, '/pet/state', 'GET')
+  await configStarted
+  const restAt = Date.now()
+  petView.setRestOverride('sleep')
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  releaseConfig()
+
+  const state = await pending
+  assert.equal(state.status, 200)
+  // This response captured the pre-rest state. Its top-level timestamp must stay pre-rest so
+  // the renderer's manual-intent floor rejects it when the POST /pet/rest response arrives.
+  assert.equal(state.body.scene, null)
+  assert.ok(state.body.at <= restAt, `state.at=${state.body.at} restAt=${restAt}`)
+})
+
 test('hello / config / rotate 三条新路由', async () => {
   const ctx = fakeCtx()
   ctx.cfg.connection = { requestRejection: () => null }
@@ -219,7 +281,7 @@ test('/pet/config 接受气泡透明度和宽度，并在 state.settings 里回�
   assert.equal(state.body.settings.bubbleWidth, 0)
 })
 
-test('petView 缺席时两条路由都返回 200 ok:false，不 500', async () => {
+test('petView 缺席时桌宠路由都返回 200 ok:false，不 500', async () => {
   const ctx = fakeCtx()
   ctx.cfg.connection = { requestRejection: () => null }
   registerObserve(ctx, { root: '/tmp/fish-pet-unused' })
@@ -233,4 +295,9 @@ test('petView 缺席时两条路由都返回 200 ok:false，不 500', async () =
   assert.equal(act.status, 200)
   assert.equal(act.body.ok, false)
   assert.equal(act.body.note, '桌宠状态没在跑。')
+
+  const rest = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'sleep' })
+  assert.equal(rest.status, 200)
+  assert.equal(rest.body.ok, false)
+  assert.equal(rest.body.note, '桌宠状态没在跑。')
 })
