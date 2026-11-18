@@ -156,7 +156,7 @@ test('/pet/hello 转发 action 目录，/pet/act 接受已上报的 action', asy
   assert.equal(motion.body.action.motion, 'success')
 
   const state = await callRoute(ctx.routes, '/pet/state', 'GET')
-  assert.equal(Object.hasOwn(state.body, 'actions'), false)
+  assert.deepEqual(state.body.actions, [{ id: 'wave', label: '挥手', group: '回应' }])
   assert.equal(Object.hasOwn(state.body.pet, 'actions'), false)
 })
 
@@ -253,6 +253,34 @@ test('hello / config / rotate 三条新路由', async () => {
   const rot = await callRoute(ctx.routes, '/pet/rotate', 'POST', {})
   assert.equal(rot.status, 200)
   assert.equal(rot.body.sessionId, 's1')
+})
+
+test('/pet/state 把当前桌宠上报的动作目录交给工作台', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  petView.noteHello({ actions: [{ id: 'asset-001', label: '三球抛接', group: '日常' }] })
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const state = await callRoute(ctx.routes, '/pet/state', 'GET')
+
+  assert.deepEqual(state.body.actions, [{ id: 'asset-001', label: '三球抛接', group: '日常' }])
+})
+
+test('/pet/rest 接受 auto、sleep、wake 并回传当前场景', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  petView.setScheduleRest({ rest: true, at: 900 })
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const sleep = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'sleep' })
+  assert.deepEqual(sleep.body.scene, { kind: 'rest', at: 1000 })
+  const wake = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'wake' })
+  assert.equal(wake.body.scene, null)
+  const auto = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'auto' })
+  assert.deepEqual(auto.body.scene, { kind: 'rest', at: 900 })
+  assert.equal((await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'wrong' })).status, 400)
 })
 
 test('/pet/config 接受气泡透明度和宽度，并在 state.settings 里回显', async () => {

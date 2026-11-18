@@ -193,6 +193,17 @@ test('桌宠页：状态、动作、外观、陪伴会话四块齐全', async ()
   }
 })
 
+test('桌宠页按在线壳上报目录分组试演动作，并提供休息覆盖', () => {
+  const s = src('pet.js')
+  assert.match(s, /s\.actions/)
+  assert.match(s, /onclick:\s*\(ev\)\s*=>\s*act\(\{\s*action:\s*SPEC\.registeredActionSelect\.value\s*\}/)
+  assert.match(s, /postFish\('pet\/act',\s*payload\)/)
+  assert.match(s, /postFish\('pet\/rest'/)
+  assert.match(s, /optgroup/)
+  assert.match(s, /桌宠已上报/)
+  assert.match(s, /sleep|wake|auto/)
+})
+
 test('桌宠页有「仅打开桌宠」链接，走 bigfishpet 协议且不碰陪看', () => {
   const s = src('pet.js')
   assert.match(s, /仅打开桌宠/)

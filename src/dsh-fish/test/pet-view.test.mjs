@@ -196,6 +196,20 @@ test('最新的 hello 动作目录生效，缺省或非法 actions 清空旧目�
   assert.equal(pv.act({ action: 'new' }).ok, false)
 })
 
+test('snapshot 暴露最近 hello 的已校验动作目录', () => {
+  const pv = createPetView({ now: () => 1000 })
+  pv.noteHello({ actions: [
+    { id: 'z-wave', label: ' 挥手 ', group: ' 回应 ' },
+    { id: 'a-rest', label: '睡觉', group: '休息' },
+    { id: 'invalid id', label: '忽略', group: '其他' },
+  ] })
+
+  assert.deepEqual(pv.snapshot().actions, [
+    { id: 'a-rest', label: '睡觉', group: '休息' },
+    { id: 'z-wave', label: '挥手', group: '回应' },
+  ])
+})
+
 test('action 请求与 motion 请求必须二选一', () => {
   const pv = createPetView({ now: () => 1000 })
   pv.noteHello({ actions: [{ id: 'wave', label: '挥手', group: '回应' }] })

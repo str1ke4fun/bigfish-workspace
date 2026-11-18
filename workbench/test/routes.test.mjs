@@ -37,6 +37,13 @@ test('桌宠心跳/配置/轮换三条 BFF 路由', () => {
   }
 })
 
+test('桌宠休息覆盖走 fish 上游的 P2 写路由', () => {
+  const route = ROUTES.find((r) => r.path === 'pet/rest')
+  assert.equal(route.methods.POST, 'P2')
+  assert.equal(route.upstream, 'fish')
+  assert.equal(route.maxBody, 64 * 1024)
+})
+
 test('P2 写路由的 body 上限与超时符合设计', () => {
   const byPath = Object.fromEntries(ROUTES.map((r) => [r.path, r]))
   assert.equal(byPath.say.maxBody, 12_000_000)

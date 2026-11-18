@@ -348,6 +348,7 @@ export function createPetView({ now = Date.now, log } = {}) {
       helloAt,
       version,
       skins: skins.map((x) => ({ ...x })),
+      actions: [...actionCatalog.values()].map((x) => ({ ...x })),
       scene,
       cues: cues.map((cue) => ({ ...cue })),
     }

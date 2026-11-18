@@ -885,7 +885,7 @@ export function registerObserve(ctx, deps = {}) {
     }],
 
     // ---- 桌宠薄壳（BFF-only，不进公开文档）----
-    // 桌宠窗口只跟这三条打交道：状态是易失活动 + 场景 + cue + 动作；
+    // 桌宠窗口只跟这些路由打交道：状态是易失活动 + 场景 + cue + 动作；
     // 动作和休息覆盖都是用户点出来的，只写 petView，不调模型、不碰 events.jsonl。
     ['/pet/state', async (req, res) => {
       const pet = deps.petView
@@ -906,6 +906,7 @@ export function registerObserve(ctx, deps = {}) {
         presence,
         activity: s.activity,
         action: s.action,
+        actions: Array.isArray(s.actions) ? s.actions : [],
         scene: s.scene ?? null,
         cues: Array.isArray(s.cues) ? s.cues : [],
         settings: {

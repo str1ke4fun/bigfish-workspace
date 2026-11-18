@@ -31,6 +31,7 @@ export const ROUTES = [
   { path: 'pet/hello', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'pet/config', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'pet/rotate', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
+  { path: 'pet/rest', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'diary', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'reports', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'templates', methods: { GET: 'P1' }, upstream: 'fish' },

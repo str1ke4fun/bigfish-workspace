@@ -74,6 +74,7 @@ function build(root, ctx) {
   SPEC.statusMeta = el('div', { class: 'meta' })
   SPEC.activity = el('div', { class: 'meta' })
   SPEC.action = el('div', { class: 'meta' })
+  SPEC.scene = el('div', { class: 'meta' })
   SPEC.presence = el('div', { class: 'meta' })
   // 仅拉起桌宠壳，不碰陪看。链接交给浏览器、由 Windows 按 bigfishpet:// 协议启动壳；
   // 服务端不起子进程。协议要壳在 Windows 上手动启动过一次才登记。
@@ -87,6 +88,7 @@ function build(root, ctx) {
     SPEC.statusMeta,
     SPEC.activity,
     SPEC.action,
+    SPEC.scene,
     SPEC.presence,
     el('div', { class: 'row' }, SPEC.openPet),
     SPEC.openPetNote,
@@ -120,13 +122,40 @@ function build(root, ctx) {
       class: 'small',
       type: 'button',
       text: m.label,
-      onclick: (ev) => act(m.id, ev.currentTarget),
+      onclick: (ev) => act({ motion: m.id }, ev.currentTarget),
     })
     SPEC.actionButtons.push(btn)
     SPEC.actions.append(btn)
   }
+  SPEC.registeredActionSelect = el('select', { class: 'small', 'aria-label': '选择已登记动作' })
+  SPEC.registeredActionSelect.append(el('option', { value: '', text: '选择动作…' }))
+  SPEC.registeredActionSelect.addEventListener('change', () => {
+    SPEC.registeredActionButton.disabled = !SPEC.registeredActionSelect.value || !SPEC.state?.pet?.online
+  })
+  SPEC.registeredActionButton = el('button', {
+    class: 'small', type: 'button', text: '演一遍', disabled: true,
+    onclick: (ev) => act({ action: SPEC.registeredActionSelect.value }, ev.currentTarget),
+  })
+  SPEC.registeredActionsNote = el('div', { class: 'meta' })
+  SPEC.sceneButtons = new Map()
+  SPEC.sceneControls = el('div', { class: 'row' })
+  for (const [id, label] of [['auto', '按日程'], ['sleep', '睡觉'], ['wake', '起来']]) {
+    const button = el('button', {
+      class: 'small', type: 'button', text: label,
+      onclick: (ev) => setRest(id, ev.currentTarget),
+    })
+    SPEC.sceneButtons.set(id, button)
+    SPEC.sceneControls.append(button)
+  }
   SPEC.actionsNote = el('div', { class: 'meta' })
-  SPEC.actionsCard.body.append(SPEC.actions, SPEC.actionsNote)
+  SPEC.actionsCard.body.append(
+    SPEC.actions,
+    el('div', { class: 'row' }, SPEC.registeredActionSelect, SPEC.registeredActionButton),
+    SPEC.registeredActionsNote,
+    el('div', { class: 'field' }, el('span', { class: 'meta', text: '休息场景' }), SPEC.sceneControls),
+    SPEC.actionsNote,
+  )
+  SPEC.actionCatalogSignature = ''
 
   // ---- 3. 外观 ----
   SPEC.looksCard = card('外观', {
@@ -228,9 +257,18 @@ function render() {
     ? `活动：${ACTIVITY_LABEL[activity.state] || activity.state} · ${timeText(activity.at)}`
     : '活动：现在没有正在进行的活动'
   const action = s.action
+  const actionLabel = action?.action
+    ? (Array.isArray(s.actions) ? s.actions.find((item) => item.id === action.action)?.label : '') || action.action
+    : MOTIONS.find((m) => m.id === action?.motion)?.label || action?.motion
   SPEC.action.textContent = action
-    ? `动作：${MOTIONS.find((m) => m.id === action.motion)?.label || action.motion}${action.text ? ` · ${action.text}` : ''} · ${timeText(action.at)}`
+    ? `动作：${actionLabel}${action.text ? ` · ${action.text}` : ''} · ${timeText(action.at)}`
     : '动作：没有正在演的动作'
+
+  SPEC.scene.textContent = s.scene?.kind === 'rest'
+    ? `场景：休息 · ${timeText(s.scene.at)}`
+    : s.scene?.kind === 'out'
+      ? `场景：出门 · ${timeText(s.scene.at)}`
+      : '场景：日常'
 
   const presence = s.presence
   SPEC.presence.textContent = presence
@@ -251,6 +289,8 @@ function render() {
   }
 
   for (const btn of SPEC.actionButtons) btn.disabled = !online
+  renderRegisteredActions(s.actions, online)
+  for (const button of SPEC.sceneButtons.values()) button.disabled = !online
 
   const settings = s.settings || {}
   const size = Number(settings.size ?? 400)
@@ -306,6 +346,35 @@ function render() {
   }
 }
 
+function renderRegisteredActions(actions, online) {
+  const list = Array.isArray(actions) ? actions.filter((item) => (
+    item && typeof item.id === 'string' && typeof item.label === 'string' && typeof item.group === 'string'
+  )) : []
+  const signature = list.map((item) => `${item.id}:${item.label}:${item.group}`).join('|')
+  if (signature !== SPEC.actionCatalogSignature) {
+    const selected = SPEC.registeredActionSelect.value
+    SPEC.actionCatalogSignature = signature
+    clear(SPEC.registeredActionSelect)
+    SPEC.registeredActionSelect.append(el('option', { value: '', text: '选择动作…' }))
+    const groups = new Map()
+    for (const item of list) {
+      if (!groups.has(item.group)) groups.set(item.group, [])
+      groups.get(item.group).push(item)
+    }
+    for (const [group, items] of groups) {
+      const optgroup = el('optgroup', { label: group })
+      for (const item of items) optgroup.append(el('option', { value: item.id, text: item.label }))
+      SPEC.registeredActionSelect.append(optgroup)
+    }
+    if (list.some((item) => item.id === selected)) SPEC.registeredActionSelect.value = selected
+  }
+  SPEC.registeredActionSelect.disabled = !online || list.length === 0
+  SPEC.registeredActionButton.disabled = !online || !SPEC.registeredActionSelect.value || list.length === 0
+  SPEC.registeredActionsNote.textContent = list.length
+    ? `桌宠已上报 ${list.length} 个动作。`
+    : online ? '当前桌宠没有上报动作目录；更新并重启 Windows 桌宠壳后再试。' : '桌宠在线后显示它上报的动作。'
+}
+
 async function load() {
   const r = await fish('pet/state')
   if (!r.ok) {
@@ -313,6 +382,9 @@ async function load() {
     SPEC.statusLine.replaceChildren(statusDot('bad', '离线'), el('b', { text: '桌宠状态读不到' }))
     SPEC.statusMeta.textContent = '桌宠接口不可达；可能还没部署或版本较旧。'
     for (const btn of SPEC.actionButtons) btn.disabled = true
+    SPEC.registeredActionSelect.disabled = true
+    SPEC.registeredActionButton.disabled = true
+    for (const button of SPEC.sceneButtons.values()) button.disabled = true
     return
   }
   SPEC.note.textContent = ''
@@ -389,14 +461,28 @@ async function stopPresence() {
   else await load()
 }
 
-async function act(motion, btn) {
+async function act(payload, btn) {
   if (btn) btn.disabled = true
   SPEC.actionsNote.textContent = '正在演…'
-  const r = await postFish('pet/act', { motion })
+  const r = await postFish('pet/act', payload)
   const ok = r.ok && r.data?.ok !== false
   SPEC.actionsNote.textContent = ok ? '演好了。' : writeError(r)
   if (btn) btn.disabled = false
   if (ok) await load()
+}
+
+async function setRest(action, btn) {
+  for (const button of SPEC.sceneButtons.values()) button.disabled = true
+  SPEC.actionsNote.textContent = action === 'auto' ? '正在恢复日程…' : action === 'sleep' ? '正在休息…' : '正在起来…'
+  const r = await postFish('pet/rest', { action })
+  if (!r.ok || r.data?.ok === false) {
+    SPEC.actionsNote.textContent = writeError(r)
+  } else {
+    SPEC.actionsNote.textContent = action === 'auto' ? '已交回日程决定。' : action === 'sleep' ? '进入休息场景。' : '休息场景已结束。'
+    await load()
+  }
+  for (const button of SPEC.sceneButtons.values()) button.disabled = !SPEC.state?.pet?.online
+  if (btn) btn.blur()
 }
 
 async function applyConfig(body) {
