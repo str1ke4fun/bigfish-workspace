@@ -74,6 +74,8 @@ t('预览和正文只按前缀对齐，短文本不硬配', () => {
   assert.equal(samePreviewText('明天几点出发', '明天几点出发呀'), true)
   assert.equal(samePreviewText('好', '好的'), false)
   assert.equal(samePreviewText('完全不同', '明天'), false)
+  // 侧栏预览被微信截断成「…」；整屏读到全文时不能再当成两条。
+  assert.equal(samePreviewText('@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来，然后给一个非常严谨的答案：…', '@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来，然后给一个非常严谨的答案：不能证明xx/不能完全说明xx ，然后什么活都停下来不干，这就是大傻龙了'), true)
 })
 
 console.log('归因')

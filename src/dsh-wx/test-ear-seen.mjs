@@ -77,6 +77,16 @@ assert.equal(dropRecentContent([h1], recent, { now: NOW }).length, 1, '没投过
 noteContent(recent, h1, { now: NOW })
 assert.equal(dropRecentContent([h2], recent, { now: NOW + 17_000 }).length, 0, '17 秒后换 key 的同一句要拦')
 assert.equal(dropRecentContent([{ ...h2, why: '@' }], recent, { now: NOW + 17_000 }).length, 0, '@ 也一样')
+// 侧栏预览被截成「…」，整屏拿到全文后不能当成第二句再叫一次。
+const truncated = []
+noteContent(truncated, {
+  chat: '某群', why: '@',
+  preview: '@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来，然后给一个非常严谨的答案：…',
+}, { now: NOW })
+assert.equal(dropRecentContent([{
+  chat: '某群', why: 'at',
+  preview: '@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来，然后给一个非常严谨的答案：不能证明xx/不能完全说明xx ，然后什么活都停下来不干，这就是大傻龙了',
+}], truncated, { now: NOW + 25_000 }).length, 0, '截断预览与整屏全文只算一条')
 assert.equal(dropRecentContent([h2], recent, { now: NOW + CONTENT_WINDOW_MS + 1 }).length, 1, '窗口外放行')
 assert.equal(dropRecentContent([{ ...h2, chat: '别的猫' }], recent, { now: NOW + 1000 }).length, 1, '别的会话放行')
 assert.equal(dropRecentContent([{ ...h2, preview: '晚上吃什么' }], recent, { now: NOW + 1000 }).length, 1, '别的正文放行')

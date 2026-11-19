@@ -51,7 +51,7 @@ assert.deepEqual(
     row: row({ name: '测试群A', preview: `安卓4224柚厨圣: ${atText}` }),
     captured: captured(rec({ text: atText })),
   }),
-  { chat: '测试群A', why: 'at', preview: `安卓4224柚厨圣: ${atText}`, unread: 0, key: 'capture:m_1' },
+  { chat: '测试群A', why: 'at', preview: atText, unread: 0, key: 'capture:m_1' },
 )
 
 // 4c. 群里按配置叫名字、不带 @ 也算
@@ -94,6 +94,15 @@ assert.deepEqual(
   })?.key,
   'capture:m_1',
 )
+
+// 10b. 侧栏预览被微信截成「…」时，用整屏全文叫她，不丢后半句
+const longFull = '@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来，然后给一个非常严谨的答案：不能证明xx/不能完全说明xx ，然后什么活都停下来不干，这就是大傻龙了'
+const longHit = hit({
+  row: row({ preview: '@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来，然后给一个非常严谨的答案：…' }),
+  captured: captured(rec({ text: longFull })),
+})
+assert.equal(longHit?.preview, longFull)
+assert.equal(longHit?.key, 'capture:m_1')
 
 // 11. 多匹配取最新一条；没有 preview / 没抓到记录 → 不叫
 assert.equal(

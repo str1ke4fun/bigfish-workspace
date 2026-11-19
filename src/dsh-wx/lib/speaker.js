@@ -61,7 +61,12 @@ export function looksLikeDirect(preview) {
   return !PREVIEW_SENDER.test(raw)
 }
 
-const normalize = (s) => str(s).replace(/\s+/g, ' ')
+// 侧栏预览被微信截断时会以「…」收尾；结尾的省略号是截断标记，不参与内容比对。
+// 整句只有省略号时保留原样，别把两条「……」洗成空串。
+const normalize = (s) => {
+  const collapsed = str(s).replace(/\s+/g, ' ')
+  return collapsed.replace(/(?:…|\.{3,})\s*$/u, '').trim() || collapsed.trim()
+}
 
 /** 内容是否对得上：预览往往只是正文开头，允许前缀匹配。 */
 export function samePreviewText(a, b) {
