@@ -1020,6 +1020,20 @@ export function apply(ctx, config = {}) {
     writeHealth()
   }
 
+  // ---- @ 才回：谁最近被 @ 过 ----
+  // 耳朵看见侧栏有人 @ 她 → 盖戳；发送前查这里。手动 poke 也会盖。
+  // 必须在发送闸之前声明：createSendGate 立刻读这个函数引用，放在后面会触发 TDZ。
+  const MENTIONS = '/home/str1k3/.dsh-wx/mentions.json'
+  const readMentions = () => {
+    try { return JSON.parse(readFileSync(MENTIONS, 'utf8')) || {} } catch { return {} }
+  }
+  const saveMentions = (state) => {
+    try {
+      mkdirSync(dirname(MENTIONS), { recursive: true })
+      writeFileSync(MENTIONS, JSON.stringify(pruneMentions(state, Date.now()), null, 2))
+    } catch { /* 记不下就当她没被 @，宁可不说话 */ }
+  }
+
   // ---- 发送前的闸 ----
   // 以前是 `tree.includes(名单里的名字)`：会话列表里永远有那个群，所以不管当前开着谁都放行。
   // 现在只认「当前会话」这一个字段，并且要求树没落后（落后时当前会话可能是旧的）。
@@ -1041,18 +1055,6 @@ export function apply(ctx, config = {}) {
     now: Date.now,
   })
 
-  // ---- @ 才回：谁最近被 @ 过 ----
-  // 耳朵看见侧栏有人 @ 她 → 盖戳；发送前查这里。手动 poke 也会盖。
-  const MENTIONS = '/home/str1k3/.dsh-wx/mentions.json'
-  const readMentions = () => {
-    try { return JSON.parse(readFileSync(MENTIONS, 'utf8')) || {} } catch { return {} }
-  }
-  const saveMentions = (state) => {
-    try {
-      mkdirSync(dirname(MENTIONS), { recursive: true })
-      writeFileSync(MENTIONS, JSON.stringify(pruneMentions(state, Date.now()), null, 2))
-    } catch { /* 记不下就当她没被 @，宁可不说话 */ }
-  }
   // ---- 说话频率 ----
   // 工作台里一个开关管两个通道：策略在 /home/str1k3/dsh-plugins/speech/speech.json，每次都现读。
   // 间隔不够就等（等到就说），额度用完就不发（说清楚地说了几条），不静默丢话。

@@ -523,8 +523,16 @@ test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上�
   assert.equal(breaker.speaking.ok, false)
   assert.match(breaker.speaking.why, /熔断/)
 
+  // 文件不存在是「今天还没主动说过话」，与运行时 loadState 的 ENOENT 语义一致；
+  // 不能把第一天当成坏账本，否则工作台会一直显示「额度读不出来」。
+  putLedger(undefined)
+  const missing = await readScope()
+  assert.equal(missing.proactiveStateOk, true)
+  assert.deepEqual(missing.proactiveUsed, {})
+  assert.equal(missing.speaking.ok, true)
+  assert.match(missing.speaking.why, /还剩 2 条/)
+
   const bad = [
-    ['missing file', undefined],
     ['unreadable file', 'directory'],
     ['malformed JSON', '{not json'],
     ['missing used', JSON.stringify({ day: today })],

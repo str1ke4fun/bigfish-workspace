@@ -79,6 +79,9 @@
 
 **Review fix evidence (2026-11-18, `a0bc228`):** workbench `/api/wx/scope` 改为直接读取 `proactive.json` 并复用运行时状态形状解析；缺失、不可读、坏 JSON、缺 `used`、`used` 非对象、非法/负数计数都置 `proactiveStateOk:false`，`speaking.ok:false`，页面不能渲染「现在能说」。HTTP 全量 scope 回归同时确认软上限后的允许区仍在、硬熔断仍拒绝；@/免 @/名单/主机/permit/长度/speech 等硬闸与 `proactive-send` / `proactive-breaker` 审计路径未改。`src/dsh-wx`: `node --test` → 149 pass / 0 fail；`workbench`: `node --test` → 129 pass / 0 fail；聚焦状态/配额测试 → 9 pass / 0 fail。`git diff --cached --check` 通过；`python3 scripts/audit-staged.py` 返回无候选密钥、无大文件。未推送、未部署、未重启服务、未做真机微信发送。
 
+**Correction (2026-11-19):** 上一条把「缺失 `proactive.json`」也按失败关闭处理，与运行时 `loadState` 的 ENOENT = 第一天空账本语义不一致，导致工作台在还没主动发过言时一直显示「额度状态读不出来」。现改为工作台直接复用 `loadState`：ENOENT 按空账本，不可读/坏 JSON/坏形状仍 `proactiveStateOk:false`。补 `src/dsh-wx/test/plugin-apply.test.mjs` 覆盖插件 `apply()` 注册路径。
+
+
 ### Task 5: WeChat return envelopes
 
 **Files:** `src/dsh-wx/lib/index.js`, `tool-error.js`, `project.js`, `src/dsh-fish/lib/tool-result.js`, `tool-ledger.js`, tests.
