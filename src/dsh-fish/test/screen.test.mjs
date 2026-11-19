@@ -320,6 +320,30 @@ test('评论达到每小时上限后不再递新候选（自然文本也要受�
   })
 })
 
+test('切换模式重置每小时配额，不被上一个模式的用量卡住', async () => {
+  await withRoot(async (root) => {
+    const cfg = normalizeConfig({ presence: {
+      event: { maxCommentsPerHour: 1 },
+      ambient: { maxCommentsPerHour: 1 },
+    } })
+    const h = makeService(root, { config: cfg, promptText: '说一句。' })
+    await h.service.setMode({ mode: 'ambient', on: true })
+    await h.capture.emit({ buf: JPEG, yavg: 40 })
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(h.prompts.length, 1, 'ambient 的配额用掉了')
+    assert.equal(h.service.status().commentsThisHour, 1)
+
+    h.tick(31_000)
+    await h.service.setMode({ mode: 'event', on: true })
+    assert.equal(h.service.status().commentsThisHour, 0, '换模式后评论配额从零开始')
+    assert.equal(h.service.status().candidatesThisHour, 0, '候选配额也从零开始')
+
+    await h.capture.emit({ buf: JPEG, yavg: 40, event: 'scene_change' })
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(h.prompts.length, 2, '换模式后第一帧仍能递出去')
+  })
+})
+
 test('work 模式只看前台白名单窗口：deny 立即停，allow 才按矩形裁剪', async () => {
   await withRoot(async (root) => {
     const h = makeService(root)

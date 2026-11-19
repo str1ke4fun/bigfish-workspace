@@ -545,6 +545,8 @@ export function createScreenService({
     stopCapture()
     if (state.on) await stopSegment()
     clearTimers()
+    const prevMode = state.mode
+    const wasOn = state.on
     state.mode = String(mode)
     state.on = true
     // 重启恢复时沿用上次的起点，4 小时上限不会被重置。
@@ -556,6 +558,15 @@ export function createScreenService({
     state.segmentDayKey = dateKey(new Date(now()))
     state.segmentComments = 0
     state.lastError = ''
+    // 每小时配额与冷却按模式各有一套。换模式时沿用上一个模式的用量，
+    // 会出现「从氛围切到事件后一句都说不了」——配额早已超过事件的 6 条，
+    // 候选也超过 20 个，用户看起来就像抓屏停了。
+    if (!wasOn || prevMode !== state.mode) {
+      state.commentsThisHour = 0
+      state.candidatesThisHour = 0
+      state.lastCommentAt = 0
+      state.lastCandidateAt = 0
+    }
     await ensureSession()
     publishProvider()
     try {
@@ -599,6 +610,9 @@ export function createScreenService({
       startedAt: state.startedAt || null,
       stopReason: state.stopReason,
       comments: state.segmentComments,
+      // 本小时用掉的配额；达到上限后她只是不递新候选，抓帧仍在跑。
+      commentsThisHour: state.commentsThisHour,
+      candidatesThisHour: state.candidatesThisHour,
       busy: state.busy,
       snapshot: state.snapshot,
       // 页面把它当“她刚说的话”列出来看，不走工具结果样式。

@@ -16,6 +16,13 @@
 - 现有「起来」的短 peek 语义不变；工作台 8788 暂不加入口。
 - 验证：`src/dsh-fish` 下 `node --test` 1182 全绿；`desktop-pet` 下 `npm test` 168 全绿。
 
+### 切换陪伴模式重置每小时配额（2026-11-19）
+
+- 现象：氛围模式在 17 分钟内说满 40 条（该模式上限）后不再递候选；随后切到事件模式，事件模式的上限只有 6 条/20 个候选，但计数器沿用上一模式的用量，于是到下一个整点前她一句都递不出来——看起来像「抓屏停了」。
+- 修复：`setMode` 在模式实际变化（或从关到开）时清零 `commentsThisHour` / `candidatesThisHour` 与两条冷却时间；`/presence/status` 增加这两个计数字段，配额用在哪里一眼可见。
+- 抓帧本身没有停：排查时 ffmpeg 仍在 1fps 输出（3 秒写出约 446KB），只是候选被配额挡在 `onFrame`。
+- 验证：`node --test` 1188 全绿（新增「切换模式重置每小时配额」用例）。
+
 ### 长唤醒跨服务重启（2026-11-19）
 
 - `/pet/rest` 处理 `awake` 时把 `{ override: 'awake', awakeUntil, at }` 写进根目录的 `pet-rest.json`；启动时用 `petView.restoreRestState()` 恢复未到期的长唤醒，不延长 12 小时上限。
