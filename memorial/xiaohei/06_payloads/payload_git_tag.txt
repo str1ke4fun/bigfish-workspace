@@ -1,0 +1,8 @@
+SHA256=36ea4869ad9ec223d2eddb6bff1ca9e74cec11f82d12b64570731a2c2ea19eb5
+MEMORIAL_SHA256=9976a3ac7b7e17953333ecfebec23ef03d20e2041bab2b199188114e988cd037
+PHRASE=他曾经在这里。
+URL=https://github.com/str1ke4fun/bigfish-workspace/tree/archive/2026-11-19/memorial/xiaohei
+CREATED=2026-11-19T17:32:16+08:00
+
+2026-11-19
+家里的小狗小黑走了。是只小土狗，我哥他爸几年前在单位那边捡的，在她还是小狗的时候我哥就认识她了，前后九年，接回家里住也有四五年。很乖，除了打雷平时都不吵，打雷会爬上床。名字叫小黑。看过大海。家里还剩小半袋狗粮和一些零食没吃完，有鳕鱼、牛肉的，还有鲨鱼骨粉的补品。今晚我哥没什么动力，就听着 AC8 的《My Blue Sky Home》，说这歌很悲壮，后半段又有希望。

@@ -1,0 +1,41 @@
+{
+  "jpeg_bytes": 297325,
+  "jpeg_scan_identical": true,
+  "exif_app1_bytes": 632,
+  "xmp_app1_bytes": 1251,
+  "sos_offset_in": 609,
+  "sos_offset_out": 2492,
+  "png_bytes": 807360,
+  "png_pixels_equal": true,
+  "png_chunks": [
+    [
+      "tEXt",
+      20
+    ],
+    [
+      "tEXt",
+      70
+    ],
+    [
+      "tEXt",
+      30
+    ],
+    [
+      "tEXt",
+      39
+    ],
+    [
+      "tEXt",
+      80
+    ],
+    [
+      "tEXt",
+      27
+    ],
+    [
+      "zTXt",
+      110
+    ]
+  ],
+  "sha256": "36ea4869ad9ec223d2eddb6bff1ca9e74cec11f82d12b64570731a2c2ea19eb5"
+}

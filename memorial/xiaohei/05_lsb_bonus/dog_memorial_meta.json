@@ -1,0 +1,9 @@
+{
+  "carrier": "dog_memorial_carrier.png",
+  "payload_sha256": "36ea4869ad9ec223d2eddb6bff1ca9e74cec11f82d12b64570731a2c2ea19eb5",
+  "payload_bytes": 295442,
+  "stego_bytes": 295490,
+  "capacity_bytes": 921600,
+  "method": "LSB, RGB channels, sequential, MSB-first",
+  "header": "DOGSTEG1 | uint64be length | sha256(payload)"
+}
