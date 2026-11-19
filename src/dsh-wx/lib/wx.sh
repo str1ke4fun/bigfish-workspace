@@ -142,8 +142,8 @@ case "$cmd" in
     ;;
 
   tree)
-    cd /home/str1k3/cu-test 2>/dev/null || { echo "没有 ~/cu-test" >&2; exit 2; }
-    node wx-elements.mjs 2>&1 | head -c 200000
+    # 桥接脚本在仓库里；cua-driver 仍从运行目录解析（插件保持零依赖）。
+    node "$LIB_DIR/wx-elements.mjs" 2>&1 | head -c 200000
     ;;
 
   ocr)

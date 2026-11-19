@@ -9,6 +9,16 @@ cd src/dsh-wx
 node --test
 ```
 
+## 运行依赖：无障碍树桥接
+
+`wx.sh tree` 现在直接运行仓库里的 `lib/wx-elements.mjs`，不再从 `~/cu-test` 读一份副本。`@trycua/cua-driver` 仍按运行环境解析（插件本身保持零依赖）：
+
+- 默认从 `~/cu-test/node_modules/@trycua/cua-driver` 加载；
+- 装在别处时设置 `WX_CU_DIR=/path/to/cu-test`；
+- 缺依赖时 `wx.sh tree` 会输出一句明确的“找不到 cua-driver”，不会静默返回空树。
+
+长消息正文、会话行解析和坐标换算的修复都放在这个仓库文件里；以后更新只改这里，不要再改运行目录里的副本。
+
 ## 配置：`~/.dsh-wx/policy.json`
 
 每次调用工具、每轮耳朵都会重新读取，改完不需要重启。
