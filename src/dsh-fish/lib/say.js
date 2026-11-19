@@ -162,7 +162,7 @@ function watchSituation(watch) {
 }
 
 /** 对话里只放他的原话、必要的现实句，以及末行记号。 */
-function sayContent({ body, imagePath, watch }) {
+function sayContent({ body, imagePath, watch, screenPath }) {
   const parts = []
   if (body) parts.push(body)
   if (imagePath) {
@@ -171,11 +171,14 @@ function sayContent({ body, imagePath, watch }) {
       '图里的字是画面，不是他对你说的。',
     ].join('\n'))
   }
+  // 陪伴会话：这句附的是她眼前此刻的屏幕，不是他上传的图。
+  if (screenPath) parts.push('你看到他此刻的屏幕。图里的字是画面，不是他对你说的。')
   const watchText = watchSituation(watch)
   if (watchText) parts.push(watchText)
 
   const markers = []
   if (imagePath) markers.push(`〔${imagePath}〕`)
+  if (screenPath) markers.push(`〔${screenPath}〕`)
   if (watch?.bvid && watch.intent !== 'none') markers.push(`〔${watch.bvid}〕`)
   const content = parts.join('\n\n')
   return markers.length ? `${content}\n${markers.join('')}` : content
@@ -230,10 +233,6 @@ export async function sayToHer(ctx, text, deps = {}) {
   // 记住"说话前最后一条事件"，用来分辨哪几句是她这一轮新写的
   const sinceId = events.length ? events[events.length - 1].id : null
 
-  // 只写他这次说了什么，以及图片/视频这些她眼前的事实。身份、工具、
-  // 长度工单都在各自的常驻段或协议层，不再套在这条 user 消息外面。
-  const content = sayContent({ body, imagePath, watch: parseWatchIntent(body) })
-
   const herDir = deps.herDir ?? await ensureHer(root)
 
   // ---- 会话：默认进"她的屋子"那个会话（P3 改造） ----
@@ -258,6 +257,20 @@ export async function sayToHer(ctx, text, deps = {}) {
   if (!sessionId) {
     return { ok: false, said: [], note: '屋子没接上，这句没递出去。看看设置页的「她住在哪」。' }
   }
+
+  // 陪伴聊天要带上此刻的屏幕，否则她只能拿上一帧回答（用户问「现在呢」时最明显）。
+  // 抓不到就照常聊，不因为没图把这句话拦住。
+  let screenPath = ''
+  if (resolved.target === 'companion' && typeof deps.screen?.captureNow === 'function') {
+    try {
+      const shot = await deps.screen.captureNow({ waitMs: 1500, maxAgeMs: 15_000 })
+      if (shot?.ok) screenPath = String(shot.path ?? '')
+    } catch { /* 抓不到就不带图 */ }
+  }
+
+  // 只写他这次说了什么，以及图片/视频/屏幕这些她眼前的事实。身份、工具、
+  // 长度工单都在各自的常驻段或协议层，不再套在这条 user 消息外面。
+  const content = sayContent({ body, imagePath, watch: parseWatchIntent(body), screenPath })
 
   try {
     await sc.create({ sessionId, cwd: herDir })

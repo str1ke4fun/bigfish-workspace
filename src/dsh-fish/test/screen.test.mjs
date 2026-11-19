@@ -344,6 +344,58 @@ test('切换模式重置每小时配额，不被上一个模式的用量卡住',
   })
 })
 
+test('按需抓屏：复用最新帧落盘，2 秒内重复调用不重写文件', async () => {
+  await withRoot(async (root) => {
+    const h = makeService(root)
+    await h.service.setMode({ mode: 'ambient', on: true })
+    await h.capture.emit({ buf: JPEG, yavg: 40 })
+
+    const r = await h.service.captureNow()
+    assert.equal(r.ok, true)
+    assert.match(r.path, /look-/)
+    assert.equal((await readFile(r.path)).length, JPEG.length)
+
+    const again = await h.service.captureNow()
+    assert.equal(again.ok, true)
+    assert.equal(again.reused, true)
+    assert.equal(again.path, r.path)
+  })
+})
+
+test('按需抓屏：没开陪玩、没在采集、没有新帧都拒绝，不回旧图', async () => {
+  await withRoot(async (root) => {
+    const off = makeService(root)
+    assert.deepEqual(await off.service.captureNow(), { ok: false, why: 'presence-off' })
+
+    const work = makeService(root)
+    await work.service.setMode({ mode: 'work', on: true })
+    work.foreground.emit({
+      name: 'Weixin.exe',
+      rect: { left: 0, top: 0, right: 500, bottom: 400 },
+      monitors: [{ x: 0, y: 0, w: 2560, h: 1600 }],
+    })
+    assert.deepEqual(await work.service.captureNow(), { ok: false, why: 'not-capturing' })
+
+    const empty = makeService(root)
+    await empty.service.setMode({ mode: 'event', on: true })
+    assert.deepEqual(await empty.service.captureNow({ waitMs: 10 }), { ok: false, why: 'no-frame' })
+  })
+})
+
+test('按需抓屏：停流后清掉内存帧，黑屏帧仍可返回', async () => {
+  await withRoot(async (root) => {
+    const h = makeService(root)
+    await h.service.setMode({ mode: 'event', on: true })
+    await h.capture.emit({ buf: JPEG, yavg: 0 })
+    const dark = await h.service.captureNow()
+    assert.equal(dark.ok, true, '黑屏也让她看到，不假装没画面')
+
+    await h.service.setMode({ mode: 'event', on: false })
+    assert.equal(h.service.status().lastFrameAt, null)
+    assert.deepEqual(await h.service.captureNow(), { ok: false, why: 'presence-off' })
+  })
+})
+
 test('work 模式只看前台白名单窗口：deny 立即停，allow 才按矩形裁剪', async () => {
   await withRoot(async (root) => {
     const h = makeService(root)

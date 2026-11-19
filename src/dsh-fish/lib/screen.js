@@ -91,7 +91,13 @@ export function createScreenService({
     watcher: null,
     providerOff: null,
     timers: [],
+    // 按需抓屏：常驻流的最新一帧 + 最近一次落盘结果。都只在内存里。
+    lastFrame: null,
+    lastLookPath: '',
+    lastLookAt: 0,
   }
+  // 等下一帧的单次 waiter；抓屏工具用它避免拿到过期画面。
+  let frameWaiter = null
 
   const configNow = () => {
     // `fishCore.config.get` 是异步的；setMode 进入时刷新一次，开屏期间稳定使用同一份。
@@ -249,12 +255,21 @@ export function createScreenService({
     return state.sessionId
   }
 
+  /** 丢掉按需抓屏的内存帧；停流后绝不能再把上一段画面递出去。 */
+  function clearLastFrame() {
+    state.lastFrame = null
+    state.lastLookPath = ''
+    state.lastLookAt = 0
+    if (frameWaiter) { const wake = frameWaiter; frameWaiter = null; wake(null) }
+  }
+
   function stopCapture() {
     if (state.stream?.stop) { try { void state.stream.stop() } catch { /* ignore */ } }
     state.stream = null
     if (state.watcher?.stop) { try { void state.watcher.stop() } catch { /* ignore */ } }
     state.watcher = null
     state.workKey = ''
+    clearLastFrame()
   }
 
   function clearTimers() {
@@ -342,6 +357,9 @@ export function createScreenService({
   async function onFrame(frame = {}) {
     if (!state.on) return
     if (!frame?.buf) return
+    // 按需抓屏看的是「此刻」，和候选/冷却/她是否忙着无关。
+    state.lastFrame = { buf: frame.buf, at: now() }
+    if (frameWaiter) { const wake = frameWaiter; frameWaiter = null; wake(state.lastFrame) }
     resetHour()
     const yavg = Number(frame.yavg)
     const bytes = Number(frame.bytes ?? frame.buf?.length ?? 0)
@@ -371,6 +389,49 @@ export function createScreenService({
     state.snapshot = { app: state.mode === 'work' ? 'work' : 'game', mode: state.mode, event: frame.event ?? 'scene_change', at: now() }
     await deliver(saved)
     void ensureDir()
+  }
+
+  /** 等下一帧；超时给 null。同一时间只保留一个 waiter，后到的优先。 */
+  function waitFrame(ms) {
+    return new Promise((resolve) => {
+      let done = false
+      const finish = (frame) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        if (frameWaiter === finish) frameWaiter = null
+        resolve(frame)
+      }
+      const timer = setTimeout(() => finish(null), Math.max(0, Number(ms) || 0))
+      timer.unref?.()
+      frameWaiter = finish
+    })
+  }
+
+  /**
+   * 按需抓一帧。复用常驻抓帧流，不另起 ffmpeg。
+   * 拿不到新帧时宁可拒绝，也不把停流前/过期画面递出去。
+   */
+  async function captureNow({
+    waitMs = 6000, maxAgeMs = 15_000, freshMs = 1500, cooldownMs = 2000,
+  } = {}) {
+    if (!state.on || !state.mode) return { ok: false, why: 'presence-off' }
+    if (!state.stream) return { ok: false, why: 'not-capturing' }
+    // 刚抓过就复用同一张，不重复落盘。
+    if (state.lastLookPath && state.lastLookAt && now() - state.lastLookAt <= cooldownMs) {
+      return { ok: true, path: state.lastLookPath, at: state.lastLookAt, mode: state.mode, ageMs: now() - state.lastLookAt, reused: true }
+    }
+    let frame = state.lastFrame
+    if (!frame || now() - frame.at > freshMs) {
+      const next = await waitFrame(waitMs)
+      if (next) frame = next
+    }
+    if (!frame || now() - frame.at > maxAgeMs) return { ok: false, why: 'no-frame' }
+    const img = await saveImage(root, frame.buf, { prefix: 'look' }).catch(() => null)
+    if (!img?.ok) return { ok: false, why: img?.why || 'save-failed' }
+    state.lastLookPath = img.path
+    state.lastLookAt = now()
+    return { ok: true, path: img.path, at: frame.at, mode: state.mode, ageMs: now() - frame.at }
   }
 
   function canSpeak() {
@@ -468,6 +529,7 @@ export function createScreenService({
   function stopStream() {
     if (state.stream?.stop) { try { void state.stream.stop() } catch { /* ignore */ } }
     state.stream = null
+    clearLastFrame()
   }
 
   /**
@@ -518,6 +580,7 @@ export function createScreenService({
     const hours = Number(presence()?.retentionHours ?? 24)
     if (!(hours > 0)) return
     await sweepMedia(root, { ttlMs: hours * 3600_000, prefix: 'presence-' }).catch(() => {})
+    await sweepMedia(root, { ttlMs: hours * 3600_000, prefix: 'look-' }).catch(() => {})
   }
 
   async function setMode({ mode, on, reason = '', startedAt } = {}) {
@@ -613,6 +676,7 @@ export function createScreenService({
       // 本小时用掉的配额；达到上限后她只是不递新候选，抓帧仍在跑。
       commentsThisHour: state.commentsThisHour,
       candidatesThisHour: state.candidatesThisHour,
+      lastFrameAt: state.lastFrame?.at ?? null,
       busy: state.busy,
       snapshot: state.snapshot,
       // 页面把它当“她刚说的话”列出来看，不走工具结果样式。
@@ -660,6 +724,6 @@ export function createScreenService({
 
   return {
     setMode, status, canSpeak, recordComment, currentMode: () => state.mode, dispose, renderActivity,
-    ensureSession, rotateSession, noteChatTurn, companionInfo,
+    ensureSession, rotateSession, noteChatTurn, companionInfo, captureNow,
   }
 }

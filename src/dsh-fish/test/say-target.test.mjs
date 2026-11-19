@@ -107,6 +107,52 @@ test('回落 home 时 note 要说清楚：这句进了主页会话', async () =>
   })
 })
 
+test('companion 聊天带上此刻屏幕的路径，不再拿上一帧回答', async () => {
+  await withSayRoot(async (root) => {
+    const ctx = fakeCtx()
+    const shots = []
+    const screen = {
+      ensureSession: async () => 'c1',
+      noteChatTurn: async () => ({ rotated: false, sessionId: 'c1' }),
+      captureNow: async (opts) => {
+        shots.push(opts)
+        return { ok: true, path: '/tmp/look-1.jpg' }
+      },
+    }
+    const r = await sayToHer(ctx, '现在呢', { root, target: 'companion', screen, waitMs: 500 })
+    assert.equal(r.ok, true)
+    const text = ctx.prompts[0].content[0].text
+    assert.match(text, /现在呢/)
+    assert.match(text, /你看到他此刻的屏幕/)
+    assert.match(text, /〔\/tmp\/look-1\.jpg〕/)
+    assert.equal(shots.length, 1)
+    assert.ok(shots[0].waitMs <= 2000, '聊天不能为了抓图等太久')
+  })
+})
+
+test('home 聊天不抓屏幕；companion 抓失败时照常说话、只是没有图', async () => {
+  await withSayRoot(async (root) => {
+    let touched = false
+    const screen = {
+      ensureSession: async () => 'c1',
+      noteChatTurn: async () => ({ rotated: false, sessionId: 'c1' }),
+      captureNow: async () => { touched = true; return { ok: false, why: 'no-frame' } },
+    }
+
+    const homeCtx = fakeCtx()
+    await sayToHer(homeCtx, '在吗', { root, screen, waitMs: 500 })
+    assert.equal(touched, false)
+    assert.equal(homeCtx.prompts[0].content[0].text, '在吗')
+
+    const compCtx = fakeCtx()
+    const r = await sayToHer(compCtx, '现在呢', { root, target: 'companion', screen, waitMs: 500 })
+    assert.equal(r.ok, true)
+    const text = compCtx.prompts[0].content[0].text
+    assert.match(text, /现在呢/)
+    assert.doesNotMatch(text, /你看到他此刻的屏幕/)
+  })
+})
+
 test('他说话时只递原话，不再套标题、工具教程或字数工单', async () => {
   await withSayRoot(async (root) => {
     const ctx = fakeCtx()
