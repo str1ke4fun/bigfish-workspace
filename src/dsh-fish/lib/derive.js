@@ -52,12 +52,18 @@ const PAST_RE = /之前|上次|那时候|想起|以前|上次说|还记得/
  * 所以「名字」这条必须带「他自己的」，裸的「名字」不算。
  */
 const NAME_SAY_RE = /(?:称呼你|叫你|称呼他|叫他|称他)(?:做|为|作|叫)?\s*[「“"']?([^\s，。！？、,.!?」”"']{1,8})/
-const NAME_GIVE_RE = /他(?:给(?:了)?)?(?:自己)?的?名字\s*(?:是|叫|：|:)?\s*[「“"']?([^\s，。！？、,.!?」”"']{1,8})/
+// 「他名字里熔融、氯化」说的是他名字里有什么，不是「他的名字叫里熔融」。
+// 冒号/是/叫必须真的出现，不能靠可选分隔符把「名字里」的「里」吞进称呼。
+const NAME_GIVE_RE = /他(?:给(?:了)?)?(?:自己)?的?名字\s*(?:是|叫|：|:)\s*[「“"']?([^\s，。！？、,.!?」”"']{1,8})/
+// 她自己改口/澄清时说的「我起的是X」优先于同一段里引用的提示词称呼。
+const NAME_SELF_RE = /我起(?:的|了)?(?:是|叫)\s*[「“"']?([^\s，。！？、,.!?」”"']{1,8})/
 // 截出来的常常带尾巴：「我叫你老张好了」会截到「老张好了」。
 // 只剥语气词和「了/好」这类收尾——**不剥「的」**，「开灯的」剥掉就成了「开灯」。
 const NAME_TAIL = /[了吧呢啊嘛哦诶欸呀哈哇哦嘞好]+$/
 const NAME_STOP = new Set(['你', '我', '他', '她', '它', '自己', '什么', '名字'])
 const NAME_BAD_HEAD = /^[你我他她它]/
+// 引用提示词原文的「这里现在写着管他叫…」不是她的新称呼。
+const NAME_QUOTE = /写着|显示|提示|身份/
 
 /**
  * 冲突检测（2026-10-24，用户批准的 P0）
@@ -273,14 +279,26 @@ export function growthDay(events, now = Date.now()) {
 
 export function pickName(text) {
   const s = String(text ?? '')
+  const clean = (raw) => {
+    const name = String(raw ?? '').trim().replace(NAME_TAIL, '')
+    // 代词/空串不算称呼；她自己的名字（「他给我起了名字：大肥鱼」）由 NAME_GIVE_RE 的
+    // 「他的/自己的」限定排除，这里只兜住明显的非名字。
+    if (!name || NAME_STOP.has(name) || NAME_BAD_HEAD.test(name)) return null
+    return name
+  }
+  // 她自己澄清「我起的是铁哥」时，以这句为准，别让同一段里引用的提示词称呼盖过去。
+  const self = NAME_SELF_RE.exec(s)
+  if (self) {
+    const name = clean(self[1])
+    if (name) return name
+  }
   for (const re of [NAME_SAY_RE, NAME_GIVE_RE]) {
     const m = re.exec(s)
     if (!m) continue
-    let name = String(m[1] ?? '').trim().replace(NAME_TAIL, '')
-    // 代词/空串不算称呼；她自己的名字（「他给我起了名字：大肥鱼」）由 NAME_GIVE_RE 的
-    // 「他的/自己的」限定排除，这里只兜住明显的非名字。
-    if (!name || NAME_STOP.has(name) || NAME_BAD_HEAD.test(name)) continue
-    return name
+    const at = Number(m.index) || 0
+    if (NAME_QUOTE.test(s.slice(Math.max(0, at - 8), at))) continue
+    const name = clean(m[1])
+    if (name) return name
   }
   return null
 }
