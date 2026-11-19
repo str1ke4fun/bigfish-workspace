@@ -1020,6 +1020,10 @@ export function registerObserve(ctx, deps = {}) {
       pet.setRestOverride(action)
       const snapshot = pet.snapshot?.() ?? {}
       const scene = snapshot.scene ?? null
+      // 长唤醒要跨服务重启：落盘失败不影响这一次操作，只是重启后会回日程。
+      try {
+        await deps.persistPetRest?.({ action, awakeUntil: snapshot.awakeUntil ?? null })
+      } catch { /* ignore */ }
       return send(res, 200, { ok: true, action, scene, awakeUntil: snapshot.awakeUntil ?? null })
     }],
 

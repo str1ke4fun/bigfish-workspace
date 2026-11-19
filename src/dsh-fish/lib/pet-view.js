@@ -272,6 +272,31 @@ export function createPetView({ now = Date.now, log } = {}) {
     return true
   }
 
+  /** 导出可落盘的休息意图；只有长唤醒需要跨重启保留。 */
+  function exportRestState() {
+    return {
+      override: restOverride,
+      awakeUntil: restOverride === 'awake' ? awakeUntil : null,
+      at: restOverrideAt,
+    }
+  }
+
+  /**
+   * 启动时恢复长唤醒。只认未到期的 awake：sleep/wake 是短 peek，
+   * auto 就是日程本身，恢复它们会让日程失去意义。不延长 12 小时上限。
+   */
+  function restoreRestState(saved) {
+    if (!saved || typeof saved !== 'object') return false
+    if (saved.override !== 'awake') return false
+    const until = Number(saved.awakeUntil)
+    if (!Number.isFinite(until) || until <= now()) return false
+    restOverride = 'awake'
+    const at = Number(saved.at)
+    restOverrideAt = Number.isFinite(at) ? at : now()
+    awakeUntil = until
+    return true
+  }
+
   /** 桌宠窗口轮询一次；只刷新 lastPollAt。 */
   function markPolled(at = now()) {
     lastPollAt = Number(at)
@@ -391,6 +416,6 @@ export function createPetView({ now = Date.now, log } = {}) {
 
   return {
     noteSessionEvent, act, markPolled, noteHello, noteCue,
-    setScheduleRest, setOuting, setRestOverride, snapshot, clear,
+    setScheduleRest, setOuting, setRestOverride, exportRestState, restoreRestState, snapshot, clear,
   }
 }

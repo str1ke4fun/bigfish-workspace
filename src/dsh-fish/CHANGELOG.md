@@ -16,6 +16,13 @@
 - 现有「起来」的短 peek 语义不变；工作台 8788 暂不加入口。
 - 验证：`src/dsh-fish` 下 `node --test` 1182 全绿；`desktop-pet` 下 `npm test` 168 全绿。
 
+### 长唤醒跨服务重启（2026-11-19）
+
+- `/pet/rest` 处理 `awake` 时把 `{ override: 'awake', awakeUntil, at }` 写进根目录的 `pet-rest.json`；启动时用 `petView.restoreRestState()` 恢复未到期的长唤醒，不延长 12 小时上限。
+- 其他手动覆盖（`sleep` / `wake` / `auto`）不恢复：短 peek 与日程本身都不是跨重启的状态；落盘写 `{ override: 'auto' }`。
+- 修复的真实症状：点「起来陪我」后聊天有回，重启服务后又变回「在休息」。原因是长唤醒只在内存里，而桌宠在重启那几秒还拿着旧 scene 放行了一次对话。
+- 验证：`node --test` 1187 全绿。
+
 ### 陪伴会话被删后不再把话投进死会话（2026-11-19）
 
 - `screen.js` 的 `ensureSession` 在复用 `screen-session.json` 前先查宿主 `workspaceRegistry.archivedSessionIds`；会话被用户在侧栏删掉/归档后自动新建一条「陪你看屏幕」，并清空会话评论数与聊天轮次。

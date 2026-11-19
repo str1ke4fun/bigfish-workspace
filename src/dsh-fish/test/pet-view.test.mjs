@@ -184,6 +184,43 @@ test('awake 长唤醒：跨过日程 tick、12 小时到期、显式结束', () 
   assert.equal(pv.snapshot().awakeUntil, null)
 })
 
+test('长唤醒状态导出后在重启时恢复，不延长 12 小时上限', () => {
+  let t = 1000
+  const pv = createPetView({ now: () => t })
+  pv.setScheduleRest({ rest: true, at: 900 })
+  t = 2000
+  pv.setRestOverride('awake')
+  const saved = pv.exportRestState()
+  assert.equal(saved.override, 'awake')
+  assert.equal(saved.awakeUntil, 2000 + 12 * 60 * 60 * 1000)
+
+  // 模拟服务重启：新实例先吃到日程休息，再恢复保存的长唤醒。
+  t = 10_000
+  const next = createPetView({ now: () => t })
+  next.setScheduleRest({ rest: true, at: 9_500 })
+  assert.equal(next.snapshot().scene.kind, 'rest')
+  assert.equal(next.restoreRestState(saved), true)
+  assert.equal(next.snapshot().scene, null)
+  assert.equal(next.snapshot().awakeUntil, saved.awakeUntil)
+
+  // 到期后不再恢复。
+  t = saved.awakeUntil
+  const later = createPetView({ now: () => t })
+  later.setScheduleRest({ rest: true, at: t })
+  assert.equal(later.restoreRestState(saved), false)
+  assert.equal(later.snapshot().scene.kind, 'rest')
+})
+
+test('导出非长唤醒时 awakeUntil 为空，恢复忽略 auto/sleep/坏数据', () => {
+  const pv = createPetView({ now: () => 1000 })
+  pv.setRestOverride('sleep')
+  assert.deepEqual(pv.exportRestState(), { override: 'sleep', awakeUntil: null, at: 1000 })
+  assert.equal(pv.restoreRestState({ override: 'sleep', awakeUntil: null }), false)
+  assert.equal(pv.restoreRestState({ override: 'awake' }), false)
+  assert.equal(pv.restoreRestState(null), false)
+  assert.equal(pv.snapshot().scene.kind, 'rest')
+})
+
 test('hello 动作目录按 id 去重、排序并截断 256 条', () => {
   const pv = createPetView({ now: () => 1000 })
   const actions = []

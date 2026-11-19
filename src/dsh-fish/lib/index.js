@@ -10,6 +10,7 @@
  *   dispose → 停定时器、注销路由。停用插件 = 零后台活动。
  */
 
+import { join } from 'node:path'
 import { rootDir, readEvents, appendEvent, readJson, paths, writeAtomic, ensureHer } from './store.js'
 import { loadConfig, inWindow } from './settings.js'
 import { deriveSelf } from './derive.js'
@@ -475,8 +476,17 @@ export function apply(ctx, baseConfig = {}) {
 
     // ---- 桌宠：她自己的会话事件 → 易失活动状态 ----
     // 纯内存接线：活动、发言、被回复、出门与日程休息都只写 petView；
-    // 不落盘、不写台账、不调模型，dispose 时统一摘掉观察器。
+    // 不写台账、不调模型，dispose 时统一摘掉观察器。
+    // 唯一例外：用户显式按下的长唤醒（起来陪我）把到期时刻落一份，
+    // 否则重启服务会把「陪我」悄悄清回日程，桌宠又会提示在休息。
     const petView = createPetView({ log: (...a) => logger.warn(...a) })
+    const petRestFile = join(root, 'pet-rest.json')
+    try {
+      const savedRest = await readJson(petRestFile, null)
+      if (savedRest && petView.restoreRestState?.(savedRest)) {
+        logger.info('[dsh-fish] 恢复了桌宠长唤醒')
+      }
+    } catch { /* 读不到就当没有 */ }
     try {
       const petSources = wirePetEventSources({
         ctx,
@@ -573,7 +583,19 @@ export function apply(ctx, baseConfig = {}) {
       ledger,
       qq: qqExposure(),
     }
-    const obs = registerObserve(ctx, { root, version: VERSION, exposure, screen, petView })
+    const obs = registerObserve(ctx, {
+      root,
+      version: VERSION,
+      exposure,
+      screen,
+      petView,
+      persistPetRest: async ({ action, awakeUntil } = {}) => {
+        const body = action === 'awake' && Number.isFinite(awakeUntil)
+          ? { override: 'awake', awakeUntil, at: Date.now() }
+          : { override: 'auto' }
+        await writeAtomic(petRestFile, JSON.stringify(body, null, 2))
+      },
+    })
     if (obs?.dispose) disposers.push(() => obs.dispose())
 
     // ---- 调度钩子（A1.5 / A2）----

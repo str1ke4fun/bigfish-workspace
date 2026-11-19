@@ -295,6 +295,24 @@ test('/pet/rest 接受 auto、sleep、wake、awake 并回传当前场景', async
   assert.equal((await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'wrong' })).status, 400)
 })
 
+test('/pet/rest 把休息意图交给落盘回调，长唤醒带到期时刻', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  const saved = []
+  registerObserve(ctx, {
+    root: '/tmp/fish-pet-unused',
+    petView,
+    persistPetRest: (state) => saved.push(state),
+  })
+
+  await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'awake' })
+  assert.deepEqual(saved.at(-1), { action: 'awake', awakeUntil: 1000 + 12 * 60 * 60 * 1000 })
+
+  await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'sleep' })
+  assert.deepEqual(saved.at(-1), { action: 'sleep', awakeUntil: null })
+})
+
 test('/pet/config 接受气泡透明度和宽度，并在 state.settings 里回显', async () => {
   const ctx = fakeCtx()
   ctx.cfg.connection = { requestRejection: () => null }
