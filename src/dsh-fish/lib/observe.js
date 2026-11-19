@@ -908,6 +908,8 @@ export function registerObserve(ctx, deps = {}) {
         action: s.action,
         actions: Array.isArray(s.actions) ? s.actions : [],
         scene: s.scene ?? null,
+        // 长唤醒到期时刻；null = 不在长唤醒。桌宠菜单据此显示「回去睡吧」。
+        awakeUntil: typeof s.awakeUntil === 'number' ? s.awakeUntil : null,
         cues: Array.isArray(s.cues) ? s.cues : [],
         settings: {
           size: Number(cfg?.pet?.size ?? 400),

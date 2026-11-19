@@ -281,12 +281,16 @@ test('/pet/rest 接受 auto、sleep、wake、awake 并回传当前场景', async
   const auto = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'auto' })
   assert.deepEqual(auto.body.scene, { kind: 'rest', at: 900 })
 
+  assert.equal((await callRoute(ctx.routes, '/pet/state', 'GET')).body.awakeUntil, null)
+
   const awake = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'awake' })
   assert.equal(awake.status, 200)
   assert.equal(awake.body.ok, true)
   assert.equal(awake.body.action, 'awake')
   assert.equal(awake.body.scene, null)
   assert.equal(awake.body.awakeUntil, 1000 + 12 * 60 * 60 * 1000)
+  // 桌宠菜单读的是 /pet/state，必须一并透出。
+  assert.equal((await callRoute(ctx.routes, '/pet/state', 'GET')).body.awakeUntil, 1000 + 12 * 60 * 60 * 1000)
 
   assert.equal((await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'wrong' })).status, 400)
 })
