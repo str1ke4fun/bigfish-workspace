@@ -267,7 +267,7 @@ test('/pet/state 把当前桌宠上报的动作目录交给工作台', async () 
   assert.deepEqual(state.body.actions, [{ id: 'asset-001', label: '三球抛接', group: '日常' }])
 })
 
-test('/pet/rest 接受 auto、sleep、wake 并回传当前场景', async () => {
+test('/pet/rest 接受 auto、sleep、wake、awake 并回传当前场景', async () => {
   const ctx = fakeCtx()
   ctx.cfg.connection = { requestRejection: () => null }
   const petView = createPetView({ now: () => 1000 })
@@ -280,6 +280,14 @@ test('/pet/rest 接受 auto、sleep、wake 并回传当前场景', async () => {
   assert.equal(wake.body.scene, null)
   const auto = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'auto' })
   assert.deepEqual(auto.body.scene, { kind: 'rest', at: 900 })
+
+  const awake = await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'awake' })
+  assert.equal(awake.status, 200)
+  assert.equal(awake.body.ok, true)
+  assert.equal(awake.body.action, 'awake')
+  assert.equal(awake.body.scene, null)
+  assert.equal(awake.body.awakeUntil, 1000 + 12 * 60 * 60 * 1000)
+
   assert.equal((await callRoute(ctx.routes, '/pet/rest', 'POST', { action: 'wrong' })).status, 400)
 })
 

@@ -6,6 +6,16 @@
 - 仍然不挂 `her_leave` / `her_tools` / 任何 web/wx/bili 工具；`person_note` 在 `screen` 面本来就允许写。
 - 验证：`src/dsh-fish` 下 `node --test`，1181 全绿。
 
+### 桌宠「起来陪我」长唤醒（2026-11-19）
+
+日程窗口外桌宠会自动进入休息，原来菜单「起来」只是短 peek：下一次 60 秒日程 tick 就把手动覆盖重置回 `auto`，窗户外一分钟内又睡回去。新增一条显式的长唤醒入口：
+
+- `pet-view.js` 增加 `awake` 覆盖与 `awakeUntil`（12 小时兜底）。日程 tick 仍刷新 `scheduleRest/scheduleRestAt`，但 `awake` 期间不收回覆盖；到期由下一次 `snapshot` 自动回 `auto`。`scene` 仍是 `rest | out | null`，出门（`out`）继续优先。
+- `/pet/rest` 接受 `action: 'awake'`，响应新增 `awakeUntil`；未知 action 仍 400。
+- 桌面宠物菜单：休息中显示「起来陪我」，长唤醒中显示「回去睡吧」；两项都复用已注册的「起来 / 睡觉」动作，没有注册动作时只改状态。发给渲染进程的 IPC 仍归一成 `rest: 'wake'`，播放层不需要认识 `awake`。
+- 现有「起来」的短 peek 语义不变；工作台 8788 暂不加入口。
+- 验证：`src/dsh-fish` 下 `node --test` 1182 全绿；`desktop-pet` 下 `npm test` 168 全绿。
+
 ## 未发布 — 2026-11-14
 
 **屏幕陪玩真机验收：她能看见了，而且不用调工具才说话**（用户：继续宿主机截图/陪玩，后台测试）。

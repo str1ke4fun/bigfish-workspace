@@ -276,6 +276,8 @@ const baseState: MenuState = {
   width: 0,
   hidden: false,
   presence: { on: true, mode: 'event' },
+  scene: null,
+  awakeUntil: null,
 }
 
 function find(items: ReturnType<typeof buildMenuModel>, label: string) {
@@ -405,6 +407,49 @@ test('休息组里的睡觉/起来改走 rest 回调，普通注册动作仍走 
     'rest:wake:wake-action',
     'action:swing',
   ])
+})
+
+test('休息中显示「起来陪我」，长唤醒中显示「回去睡吧」', () => {
+  const log: string[] = []
+  const catalog = [
+    registered('sleep-action', '睡觉', '休息'),
+    registered('wake-action', '起来', '休息'),
+  ]
+
+  const sleeping = buildMenuModel(
+    { ...baseState, scene: { kind: 'rest' }, awakeUntil: null },
+    catalog,
+    callbacks(log),
+    'context',
+  )
+  find(sleeping, '起来陪我').click!()
+  assert.deepEqual(log, ['rest:awake:wake-action'])
+
+  log.length = 0
+  const awake = buildMenuModel(
+    { ...baseState, scene: null, awakeUntil: 2000 },
+    catalog,
+    callbacks(log),
+    'context',
+  )
+  find(awake, '回去睡吧').click!()
+  assert.deepEqual(log, ['rest:sleep:sleep-action'])
+
+  const plain = buildMenuModel(baseState, catalog, callbacks([]), 'context')
+  assert.equal(plain.some((item) => item.label === '起来陪我'), false)
+  assert.equal(plain.some((item) => item.label === '回去睡吧'), false)
+})
+
+test('没有注册休息动作时，长唤醒入口仍然可用', () => {
+  const log: string[] = []
+  const menu = buildMenuModel(
+    { ...baseState, scene: { kind: 'rest' }, awakeUntil: null },
+    [],
+    callbacks(log),
+    'context',
+  )
+  find(menu, '起来陪我').click!()
+  assert.deepEqual(log, ['rest:awake:'])
 })
 
 test('空白 group 落到其他，不生成空标题菜单', () => {

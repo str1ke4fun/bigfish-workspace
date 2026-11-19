@@ -94,6 +94,9 @@ let petHidden = false
 let tray: Tray | null = null
 /** 最近一次 `/pet/state` 里的陪看状态，托盘菜单用。 */
 let lastPresence: { on: boolean; mode: string | null } | null = null
+/** 最近一次 `/pet/state` 里的场景与长唤醒到期时刻，菜单据此显示「起来陪我/回去睡吧」。 */
+let lastScene: { kind: 'rest' | 'out' } | null = null
+let lastAwakeUntil: number | null = null
 /** 当前默认注册表 + 当前皮肤覆盖后的完整动作；菜单、渲染进程与 hello 共用。 */
 let actionCatalog: ActionDefinition[] = []
 let lastActionError: string | null = null
@@ -836,7 +839,12 @@ export async function runRestAction(
     if (!isRecord(body) || body.ok !== true) return { ok: false, scene: null }
 
     const scene = sceneFrom(body.scene)
-    sendActionMessage(win, { action: actionId, rest: action, scene, intentAt: Date.now() })
+    // 播放层只认 sleep/wake：长唤醒在渲染端就是一次「起来」；没有注册动作时
+    // 不发 IPC，交给下一次 /pet/state 的 scene 变化经 scene:rest:exit 补播。
+    if (actionId !== '') {
+      const rest = action === 'awake' ? 'wake' : action
+      sendActionMessage(win, { action: actionId, rest, scene, intentAt: Date.now() })
+    }
     return { ok: true, scene }
   } catch {
     return { ok: false, scene: null }
@@ -854,7 +862,15 @@ function setPetHidden(hidden: boolean): void {
 function buildMenu(kind: 'context' | 'tray'): Menu {
   const win = petWindow
   const model = buildMenuModel(
-    { size: petSize, opacity: petLook.opacity, width: petLook.width, hidden: petHidden, presence: lastPresence },
+    {
+      size: petSize,
+      opacity: petLook.opacity,
+      width: petLook.width,
+      hidden: petHidden,
+      presence: lastPresence,
+      scene: lastScene,
+      awakeUntil: lastAwakeUntil,
+    },
     actionCatalog,
     {
       motion: (motion) => sendActionMessage(win, toActionMessage('motion', motion)),
@@ -903,10 +919,22 @@ function createPetTray(): void {
  * 避免首拍 IPC 早于订阅被丢掉。
  */
 const stateForwarder = createStateForwarder((state) => {
-  const presence = state && typeof state === 'object' ? (state as Record<string, unknown>).presence : null
-  if (presence && typeof presence === 'object') {
-    const p = presence as Record<string, unknown>
-    lastPresence = { on: p.on === true, mode: typeof p.mode === 'string' ? p.mode : null }
+  if (state && typeof state === 'object') {
+    const snapshot = state as Record<string, unknown>
+    const presence = snapshot.presence
+    if (presence && typeof presence === 'object') {
+      const p = presence as Record<string, unknown>
+      lastPresence = { on: p.on === true, mode: typeof p.mode === 'string' ? p.mode : null }
+    }
+    const scene = snapshot.scene
+    if (scene && typeof scene === 'object') {
+      const kind = (scene as Record<string, unknown>).kind
+      lastScene = kind === 'rest' || kind === 'out' ? { kind } : null
+    } else {
+      lastScene = null
+    }
+    const awakeUntil = snapshot.awakeUntil
+    lastAwakeUntil = typeof awakeUntil === 'number' && Number.isFinite(awakeUntil) ? awakeUntil : null
   }
   if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:state', state)
 })

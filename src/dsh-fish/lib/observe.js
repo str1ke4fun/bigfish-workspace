@@ -1012,12 +1012,13 @@ export function registerObserve(ctx, deps = {}) {
       try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
       catch { return send(res, 400, { ok: false, note: 'body 不是 JSON' }) }
       const action = body?.action
-      if (action !== 'auto' && action !== 'sleep' && action !== 'wake') {
-        return send(res, 400, { ok: false, note: 'action 只能是 auto、sleep 或 wake。' })
+      if (action !== 'auto' && action !== 'sleep' && action !== 'wake' && action !== 'awake') {
+        return send(res, 400, { ok: false, note: 'action 只能是 auto、sleep、wake 或 awake。' })
       }
       pet.setRestOverride(action)
-      const scene = pet.snapshot?.().scene ?? null
-      return send(res, 200, { ok: true, action, scene })
+      const snapshot = pet.snapshot?.() ?? {}
+      const scene = snapshot.scene ?? null
+      return send(res, 200, { ok: true, action, scene, awakeUntil: snapshot.awakeUntil ?? null })
     }],
 
     // ---- P3-3：桌面提醒 ----

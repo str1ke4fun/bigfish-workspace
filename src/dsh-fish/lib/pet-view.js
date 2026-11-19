@@ -32,7 +32,9 @@ const PET_ACTION_ID_RE = /^[a-z0-9-]{1,32}$/
 const PET_SURFACES = new Set(['web', 'screen'])
 const PET_ACTION_MOTION_SET = new Set(PET_ACTION_MOTIONS)
 const PET_CUE_KINDS = new Set(['speak', 'replied'])
-const PET_REST_OVERRIDES = new Set(['auto', 'sleep', 'wake'])
+const PET_REST_OVERRIDES = new Set(['auto', 'sleep', 'wake', 'awake'])
+/** 用户显式「起来陪我」的最长时限；到期后交回日程，避免忘记收回。 */
+export const PET_AWAKE_MAX_MS = 12 * 60 * 60 * 1000
 
 /** dsh-pet 的优先级：数值越大越优先；同档由 pickActivity 取更大 seq。 */
 const ACTIVITY_PRIORITY = Object.freeze({
@@ -146,6 +148,8 @@ export function createPetView({ now = Date.now, log } = {}) {
   let outingAt = null
   let restOverride = 'auto'
   let restOverrideAt = null
+  // 仅 restOverride === 'awake' 时非空：到期时刻，跨过日程 tick 的兜底。
+  let awakeUntil = null
 
   /**
    * 记录她的一条会话事件。只接受 web/screen 面。
@@ -241,9 +245,12 @@ export function createPetView({ now = Date.now, log } = {}) {
     const n = Number(at)
     scheduleRest = rest
     scheduleRestAt = at === undefined || at === null || !Number.isFinite(n) ? now() : n
-    // 日程进入下一次 tick 后重新接管；用户手动覆盖只保留到这一刻。
-    restOverride = 'auto'
-    restOverrideAt = null
+    // 日程进入下一次 tick 后重新接管；长唤醒（awake）是唯一例外，
+    // 它跨 tick 保持，直到用户收回或 12 小时兜底到期。
+    if (restOverride !== 'awake') {
+      restOverride = 'auto'
+      restOverrideAt = null
+    }
     return true
   }
 
@@ -261,6 +268,7 @@ export function createPetView({ now = Date.now, log } = {}) {
     if (!PET_REST_OVERRIDES.has(value)) return false
     restOverride = value
     restOverrideAt = value === 'auto' ? null : now()
+    awakeUntil = value === 'awake' ? restOverrideAt + PET_AWAKE_MAX_MS : null
     return true
   }
 
@@ -318,10 +326,17 @@ export function createPetView({ now = Date.now, log } = {}) {
    * @returns {{activity:{state:string, at:number, sessionId:string}|null,
    *   action:{id:string, motion?:string, action?:string, text?:string, at:number, ttlMs:number}|null,
    *   scene:{kind:'rest'|'out', at:number}|null,
+   *   awakeUntil:number|null,
    *   cues:Array<{id:string, kind:'speak'|'replied', text:string, at:number, ttlMs:number}>}}
    */
   function snapshot() {
     const nowMs = now()
+    // 长唤醒到期：下一次快照自动交回日程，不依赖用户操作。
+    if (restOverride === 'awake' && awakeUntil !== null && nowMs >= awakeUntil) {
+      restOverride = 'auto'
+      restOverrideAt = null
+      awakeUntil = null
+    }
     pruneExpired(nowMs)
     pruneCues(nowMs)
     const picked = pickActivity([...sessions.values()])
@@ -350,6 +365,7 @@ export function createPetView({ now = Date.now, log } = {}) {
       skins: skins.map((x) => ({ ...x })),
       actions: [...actionCatalog.values()].map((x) => ({ ...x })),
       scene,
+      awakeUntil: restOverride === 'awake' ? awakeUntil : null,
       cues: cues.map((cue) => ({ ...cue })),
     }
   }
@@ -370,6 +386,7 @@ export function createPetView({ now = Date.now, log } = {}) {
     outingAt = null
     restOverride = 'auto'
     restOverrideAt = null
+    awakeUntil = null
   }
 
   return {

@@ -13,6 +13,10 @@ export interface MenuState {
   hidden: boolean
   /** null = 服务端没回话，托盘里不显示陪看项。 */
   presence: { on: boolean; mode: string | null } | null
+  /** 服务端当前场景；null = 不在休息/出门。 */
+  scene: { kind: 'rest' | 'out' } | null
+  /** 长唤醒到期时刻；null = 没有在长唤醒。 */
+  awakeUntil: number | null
 }
 
 export interface MenuCallbacks {
@@ -32,7 +36,7 @@ export interface MenuCallbacks {
   quit: () => void
 }
 
-export type PetRestAction = 'sleep' | 'wake'
+export type PetRestAction = 'sleep' | 'wake' | 'awake'
 
 export interface MenuItemModel {
   label?: string
@@ -81,6 +85,14 @@ export function petRestAction(action: ActionDefinition): PetRestAction | null {
   return null
 }
 
+/** 长唤醒/回去睡复用休息组里已注册的动作；没有就只改状态（空 id）。 */
+function restActionId(actions: readonly ActionDefinition[], want: PetRestAction): string {
+  for (const action of actions) {
+    if (petRestAction(action) === want) return action.id
+  }
+  return ''
+}
+
 export function buildMenuModel(
   state: MenuState,
   actions: readonly ActionDefinition[],
@@ -93,6 +105,20 @@ export function buildMenuModel(
     items.push({ label: state.hidden ? '显示桌宠' : '隐藏桌宠', click: callbacks.toggleHidden })
     items.push({ label: '回到右下角', click: callbacks.resetPosition })
     items.push({ separator: true })
+  }
+
+  // 长唤醒只在休息中出现；收回项只在长唤醒中出现。两者互斥，避免菜单常驻噪音。
+  if (state.scene?.kind === 'rest') {
+    items.push({
+      label: '起来陪我',
+      click: () => callbacks.rest(restActionId(actions, 'wake'), 'awake'),
+    })
+  }
+  if (typeof state.awakeUntil === 'number' && Number.isFinite(state.awakeUntil)) {
+    items.push({
+      label: '回去睡吧',
+      click: () => callbacks.rest(restActionId(actions, 'sleep'), 'sleep'),
+    })
   }
 
   const registeredGroups = new Map<string, MenuItemModel[]>()

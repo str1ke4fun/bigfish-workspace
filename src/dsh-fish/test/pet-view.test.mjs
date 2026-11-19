@@ -134,6 +134,56 @@ test('日程下一次 tick 会清除手动休息覆盖', () => {
   assert.equal(pv.snapshot().scene, null)
 })
 
+test('awake 长唤醒：跨过日程 tick、12 小时到期、显式结束', () => {
+  let t = 1000
+  const pv = createPetView({ now: () => t })
+  pv.setScheduleRest({ rest: true, at: 900 })
+  assert.deepEqual(pv.snapshot().scene, { kind: 'rest', at: 900 })
+
+  t = 2000
+  assert.equal(pv.setRestOverride('awake'), true)
+  assert.equal(pv.snapshot().scene, null)
+  const until = pv.snapshot().awakeUntil
+  assert.equal(until, 2000 + 12 * 60 * 60 * 1000)
+
+  // 日程 tick 不再收回
+  t = 62_000
+  pv.setScheduleRest({ rest: true, at: 62_000 })
+  assert.equal(pv.snapshot().scene, null)
+  assert.equal(pv.snapshot().awakeUntil, until)
+
+  // 出门仍优先
+  pv.setOuting({ active: true, at: 63_000 })
+  assert.equal(pv.snapshot().scene.kind, 'out')
+  pv.setOuting({ active: false, at: 64_000 })
+  assert.equal(pv.snapshot().scene, null)
+
+  // 显式 sleep 结束长唤醒
+  t = 65_000
+  pv.setRestOverride('sleep')
+  assert.equal(pv.snapshot().awakeUntil, null)
+  assert.equal(pv.snapshot().scene.kind, 'rest')
+
+  // wake / auto 也会清掉长唤醒
+  t = 66_000
+  pv.setRestOverride('awake')
+  t = 67_000
+  pv.setRestOverride('wake')
+  assert.equal(pv.snapshot().awakeUntil, null)
+  t = 68_000
+  pv.setRestOverride('awake')
+  t = 69_000
+  pv.setRestOverride('auto')
+  assert.equal(pv.snapshot().awakeUntil, null)
+
+  // 重新 awake，到期自动回日程
+  t = 70_000
+  pv.setRestOverride('awake')
+  t = 70_000 + 12 * 60 * 60 * 1000
+  assert.deepEqual(pv.snapshot().scene, { kind: 'rest', at: 62_000 })
+  assert.equal(pv.snapshot().awakeUntil, null)
+})
+
 test('hello 动作目录按 id 去重、排序并截断 256 条', () => {
   const pv = createPetView({ now: () => 1000 })
   const actions = []
