@@ -1,3 +1,11 @@
+## 未发布 — 2026-11-19
+
+**陪伴会话也能记下想留的话**
+
+- `screen` 面的工具策略从 `read_image + her_recall` 扩到 `growth_commit + read_image + her_recall`：陪看时她想记下的东西可以直接写进自己的记忆，不必再绕道 `subagent`（那条路被兜底 guard 挡住，只回「这件事我做不到。」）。起因是 2026-11-19 她在陪伴会话里想记「小黑」，写不进去。
+- 仍然不挂 `her_leave` / `her_tools` / 任何 web/wx/bili 工具；`person_note` 在 `screen` 面本来就允许写。
+- 验证：`src/dsh-fish` 下 `node --test`，1181 全绿。
+
 ## 未发布 — 2026-11-14
 
 **屏幕陪玩真机验收：她能看见了，而且不用调工具才说话**（用户：继续宿主机截图/陪玩，后台测试）。

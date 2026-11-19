@@ -285,6 +285,7 @@
 - 除 `surface.reserve(id,'screen')` 外，`core-service.js` 注册一个 `screen` matcher：`cwd === join(baseRoot,'home','screen')`。这样即使宿主创建会话时忽略了预分配 id、`agent/created` 早于 reserve，`surface.current` 仍返回 `screen`，不会落到 `restrict.js` 的 `isHerAgent` web 兜底。
 - `restrict.js` 不需要新增 cwd 特判；matcher 是唯一新增点。
 - 补测试：不 reserve、只给 cwd=home/screen 时，`surface.current` 返回 screen；screen 面拿不到 `growth_commit`。
+  **2026-11-19 修订**：screen 面现已可见 `growth_commit`（陪伴时记下想留的话）；D36 保留的只是「fail-closed 地分到 screen 面」这一半，工具收窄不再包含 growth_commit。
 
 ### D37. `presence_speak` 的降级可见性
 

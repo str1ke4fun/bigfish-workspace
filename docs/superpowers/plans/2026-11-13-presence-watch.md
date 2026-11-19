@@ -119,7 +119,8 @@ const BUILTIN = Object.freeze([
 ])
 ```
 
-不要给 `screen` 面加 `growth_commit` / `her_leave` / `her_tools`。
+不要给 `screen` 面加 `her_leave` / `her_tools`。
+（2026-11-19 修订：`growth_commit` 已加入 `screen` 面，见 CHANGELOG；本条不再禁止它。）
 
 - [ ] **Step 4: 跑测试确认通过**
 

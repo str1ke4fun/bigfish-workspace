@@ -355,6 +355,7 @@ saveImage(root, jpegBuf, { prefix: 'presence' })  // 只落候选帧
 
 1. `surface.js` 的 `SURFACES` 增加 `screen`；`tool-policy.js` 的 `SURFACES` 同步增加 `screen`。
 2. `tool-policy.js` 给 `screen` 面一条独立策略：`read_image` + `presence_speak` + `her_recall`，全部常驻；不挂 `growth_commit`、`her_leave`、`her_tools` 或任何 web/wx/bili 工具。
+   **2026-11-19 修订**：`screen` 面增加常驻 `growth_commit`，陪看时她想记下的东西可以直接写进记忆；仍不挂 `her_leave`、`her_tools` 和任何 web/wx/bili 工具。
 3. `OWN_TOOL_NAMES` 增加 `presence_speak`，让它能通过宿主的 `restrictableNames` 校验；其它面不在策略表里，因此看不见。
 4. 工具执行时再校验一次 cwd/会话，非 `screen` 会话直接拒绝。
 

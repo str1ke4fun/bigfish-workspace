@@ -96,10 +96,11 @@ function coreEntries(surface) {
 }
 
 /**
- * screen 面（陪你看屏幕）的独立策略：只看图、翻旧事。
+ * screen 面（陪你看屏幕）的独立策略：看图、翻旧事、记下想留的话。
  *
- * 刻意**不用** `coreEntries('screen')`：那会把 growth_commit / her_leave /
- * her_tools 一起带进陪伴会话，而陪伴会话只该「看图 + 翻旧事」。
+ * 刻意**不用** `coreEntries('screen')`：那会把 her_leave / her_tools
+ * 一起带进陪伴会话。陪伴会话能看、能回想、也能把此刻想留的写下来
+ * （growth_commit），但不在这里给她留话和工具目录。
  *
  * 不挂 `presence_speak`：她自然说出口的那句会被 `screen.js` 接住，不需要
  * 在聊天里多一次工具调用。工具仍注册（`OWN_TOOL_NAMES` 里有，供宿主校验），
@@ -108,6 +109,7 @@ function coreEntries(surface) {
 function screenEntries() {
   const s = 'screen'
   return [
+    tool('growth_commit', s, ALWAYS, '', '把此刻想留下的话写下', 'write'),
     tool('read_image', s, ALWAYS, '', '看一张图', 'read', ['hasImageRoute']),
     tool('her_recall', s, ALWAYS, '', '翻自己过去记下的事', 'read'),
   ]
