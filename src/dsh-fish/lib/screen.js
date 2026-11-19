@@ -205,19 +205,43 @@ export function createScreenService({
     try { core.context?.remove?.('screen-activity') } catch { /* ignore */ }
   }
 
+  /**
+   * 保存的陪伴会话是否已被宿主归档/删除。
+   *
+   * 归档的会话会被宿主的 archived-session-gate 拦在模型调用之前，
+   * 每一轮都以 `turn/end {kind:'blocked'}` 结束——看起来像"她不回"，
+   * 其实是话根本没递进模型。用户在侧栏删掉那条会话就会这样。
+   * registry 读不到时沿用旧 id，不能因为读不到就随便换会话。
+   */
+  function sessionArchived(id) {
+    const host = bus ?? core
+    let reg = null
+    try { reg = host?.get?.('workspaceRegistry') ?? null } catch { return false }
+    if (!reg) return false
+    const archived = Array.isArray(reg.archivedSessionIds) ? reg.archivedSessionIds : []
+    return archived.includes(id)
+  }
+
   async function ensureSession({ rotate = false } = {}) {
     const saved = await readJson(segmentFile(), null).catch(() => null)
     if (!rotate && saved?.sessionId) {
-      state.sessionId = String(saved.sessionId)
-      state.sessionComments = Number(saved.sessionComments) || 0
-      try { core.surface?.reserve?.(state.sessionId, 'screen') } catch { /* ignore */ }
-      return state.sessionId
+      const savedId = String(saved.sessionId)
+      if (sessionArchived(savedId)) {
+        log?.('[dsh-fish] 陪伴会话已被归档/删除，换一条新的')
+      } else {
+        state.sessionId = savedId
+        state.sessionComments = Number(saved.sessionComments) || 0
+        try { core.surface?.reserve?.(state.sessionId, 'screen') } catch { /* ignore */ }
+        return state.sessionId
+      }
     }
     const dir = join(paths(root).root, 'home', 'screen')
     await mkdir(dir, { recursive: true }).catch(() => {})
     const r = await core.sessions?.create?.({ title: '陪你看屏幕', cwd: dir, surface: 'screen' }).catch(() => null)
     state.sessionId = String(r?.sessionId ?? '')
     state.sessionComments = 0
+    state.chatTurns = 0
+    state.recentComments = []
     if (state.sessionId) {
       try { core.surface?.reserve?.(state.sessionId, 'screen') } catch { /* ignore */ }
       await persistSegment()

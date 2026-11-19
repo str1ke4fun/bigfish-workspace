@@ -16,6 +16,13 @@
 - 现有「起来」的短 peek 语义不变；工作台 8788 暂不加入口。
 - 验证：`src/dsh-fish` 下 `node --test` 1182 全绿；`desktop-pet` 下 `npm test` 168 全绿。
 
+### 陪伴会话被删后不再把话投进死会话（2026-11-19）
+
+- `screen.js` 的 `ensureSession` 在复用 `screen-session.json` 前先查宿主 `workspaceRegistry.archivedSessionIds`；会话被用户在侧栏删掉/归档后自动新建一条「陪你看屏幕」，并清空会话评论数与聊天轮次。
+- 原因：归档会话的模型调用会被宿主 `archived-session-gate` 拦成 `turn/end {kind:'blocked'}`，表现为桌宠聊天和陪看点评都「没有回」，但消息其实已经写进了那条死会话。
+- registry 读不到时沿用旧 id，不因为读取失败而误换会话。
+- 验证：`node --test` 1184 全绿（新增「会话归档后自动换新」与「活会话照旧复用」两条）。
+
 ## 未发布 — 2026-11-14
 
 **屏幕陪玩真机验收：她能看见了，而且不用调工具才说话**（用户：继续宿主机截图/陪玩，后台测试）。

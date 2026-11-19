@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, mkdir, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createScreenService, renderActivity } from '../lib/screen.js'
@@ -22,7 +22,7 @@ async function withRoot(fn) {
   }
 }
 
-function makeService(root, { mode = 'event', startOk = true, promptText = '', config = normalizeConfig({}), startAt = '2026-11-13T10:00:00Z', maxRunMs } = {}) {
+function makeService(root, { mode = 'event', startOk = true, promptText = '', config = normalizeConfig({}), startAt = '2026-11-13T10:00:00Z', maxRunMs, archived = [] } = {}) {
   let t = Date.parse(startAt)
   const prompts = []
   const wakeTexts = []
@@ -71,6 +71,10 @@ function makeService(root, { mode = 'event', startOk = true, promptText = '', co
     },
     config: { get: async () => config },
     on(ev, fn) { if (ev === 'session/event') turnHandler = fn; return () => {} },
+    get(name) {
+      if (name === 'workspaceRegistry') return { archivedSessionIds: archived }
+      return null
+    },
   }
   const service = createScreenService({
     root, core, config, capture, foreground,
@@ -98,6 +102,47 @@ test('开着时重启：自动恢复同一模式，起点沿用', async () => {
     assert.equal(st.mode, 'event')
     assert.equal(st.startedAt, Date.parse('2026-11-13T10:00:00Z'))
     assert.equal(second.instances.length, 1)
+  })
+})
+
+test('陪伴会话被删/归档后自动换新，不再把话投进死会话', async () => {
+  await withRoot(async (root) => {
+    await writeFile(join(root, 'screen-session.json'), JSON.stringify({
+      sessionId: 'dead-1',
+      mode: 'event',
+      segmentStartedAt: Date.parse('2026-11-13T09:50:00Z'),
+      segmentDayKey: '2026-11-13',
+      segmentComments: 1,
+      sessionComments: 3,
+    }))
+
+    const svc = makeService(root, { archived: ['dead-1'] })
+    await svc.service.setMode({ mode: 'event', on: true })
+
+    // 没换成 dead-1，而是建了这条服务的第一条新会话。
+    assert.equal(svc.service.companionInfo().sessionId, 's1')
+    const saved = JSON.parse(await readFile(join(root, 'screen-session.json'), 'utf8'))
+    assert.equal(saved.sessionId, 's1')
+    assert.equal(saved.sessionComments, 0)
+  })
+})
+
+test('还活着的陪伴会话照旧复用，不重建', async () => {
+  await withRoot(async (root) => {
+    await writeFile(join(root, 'screen-session.json'), JSON.stringify({
+      sessionId: 'live-1',
+      mode: 'event',
+      segmentStartedAt: Date.parse('2026-11-13T09:50:00Z'),
+      segmentDayKey: '2026-11-13',
+      segmentComments: 0,
+      sessionComments: 2,
+    }))
+
+    const svc = makeService(root, { archived: [] })
+    await svc.service.setMode({ mode: 'event', on: true })
+
+    assert.equal(svc.service.companionInfo().sessionId, 'live-1')
+    assert.equal(svc.service.companionInfo().sessionComments, 2)
   })
 })
 
