@@ -62,6 +62,7 @@ import { scanStickers } from './sticker-scan.js'
 import { sendSticker, targetEntry } from './sticker-send.js'
 import { collectSticker } from './sticker-collect.js'
 import { normalizeKeyword, searchSticker } from './sticker-search.js'
+import { completeFromOcrLines } from './ocr-complete.js'
 import { WxToolError, registerWxToolErrorAdapter, wrapWxTool, wxFailure, wxWithText } from './tool-error.js'
 import { createSendGate } from './send-gate.js'
 import {
@@ -845,6 +846,18 @@ export function apply(ctx, config = {}) {
       logInbound({ type: 'ocr-reconciled', chats: fixed.map((chat) => ({ ocr: chat.ocrName, chat: chat.name })) })
     }
     return { ...data, parsed }
+  }
+
+  /**
+   * 当前会话有 @ 时，用消息区 OCR 把侧栏预览的「…」补全。
+   * 只在预览和整屏记录都对不上时调用；OCR 失败/更短就返回空，调用方保留原预览。
+   */
+  async function ocrCompleteCurrent(preview) {
+    const body = parsePreviewSender(String(preview ?? '')).text || String(preview ?? '')
+    if (!body) return ''
+    const data = jsonLine(await run(['ocr-messages'], 60_000))
+    if (!data?.ok || !Array.isArray(data.lines) || data.lines.length === 0) return ''
+    return completeFromOcrLines(body, data.lines)
   }
 
   /** 取快照并对账。疑似落后时，隔一会儿再看一次再下结论。 */
@@ -2270,6 +2283,34 @@ export function apply(ctx, config = {}) {
       const mentionsRaw = [...mergedHits.values()]
       // 截断名解析到全名后再记 @ 窗口和任务，否则发送闸会拿两个不同的键互相比。
       const mentions = mentionsRaw.map((m) => ({ ...m, chat: canonicalName(m.chat) }))
+      // 当前会话被 @：侧栏预览可能被微信截成「…」。先看整屏这一轮有没有全文；
+      // 没有就立刻 OCR 右侧消息区补全，再交给她。已经投过/刚投过的不用再 OCR。
+      if (tree.ok && !ocrRecovered && parsed.current) {
+        for (const m of mentions) {
+          if (!sameName(m.chat, parsed.current)) continue
+          if (m.why !== '@' && m.why !== 'name') continue
+          if (seen.has(m.key)) continue
+          if (dropRecentContent([m], recentContent).length === 0) continue
+          const pv = parsePreviewSender(String(m.preview ?? ''))
+          const body = pv.text || String(m.preview ?? '')
+          if (!body) continue
+          const prefix = pv.sender ? `${pv.sender}: ` : ''
+          const rec = (s.capturedCurrent?.records ?? [])
+            .filter((r) => r && r.direction === 'in' && r.text && samePreviewText(body, r.text))
+            .at(-1)
+          if (rec?.text && [...String(rec.text)].length > [...body].length) {
+            m.preview = prefix + String(rec.text)
+            continue
+          }
+          try {
+            const full = await ocrCompleteCurrent(m.preview)
+            if (full && [...full].length > [...body].length) {
+              m.preview = prefix + full
+              logInbound({ type: 'ocr-complete', chat: m.chat, preview: m.preview.slice(0, 160) })
+            }
+          } catch { /* OCR 补不全就用原预览，不阻塞投递 */ }
+        }
+      }
       // 有人 @ 她 → 这个会话在窗口内可以开口（@ 才回）。挂着的未读 @ 会一直续窗口。
       if (mentions.length > 0) {
         let st = readMentions()
@@ -2315,10 +2356,19 @@ export function apply(ctx, config = {}) {
       const fresh1 = freshHits([...now.values()], seen, {
         isEcho: (m) => ownEcho(m.chat, m.preview, outbox, { echoMs: ECHO_MS }),
       })
+      // freshHits 按正文拦下的命中（例如预览键和 capture 键是同一句）也要记账：
+      // capture:<msgId> 是稳定消息号，预览换掉后后台采集还会再读到它，不能重投。
+      let rememberSuppressed = false
+      for (const m of now.values()) {
+        if (fresh1.includes(m) || seen.has(m.key)) continue
+        seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat), text: String(m.preview ?? '') })
+        rememberSuppressed = true
+      }
+      if (rememberSuppressed) saveSeen()
       const hits = dropRecentContent(fresh1, recentContent)
       if (hits.length < fresh1.length) {
         // 内容重复的命中记账，不再每轮重试：key 记进 seen，之后同 key 也不会再来。
-        for (const m of fresh1) if (!hits.includes(m)) seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat) })
+        for (const m of fresh1) if (!hits.includes(m)) seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat), text: String(m.preview ?? '') })
         saveSeen()
         console.log('[dsh-wx] 耳朵：内容近期已投过，跳过 ' + (fresh1.length - hits.length) + ' 条')
       }
@@ -2378,7 +2428,7 @@ export function apply(ctx, config = {}) {
           const sid = await deliverToChat(chat, chatId, note, { contact: isContactWhy(h.why) })
           sentChats.push(chat)
           // 投成功才记账：失败下一轮还投，不会丢这条 @
-          seen.set(h.key, { at: Date.now(), chat })
+          seen.set(h.key, { at: Date.now(), chat, text: String(h.preview ?? '') })
           noteContent(recentContent, h)
           // 每个会话投完都给采集留一段静默期（取较大值，不会无限延长）。
           quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)

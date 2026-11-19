@@ -51,7 +51,7 @@ assert.deepEqual(
     row: row({ name: '测试群A', preview: `安卓4224柚厨圣: ${atText}` }),
     captured: captured(rec({ text: atText })),
   }),
-  { chat: '测试群A', why: 'at', preview: atText, unread: 0, key: 'capture:m_1' },
+  { chat: '测试群A', why: 'at', preview: `安卓4224柚厨圣: ${atText}`, unread: 0, key: 'capture:m_1' },
 )
 
 // 4c. 群里按配置叫名字、不带 @ 也算

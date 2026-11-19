@@ -100,8 +100,9 @@ export function openChatHit({
   return {
     chat: name,
     why: exempt ? 'exempt' : (inGroup ? 'at' : 'dm'),
-    // 侧栏预览可能被微信截断成「…」；整屏记录才是全文。对得上时也用全文叫她。
-    preview: String(rec.text),
+    // 侧栏预览可能被微信截断成「…」；整屏记录才是全文。群聊仍保留预览里的
+    // 「发送者: 」前缀，耳朵才知道是谁在叫。
+    preview: (pv.sender ? `${pv.sender}: ` : '') + String(rec.text),
     unread: 0,
     key: 'capture:' + rec.msgId,
   }

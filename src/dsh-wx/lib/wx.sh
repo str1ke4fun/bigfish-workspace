@@ -150,6 +150,11 @@ case "$cmd" in
     node "$LIB_DIR/ocr-snapshot.mjs" 2>&1 | head -c 200000
     ;;
 
+  ocr-messages)
+    # 只读右侧消息区；当前会话有 @ 时用来补全侧栏预览的截断。
+    node "$LIB_DIR/ocr-messages.mjs" 2>&1 | head -c 200000
+    ;;
+
   speakers)
     # 这是给上层解析的接口，node 的失败码要跟着传出去；输出仍然限长。
     out=$(node "$LIB_DIR/ocr-speakers.mjs" 2>&1); status=$?
@@ -463,7 +468,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|speakers|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|pid|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|win-gray <x> <y> <w> <h>|sha256 <file>}" >&2
+    echo "用法: wx.sh {pick|shot <out>|clean|click <x> <y> [btn]|clicklabel <标签>|type <text>|key <keys>|peek|tree|chats|ocr|ocr-messages|speakers|pixhash <x> <y> <w> <h>|mouse|nudge <x> <y>|scroll <x> <y> <up|down> [times]|atspi|bus-start|pid|restart|panel-find|panel-open|panel-close|panel-click <x> <y>|panel-scroll-up [times]|panel-park|panel-shot <out>|panel-gray <png>|panel-thumb <png> <x> <y> <w> <h> <out>|win-gray <x> <y> <w> <h>|sha256 <file>}" >&2
     exit 64
     ;;
 esac

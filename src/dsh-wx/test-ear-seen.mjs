@@ -25,6 +25,47 @@ assert.equal(forgetReadChats(seen, [{ name: 'cat不到flag的cat', unread: 0 }])
 assert.equal(seen.has(key), false)
 assert.equal(freshHits([hit], seen).length, 1, '读完之后同一句话应重新触发')
 
+// 2b. 已读但侧栏预览还是同一句 @：不能清 key，否则同一句每隔几分钟又推一次
+const sameVisibleKey = '某群|@|@D33p53Ek 整个活'
+const visible = parseSeen({ delivered: [{ key: sameVisibleKey, at: NOW, chat: '某群' }] }, NOW)
+assert.equal(forgetReadChats(visible, [{ name: '某群', unread: 0, preview: '@D33p53Ek 整个活' }]), 0, '预览没变，保留投递记忆')
+assert.equal(visible.has(sameVisibleKey), true)
+assert.equal(forgetReadChats(visible, [{ name: '某群', unread: 0, preview: '换了一句' }]), 1, '预览变了才清')
+
+// 2c. 同一句 @ 带不带「发送者:」前缀都算同一条
+const prefixedKey = '某群|@|cat不到flag的cat: @D33p53Ek 整个活'
+const prefixedSeen = parseSeen({ delivered: [{ key: prefixedKey, at: NOW, chat: '某群' }] }, NOW)
+assert.equal(forgetReadChats(prefixedSeen, [{ name: '某群', unread: 0, preview: '@D33p53Ek 整个活' }]), 0)
+assert.equal(freshHits([{
+  key: '某群|@|@D33p53Ek 整个活', chat: '某群', why: '@', preview: '@D33p53Ek 整个活',
+}], prefixedSeen).length, 0, '同一个 @ 换了个前缀写法也不能再投')
+
+// 2d. capture 键里没有正文段：靠 seen 里记下的 text 判断预览还是同一句
+const captureKey = 'capture:m_8978fbc4e0c87564'
+const captureSeen = parseSeen({ delivered: [{
+  key: captureKey, at: NOW, chat: '我需要重新集结部队',
+  text: '@D33p53Ek 面对华约30km巨大火炮，北约该发射什么？',
+}] }, NOW)
+assert.equal(forgetReadChats(captureSeen, [{
+  name: '我需要重新集结部队', unread: 0, preview: '@D33p53Ek 面对华约30km巨大火炮，北约该发射什么？',
+}]), 0, '预览没变，capture 键也要保留')
+assert.equal(forgetReadChats(captureSeen, [{
+  name: '我需要重新集结部队', unread: 0, preview: '换了一句',
+}]), 0, 'capture 键是稳定消息号，预览换了也不能清')
+assert.equal(captureSeen.has(captureKey), true)
+assert.equal(freshHits([{
+  key: captureKey, chat: '我需要重新集结部队', why: '@',
+  preview: '@D33p53Ek 面对华约30km巨大火炮，北约该发射什么？',
+}], captureSeen).length, 0)
+assert.equal(freshHits([{
+  key: 'capture:m_newer', chat: '我需要重新集结部队', why: '@',
+  preview: '@D33p53Ek 面对华约30km巨大火炮，北约该发射什么？',
+}], captureSeen).length, 0, '换了 msgId 的同文也要拦')
+
+// 2e. text 跟着 seen 落盘再读回
+const withText = parseSeen({ delivered: [{ key: captureKey, at: NOW, chat: '群', text: '一句话' }] }, NOW)
+assert.deepEqual(parseSeen(JSON.parse(JSON.stringify(serializeSeen(withText, NOW))), NOW), withText)
+
 // 3. 不在这一屏的会话不能因为「没看见」就被当成已读清掉
 const kept = parseSeen({ delivered: [{ key, at: NOW, chat: 'cat不到flag的cat' }] }, NOW)
 assert.equal(forgetReadChats(kept, [{ name: '另一个会话', unread: 0 }]), 0)
@@ -87,6 +128,10 @@ assert.equal(dropRecentContent([{
   chat: '某群', why: 'at',
   preview: '@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来，然后给一个非常严谨的答案：不能证明xx/不能完全说明xx ，然后什么活都停下来不干，这就是大傻龙了',
 }], truncated, { now: NOW + 25_000 }).length, 0, '截断预览与整屏全文只算一条')
+// 群预览带不带「发送者: 」前缀，同一条 @ 不能推两次。
+const prefixed = []
+noteContent(prefixed, { chat: '某群', why: '@', preview: 'cat不到flag的cat: @D33p53Ek 整个活' }, { now: NOW })
+assert.equal(dropRecentContent([{ chat: '某群', why: '@', preview: '@D33p53Ek 整个活' }], prefixed, { now: NOW + 80_000 }).length, 0, '前缀不同但正文相同要拦')
 assert.equal(dropRecentContent([h2], recent, { now: NOW + CONTENT_WINDOW_MS + 1 }).length, 1, '窗口外放行')
 assert.equal(dropRecentContent([{ ...h2, chat: '别的猫' }], recent, { now: NOW + 1000 }).length, 1, '别的会话放行')
 assert.equal(dropRecentContent([{ ...h2, preview: '晚上吃什么' }], recent, { now: NOW + 1000 }).length, 1, '别的正文放行')

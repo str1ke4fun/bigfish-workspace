@@ -11,7 +11,21 @@
  *   - 上限按时间保留最新的 200 条，盘不会越滚越大。
  */
 import { sameName } from './tree.js'
-import { samePreviewText } from './speaker.js'
+import { parsePreviewSender, samePreviewText } from './speaker.js'
+
+/** 比较「是不是同一句」时只看正文：群预览可能带「发送者: 」前缀，同一条消息两种写法。 */
+const bodyOf = (text) => {
+  const raw = String(text ?? '')
+  return parsePreviewSender(raw).text || raw
+}
+
+/** key 的第三段是预览正文；前两段是会话名和 @ 标记。 */
+function previewOfKey(key) {
+  const first = String(key ?? '').indexOf('|')
+  if (first < 0) return ''
+  const second = String(key).indexOf('|', first + 1)
+  return second < 0 ? '' : String(key).slice(second + 1)
+}
 
 export const SEEN_TTL_MS = 24 * 3600_000
 export const SEEN_CAP = 200
@@ -29,27 +43,37 @@ export function parseSeen(raw, now = Date.now()) {
     if (!key) continue
     const at = typeof x === 'string' ? now : Number(x.at) || now
     const chat = String(typeof x === 'string' ? '' : x.chat ?? '') || key.split('|')[0] || ''
-    out.set(key, { at, chat })
+    const text = String(typeof x === 'string' ? '' : x.text ?? '')
+    out.set(key, text ? { at, chat, text } : { at, chat })
   }
   return out
 }
 
 /**
  * 会话被读到（未读=0）→ 这一轮未读回合结束，清掉这个会话的投递记忆。
+ * 但 `capture:<msgId>` 是稳定消息号，后台采集会反复重读同一条消息，不清；
+ * 预览键如果还是同一句（例如她刚回完、那行 @ 还挂在侧栏）也保留，直到预览换掉。
  * 没出现在这一屏的会话不动：没看见不代表已读。
  * 返回清掉的条数，调用方据此决定要不要落盘。
  */
 export function forgetReadChats(seen, chats, same = sameName) {
   const read = (chats ?? [])
     .filter((c) => Number(c?.unread) === 0 && c?.name)
-    .map((c) => String(c.name))
+    .map((c) => ({ name: String(c.name), preview: String(c?.preview ?? '') }))
   if (!read.length) return 0
   let n = 0
   for (const [key, rec] of seen) {
-    if (read.some((name) => same(name, rec?.chat))) {
-      seen.delete(key)
-      n += 1
-    }
+    // capture:<msgId> 是稳定消息号：同一条消息被后台采集重读多少次都不该再叫，
+    // 不能因为未读归零就清掉；过期交给 pruneSeen 的 24 小时 TTL。
+    if (String(key).startsWith('capture:')) continue
+    const row = read.find((c) => same(c.name, rec?.chat))
+    if (!row) continue
+    // 预览仍在同一句：这不是新回合，保留 key，避免同一句每隔几分钟又推一次。
+    // capture/m_xxx 这类 key 里没有正文，优先用投递时记下的 text。
+    const keyPreview = String(rec?.text ?? '') || previewOfKey(key)
+    if (row.preview && keyPreview && samePreviewText(bodyOf(row.preview), bodyOf(keyPreview))) continue
+    seen.delete(key)
+    n += 1
   }
   return n
 }
@@ -69,10 +93,25 @@ export function ownEcho(chat, preview, outbox = [], { now = Date.now(), echoMs =
 
 /**
  * 这一轮真正要投的命中。
- * 已经投过的 key 不再投；@ 立刻能投，其余命中只要不是她自己的回声就能投。
+ * 已经投过的 key 不再投；同一个会话里正文对得上的旧 key 也不再投
+ * （群预览带不带「发送者:」前缀会换 key）；@ 立刻能投，其余命中只要不是
+ * 她自己的回声就能投。
  */
-export function freshHits(hits, seen, { isEcho = () => false } = {}) {
-  return (hits ?? []).filter((m) => !seen.has(m.key) && (m.why === '@' || !isEcho(m)))
+export function freshHits(hits, seen, { isEcho = () => false, same = samePreviewText } = {}) {
+  const alreadyDelivered = (m) => {
+    if (seen.has(m.key)) return true
+    const body = bodyOf(m?.preview)
+    if (!body) return false
+    for (const [key, rec] of seen) {
+      // capture/m_xxx 这类 key 里没有正文，投递时把正文一起记进 seen；旧记录退回 key。
+      const text = String(rec?.text ?? '') || previewOfKey(key)
+      if (!text) continue
+      const chat = String(rec?.chat ?? '') || String(key).split('|')[0] || ''
+      if (sameName(chat, m.chat) && same(bodyOf(text), body)) return true
+    }
+    return false
+  }
+  return (hits ?? []).filter((m) => !alreadyDelivered(m) && (m.why === '@' || !isEcho(m)))
 }
 
 /** 同一会话里同一句话，这么久之内只投一次。 */
@@ -92,7 +131,8 @@ export function dropRecentContent(hits, recent, { now = Date.now(), windowMs = C
   return (hits ?? []).filter((m) => {
     const text = String(m?.preview ?? '')
     if (!text) return true
-    const dup = (r) => sameName(r.chat, m.chat) && same(r.text, text)
+    // 群预览有时带「发送者: 」前缀、有时不带；同一条消息不能因此算两句。
+    const dup = (r) => sameName(r.chat, m.chat) && same(bodyOf(r.text), bodyOf(text))
     if ((Array.isArray(recent) ? recent : []).some((r) => now - (Number(r.at) || 0) <= windowMs && dup(r))) return false
     if (batch.some(dup)) return false
     batch.push({ chat: m.chat, text })
@@ -107,7 +147,7 @@ export function noteContent(recent, hit, { now = Date.now(), windowMs = CONTENT_
   for (let i = recent.length - 1; i >= 0; i--) {
     const r = recent[i]
     if (now - (Number(r.at) || 0) > windowMs) recent.splice(i, 1)
-    else if (sameName(r.chat, hit.chat) && same(r.text, text)) recent.splice(i, 1)
+    else if (sameName(r.chat, hit.chat) && same(bodyOf(r.text), bodyOf(text))) recent.splice(i, 1)
   }
   recent.push({ chat: hit.chat, text, at: now })
 }
@@ -133,6 +173,7 @@ export function serializeSeen(seen, now = Date.now()) {
       key,
       at: Number(rec?.at) || 0,
       chat: String(rec?.chat ?? ''),
+      ...(rec?.text ? { text: String(rec.text) } : {}),
     })),
     at: new Date(now).toISOString(),
   }
