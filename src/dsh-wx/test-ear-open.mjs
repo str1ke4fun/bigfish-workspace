@@ -150,4 +150,14 @@ assert.equal(hit({
 // 16. 首次看见这个会话时仍然只认 preview：整屏旧消息不能被当成新消息
 assert.equal(hit({ captured: captured(rec({ text: '你在吗' })), requirePreviewMatch: true }), null)
 
+// 17. 侧栏预览跟丢（matched 为空）时，不能拿旧预览的发送者给新记录安名字
+const staleSender = hit({
+  chat: '测试群A',
+  row: row({ name: '测试群A', preview: '张三: 早上的事' }),
+  captured: captured(rec({ text: '李四这边的消息 @D33P533K 看一下' })),
+  requirePreviewMatch: false,
+})
+assert.equal(staleSender?.preview, '李四这边的消息 @D33P533K 看一下')
+assert.equal(staleSender?.why, 'at')
+
 console.log('ear-open: 全部通过')
