@@ -42,6 +42,11 @@ function asWarn(log) {
   return undefined
 }
 
+function asInfo(log) {
+  if (typeof log?.info === 'function') return (...args) => log.info(...args)
+  return undefined
+}
+
 /**
  * 创建并登记 `fishCore` 服务。
  *
@@ -114,7 +119,7 @@ export function provideFishCore(ctx, { root, herDir, log, refreshSelfDoc, identi
     guard: { sanitizeForeign, looksLikeSecret, looksLikeRewriting, screenOutgoing },
     // 配置只读 + 白名单写入（A1.7）。persona 永不在白名单里。
     config: createConfigService({ root: baseRoot, log: warn }),
-    owner: createOwnerService({ root: baseRoot, log: warn }),
+    owner: createOwnerService({ root: baseRoot, log: warn, info: asInfo(log) }),
     toolLedger: createToolLedgerService({ root: baseRoot, ledger: toolLedger, log: warn }),
     tools: { wrap: null, wrapRender: null, reveal: null },
   }

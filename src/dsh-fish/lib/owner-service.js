@@ -38,7 +38,7 @@ export class CredentialHandle {
 /**
  * @param {{ root?: string, log?: Function }} [opts]
  */
-export function createOwnerService({ root, log } = {}) {
+export function createOwnerService({ root, log, info } = {}) {
   async function owner() {
     try {
       return await readOwner(root)
@@ -54,8 +54,10 @@ export function createOwnerService({ root, log } = {}) {
 
     async credentials() {
       const handle = new CredentialHandle((await owner())?.cookie)
-      // 审计日志只记"取用过"，绝不记值。
-      log?.('[dsh-fish] owner.credentials() 被取用（值不记录）')
+      // 审计日志只记"取用过"，绝不记值。例行取用（B 站每次读 cookie）走 info，
+      // 不占 warn 通道；没有 info 时退回原样。
+      const audit = info ?? log
+      audit?.('[dsh-fish] owner.credentials() 被取用（值不记录）')
       return handle
     },
 

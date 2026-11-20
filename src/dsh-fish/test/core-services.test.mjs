@@ -123,6 +123,16 @@ test('owner.read 不含 cookie；credentials 进程内可用但序列化脱敏',
   })
 })
 
+test('owner.credentials 的例行取用走 info，不占 warn', async () => {
+  const calls = { info: [], warn: [] }
+  await withCore(async ({ core, root }) => {
+    await writeOwner({ mid: '42', cookie: 'SESSDATA=abc' }, root)
+    await core.owner.credentials()
+    assert.equal(calls.info.some((a) => String(a[0]).includes('owner.credentials')), true)
+    assert.equal(calls.warn.some((a) => String(a[0]).includes('owner.credentials')), false)
+  }, { log: { info: (...a) => calls.info.push(a), warn: (...a) => calls.warn.push(a) } })
+})
+
 // ---- toolLedger ----
 
 test('toolLedger 按日期/会话/工具过滤，status 透传', async () => {

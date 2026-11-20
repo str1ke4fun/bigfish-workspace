@@ -236,7 +236,8 @@ export function apply(ctx, baseConfig = {}) {
       const handle = provideFishCore(ctx, {
         root,
         herDir,
-        log: (...a) => logger.warn(...a),
+        // 直接传 logger：core-service 经 asWarn 取 .warn，owner 服务经 asInfo 取 .info。
+        log: logger,
         // 身份文档刷新由这里注入：core-service / memory-service 都不直接 import selfdoc。
         refreshSelfDoc: (r = root) => refreshSelfDoc(r, { log: (...a) => logger.warn(...a) }),
         // 身份文本同理：fishCore.self.identity 读的就是她当前那份文档。
