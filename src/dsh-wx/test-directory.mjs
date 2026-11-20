@@ -301,4 +301,13 @@ await t('跨页接缝的同名行没有共同身份证据时保留为撞名', as
   assert.equal(d.sendableTarget('撞名群'), null)
 })
 
+await t('OCR 来源只写名字，不写预览与发送者', async () => {
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({ chats: [{ name: '某群', preview: 'ea] File Transfer 11/05' }], source: 'ocr' })
+  assert.equal(d.entry('某群').lastPreview, '', 'OCR 不写预览')
+  assert.equal(d.entry('某群').lastSender, null, 'OCR 不写发送者')
+  d.merge({ chats: [{ name: '某群', preview: '真的预览' }], source: 'tree' })
+  assert.equal(d.entry('某群').lastPreview, '真的预览', 'tree 照旧写预览')
+})
+
 console.log(`\n${n} 项通过`)

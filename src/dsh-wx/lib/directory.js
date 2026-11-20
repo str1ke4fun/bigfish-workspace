@@ -160,6 +160,9 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
     chats = [], current = '', source = 'tree', knownNames = [], directNames = [], ignoreChats = [],
   } = {}) {
     const at = nowIso(now)
+    // 树不可用时 OCR 只负责名字：预览/发送者/未读/置顶都是屏幕上可能串行的东西，
+    // 交给树或目录扫描确认后再写。
+    const namesOnly = source === 'ocr'
     const authoritative = [
       ...(knownNames ?? []).map(str).filter(Boolean),
       ...entries.map((e) => e.fullName).filter(Boolean),
@@ -237,21 +240,21 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
         : ''
       if (direct.has(norm(name)) || direct.has(norm(e.fullName))) e.kind = 'dm'
       else if (row.kind) e.kind = str(row.kind)
-      else if (row.preview && /\S[:：]\s*\S/.test(String(row.preview))) e.kind = 'group'
+      else if (!namesOnly && row.preview && /\S[:：]\s*\S/.test(String(row.preview))) e.kind = 'group'
       e.lastSeenAt = at
       if (!e.firstSeenAt) e.firstSeenAt = at
-      if (row.preview !== undefined) {
+      if (!namesOnly && row.preview !== undefined) {
         // 服务号只更新元数据，不把预览正文写进目录。
         if (!ignored) e.lastPreview = String(row.preview ?? '').slice(0, 240)
         e.lastSender = parsePreviewSender(row.preview).sender ?? e.lastSender ?? null
       }
-      if (row.unread !== undefined) {
+      if (!namesOnly && row.unread !== undefined) {
         const u = Math.max(0, Number(row.unread) || 0)
         e.unread = u
         if (u > 0) { e.lastNonZeroUnread = u; e.lastNonZeroAt = at }
       }
-      if (row.pinned !== undefined) e.pinned = row.pinned === true
-      if (Number.isFinite(Number(row.position))) e.position = Number(row.position)
+      if (!namesOnly && row.pinned !== undefined) e.pinned = row.pinned === true
+      if (!namesOnly && Number.isFinite(Number(row.position))) e.position = Number(row.position)
       const names = [e.displayName, e.fullName, ...(e.aliases ?? [])].map(norm).filter(Boolean)
       const collisions = [...new Set(names.flatMap((n) => findMatches(n)).filter((x) => x !== e))]
       if (collisions.length) {
