@@ -22,7 +22,7 @@ async function withRoot(fn) {
   }
 }
 
-function makeService(root, { mode = 'event', startOk = true, promptText = '', config = normalizeConfig({}), startAt = '2026-11-13T10:00:00Z', maxRunMs, archived = [] } = {}) {
+function makeService(root, { mode = 'event', startOk = true, promptText = '', config = normalizeConfig({}), startAt = '2026-11-13T10:00:00Z', maxRunMs, archived = [], liveSessions = null } = {}) {
   let t = Date.parse(startAt)
   const prompts = []
   const wakeTexts = []
@@ -72,7 +72,13 @@ function makeService(root, { mode = 'event', startOk = true, promptText = '', co
     config: { get: async () => config },
     on(ev, fn) { if (ev === 'session/event') turnHandler = fn; return () => {} },
     get(name) {
-      if (name === 'workspaceRegistry') return { archivedSessionIds: archived }
+      if (name === 'workspaceRegistry') {
+        return {
+          archivedSessionIds: archived,
+          // 空数组表示「registry 返回空列表」，不是「一个没有会话的工作区」。
+          ...(liveSessions ? { list: () => (liveSessions.length ? [{ sessionIds: liveSessions }] : []) } : {}),
+        }
+      }
       return null
     },
   }
@@ -124,6 +130,32 @@ test('陪伴会话被删/归档后自动换新，不再把话投进死会话', a
     const saved = JSON.parse(await readFile(join(root, 'screen-session.json'), 'utf8'))
     assert.equal(saved.sessionId, 's1')
     assert.equal(saved.sessionComments, 0)
+  })
+})
+
+test('陪伴会话不在任何工作区的 sessionIds 里也算死，自动换新', async () => {
+  await withRoot(async (root) => {
+    await writeFile(join(root, 'screen-session.json'), JSON.stringify({
+      sessionId: 'gone-1', mode: 'event',
+      segmentStartedAt: Date.parse('2026-11-13T09:50:00Z'),
+      segmentDayKey: '2026-11-13', segmentComments: 0, sessionComments: 2,
+    }))
+    const svc = makeService(root, { liveSessions: ['other-session'] })
+    await svc.service.setMode({ mode: 'event', on: true })
+    assert.equal(svc.service.companionInfo().sessionId, 's1')
+  })
+})
+
+test('registry 返回空列表时不能误判死会话', async () => {
+  await withRoot(async (root) => {
+    await writeFile(join(root, 'screen-session.json'), JSON.stringify({
+      sessionId: 'live-2', mode: 'event',
+      segmentStartedAt: Date.parse('2026-11-13T09:50:00Z'),
+      segmentDayKey: '2026-11-13', segmentComments: 0, sessionComments: 1,
+    }))
+    const svc = makeService(root, { liveSessions: [] })
+    await svc.service.setMode({ mode: 'event', on: true })
+    assert.equal(svc.service.companionInfo().sessionId, 'live-2')
   })
 })
 

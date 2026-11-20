@@ -212,27 +212,34 @@ export function createScreenService({
   }
 
   /**
-   * 保存的陪伴会话是否已被宿主归档/删除。
+   * 保存的陪伴会话是否已经死了。
    *
    * 归档的会话会被宿主的 archived-session-gate 拦在模型调用之前，
    * 每一轮都以 `turn/end {kind:'blocked'}` 结束——看起来像"她不回"，
-   * 其实是话根本没递进模型。用户在侧栏删掉那条会话就会这样。
-   * registry 读不到时沿用旧 id，不能因为读不到就随便换会话。
+   * 其实是话根本没递进模型。硬删除/工作区重置时它还会从所有工作区的
+   * sessionIds 里消失，但未必进 archivedSessionIds，所以两处都要看。
+   * registry 读不到、没有 list、list 抛错或返回空时沿用旧 id：
+   * 误判死会让 ensureSession 每次聊天都新建会话。
    */
-  function sessionArchived(id) {
+  async function sessionDead(id) {
     const host = bus ?? core
     let reg = null
     try { reg = host?.get?.('workspaceRegistry') ?? null } catch { return false }
     if (!reg) return false
     const archived = Array.isArray(reg.archivedSessionIds) ? reg.archivedSessionIds : []
-    return archived.includes(id)
+    if (archived.includes(id)) return true
+    if (typeof reg.list !== 'function') return false
+    let list = null
+    try { list = await reg.list() } catch { return false }
+    if (!Array.isArray(list) || list.length === 0) return false
+    return !list.some((ws) => Array.isArray(ws?.sessionIds) && ws.sessionIds.includes(id))
   }
 
   async function ensureSession({ rotate = false } = {}) {
     const saved = await readJson(segmentFile(), null).catch(() => null)
     if (!rotate && saved?.sessionId) {
       const savedId = String(saved.sessionId)
-      if (sessionArchived(savedId)) {
+      if (await sessionDead(savedId)) {
         log?.('[dsh-fish] 陪伴会话已被归档/删除，换一条新的')
       } else {
         state.sessionId = savedId
