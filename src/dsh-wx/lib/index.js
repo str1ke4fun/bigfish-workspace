@@ -2353,18 +2353,20 @@ export function apply(ctx, config = {}) {
         if (forgetReadChats(seen, readChats)) saveSeen()
       }
       // 只有真的 @ 才能穿过回声判断：同一个人在群里连 @ 她两次，第二次也是要找她。
+      const suppressed = []
       const fresh1 = freshHits([...now.values()], seen, {
         isEcho: (m) => ownEcho(m.chat, m.preview, outbox, { echoMs: ECHO_MS }),
+        onDuplicate: (m) => suppressed.push(m),
       })
       // freshHits 按正文拦下的命中（例如预览键和 capture 键是同一句）也要记账：
       // capture:<msgId> 是稳定消息号，预览换掉后后台采集还会再读到它，不能重投。
-      let rememberSuppressed = false
-      for (const m of now.values()) {
-        if (fresh1.includes(m) || seen.has(m.key)) continue
-        seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat), text: String(m.preview ?? '') })
-        rememberSuppressed = true
+      // 只记正文重复；被回声判断拦下的不记，等回声窗口过去还能重新考虑。
+      if (suppressed.length) {
+        for (const m of suppressed) {
+          seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat), text: String(m.preview ?? '') })
+        }
+        saveSeen()
       }
-      if (rememberSuppressed) saveSeen()
       const hits = dropRecentContent(fresh1, recentContent)
       if (hits.length < fresh1.length) {
         // 内容重复的命中记账，不再每轮重试：key 记进 seen，之后同 key 也不会再来。

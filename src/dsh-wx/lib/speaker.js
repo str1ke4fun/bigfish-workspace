@@ -63,15 +63,20 @@ export function looksLikeDirect(preview) {
 
 // 侧栏预览被微信截断时会以「…」收尾；结尾的省略号是截断标记，不参与内容比对。
 // 整句只有省略号时保留原样，别把两条「……」洗成空串。
-const normalize = (s) => {
+export function normalizePreview(s) {
   const collapsed = str(s).replace(/\s+/g, ' ')
   return collapsed.replace(/(?:…|\.{3,})\s*$/u, '').trim() || collapsed.trim()
 }
 
+/** 是不是被截断的预览（结尾是省略号；允许尾随空格）。 */
+export function previewTruncated(text) {
+  return /(?:…|\.{3,})\s*$/u.test(String(text ?? ''))
+}
+
 /** 内容是否对得上：预览往往只是正文开头，允许前缀匹配。 */
 export function samePreviewText(a, b) {
-  const x = normalize(a)
-  const y = normalize(b)
+  const x = normalizePreview(a)
+  const y = normalizePreview(b)
   if (!x || !y) return false
   if (x === y) return true
   const short = x.length <= y.length ? x : y
@@ -103,8 +108,8 @@ export function attributeMessages({
   const pv = parsePreviewSender(preview)
   const chatName = str(chat)
   const recentOut = (Array.isArray(outbox) ? outbox : [])
-    .filter((x) => x && x.text && (!x.chat || !chatName || normalize(x.chat) === normalize(chatName)))
-    .map((x) => ({ text: normalize(x.text), at: timeOf(x.at, 0) }))
+    .filter((x) => x && x.text && (!x.chat || !chatName || normalizePreview(x.chat) === normalizePreview(chatName)))
+    .map((x) => ({ text: normalizePreview(x.text), at: timeOf(x.at, 0) }))
     .filter((x) => !x.at || now - x.at <= 30 * 60_000)
 
   // 只有最后一条对得上预览时才用预览里的发言人。对不上就不硬套。
@@ -118,7 +123,7 @@ export function attributeMessages({
   return list.map((m, i) => {
     if (!m || typeof m !== 'object') return m
     const out = { ...m }
-    const text = normalize(out.text)
+    const text = normalizePreview(out.text)
     const sent = recentOut.find((x) => x.text && (x.text === text || (text.length >= 6 && text.startsWith(x.text))))
     if (out.direction === 'out' || sent) {
       out.direction = 'out'

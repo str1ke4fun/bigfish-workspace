@@ -38,7 +38,7 @@ const prefixedSeen = parseSeen({ delivered: [{ key: prefixedKey, at: NOW, chat: 
 assert.equal(forgetReadChats(prefixedSeen, [{ name: '某群', unread: 0, preview: '@D33p53Ek 整个活' }]), 0)
 assert.equal(freshHits([{
   key: '某群|@|@D33p53Ek 整个活', chat: '某群', why: '@', preview: '@D33p53Ek 整个活',
-}], prefixedSeen).length, 0, '同一个 @ 换了个前缀写法也不能再投')
+}], prefixedSeen, { now: NOW }).length, 0, '同一个 @ 换了个前缀写法也不能再投')
 
 // 2d. capture 键里没有正文段：靠 seen 里记下的 text 判断预览还是同一句
 const captureKey = 'capture:m_8978fbc4e0c87564'
@@ -56,11 +56,61 @@ assert.equal(captureSeen.has(captureKey), true)
 assert.equal(freshHits([{
   key: captureKey, chat: '我需要重新集结部队', why: '@',
   preview: '@D33p53Ek 面对华约30km巨大火炮，北约该发射什么？',
-}], captureSeen).length, 0)
+}], captureSeen, { now: NOW }).length, 0)
 assert.equal(freshHits([{
   key: 'capture:m_newer', chat: '我需要重新集结部队', why: '@',
   preview: '@D33p53Ek 面对华约30km巨大火炮，北约该发射什么？',
-}], captureSeen).length, 0, '换了 msgId 的同文也要拦')
+}], captureSeen, { now: NOW }).length, 0, '换了 msgId 的同文也要拦')
+
+// 2f. 6 小时前的同开头消息不能压住今天的新消息
+const oldBody = parseSeen({ delivered: [{
+  key: 'capture:m_old', at: NOW - 6 * HOUR, chat: '某群', text: '你能帮我看一下这个吗',
+}] }, NOW)
+assert.equal(freshHits([{
+  key: 'capture:m_new', chat: '某群', why: '@', preview: '你能帮我看一下这个吗？急',
+}], oldBody, { now: NOW }).length, 1, '超出去重窗口的正文不能永久压住新消息')
+
+// 2g. 窗口内、都没截断的两句只是延伸关系 → 算两条
+const nearBody = parseSeen({ delivered: [{
+  key: 'capture:m_a', at: NOW - 60_000, chat: '某群', text: '明天下午三点开会，记得带电脑',
+}] }, NOW)
+assert.equal(freshHits([{
+  key: 'capture:m_b', chat: '某群', why: '@', preview: '明天下午三点开会，记得带电脑和充电器',
+}], nearBody, { now: NOW }).length, 1, '没截断的两句不是同一句')
+
+// 2g2. 截断预览与全文仍按前缀算同一条
+const truncBody = parseSeen({ delivered: [{
+  key: 'capture:m_t', at: NOW - 60_000, chat: '某群',
+  text: '@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来',
+}] }, NOW)
+assert.equal(freshHits([{
+  key: 'capture:m_t2', chat: '某群', why: '@',
+  preview: '@D33P533K 当别人问你问题的时候，你要多思考，把条件全部列出来…',
+}], truncBody, { now: NOW }).length, 0, '截断预览与全文仍算一条')
+
+// 2h. 只把「正文重复」写进 seen；回声拦下的不写
+const dup = []
+const dupSeen = parseSeen({ delivered: [{
+  key: 'capture:m_dup', at: NOW - 30_000, chat: '某群', text: '同一句',
+}] }, NOW)
+assert.equal(freshHits([{
+  key: 'capture:m_dup2', chat: '某群', why: '@', preview: '同一句',
+}], dupSeen, { now: NOW, onDuplicate: (m) => dup.push(m.key) }).length, 0)
+assert.deepEqual(dup, ['capture:m_dup2'])
+
+const echoDup = []
+freshHits([{ key: '某个猫||哟', chat: '某个猫', why: 'exempt', preview: '哟' }], new Map(), {
+  now: NOW,
+  isEcho: () => true,
+  onDuplicate: (m) => echoDup.push(m.key),
+})
+assert.deepEqual(echoDup, [], '回声拦下不等于正文重复')
+
+// 2i. 缺 at 的旧记录不参与正文比对，不能被当成永远有效
+const noAt = new Map([['capture:m_nat', { chat: '某群', text: '同一句' }]])
+assert.equal(freshHits([{
+  key: 'capture:m_nat2', chat: '某群', why: '@', preview: '同一句',
+}], noAt, { now: NOW }).length, 1)
 
 // 2e. text 跟着 seen 落盘再读回
 const withText = parseSeen({ delivered: [{ key: captureKey, at: NOW, chat: '群', text: '一句话' }] }, NOW)

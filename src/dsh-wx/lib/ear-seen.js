@@ -11,7 +11,7 @@
  *   - 上限按时间保留最新的 200 条，盘不会越滚越大。
  */
 import { sameName } from './tree.js'
-import { parsePreviewSender, samePreviewText } from './speaker.js'
+import { normalizePreview, parsePreviewSender, previewTruncated, samePreviewText } from './speaker.js'
 
 /** 比较「是不是同一句」时只看正文：群预览可能带「发送者: 」前缀，同一条消息两种写法。 */
 const bodyOf = (text) => {
@@ -97,17 +97,36 @@ export function ownEcho(chat, preview, outbox = [], { now = Date.now(), echoMs =
  * （群预览带不带「发送者:」前缀会换 key）；@ 立刻能投，其余命中只要不是
  * 她自己的回声就能投。
  */
-export function freshHits(hits, seen, { isEcho = () => false, same = samePreviewText } = {}) {
+/** 正文去重的覆盖范围：只够同一轮采集/预览键与 capture 键交叉，不能拿 24 小时的 seen 当身份。 */
+export const BODY_DEDUPE_MS = 10 * 60_000
+
+export function freshHits(hits, seen, {
+  isEcho = () => false,
+  same = samePreviewText,
+  now = Date.now(),
+  dedupeMs = BODY_DEDUPE_MS,
+  onDuplicate,
+} = {}) {
+  // 截断预览和全文是同一句（前缀比对）；两句都完整时必须一字不差。
+  const sameBody = (a, b) => (previewTruncated(a) || previewTruncated(b)
+    ? same(bodyOf(a), bodyOf(b))
+    : normalizePreview(bodyOf(a)) === normalizePreview(bodyOf(b)))
   const alreadyDelivered = (m) => {
     if (seen.has(m.key)) return true
-    const body = bodyOf(m?.preview)
+    const raw = String(m?.preview ?? '')
+    const body = bodyOf(raw)
     if (!body) return false
     for (const [key, rec] of seen) {
       // capture/m_xxx 这类 key 里没有正文，投递时把正文一起记进 seen；旧记录退回 key。
       const text = String(rec?.text ?? '') || previewOfKey(key)
       if (!text) continue
+      // 缺 at 或超出窗口的旧记录不参与正文比对，避免永久压住新消息。
+      const at = Number(rec?.at) || 0
+      if (!at || now - at > dedupeMs) continue
       const chat = String(rec?.chat ?? '') || String(key).split('|')[0] || ''
-      if (sameName(chat, m.chat) && same(bodyOf(text), body)) return true
+      if (!sameName(chat, m.chat) || !sameBody(text, raw)) continue
+      onDuplicate?.(m)
+      return true
     }
     return false
   }
