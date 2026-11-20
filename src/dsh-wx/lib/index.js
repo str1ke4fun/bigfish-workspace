@@ -53,6 +53,7 @@ import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
 import { createPeople } from './people.js'
 import { normalizeMessages } from './transcript.js'
 import { createSessionPool } from './sessions.js'
+import { logLine } from './log.mjs'
 import { parsePreviewSender, previewTruncated, requesterOf, samePreviewText } from './speaker.js'
 import { alignSpeakers, planSpeakerRepairs } from './speaker-align.js'
 import { createVectorProvider } from './vector.js'
@@ -504,7 +505,7 @@ export function apply(ctx, config = {}) {
   // 回到旧字符串返回与宿主错误投影适配器。中途改 policy 需要重载插件才生效。
   const toolEnvelopesEnabled = policy().returnEnvelopes !== false
   if (!toolEnvelopesEnabled) {
-    disposers.push(registerWxToolErrorAdapter(ctx, { log: (m) => console.log(m) }))
+    disposers.push(registerWxToolErrorAdapter(ctx, { log: (m) => logLine(m) }))
   }
   // 预分配的微信会话 id：宿主在 create 期间就触发 agent/created，那时 surface
   // 登记必须已经能命中。本地集合先兜底，fishCore 在场时再写进面注册表。
@@ -544,20 +545,20 @@ export function apply(ctx, config = {}) {
   // ---- 定时提醒：一次性许可 + 「最近把谁叫醒过」 ----
   // 许可只管「到点时允许往这一个会话发一次」；它不放宽允许名单，也不改频率。
   const permitStore = createPermitStore({
-    log: (m) => console.log('[dsh-wx] 提醒许可：' + m),
+    log: (m) => logLine('[dsh-wx] 提醒许可：' + m),
   })
   const reminderJobs = createReminderJobStore({
-    log: (m) => console.log('[dsh-wx] 机械提醒：' + m),
+    log: (m) => logLine('[dsh-wx] 机械提醒：' + m),
   })
 
   // ---- 会话目录 / 多会话 ----
   // 目录是派生索引：侧栏每见到一次就合并一次；全量滚动扫描只在启动/登录后和工作台按钮点的时候做。
   // chatId 一旦分配就不换，台账、任务、向量缓存都靠它对齐。
   const directory = createDirectory({
-    log: (m) => console.log('[dsh-wx] 会话目录：' + String(m ?? '').slice(0, 160)),
+    log: (m) => logLine('[dsh-wx] 会话目录：' + String(m ?? '').slice(0, 160)),
   })
   const sessions = createSessionPool({
-    log: (m) => console.log('[dsh-wx] 会话池：' + String(m ?? '').slice(0, 160)),
+    log: (m) => logLine('[dsh-wx] 会话池：' + String(m ?? '').slice(0, 160)),
   })
   const knownNames = () => {
     const p = policy()
@@ -591,7 +592,7 @@ export function apply(ctx, config = {}) {
         ignoreChats: policy().ignoreChats,
       })
     } catch (err) {
-      console.log('[dsh-wx] 会话目录合并失败：' + String(err?.message ?? err).slice(0, 120))
+      logLine('[dsh-wx] 会话目录合并失败：' + String(err?.message ?? err).slice(0, 120))
       return null
     }
   }
@@ -606,22 +607,22 @@ export function apply(ctx, config = {}) {
     if (g?.sanitizeForeign) return g.sanitizeForeign(String(text ?? ''))
     if (!guardWarned) {
       guardWarned = true
-      console.log('[dsh-wx] fishGuard 没接上，检索结果暂不显示原文')
+      logLine('[dsh-wx] fishGuard 没接上，检索结果暂不显示原文')
     }
     return { text: '', dropped: String(text ?? '').trim() ? 1 : 0 }
   }
   const vectorProvider = createVectorProvider({
-    log: (m) => console.log('[dsh-wx] 向量检索：' + m),
+    log: (m) => logLine('[dsh-wx] 向量检索：' + m),
   })
   const contextStore = createContextStore({
     sanitize: sanitizeForHer,
     vectorProvider: (req) => vectorProvider.provider(req),
     resolveChat,
-    log: (m, err) => console.log('[dsh-wx] 上下文：' + String(m ?? '') + (err ? '（' + String(err?.message ?? err).slice(0, 120) + '）' : '')),
+    log: (m, err) => logLine('[dsh-wx] 上下文：' + String(m ?? '') + (err ? '（' + String(err?.message ?? err).slice(0, 120) + '）' : '')),
   })
   // 人物名册是派生索引：只增不删，写坏了按空名册处理，不影响台账。
   const people = createPeople({
-    log: (m) => console.log('[dsh-wx] 人物名册：' + String(m ?? '').slice(0, 160)),
+    log: (m) => logLine('[dsh-wx] 人物名册：' + String(m ?? '').slice(0, 160)),
   })
   // 她自己发出去、回执确认过的原文。发言人归因只认这批，绝不从正文猜。
   const outbox = []
@@ -663,7 +664,7 @@ export function apply(ctx, config = {}) {
     } catch (err) {
       if (!captureWarned) {
         captureWarned = true
-        console.log('[dsh-wx] 台账记不下（不影响收发）：' + String(err?.message ?? err).slice(0, 120))
+        logLine('[dsh-wx] 台账记不下（不影响收发）：' + String(err?.message ?? err).slice(0, 120))
       }
     }
     return null
@@ -676,7 +677,7 @@ export function apply(ctx, config = {}) {
     contextStore,
     directory,
     people,
-    log: (line) => console.log('[dsh-wx] ' + line),
+    log: (line) => logLine('[dsh-wx] ' + line),
   })
   const RECENT_FILE = '/home/str1k3/.dsh-wx/recent-chats.json'
   const RECENT_MS = 30 * 60_000
@@ -769,7 +770,7 @@ export function apply(ctx, config = {}) {
   }
 
   const treeStats = { calls: 0, lastMs: 0, since: Date.now() }
-  const fresh = createFreshness((m) => console.log('[dsh-wx] 树：' + m))
+  const fresh = createFreshness((m) => logLine('[dsh-wx] 树：' + m))
   // 树的重试发生在两段：插件刚挂上（init），以及**检测到微信被重启过**（recover）。
   // 微信常常比用户级无障碍总线先启动，Qt 的桥只连一次，总线晚到就永远空树；
   // 重启微信（systemd Restart、工作台按钮、手动）也会重演这件事。
@@ -842,7 +843,7 @@ export function apply(ctx, config = {}) {
     const note = fixed.map((chat) => `${chat.ocrName}→${chat.name}`).join('、')
     if (note && note !== lastReconciled) {
       lastReconciled = note
-      console.log('[dsh-wx] OCR 名字对账：' + note)
+      logLine('[dsh-wx] OCR 名字对账：' + note)
       logInbound({ type: 'ocr-reconciled', chats: fixed.map((chat) => ({ ocr: chat.ocrName, chat: chat.name })) })
     }
     return { ...data, parsed }
@@ -963,8 +964,8 @@ export function apply(ctx, config = {}) {
     if (h.status !== treeStatus) {
       treeStatus = h.status
       treeSince = Date.now()
-      if (h.status === 'ok') console.log(`[dsh-wx] 树恢复：${h.elements} 个元素、${h.chats} 个会话`)
-      else console.log(`[dsh-wx] 树状态：${h.status}（元素 ${h.elements}、会话 ${h.chats}）`)
+      if (h.status === 'ok') logLine(`[dsh-wx] 树恢复：${h.elements} 个元素、${h.chats} 个会话`)
+      else logLine(`[dsh-wx] 树状态：${h.status}（元素 ${h.elements}、会话 ${h.chats}）`)
     }
     if (h.status === 'login' || h.login) treeLastLoginAt = Date.now()
     const act = treeAction({
@@ -989,7 +990,7 @@ export function apply(ctx, config = {}) {
       treeAlert = ''
     } else if (act.alert) {
       treeAlert = act.alert
-      if (treeAlert !== prevAlert) console.log('[dsh-wx] 树：' + treeAlert)
+      if (treeAlert !== prevAlert) logLine('[dsh-wx] 树：' + treeAlert)
     }
     writeHealth()
     return act
@@ -1005,14 +1006,14 @@ export function apply(ctx, config = {}) {
     treeAttempts = Number(act?.attempt) || treeAttempts + 1
     treeLastRestartAt = Date.now()
     treeAlert = act?.alert || `${when}微信没连上无障碍树，准备重启`
-    console.log('[dsh-wx] 树：' + treeAlert)
+    logLine('[dsh-wx] 树：' + treeAlert)
     logInbound({ type: 'tree-restart', attempt: treeAttempts, status: treeLast?.status, elements: treeLast?.elements, chats: treeLast?.chats })
     writeHealth()
     const bus = await run(['bus-start'], 30_000).then(jsonLine).catch((e) => jsonLine(e?.message))
     if (!bus?.ok) {
       treeRetryAfter = Date.now() + TREE_RESTART_COOLDOWN_MS
       treeAlert = `${when}读不到无障碍树，而且无障碍总线没起来：先不重启微信，等总线恢复`
-      console.log('[dsh-wx] 树：' + treeAlert)
+      logLine('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-error', error: treeAlert, bus })
       writeHealth()
       return
@@ -1022,12 +1023,12 @@ export function apply(ctx, config = {}) {
       if (!r?.ok) throw new Error(r?.error || '重启命令没有返回 ok')
       treeRetryAfter = Date.now() + TREE_RESTART_SETTLE_MS
       treeAlert = `${when}微信没连上无障碍树，已重启微信（${r.oldPid}→${r.pid}），等树恢复`
-      console.log('[dsh-wx] 树：' + treeAlert)
+      logLine('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-restarted', attempt: treeAttempts, ...r })
     } catch (error) {
       treeRetryAfter = Date.now() + TREE_RESTART_COOLDOWN_MS
       treeAlert = `${when}微信没连上无障碍树，重启失败：` + String(error?.message ?? error).slice(0, 120)
-      console.log('[dsh-wx] 树：' + treeAlert)
+      logLine('[dsh-wx] 树：' + treeAlert)
       logInbound({ type: 'tree-error', error: treeAlert, attempt: treeAttempts })
     }
     writeHealth()
@@ -1250,13 +1251,13 @@ export function apply(ctx, config = {}) {
     await pressReturnThenMark({
       pressReturn: () => run(['key', 'Return']),
       onReturn,
-      log: (m) => console.log('[dsh-wx] ' + m),
+      log: (m) => logLine('[dsh-wx] ' + m),
     })
     await sleep(900)
 
     if (token) {
       const used = permitStore.consume({ id: token, chat: allowed.chat, text: body })
-      if (!used.ok) console.log('[dsh-wx] 提醒许可作废失败：' + used.why)
+      if (!used.ok) logLine('[dsh-wx] 提醒许可作废失败：' + used.why)
     }
 
     const after = await look({ confirm: false })
@@ -1384,7 +1385,7 @@ export function apply(ctx, config = {}) {
       id: sid,
       before,
       look: () => look({ confirm: false }),
-      log: (m) => console.log('[dsh-wx] 表情发送：' + m),
+      log: (m) => logLine('[dsh-wx] 表情发送：' + m),
     })
 
     // 回执确认了才落台账：没看到新增表情就不假装发过。
@@ -1454,7 +1455,7 @@ export function apply(ctx, config = {}) {
       dir: stickerDir,
       look: () => look({ confirm: false }),
       which,
-      log: (m) => console.log('[dsh-wx] 表情收藏：' + m),
+      log: (m) => logLine('[dsh-wx] 表情收藏：' + m),
     })
     return { ...r, chat: s.parsed.current }
   }
@@ -1532,7 +1533,7 @@ export function apply(ctx, config = {}) {
         return now.parsed.ok && sameName(now.parsed.current, allowed.chat)
       },
       shot: join(stickerDir, 'search-panel.png'),
-      log: (m) => console.log('[dsh-wx] 表情搜索：' + m),
+      log: (m) => logLine('[dsh-wx] 表情搜索：' + m),
     })
 
     let outMsgId = ''
@@ -1562,7 +1563,7 @@ export function apply(ctx, config = {}) {
       if (cwd !== HER_DIR) return
       // QQ 会话（onebot-*）不挂微信说明：说明里的内容会被带进 QQ 的话里
       if (String(agent?.session?.id ?? '').startsWith('onebot-')) return
-      console.log('[dsh-wx] 拿到她的 agent（' + String(agent?.session?.id ?? '?') + '）')
+      logLine('[dsh-wx] 拿到她的 agent（' + String(agent?.session?.id ?? '?') + '）')
       // 只挂一段会改变下一句判断的现实规则；具体动作由当时可见的说明负责。
       agent.ctx?.systemPrompt?.section?.({
         name: 'channel:dsh-wx',
@@ -1675,7 +1676,7 @@ export function apply(ctx, config = {}) {
     saveWxSession(id)
     const st = sessions.stats()
     if (st.mainChatId) sessions.assignMain(st.mainChatId, id, st.mainChatName)
-    console.log('[dsh-wx] 微信会话：' + id)
+    logLine('[dsh-wx] 微信会话：' + id)
     return id
   }
 
@@ -1711,10 +1712,10 @@ export function apply(ctx, config = {}) {
       if (!id) return main
       const r = sessions.assign(chatId, id, chatName)
       if (!r.ok) return main
-      console.log('[dsh-wx] 会话池：' + chatName + ' → ' + id)
+      logLine('[dsh-wx] 会话池：' + chatName + ' → ' + id)
       return id
     } catch (err) {
-      console.log('[dsh-wx] 会话池建 worker 失败，回落主会话：' + String(err?.message ?? err).slice(0, 120))
+      logLine('[dsh-wx] 会话池建 worker 失败，回落主会话：' + String(err?.message ?? err).slice(0, 120))
       return main
     }
   }
@@ -1747,7 +1748,7 @@ export function apply(ctx, config = {}) {
     }
   }
   const early = setTimeout(() => {
-    ensureWxSession().catch((e) => console.log('[dsh-wx] 还建不了微信会话（下一轮再试）：' + String(e?.message ?? e).slice(0, 120)))
+    ensureWxSession().catch((e) => logLine('[dsh-wx] 还建不了微信会话（下一轮再试）：' + String(e?.message ?? e).slice(0, 120)))
   }, 12_000)
   early.unref?.()
 
@@ -1795,7 +1796,7 @@ export function apply(ctx, config = {}) {
         ignoreChats: policy().ignoreChats,
       })
       fresh.reset('目录扫描滚动了侧栏，旧基线作废')
-      console.log(`[dsh-wx] 目录扫描：${res.pages} 页、${merged.length} 个会话（${res.reason}）`)
+      logLine(`[dsh-wx] 目录扫描：${res.pages} 页、${merged.length} 个会话（${res.reason}）`)
       logInbound({ type: 'directory-scan', pages: res.pages, chats: merged.length, reason: res.reason, complete: res.complete })
       return res
     } finally {
@@ -1826,7 +1827,7 @@ export function apply(ctx, config = {}) {
         maxLevel: 3,
         finalBlock: p.overdueVisibility,
         backoff: reminderBackoff,
-        log: (m) => console.log('[dsh-wx] 逾期：' + String(m ?? '').slice(0, 300)),
+        log: (m) => logLine('[dsh-wx] 逾期：' + String(m ?? '').slice(0, 300)),
         deliver: async (t, level) => {
           const chat = canonicalName(t.chatName || chatNameOfId(t.chatId))
           if (!chat) throw new Error('会话名当前解析不到')
@@ -1839,7 +1840,7 @@ export function apply(ctx, config = {}) {
         nextCheckAt: (_t, level) => new Date(Date.now() + (REMIND_NEXT_MS[level] ?? REMIND_NEXT_MS[3])).toISOString(),
         note: (_t, level) => `第 ${level} 次逾期提醒`,
         onPersisted: ({ task, level, chat }) => {
-          console.log(`[dsh-wx] 逾期提醒 ${level}/3 → ${chat}（${task.taskId}）`)
+          logLine(`[dsh-wx] 逾期提醒 ${level}/3 → ${chat}（${task.taskId}）`)
           logInbound({ type: 'overdue-reminded', taskId: task.taskId, chatId: task.chatId, chat, level })
         },
       })
@@ -1855,10 +1856,10 @@ export function apply(ctx, config = {}) {
     try {
       const r = contextStore.maintain()
       if (r.archive.archived.length || r.summaries.written.length) {
-        console.log(`[dsh-wx] 维护：归档 ${r.archive.archived.length} 个文件、摘要 ${r.summaries.written.length} 天`)
+        logLine(`[dsh-wx] 维护：归档 ${r.archive.archived.length} 个文件、摘要 ${r.summaries.written.length} 天`)
       }
     } catch (err) {
-      console.log('[dsh-wx] 维护失败：' + String(err?.message ?? err).slice(0, 120))
+      logLine('[dsh-wx] 维护失败：' + String(err?.message ?? err).slice(0, 120))
     }
   }
 
@@ -1885,7 +1886,7 @@ export function apply(ctx, config = {}) {
     permits: permitStore,
     getEnabled: () => policy().mechanicalReminderDelivery,
     now: Date.now,
-    log: (m) => console.log('[dsh-wx] 机械提醒：' + String(m ?? '').slice(0, 300)),
+    log: (m) => logLine('[dsh-wx] 机械提醒：' + String(m ?? '').slice(0, 300)),
     sendReminder: (req) => withSendLock(() => sendToChat(req)),
   })
   reminderDelivery.recover()
@@ -1943,8 +1944,8 @@ export function apply(ctx, config = {}) {
     },
   }
   const wxProvided = provideWxService(ctx, wxService)
-  if (wxProvided.ok) console.log('[dsh-wx] 已向 dsh-fish 暴露 wx 服务')
-  else console.log('[dsh-wx] wx 服务没挂上：' + wxProvided.why)
+  if (wxProvided.ok) logLine('[dsh-wx] 已向 dsh-fish 暴露 wx 服务')
+  else logLine('[dsh-wx] wx 服务没挂上：' + wxProvided.why)
   if (typeof wxProvided.dispose === 'function') disposers.push(wxProvided.dispose)
 
   // ---- 后台轮转采集（M2）：当前会话 OCR 补发言人 ----
@@ -1980,7 +1981,7 @@ export function apply(ctx, config = {}) {
         }
       })
     } catch (err) {
-      console.log('[dsh-wx] 采集：当前会话 OCR 失败（' + String(err?.message ?? err).slice(0, 120) + '）')
+      logLine('[dsh-wx] 采集：当前会话 OCR 失败（' + String(err?.message ?? err).slice(0, 120) + '）')
     }
   }
 
@@ -2100,7 +2101,7 @@ export function apply(ctx, config = {}) {
     if (reason) {
       if (lastPauseLog.reason !== reason || Date.now() - lastPauseLog.at > 30_000) {
         lastPauseLog = { reason, at: Date.now() }
-        console.log('[dsh-wx] 采集：暂停（' + reason + '）')
+        logLine('[dsh-wx] 采集：暂停（' + reason + '）')
       }
       writeHealth()
       return
@@ -2114,7 +2115,7 @@ export function apply(ctx, config = {}) {
     try {
       const r = await withGuiLock(() => runCapture({
         job: { ...job, chatId: jobChatId }, io, contextStore, directory, people, settings, policy: p,
-        log: (m) => console.log('[dsh-wx] 采集：' + String(m ?? '').slice(0, 160)),
+        log: (m) => logLine('[dsh-wx] 采集：' + String(m ?? '').slice(0, 160)),
       }))
       if (r.ok) {
         for (const name of r.ocrSenders ?? []) {
@@ -2124,11 +2125,11 @@ export function apply(ctx, config = {}) {
         capturedSinceStart.add(job.chat)
         quietUntil = Date.now() + settings.quietMs
         captureHealth = { ...captureHealth, lastAt: new Date().toISOString(), lastChat: job.chat, lastResult: `added:${r.added} skipped:${r.skipped}`, lastError: '' }
-        if (r.added > 0) console.log(`[dsh-wx] 采集：${job.chat} +${r.added}（回滚 ${r.scrolled} 屏）`)
+        if (r.added > 0) logLine(`[dsh-wx] 采集：${job.chat} +${r.added}（回滚 ${r.scrolled} 屏）`)
       } else {
         queue.fail(job.chat)
         captureHealth = { ...captureHealth, lastError: r.why ?? 'failed' }
-        console.log('[dsh-wx] 采集：' + job.chat + ' 失败（' + (r.why ?? '') + '）')
+        logLine('[dsh-wx] 采集：' + job.chat + ' 失败（' + (r.why ?? '') + '）')
       }
     } catch (err) {
       queue.fail(job.chat)
@@ -2161,7 +2162,7 @@ export function apply(ctx, config = {}) {
         treeAttempts = 0
         treeRetryAfter = Date.now() + TREE_RESTART_SETTLE_MS
         treeAlert = `微信重启过（${prevPid}→${pid}），等无障碍树恢复`
-        console.log('[dsh-wx] 树：' + treeAlert)
+        logLine('[dsh-wx] 树：' + treeAlert)
         logInbound({ type: 'tree-pid-change', from: prevPid, to: pid, status: tree.status })
         writeHealth()
       }
@@ -2185,7 +2186,7 @@ export function apply(ctx, config = {}) {
             ocrRecovered = true
           }
         } catch (error) {
-          console.log('[dsh-wx] OCR 回退失败: ' + String(error?.message ?? error).slice(0, 120))
+          logLine('[dsh-wx] OCR 回退失败: ' + String(error?.message ?? error).slice(0, 120))
         }
       }
 
@@ -2202,7 +2203,7 @@ export function apply(ctx, config = {}) {
         }
         if (Date.now() - lastRelogin > 10 * 60_000) {
           lastRelogin = Date.now()
-          console.log(`[dsh-wx] 微信在登录页（窗口 ${tree.window?.w}x${tree.window?.h}），等人工登录`)
+          logLine(`[dsh-wx] 微信在登录页（窗口 ${tree.window?.w}x${tree.window?.h}），等人工登录`)
         }
         return
       }
@@ -2233,7 +2234,7 @@ export function apply(ctx, config = {}) {
       if (!ocrRecovered && directoryScanArmed) {
         directoryScanArmed = false
         await scanDirectoryNow().catch((err) => {
-          console.log('[dsh-wx] 目录扫描失败：' + String(err?.message ?? err).slice(0, 120))
+          logLine('[dsh-wx] 目录扫描失败：' + String(err?.message ?? err).slice(0, 120))
         })
       }
       // 树落后时试一次无副作用的"滚一下"逼它刷新；最多一分钟一次
@@ -2322,7 +2323,7 @@ export function apply(ctx, config = {}) {
       const sig = [...now.keys()].sort().join('‖')
       if (sig !== lastSig) {
         lastSig = sig
-        console.log(`[dsh-wx] 耳朵：侧栏 @ 行 ${now.size} 条${now.size ? ' → ' + [...now.values()].map((m) => m.chat).join('、') : ''}`)
+        logLine(`[dsh-wx] 耳朵：侧栏 @ 行 ${now.size} 条${now.size ? ' → ' + [...now.values()].map((m) => m.chat).join('、') : ''}`)
         logInbound({ type: 'detected', chats: [...now.values()].map((m) => ({ chat: m.chat, why: m.why, unread: m.unread, preview: m.preview, key: m.key })) })
       }
 
@@ -2337,7 +2338,7 @@ export function apply(ctx, config = {}) {
         // poke 里点到的允许会话，同样算「最近叫醒过」；她随后说「提醒我」时才有目标。
         noteRecent(p.allowChats.filter((n) => String(poke).includes(n)))
         await deliver(await ensureWxSession(), `[微信·叫你] ${poke}`)
-        console.log('[dsh-wx] 耳朵：主机塞了一句进去 → ' + poke.slice(0, 60))
+        logLine('[dsh-wx] 耳朵：主机塞了一句进去 → ' + poke.slice(0, 60))
         return
       }
 
@@ -2373,7 +2374,7 @@ export function apply(ctx, config = {}) {
         // 内容重复的命中记账，不再每轮重试：key 记进 seen，之后同 key 也不会再来。
         for (const m of fresh1) if (!hits.includes(m)) seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat), text: String(m.preview ?? '') })
         saveSeen()
-        console.log('[dsh-wx] 耳朵：内容近期已投过，跳过 ' + (fresh1.length - hits.length) + ' 条')
+        logLine('[dsh-wx] 耳朵：内容近期已投过，跳过 ' + (fresh1.length - hits.length) + ' 条')
       }
       // 压着没投出去的 @：本轮采集让路（投递循环后按实际成功数重算）。
       heldHits = hits.length
@@ -2382,7 +2383,7 @@ export function apply(ctx, config = {}) {
         const held = [...now.values()].filter((m) => !seen.has(m.key))
         if (held.length > 0 && Date.now() - lastHeldLog > 30_000) {
           lastHeldLog = Date.now()
-          console.log('[dsh-wx] 耳朵：压着 ' + held.length + ' 条（回声保护 ' + Math.round(ECHO_MS / 1000) + 's）→ ' + held.map((m) => m.chat).join('、'))
+          logLine('[dsh-wx] 耳朵：压着 ' + held.length + ' 条（回声保护 ' + Math.round(ECHO_MS / 1000) + 's）→ ' + held.map((m) => m.chat).join('、'))
         }
         return
       }
@@ -2390,7 +2391,7 @@ export function apply(ctx, config = {}) {
       if (hostBusy()) {
         if (Date.now() - lastHeldLog > 30_000) {
           lastHeldLog = Date.now()
-          console.log('[dsh-wx] 耳朵：主机这一轮还没答完，微信通知先压着（' + hits.map((h) => h.chat).join('、') + '）')
+          logLine('[dsh-wx] 耳朵：主机这一轮还没答完，微信通知先压着（' + hits.map((h) => h.chat).join('、') + '）')
         }
         return
       }
@@ -2414,7 +2415,7 @@ export function apply(ctx, config = {}) {
         try {
           contextStore.ingest({ chat, chatId, preview: h.preview, why: h.why, isDM, ignoreChats: p.ignoreChats })
         } catch (err) {
-          console.log('[dsh-wx] 入池失败（不影响这次投递）：' + String(err?.message ?? err).slice(0, 120))
+          logLine('[dsh-wx] 入池失败（不影响这次投递）：' + String(err?.message ?? err).slice(0, 120))
         }
         try {
           const rec = contextStore.recentContext({ chat, chatId, limit: 6, hours: 6, ignoreChats: p.ignoreChats })
@@ -2435,10 +2436,10 @@ export function apply(ctx, config = {}) {
           noteContent(recentContent, h)
           // 每个会话投完都给采集留一段静默期（取较大值，不会无限延长）。
           quietUntil = Math.max(quietUntil, Date.now() + p.capture.quietMs)
-          console.log('[dsh-wx] 耳朵：已投递（' + sid + '）→ ' + chat)
+          logLine('[dsh-wx] 耳朵：已投递（' + sid + '）→ ' + chat)
           logInbound({ type: 'delivered', session: sid, chatId, chat, why: h.why, preview: h.preview, key: h.key })
         } catch (err) {
-          console.log('[dsh-wx] 耳朵：投递失败（' + chat + '）：' + String(err?.message ?? err).slice(0, 160))
+          logLine('[dsh-wx] 耳朵：投递失败（' + chat + '）：' + String(err?.message ?? err).slice(0, 160))
           logInbound({ type: 'deliver-failed', chatId, chat, why: h.why, error: String(err?.message ?? err).slice(0, 160) })
         }
       }
@@ -2452,7 +2453,7 @@ export function apply(ctx, config = {}) {
       noteRecent(sentChats)
     } catch (err) {
       const msg = String(err?.message ?? err).slice(0, 160)
-      console.log('[dsh-wx] 耳朵出错: ' + msg)
+      logLine('[dsh-wx] 耳朵出错: ' + msg)
       // 同一个错误每 30 秒记一次，别让账本被重试刷屏
       if (Date.now() - lastFailLog > 30_000) {
         lastFailLog = Date.now()
@@ -2463,7 +2464,7 @@ export function apply(ctx, config = {}) {
       try {
         await captureTick({ parsed: roundParsed, p, pendingHits: pendingCaptureHits.length + heldHits })
       } catch (err) {
-        console.log('[dsh-wx] 采集：本轮出错（' + String(err?.message ?? err).slice(0, 120) + '）')
+        logLine('[dsh-wx] 采集：本轮出错（' + String(err?.message ?? err).slice(0, 120) + '）')
       }
       busy = false
     }
@@ -2472,7 +2473,7 @@ export function apply(ctx, config = {}) {
   const timer = setInterval(ear, Math.max(3, Number(config.pollSeconds) || 5) * 1000)
   timer.unref?.()
   const remindTimer = setInterval(() => {
-    reminderPump().catch((err) => console.log('[dsh-wx] 逾期泵出错：' + String(err?.message ?? err).slice(0, 120)))
+    reminderPump().catch((err) => logLine('[dsh-wx] 逾期泵出错：' + String(err?.message ?? err).slice(0, 120)))
   }, 60_000)
   remindTimer.unref?.()
   const maintainTimer = setInterval(maintain, 15 * 60_000)
@@ -2480,7 +2481,7 @@ export function apply(ctx, config = {}) {
   const maintainEarly = setTimeout(maintain, 120_000)
   maintainEarly.unref?.()
 
-  console.log(`[dsh-wx] mounted (display=${display}, tools=${disposers.length}, policy=${POLICY}, stickers=${stickerDir})`)
+  logLine(`[dsh-wx] mounted (display=${display}, tools=${disposers.length}, policy=${POLICY}, stickers=${stickerDir})`)
 
   // ---------------------------------------------------------------- 工具
   const wxSendTool = createWxSendTool({
@@ -2491,7 +2492,7 @@ export function apply(ctx, config = {}) {
     sendToChat: (req) => withSendLock(() => sendToChat(req)),
     recordReply: ({ taskId, msgId }) => {
       const rep = contextStore.recordReply({ taskId, msgId })
-      if (!rep.ok) console.log('[dsh-wx] 回复已发出，任务没记上：' + String(rep.why ?? 'unknown'))
+      if (!rep.ok) logLine('[dsh-wx] 回复已发出，任务没记上：' + String(rep.why ?? 'unknown'))
       return rep
     },
   })
@@ -2889,7 +2890,7 @@ export function apply(ctx, config = {}) {
       if (!policy().enabled) throw new WxToolError('WX_DISABLED', '[微信现在没开]')
       let r
       try {
-        r = await scanStickers({ run, dir: stickerDir, log: (m) => console.log('[dsh-wx] 表情扫描：' + m) })
+        r = await scanStickers({ run, dir: stickerDir, log: (m) => logLine('[dsh-wx] 表情扫描：' + m) })
       } catch (err) {
         const extra = []
         if (err?.panelShot) extra.push(`截图：${err.panelShot}`)
