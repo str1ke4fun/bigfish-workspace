@@ -42,6 +42,16 @@ test('预览被截断时用 OCR 全文；OCR 更短或对不上就放弃', () =>
   assert.equal(completeFromOcrLines(preview, lines([['短', 0]])), '')
 })
 
+test('右对齐的下一行（她自己的回复）不拼进对方气泡', () => {
+  const right = [
+    { text: '@D33P533K 这条被截断了', top: 0, height: 20, left: 20, width: 300, confidence: 80 },
+    { text: '我看到了，这就来', top: 21, height: 20, left: 520, width: 200, confidence: 80 },
+  ]
+  const joined = joinOcrBubble(right, 0)
+  assert.equal(joined.lines.length, 1)
+  assert.equal(joined.text.includes('这就来'), false)
+})
+
 test('预览没被截断时不补全，哪怕 OCR 能拼出更长的行', () => {
   const list = lines([
     ['@D33P533K 在吗晚上吃什么', 0],

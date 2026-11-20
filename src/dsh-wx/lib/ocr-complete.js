@@ -51,6 +51,8 @@ export function joinOcrBubble(lines, index) {
     // 同一条气泡内的 OCR 行通常紧挨着甚至框重叠；超过 ~10px 就是下一条消息了。
     if (top - bottom > Math.max(9, median * 0.6)) break
     if (Number(line?.left) + (Number(line?.width) || 0) < Number(start.left) - median) break
+    // 右对齐的气泡（她自己的回复）和对方气泡左边缘差得远，不能拼进来。
+    if (Number(line?.left) > Number(start.left) + Math.max(24, median)) break
     picked.push(line)
     bottom = top + height
   }
