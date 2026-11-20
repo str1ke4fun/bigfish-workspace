@@ -46,6 +46,9 @@
 **/.dsh-wx/
 **/.config/
 
+# Local candidate checkouts for the desktop pet (third-party repos, never published).
+/desktop-pet-candidates/
+
 # Dependencies, generated files and disk/archive images.
 node_modules/
 __pycache__/
