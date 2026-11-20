@@ -135,49 +135,64 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
     // 仍按名字处理；中间还有省略号才说明读坏了，丢掉。全名对账在 index.js 的
     // reconcileChatName 里做（只认唯一前缀，找不到就不改名）。
     const name = rawName.replace(/\s*(?:\.{2,}|…)\s*$/u, '').trim()
-    if (!name || name.length > 80 || /^[\p{P}\p{S}\s]+$/u.test(name)) return []
+    if (!name) return []
     const nameConfidence = titleWords.reduce((sum, word) => sum + (Number(word.confidence) || 0), 0) / titleWords.length
-    const anchorConfidence = nameConfidence + (time ? 15 : 0)
-    if (!time && nameConfidence < 85) return []
-    if (!time && /^(?:你|能|看|到|测试|吗|我|需要|重新|集结|部队)/.test(name)) return []
-    if (/\[|\]|(?:\.{2,}|…)|:/.test(name) || /^(?:You|were|mentioned|@Me)$/i.test(name)) return []
     // 行带用垂直中心：标题行的 top 会被头像/高字形拉偏，中心和相邻行的间距才稳。
     const center = line.top + line.height / 2
-    return [{ line, center, titleWords, name, nameConfidence, anchorConfidence, hasTime: Boolean(time) }]
+    return [{ line, center, name, nameConfidence, hasTime: Boolean(time) }]
   }).sort((a, b) => a.center - b.center)
 
   const deduped = []
   for (const candidate of candidates) {
     const previous = deduped.at(-1)
     if (previous && Math.abs(candidate.center - previous.center) < 18) {
-      if (candidate.anchorConfidence > previous.anchorConfidence) deduped[deduped.length - 1] = candidate
+      const score = (c) => (Number(c.nameConfidence) || 0) + (c.hasTime ? 15 : 0)
+      if (score(candidate) > score(previous)) deduped[deduped.length - 1] = candidate
     } else deduped.push(candidate)
   }
+  if (!deduped.length) return []
 
-  // 没读到时间的候选按行距验收：真实会话行是等距的，夹在中间的预览行会把间距撕成两半。
-  // 带时间锚点不足两个时退回名字可信度：够高、像标题、不是一长串数字。
-  const timedCenters = deduped.filter((a) => a.hasTime).map((a) => a.center)
+  // 预览行紧贴标题（约一个文本行高），真会话行至少隔开一行多。
+  // 带时间的锚点先给出行距；一个都没读到就用行高估。
+  const heights = deduped.map((c) => c.line.height).filter((h) => h > 0).sort((a, b) => a - b)
+  const medianHeight = heights.length ? heights[Math.floor(heights.length / 2)] : 20
+  const timed = deduped.filter((c) => c.hasTime)
   const pitches = []
-  for (let i = 1; i < timedCenters.length; i += 1) {
-    const gap = timedCenters[i] - timedCenters[i - 1]
+  for (let i = 1; i < timed.length; i += 1) {
+    const gap = timed[i].center - timed[i - 1].center
     if (gap > 4) pitches.push(gap)
   }
   pitches.sort((a, b) => a - b)
-  const medianPitch = pitches.length ? pitches[Math.floor(pitches.length / 2)] : 0
-  const anchors = deduped.filter((anchor) => {
-    if (anchor.hasTime) return true
-    if (timedCenters.length >= 2 && medianPitch > 0) {
-      const nearest = Math.min(...timedCenters.map((center) => Math.abs(center - anchor.center)))
-      return nearest >= medianPitch * 0.6 && nearest <= medianPitch * 1.4
-    }
-    return anchor.nameConfidence >= 90 && anchor.name.length <= 24 && !isPreview(anchor.name) &&
-      !/^[\d\s.…_-]{4,}$/.test(anchor.name)
-  })
+  const pitch = pitches.length ? pitches[Math.floor(pitches.length / 2)] : 0
+  const rowGap = Math.min(pitch > 0 ? pitch * 0.7 : Infinity, medianHeight * 1.6)
+  const continuationGap = medianHeight * 0.9
 
-  return anchors.map((anchor, index) => {
-    const previous = anchors[index - 1]?.center
-    const next = anchors[index + 1]?.center
-    // 行带按相邻锚点中心的中点切：一行只属于一个会话，不再用固定 +48px 的窗口。
+  // 行边界独立于名字是否合格：被过滤掉的行也要占住自己的行带，否则它的
+  // 标题/徽标会漏进下一行。紧贴上一个候选的是预览/徽标，不是新行。
+  const boundaries = []
+  let previousCandidate = null
+  for (const candidate of deduped) {
+    const prev = boundaries.at(-1)
+    const continuation = previousCandidate &&
+      candidate.center - previousCandidate.center < continuationGap
+    if (!continuation && (!prev || candidate.hasTime || candidate.center - prev.center >= rowGap)) {
+      boundaries.push(candidate)
+    }
+    previousCandidate = candidate
+  }
+  if (!boundaries.length) return []
+
+  /** 名字像不像会话标题；不像的行只占行带，不输出。 */
+  const nameLooksLikeChat = (name) => Boolean(name) && name.length <= 80 &&
+    !/^[\p{P}\p{S}\s]+$/u.test(name) &&
+    !/\[|\]|(?:\.{2,}|…)|:/.test(name) &&
+    !/^(?:You|were|mentioned|@Me)$/i.test(name) &&
+    !/^[\d\s.…_-]{4,}$/.test(name)
+
+  return boundaries.map((anchor, index) => {
+    const previous = boundaries[index - 1]?.center
+    const next = boundaries[index + 1]?.center
+    // 行带按相邻边界中心的中点切：一行只属于一个会话，不再用固定 +48px 的窗口。
     const bandTop = previous === undefined ? anchor.center - 6 : (previous + anchor.center) / 2
     const bandBottom = next === undefined ? height * 0.96 : (anchor.center + next) / 2
     const rowLines = lines.filter((line) => {
@@ -185,12 +200,14 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
       return center >= bandTop && center < bandBottom && line.left < width * 0.62
     })
     if (!rowLines.length) rowLines.push(anchor.line)
-    // 所有锚点的标题行都不算预览：否则上一行的名字会串进下一行。
-    const rest = rowLines.filter((line) => !anchors.some((a) => a.line === line))
+    // 所有边界的标题行都不算预览：否则上一行的名字会串进下一行。
+    const rest = rowLines.filter((line) => !boundaries.some((b) => b.line === line))
     const mention = rest.some((line) => isMention(line.text))
     const preview = rest.filter((line) => !isTime(line.text) && !isUnread(line.text))
       .map((line) => stripMention(line.text))
       .filter(Boolean).join(' ').trim()
+    // 没读到时间的行只有自己带 @ 徽标才输出；名字不像标题的一律只占带不输出。
+    if (!nameLooksLikeChat(anchor.name) || (!anchor.hasTime && !mention)) return null
     const nameConfidence = Math.round(anchor.nameConfidence)
     const left = Math.min(...rowLines.map((line) => line.left))
     const top = Math.min(...rowLines.map((line) => line.top))
@@ -206,7 +223,7 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
         cx: origin.x + Math.round(width * 0.5), cy: origin.y + Math.round((top + bottom) / 2),
       },
     }
-  })
+  }).filter(Boolean)
 }
 
 export function snapshotFromTsv(tsv, bounds, rowOcr = null) {

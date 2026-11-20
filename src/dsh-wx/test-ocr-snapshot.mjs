@@ -154,4 +154,47 @@ const zhBadge = [
 const zhRows = groupTimestampAnchoredRows(parseTsv(`header\n${zhBadge}`, { scale: 2 }), 339, 666)
 assert.equal(zhRows.find((row) => row.name === '某群')?.mention, true, '中文 @ 徽标也能识别')
 
+// 4) 中间一行没读到时间、名字还在：它的徽标和标题不能漏进下一行
+const droppedMiddle = [
+  word(1,1,1,1, 250, 940, 180, 44, 95, '群一'),
+  word(1,1,1,1, 1096, 948, 104, 28, 96, '10:00'),
+  word(1,1,1,2, 250, 1030, 180, 44, 95, '群二'),
+  word(1,1,1,3, 250, 1060, 480, 40, 95, '[You were mentioned]'),
+  word(1,1,1,4, 250, 1120, 180, 44, 95, '群三'),
+  word(1,1,1,4, 1096, 1128, 104, 28, 96, '10:02'),
+].join('\n')
+const droppedRows = groupTimestampAnchoredRows(parseTsv(`header\n${droppedMiddle}`, { scale: 2 }), 339, 666)
+assert.deepEqual(droppedRows.map((row) => row.name), ['群一', '群二', '群三'], '中间行仍占自己的行带')
+assert.equal(droppedRows.find((row) => row.name === '群二')?.mention, true, '没时间但自己带徽标的行仍要输出')
+assert.equal(droppedRows.find((row) => row.name === '群三')?.mention, false, '中间行的徽标不能算到下一行')
+assert.equal(droppedRows.find((row) => row.name === '群三')?.preview, '', '中间行的标题不能变成下一行的预览')
+
+// 5) 名字被过滤的中间行仍要占住自己的行带
+const rejectedMiddle = [
+  word(1,1,1,1, 250, 940, 180, 44, 95, '群一'),
+  word(1,1,1,1, 1096, 948, 104, 28, 96, '10:00'),
+  word(1,1,1,2, 250, 1030, 180, 44, 95, '群[1]'),
+  word(1,1,1,2, 1096, 1036, 104, 28, 96, '10:01'),
+  word(1,1,1,3, 250, 1060, 480, 40, 95, '[You were mentioned]'),
+  word(1,1,1,4, 250, 1120, 180, 44, 95, '群三'),
+  word(1,1,1,4, 1096, 1128, 104, 28, 96, '10:02'),
+].join('\n')
+const rejectedRows = groupTimestampAnchoredRows(parseTsv(`header\n${rejectedMiddle}`, { scale: 2 }), 339, 666)
+assert.deepEqual(rejectedRows.map((row) => row.name), ['群一', '群三'], '名字不合格的行不输出')
+assert.equal(rejectedRows.find((row) => row.name === '群三')?.mention, false, '被过滤行的徽标不能算到下一行')
+assert.equal(rejectedRows.find((row) => row.name === '群三')?.preview, '', '被过滤行的标题不能变成下一行的预览')
+
+// 6) 只有一个带时间锚点时，正文预览不能被当成会话名
+const sparsePreview = [
+  word(1,1,1,1, 250, 940, 180, 44, 95, '群一'),
+  word(1,1,1,1, 1096, 948, 104, 28, 96, '10:00'),
+  word(1,1,1,2, 250, 984, 480, 40, 95, '好的我知道了'),
+  word(1,1,1,3, 250, 1030, 180, 44, 95, '群二'),
+  word(1,1,1,4, 250, 1060, 480, 40, 95, '[You were mentioned]'),
+].join('\n')
+const sparseRows = groupTimestampAnchoredRows(parseTsv(`header\n${sparsePreview}`, { scale: 2 }), 339, 666)
+assert.deepEqual(sparseRows.map((row) => row.name), ['群一', '群二'], '正文预览不是会话名')
+assert.equal(sparseRows.find((row) => row.name === '群一')?.preview, '好的我知道了', '预览留在上一行')
+assert.equal(sparseRows.find((row) => row.name === '群二')?.mention, true, '徽标归下一条真会话')
+
 console.log('ocr snapshot: all assertions passed')
