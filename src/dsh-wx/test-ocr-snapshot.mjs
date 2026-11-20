@@ -117,4 +117,41 @@ const truncatedRow = truncated.find((row) => row.name === '星晓家园10号楼1
 assert.ok(truncatedRow, 'a title ending in an ellipsis is kept without the ellipsis')
 assert.equal(truncatedRow.mention, true, 'the @ badge stays attached to a truncated title row')
 
-console.log('ocr snapshot: 19 assertions passed')
+// 1) 长数字预览不能变成聊天名；日期/星期也要能当锚点
+const phantomLines = [
+  word(1,1,1,1, 250, 940, 180, 44, 95, 'File'), word(1,1,1,1, 440, 944, 220, 44, 95, 'Transfer'),
+  word(1,1,1,1, 1096, 948, 104, 28, 96, '11/05'),
+  word(1,1,1,2, 250, 992, 480, 40, 96, '1111111111111111111'),
+  word(1,1,1,3, 250, 1060, 180, 44, 95, 'Tina'), word(1,1,1,3, 440, 1064, 80, 44, 95, 'Yu'),
+  word(1,1,1,3, 1096, 1068, 120, 28, 96, 'Monday'),
+].join('\n')
+const phantom = groupTimestampAnchoredRows(parseTsv(`header\n${phantomLines}`, { scale: 2 }), 339, 666)
+assert.deepEqual(phantom.map((row) => row.name), ['File Transfer', 'Tina Yu'], '预览行不再是锚点')
+assert.equal(phantom[0].preview, '1111111111111111111', '预览留在原行，不串到下一行')
+
+// 2) 紧贴下一行的 @ 徽标只属于下一行
+const neighborBadge = [
+  word(1,1,1,1, 250, 940, 180, 44, 95, 'Group A'),
+  word(1,1,1,1, 1096, 948, 104, 28, 96, '10:00'),
+  word(1,1,1,2, 250, 984, 300, 40, 95, 'hello there'),
+  word(1,1,1,3, 250, 1006, 480, 40, 95, '[You were mentioned]'),
+  word(1,1,1,4, 250, 1030, 180, 44, 95, 'Group B'),
+  word(1,1,1,4, 1096, 1036, 104, 28, 96, '10:01'),
+].join('\n')
+const badgeRows = groupTimestampAnchoredRows(parseTsv(`header\n${neighborBadge}`, { scale: 2 }), 339, 666)
+assert.deepEqual(badgeRows.map((row) => row.name), ['Group A', 'Group B'], '预览行不再变成一行')
+assert.equal(badgeRows.find((row) => row.name === 'Group A')?.mention, false, '邻行的徽标不算本行')
+assert.equal(badgeRows.find((row) => row.name === 'Group A')?.preview, 'hello there', '自己的预览留在本行')
+assert.equal(badgeRows.find((row) => row.name === 'Group B')?.mention, true, '徽标跟着自己的行')
+assert.equal(badgeRows.find((row) => row.name === 'Group B')?.preview, '', '徽标不混进预览')
+
+// 3) 中文徽标也能识别
+const zhBadge = [
+  word(1,1,1,1, 250, 940, 180, 44, 95, '某群'),
+  word(1,1,1,1, 1096, 948, 104, 28, 96, '10:00'),
+  word(1,1,1,2, 250, 984, 300, 40, 95, '[有人@我]'),
+].join('\n')
+const zhRows = groupTimestampAnchoredRows(parseTsv(`header\n${zhBadge}`, { scale: 2 }), 339, 666)
+assert.equal(zhRows.find((row) => row.name === '某群')?.mention, true, '中文 @ 徽标也能识别')
+
+console.log('ocr snapshot: all assertions passed')
