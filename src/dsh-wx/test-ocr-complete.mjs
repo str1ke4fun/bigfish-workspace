@@ -41,3 +41,26 @@ test('预览被截断时用 OCR 全文；OCR 更短或对不上就放弃', () =>
   assert.equal(completeFromOcrLines('完全无关', list), '')
   assert.equal(completeFromOcrLines(preview, lines([['短', 0]])), '')
 })
+
+test('预览没被截断时不补全，哪怕 OCR 能拼出更长的行', () => {
+  const list = lines([
+    ['@D33P533K 在吗晚上吃什么', 0],
+    ['再拼一句', 21],
+  ])
+  assert.equal(completeFromOcrLines('@D33P533K 在吗', list), '', '完整短句不能被替换')
+  assert.match(
+    completeFromOcrLines('@D33P533K 在吗…', list),
+    /晚上吃什么/,
+    '全角省略号算截断',
+  )
+  assert.match(
+    completeFromOcrLines('@D33P533K 在吗...', list),
+    /晚上吃什么/,
+    '三个点也算截断',
+  )
+  assert.match(
+    completeFromOcrLines('@D33P533K 在吗… ', list),
+    /晚上吃什么/,
+    '省略号后面的空格不影响截断判断',
+  )
+})

@@ -53,7 +53,7 @@ import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
 import { createPeople } from './people.js'
 import { normalizeMessages } from './transcript.js'
 import { createSessionPool } from './sessions.js'
-import { parsePreviewSender, requesterOf, samePreviewText } from './speaker.js'
+import { parsePreviewSender, previewTruncated, requesterOf, samePreviewText } from './speaker.js'
 import { alignSpeakers, planSpeakerRepairs } from './speaker-align.js'
 import { createVectorProvider } from './vector.js'
 import { annotate, loadIndex, saveIndex } from './sticker-index.js'
@@ -2293,7 +2293,8 @@ export function apply(ctx, config = {}) {
           if (dropRecentContent([m], recentContent).length === 0) continue
           const pv = parsePreviewSender(String(m.preview ?? ''))
           const body = pv.text || String(m.preview ?? '')
-          if (!body) continue
+          // 预览没被截断就是完整一句，别让 OCR 的噪声把它换掉。
+          if (!body || !previewTruncated(body)) continue
           const prefix = pv.sender ? `${pv.sender}: ` : ''
           const rec = (s.capturedCurrent?.records ?? [])
             .filter((r) => r && r.direction === 'in' && r.text && samePreviewText(body, r.text))

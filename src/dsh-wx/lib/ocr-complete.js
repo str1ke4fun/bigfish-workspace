@@ -5,6 +5,7 @@
  * 从 OCR 行里找到和预览开头对得上的那一行，再按行距把同一条气泡的后续行拼起来。
  * 是否真的用 OCR 结果，由调用方再比一次长度；匹配不上就原样返回。
  */
+import { previewTruncated } from './speaker.js'
 
 /** 只留文字和数字，忽略空白、标点、符号，用来判断「开头是不是同一句」。 */
 export function compactText(text) {
@@ -65,6 +66,8 @@ export function completeFromOcrLines(preview, lines, { chars = 8 } = {}) {
   const list = Array.isArray(lines) ? lines : []
   const body = String(preview ?? '')
   if (!body) return ''
+  // 没有截断标记的预览本身就是完整一句；OCR 拼出来的更长文本是噪声或串行。
+  if (!previewTruncated(body)) return ''
   let index = -1
   for (let i = 0; i < list.length; i += 1) {
     if (ocrStartsWith(body, list[i]?.text, chars)) index = i
