@@ -20,14 +20,15 @@ const SCALE = 2
 // 右侧消息区：左侧 36.5% 是会话列表，顶部留标题，底部留输入栏。
 const CROP = { left: 0.365, top: 0.08, width: 0.62, height: 0.78 }
 
-export function parseMessageTsv(tsv, { scale = 1 } = {}) {
+export function parseMessageTsv(tsv, { scale = 1, minConfidence = 25 } = {}) {
   const lines = new Map()
   for (const raw of String(tsv ?? '').split(/\r?\n/).slice(1)) {
     const c = raw.split('\t')
     if (c.length < 12 || c[0] !== '5' || !c[11]?.trim()) continue
     const confidence = Number(c[10])
     const [l, t, w, h] = c.slice(6, 10).map(Number)
-    if (!Number.isFinite(confidence) || ![l, t, w, h].every(Number.isFinite) || w <= 0 || h <= 0) continue
+    if (!Number.isFinite(confidence) || confidence < minConfidence ||
+        ![l, t, w, h].every(Number.isFinite) || w <= 0 || h <= 0) continue
     const key = c.slice(1, 5).join(':')
     const line = lines.get(key) ?? { words: [], left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity, confidence: [] }
     line.words.push({ text: c[11].trim(), left: l / scale })
