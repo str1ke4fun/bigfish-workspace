@@ -39,7 +39,7 @@ import {
 } from '../lib/identity.js'
 import { legacySelfDocPath, ownerDocPath, presenceDocPath, selfDocPath, writeSelfDoc } from '../lib/selfdoc.js'
 import { appendEvent } from '../lib/store.js'
-import { DEFAULTS } from '../lib/settings.js'
+import { DEFAULTS, dateKey } from '../lib/settings.js'
 import { BELIEF_SHOWN, SELF_DOC_BUDGET } from '../lib/persona.js'
 import { BILI_HINT, CLOSING_HINT, WAKE_HINT } from '../lib/wakeconst.js'
 
@@ -364,10 +364,13 @@ test('叫醒、出门、收工只说处境，不把世界解释成系统信号',
 
 test('他这几天：写盘并只在 web 面的 fish:owner 出现', async () => {
   const root = tmp()
+  // 用相对今天的时间，别写死日期：derivePresenceRecent 只聚合最近 7 天，
+  // 写死的日期会在第 8 天自动变红（2026-11-20 首次发生）。
+  const seenAt = new Date(Date.now() - 3600_000)
   await appendEvent({
     type: 'meta',
-    text: 'presence:2026-11-13:work:120:0',
-    ts: '2026-11-13T10:00:00Z',
+    text: `presence:${dateKey(seenAt)}:work:120:0`,
+    ts: seenAt.toISOString(),
   }, { source: 'system' }, root)
   const r = await writeSelfDoc(root)
   assert.equal(r.ok, true)
