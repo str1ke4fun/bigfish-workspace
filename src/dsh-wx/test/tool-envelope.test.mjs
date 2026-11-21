@@ -97,6 +97,32 @@ test('微信失败信封保留工具自己的完整审计字段，模型投影�
   assert.equal(wrapped.output.render({}, result)[0].text, '[表情没扫成]')
 })
 
+test('微信信封在边界上只交纯 JSON：undefined 字段不会让宿主整条打回', async () => {
+  const wrapped = wrapWxTool(base(async () => ({
+    ok: true,
+    source: undefined,
+    text: '看得见',
+    nested: { keep: 1, drop: undefined },
+    items: [1, undefined, 2],
+  })))
+
+  const result = await wrapped.execute({}, {})
+  assert.deepEqual(result, { ok: true, text: '看得见', nested: { keep: 1 }, items: [1, null, 2] })
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), result)
+})
+
+test('微信失败信封同样只交纯 JSON', async () => {
+  const wrapped = wrapWxTool(base(async () => ({
+    ok: false,
+    code: 'WX_STICKER_SCAN_FAILED',
+    message: '[表情没扫成]',
+    detail: '',
+    panelShot: undefined,
+  })))
+  const result = await wrapped.execute({}, {})
+  assert.deepEqual(result, { ok: false, code: 'WX_STICKER_SCAN_FAILED', message: '[表情没扫成]' })
+})
+
 test('wxFailureFrom 只接管 WxToolError，wxWithText 不碰失败结果', () => {
   assert.deepEqual(
     wxFailureFrom(new WxToolError('WX_TREE_STALE', '[没看清]', 'tree stale')),

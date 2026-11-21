@@ -39,6 +39,7 @@ export function stripEllipsis(name) {
 export const looksTruncated = (name) => TRUNCATED.test(str(name))
 
 const tempIdFor = (name) => 'c_tmp_' + createHash('sha256').update(norm(name)).digest('hex').slice(0, 10)
+const isTempChatId = (chatId) => str(chatId).startsWith('c_tmp_')
 
 /**
  * 在权威名字（允许名单 / 已知全名）里找一个唯一前缀。
@@ -155,9 +156,11 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
    * @param {string[]} [req.knownNames] 权威全名（允许名单等）
    * @param {string[]} [req.directNames] 私聊名单
    * @param {string[]} [req.ignoreChats] 服务号会话；不再写它们的预览内容
+   * @param {boolean} [req.reconcile] 这一次是完整扫描：只出现一次的名字可以洗掉重复名临时记录
    */
   function merge({
     chats = [], current = '', source = 'tree', knownNames = [], directNames = [], ignoreChats = [],
+    reconcile = false,
   } = {}) {
     const at = nowIso(now)
     // 树不可用时 OCR 只负责名字：预览/发送者/未读/置顶都是屏幕上可能串行的东西，
@@ -175,6 +178,23 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       if (name) inputCounts.set(name, (inputCounts.get(name) ?? 0) + 1)
     }
     const seenInput = new Map()
+
+    // 完整扫描只看到一个名字：说明侧栏里并没有两个同名会话。
+    // 之前按「同名不是身份」留下的临时记录（c_tmp_*）是扫描接缝的产物，
+    // 不清掉就会永远撞名。只清「一个稳定条目 + 若干临时重复条目」这种形状；
+    // 两个稳定条目同名，或只有临时条目时，一律继续保持 fail closed。
+    if (reconcile) {
+      for (const [name, count] of inputCounts) {
+        if (count !== 1) continue
+        const matches = findMatches(name)
+        if (matches.length < 2) continue
+        const stable = matches.filter((e) => !isTempChatId(e.chatId))
+        const temps = matches.filter((e) => isTempChatId(e.chatId) && e.resolvedBy === 'duplicate-name')
+        if (stable.length !== 1 || temps.length === 0) continue
+        entries = entries.filter((e) => !temps.includes(e))
+        dirty = true
+      }
+    }
 
     const upsert = (rawName, row = {}) => {
       const name = norm(rawName)
@@ -378,6 +398,7 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
 }
 
 const sameName = (a, b) => norm(a) === norm(b)
+/** 两行有可比的预览/时间且一致，才算「同一行」的强证据。 */
 const sameScanRow = (a, b) => {
   if (!sameName(a?.name, b?.name)) return false
   const ap = norm(a?.preview)
@@ -414,16 +435,26 @@ export async function scanSidebar({
 
   const collected = []
   let previousRows = []
-  const collect = (page, index) => {
+  const collect = (page, index, { samePage = false } = {}) => {
     const rows = pageChats(page)
     let overlap = 0
-    if (index > 0 && previousRows.length && rows.length) {
-      const max = Math.min(previousRows.length, rows.length)
-      for (let n = max; n > 0; n--) {
-        const tail = previousRows.slice(-n)
-        if (tail.every((row, i) => sameScanRow(row, rows[i]))) {
-          overlap = n
-          break
+    if (index > 0) {
+      if (samePage) {
+        // 滚到底时列表不再移动：这一页就是刚才那一页，逐行对照更新，绝不能再收一遍。
+        overlap = Math.min(previousRows.length, rows.length)
+      } else if (previousRows.length && rows.length) {
+        const max = Math.min(previousRows.length, rows.length)
+        for (let n = max; n > 0; n--) {
+          const tail = previousRows.slice(-n)
+          if (!tail.every((row, i) => sameName(row?.name, rows[i]?.name))) continue
+          // 两行以上按名字连续对上，足以认定是滚动接缝上的同一段。
+          // 只有单行重叠时名字不算身份：还必须预览/时间也一致，
+          // 否则相邻的两个同名会话会被吃掉一个。
+          const strong = n === 1 ? sameScanRow(tail[0], rows[0]) : true
+          if (strong) {
+            overlap = n
+            break
+          }
         }
       }
     }
@@ -441,7 +472,7 @@ export async function scanSidebar({
     }
     previousRows = rows
     onPage?.(page, index)
-    return { overlap, fresh: index === 0 ? rows.length : rows.length - overlap }
+    return { overlap, fresh: index === 0 ? rows.length : Math.max(0, rows.length - overlap) }
   }
   collect(first, 0)
 
@@ -460,7 +491,7 @@ export async function scanSidebar({
     const rows = pageChats(page)
     if (rows.some((c) => c.draft)) { reason = 'draft'; break }
     const nextSig = rows.map((c) => norm(c.name)).join('‖')
-    const { fresh } = collect(page, pages)
+    const { fresh } = collect(page, pages, { samePage: nextSig === sig })
     pages += 1
     scrolled += 1
     if (nextSig === sig || fresh === 0) { reason = 'bottom'; break }

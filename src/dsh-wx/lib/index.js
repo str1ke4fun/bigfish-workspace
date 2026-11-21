@@ -820,6 +820,8 @@ export function apply(ctx, config = {}) {
       raw, parsed, region,
       hash0: region && prevRegion && JSON.stringify(region) === JSON.stringify(prevRegion) ? hash0 : '',
       hash, mouse, at: Date.now(), digest: contentDigest(parsed),
+      // 工具信封要过宿主的 lossless JSON 检查：source 不能留 undefined。
+      source: 'tree',
       tree: treeHealth(raw, parsed),
     }
   }
@@ -1794,6 +1796,8 @@ export function apply(ctx, config = {}) {
         chats: merged, current: '', source: 'scan',
         knownNames: knownNames(), directNames: policy().noMentionChats,
         ignoreChats: policy().ignoreChats,
+        // 只有滚到底的完整扫描才有资格洗掉重复名临时记录：没扫全就不能断定只剩一个。
+        reconcile: res.complete === true,
       })
       fresh.reset('目录扫描滚动了侧栏，旧基线作废')
       logLine(`[dsh-wx] 目录扫描：${res.pages} 页、${merged.length} 个会话（${res.reason}）`)

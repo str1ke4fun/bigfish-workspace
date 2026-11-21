@@ -39,6 +39,22 @@ export function wxFailureFrom(error) {
   return wxFailure(error.code, error.modelText, error.rawDetail)
 }
 
+/**
+ * 宿主在 render 前按 lossless JSON 快照工具返回值：一个 `undefined` 字段、
+ * 符号键或不可枚举键就会让整条结果被拒（2026-11-20 wx_peek 的
+ * `source: undefined` 就是这样把工具打哑的）。工具契约要求纯 JSON，这里在
+ * 边界上兜底：只保留可枚举字符串键，丢掉 undefined，数组里的 undefined 变 null。
+ */
+function losslessJson(value) {
+  if (value === null || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map((item) => (item === undefined ? null : losslessJson(item)))
+  const out = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (item !== undefined) out[key] = losslessJson(item)
+  }
+  return out
+}
+
 function normalizeFailure(result) {
   const code = String(result?.code ?? '')
   const message = String(result?.message ?? '')
@@ -48,7 +64,7 @@ function normalizeFailure(result) {
   const out = { ...result, ok: false, code, message }
   if (detail) out.detail = detail
   else delete out.detail
-  return out
+  return losslessJson(out)
 }
 
 function envelopeExecute(execute) {
@@ -60,7 +76,7 @@ function envelopeExecute(execute) {
       }
       if (result.ok === false) return normalizeFailure(result)
       if (result.ok !== true) throw new TypeError('wx tool envelope must contain boolean ok')
-      return result
+      return losslessJson(result)
     } catch (error) {
       const failure = wxFailureFrom(error)
       if (failure) return failure

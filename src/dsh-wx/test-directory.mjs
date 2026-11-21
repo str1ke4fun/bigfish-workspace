@@ -301,6 +301,88 @@ await t('跨页接缝的同名行没有共同身份证据时保留为撞名', as
   assert.equal(d.sendableTarget('撞名群'), null)
 })
 
+await t('没有预览/时间的行靠邻行证据对缝，不重复收集', async () => {
+  // 少说话的老会话在侧栏里既没有预览也没有时间；重叠窗口里有强证据的邻行时，
+  // 它们仍是同一个会话，不能因为自己没证据就把整段重复收一遍。
+  const pages = [
+    { parsed: { ok: true, chats: [row('甲群', 100, '甲: 预览'), row('乙群', 220, '乙: 预览'), row('丙群', 340, '丙: 预览'), row('丁群', 460), row('戊群', 580)] } },
+    { parsed: { ok: true, chats: [row('丙群', 100, '丙: 预览'), row('丁群', 220), row('戊群', 340), row('己群', 460, '己: 预览')] } },
+  ]
+  let i = 0
+  const scanned = await scanSidebar({
+    read: async () => pages[Math.min(i++, pages.length - 1)],
+    scroll: async () => {},
+    sleep: async () => {},
+    maxPages: 2,
+  })
+  assert.equal(scanned.ok, true)
+  assert.deepEqual(scanned.chats.map((c) => c.name), ['甲群', '乙群', '丙群', '丁群', '戊群', '己群'])
+})
+
+await t('滚到底后重复读到同一页，不会把整页再算一遍', async () => {
+  const pages = [
+    { parsed: { ok: true, chats: [row('甲群', 100, '甲: 预览'), row('乙群', 220, '乙: 预览'), row('丙群', 340)] } },
+    { parsed: { ok: true, chats: [row('乙群', 100, '乙: 预览'), row('丙群', 220), row('丁群', 340)] } },
+    // 到底滚不动：内容与上一页相同；名字照旧，不能因此变成两行。
+    { parsed: { ok: true, chats: [row('乙群', 100, '乙: 预览'), row('丙群', 220), row('丁群', 340)] } },
+  ]
+  let i = 0
+  const scanned = await scanSidebar({
+    read: async () => pages[Math.min(i++, pages.length - 1)],
+    scroll: async () => {},
+    sleep: async () => {},
+    maxPages: 4,
+  })
+  assert.equal(scanned.ok, true)
+  assert.equal(scanned.complete, true)
+  assert.deepEqual(scanned.chats.map((c) => c.name), ['甲群', '乙群', '丙群', '丁群'])
+
+  const d = createDirectory({ file: file(), now: () => T })
+  d.merge({ chats: mergeScanned(scanned.chats) })
+  assert.equal(d.sendableName('乙群'), '乙群', '唯一的会话必须还能发')
+})
+
+const poisoned = () => {
+  const f = file()
+  writeFileSync(f, JSON.stringify({
+    version: 1,
+    chats: [
+      { chatId: 'c_real01', displayName: '撞名群', fullName: '撞名群', aliases: [], kind: 'dm', nameConfidence: 'ambiguous', resolvedBy: 'duplicate-name' },
+      { chatId: 'c_tmp_a1', displayName: '撞名群', fullName: '撞名群', aliases: [], kind: 'unknown', nameConfidence: 'ambiguous', resolvedBy: 'duplicate-name' },
+      { chatId: 'c_tmp_a2', displayName: '撞名群', fullName: '撞名群', aliases: [], kind: 'unknown', nameConfidence: 'ambiguous', resolvedBy: 'duplicate-name' },
+    ],
+  }, null, 2))
+  return f
+}
+
+await t('完整扫描只看到一个同名会话时，清掉重复名的临时记录并恢复可发', async () => {
+  const d = createDirectory({ file: poisoned(), now: () => T })
+  assert.equal(d.sendableTarget('撞名群'), null, '清理前必须是 fail closed')
+  d.merge({ chats: [{ name: '撞名群', preview: '甲: 在吗' }], source: 'scan', reconcile: true })
+  assert.deepEqual(d.sendableTarget('撞名群'), { chatName: '撞名群', chatId: 'c_real01' })
+  assert.equal(d.all().filter((e) => e.displayName === '撞名群').length, 1)
+})
+
+await t('没拿到完整扫描证据时，重复名仍 fail closed', async () => {
+  const d = createDirectory({ file: poisoned(), now: () => T })
+  d.merge({ chats: [{ name: '撞名群', preview: '甲: 在吗' }], source: 'tree' })
+  assert.equal(d.sendableTarget('撞名群'), null)
+})
+
+await t('两个稳定会话同名时，完整扫描只看到一次也不恢复发送', async () => {
+  const f = file()
+  writeFileSync(f, JSON.stringify({
+    version: 1,
+    chats: [
+      { chatId: 'c_real01', displayName: '撞名群', fullName: '撞名群', aliases: [], kind: 'dm', nameConfidence: 'ambiguous', resolvedBy: 'duplicate-name' },
+      { chatId: 'c_real02', displayName: '撞名群', fullName: '撞名群', aliases: [], kind: 'group', nameConfidence: 'ambiguous', resolvedBy: 'duplicate-name' },
+    ],
+  }, null, 2))
+  const d = createDirectory({ file: f, now: () => T })
+  d.merge({ chats: [{ name: '撞名群', preview: '甲: 在吗' }], source: 'scan', reconcile: true })
+  assert.equal(d.sendableTarget('撞名群'), null, '两个稳定同名会话不能被误判成一个')
+})
+
 await t('OCR 来源只写名字，不写预览与发送者', async () => {
   const d = createDirectory({ file: file(), now: () => T })
   d.merge({ chats: [{ name: '某群', preview: 'ea] File Transfer 11/05' }], source: 'ocr' })
