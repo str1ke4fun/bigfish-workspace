@@ -1909,9 +1909,9 @@ export function apply(ctx, config = {}) {
     isWxSession: (sessionId) => isWxSession(sessionId),
     // 会话还在创建中 / 尚未落到 wxSessionId 或会话池时也能认出来。
     isReservedSession: (id) => reservedWxSessions.has(String(id ?? '')),
-    currentChat: (sessionId) => (isWxSession(sessionId)
-      ? (chatNameOfSession(sessionId) || recentChats().at(-1) || '')
-      : ''),
+    // 派活闸用：只认这条会话真正归属的聊天，不拿 recentChats 猜。
+    // 群 worker 在名字尚未落账时宁可返回空（拒绝派活），也不能蹭到最近私聊。
+    currentChat: (sessionId) => (isWxSession(sessionId) ? (chatNameOfSession(sessionId) || '') : ''),
     isRecentChat: (sessionId, chat, withinMs) => isWxSession(sessionId) && isRecentChat(chat, withinMs),
     // 工作汇总回到固定的主人私聊：走正常发送闸和串行锁，不跟随派活来源。
     notifyOwner: async ({ text, chat } = {}) => {
