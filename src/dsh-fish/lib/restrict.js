@@ -64,6 +64,18 @@ export const FISH_TOOLS = Object.freeze([...OWN_TOOL_NAMES])
  */
 export const HER_TOOLS = Object.freeze([...FISH_TOOLS, 'read_image'])
 
+/**
+ * 老宿主 / 单测兜底只用 web 面名单。带面专属语义的工具（陪看、工作、
+ * 工头调度）不能在 web 面放出去；真正的面表由 tool-policy 提供。
+ */
+const WEB_FALLBACK_EXCLUDE = new Set([
+  'presence_speak', 'look_screen',
+  'her_work', 'her_work_status', 'her_worker', 'her_worker_control', 'her_ask_user',
+])
+
+/** worker 的 restrict 失败时的兜底：至少不让鱼工具执行。 */
+const FISH_LIKE_RE = /^(?:growth_commit|her_|wx_|qq_|bili_|presence_speak|look_screen)/
+
 /** 归一化目录，用于判断"这条会话是不是她的屋子"。Windows 大小写不敏感。 */
 function normDir(p) {
   if (!p) return ''
@@ -167,6 +179,8 @@ export function registerToolRestrict(ctx, {
   extra = [],
   ownTools = FISH_TOOLS,
   enabled = true,
+  workerMatch = null,
+  workerNames = [],
   log,
   onResult,
 } = {}) {
@@ -186,7 +200,7 @@ export function registerToolRestrict(ctx, {
   // D37：presence_speak 进了 HER_TOOLS，但兜底路径没有 screen 面的概念；
   // 不能在 web 面放它出去，否则陪看屏幕的工具会出现在普通网页会话里。
   const effectivePolicy = policy ?? {
-    resolveAllow: ({ surface: s }) => (s === 'web' ? HER_TOOLS.filter((n) => n !== 'presence_speak') : []),
+    resolveAllow: ({ surface: s }) => (s === 'web' ? HER_TOOLS.filter((n) => !WEB_FALLBACK_EXCLUDE.has(n)) : []),
     loadTargets: ({ names = [] }) => ({ ok: true, names: [...new Set(names)] }),
   }
   const extraNames = [...new Set(
@@ -221,6 +235,93 @@ export function registerToolRestrict(ctx, {
     // 其它名字仍然要被滤掉。hostNames 为 null 表示拿不到名单，按旧行为不做宿主过滤。
     // 名单在**这一瞬间**现读：贡献表可能在注册之后、这个 agent 之前才更新。
     const namesForPolicy = hostNames ? new Set([...hostNames, ...currentOwnNames()]) : null
+
+    // ---- worker：只掩全局/继承的鱼工具，不装 scoped guard ----
+    // worker 的 preset 工具（read / write / bash / structured_output）在 own/祖先层；
+    // 用 restrict 把它们留在 allow 里，隐藏全局的 her_* / growth_commit 等。
+    // 这里刻意不装 restrict.js 的兜底 guard：那个 guard 会误杀 activation 后
+    // 才挂上的 structured_output。执行侧由 work-guard 再拦鱼工具名。
+    const isWorker = typeof workerMatch === 'function' && workerMatch(agent) === true
+    if (isWorker) {
+      const scopedTools = agent?.ctx?.tools
+      if (!scopedTools?.restrict) {
+        failed = '宿主的 agent.ctx 上没有 tools.restrict（版本不支持）'
+        onResult?.({ ok: false, applied, failed, why: 'failed', allow: [] })
+        return
+      }
+      const allow = [...new Set(
+        (Array.isArray(workerNames) ? workerNames : [])
+          .map((n) => String(n))
+          .filter((n) => !namesForPolicy || namesForPolicy.has(n)),
+      )]
+      try {
+        const dispose = scopedTools.restrict({ allow })
+        try { agent.ctx.effect?.(() => dispose) } catch { /* 拿不到 effect 就靠父级回滚 */ }
+        agentStates.set(agent, {
+          surface: 'worker',
+          hostNames: namesForPolicy,
+          allow: new Set(allow),
+          revealed: new Set(),
+          restrictDispose: typeof dispose === 'function' ? dispose : null,
+          guardDispose: null,
+          applyRestrict: null,
+        })
+        applied += 1
+        say(`[dsh-fish] worker 工具面：只留 ${allow.length} 个宿主工具`)
+        onResult?.({ ok: true, applied, why: 'worker', allow, guard: false })
+      } catch (err) {
+        failed = String(err?.message ?? err).slice(0, 300)
+        // 先按宿主报错里的 known 名单自愈；再不行就挂一条只拦鱼工具的守卫。
+        const healed = adoptKnownFromError(failed)
+        const known = new Set(lastKnownTools ?? [])
+        const usable = healed ? allow.filter((n) => known.has(n)) : []
+        if (usable.length > 0) {
+          try {
+            const dispose = scopedTools.restrict({ allow: usable })
+            try { agent.ctx.effect?.(() => dispose) } catch { /* ignore */ }
+            agentStates.set(agent, {
+              surface: 'worker',
+              hostNames: namesForPolicy,
+              allow: new Set(usable),
+              revealed: new Set(),
+              restrictDispose: typeof dispose === 'function' ? dispose : null,
+              guardDispose: null,
+              applyRestrict: null,
+            })
+            applied += 1
+            say(`[dsh-fish] worker 工具面：按宿主已知名单收窄到 ${usable.length} 个`)
+            onResult?.({ ok: true, applied, why: 'worker', allow: usable, guard: false })
+            return
+          } catch (retryErr) {
+            failed = String(retryErr?.message ?? retryErr).slice(0, 300)
+          }
+        }
+        let guardOk = false
+        try {
+          if (typeof scopedTools.guard === 'function') {
+            const disposeGuard = scopedTools.guard((exec) => (
+              FISH_LIKE_RE.test(String(exec?.name ?? '')) ? '这件事我做不到。' : undefined
+            ))
+            guardOk = typeof disposeGuard === 'function'
+            try { agent.ctx.effect?.(() => disposeGuard) } catch { /* ignore */ }
+            agentStates.set(agent, {
+              surface: 'worker',
+              hostNames: namesForPolicy,
+              allow: new Set(allow),
+              revealed: new Set(),
+              restrictDispose: null,
+              guardDispose: guardOk ? disposeGuard : null,
+              applyRestrict: null,
+            })
+          }
+        } catch (guardErr) {
+          failed = String(guardErr?.message ?? guardErr).slice(0, 300)
+        }
+        say(`[dsh-fish] worker 工具面收窄失败：${failed}${guardOk ? '（已挂鱼工具兜底守卫）' : ''}`)
+        onResult?.({ ok: false, applied, failed, why: 'failed', allow, guard: guardOk })
+      }
+      return
+    }
 
     let surfaceId = null
     try { surfaceId = surface?.current?.(agent) ?? null } catch { surfaceId = null }

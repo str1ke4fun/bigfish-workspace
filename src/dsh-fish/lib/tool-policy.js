@@ -46,7 +46,7 @@
 export const KINDS = Object.freeze(['read', 'write', 'send', 'navigate', 'maintain', 'discover'])
 
 /** 策略表认的面。贡献只能落在这些面里。 */
-export const SURFACES = Object.freeze(['web', 'wx', 'qq', 'bili', 'screen'])
+export const SURFACES = Object.freeze(['web', 'wx', 'qq', 'bili', 'screen', 'work'])
 
 /**
  * 本插件自己注册（内置表里归 dsh-fish 所有）的 8 个工具名。
@@ -61,6 +61,12 @@ export const OWN_TOOL_NAMES = Object.freeze([
   'her_remind_cancel',
   'her_inbox',
   'presence_speak',
+  'look_screen',
+  'her_work',
+  'her_work_status',
+  'her_worker',
+  'her_worker_control',
+  'her_ask_user',
 ])
 
 const ALWAYS = 'always'
@@ -112,6 +118,9 @@ function screenEntries() {
     tool('growth_commit', s, ALWAYS, '', '把此刻想留下的话写下', 'write'),
     tool('read_image', s, ALWAYS, '', '看一张图', 'read', ['hasImageRoute']),
     tool('her_recall', s, ALWAYS, '', '翻自己过去记下的事', 'read'),
+    tool('look_screen', s, ALWAYS, '', '看一眼此刻的屏幕', 'read'),
+    tool('her_work', s, ALWAYS, '', '去一个目录里把一件事做完', 'navigate'),
+    tool('her_work_status', s, ALWAYS, '', '看看工作做到哪了', 'read'),
   ]
 }
 
@@ -128,6 +137,21 @@ function wxAlways() {
     tool('her_remind', s, ALWAYS, '', '有人让你过一会儿提醒时，把到点那句定上', 'write'),
     tool('her_reminders', s, ALWAYS, '', '看看自己定了、还没到点的提醒', 'read'),
     tool('her_remind_cancel', s, ALWAYS, '', '取消一条还没到点的提醒', 'write'),
+    tool('her_work', s, ALWAYS, '', '去一个目录里把一件事做完', 'navigate'),
+    tool('her_work_status', s, ALWAYS, '', '看看工作做到哪了', 'read'),
+  ]
+}
+
+/** 工头会话：只有调度和记忆，没有 shell / 读写。 */
+function workEntries() {
+  const s = 'work'
+  return [
+    tool('her_worker', s, ALWAYS, '', '把一件具体的事派给 worker', 'navigate'),
+    tool('her_worker_control', s, ALWAYS, '', '看看 worker 在做什么，或叫停它', 'read'),
+    tool('her_ask_user', s, ALWAYS, '', '需要他拍板时把问题留下', 'write'),
+    tool('growth_commit', s, ALWAYS, '', '把此刻想留下的话写下', 'write'),
+    tool('her_recall', s, ALWAYS, '', '翻自己过去记下的事', 'read'),
+    tool('todo_write', s, ALWAYS, '', '把要做的事分成几步', 'write'),
   ]
 }
 
@@ -192,6 +216,8 @@ const BUILTIN = Object.freeze([
   ...qqDeferred(),
 
   ...coreEntries('bili'),
+
+  ...workEntries(),
 ])
 
 // ---------------------------------------------------------------------------

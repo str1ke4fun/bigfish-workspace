@@ -293,7 +293,7 @@ export function attachIdentity(agent, root, { canRemind, remindPrompt, inboxText
         } catch {
           return ''
         }
-        if (surface !== 'web' && surface !== 'wx' && surface !== 'screen') return ''
+        if (surface !== 'web' && surface !== 'wx' && surface !== 'screen' && surface !== 'work') return ''
         const parts = []
         // 历史汇总只在 web 面出现；wx/screen 只看实时 provider。
         if (surface === 'web') {
@@ -356,7 +356,10 @@ export function registerIdentity(ctx, { root, herDir, log, surfaceOf, contextOf 
   const onCreated = ({ agent } = {}) => {
     try {
       if (!herDir) return
-      if (!isHerAgent(agent, herDir)) return
+      // 工作会话的 cwd 在用户目录，不在她的屋子里；按面单独认。
+      let surface = ''
+      try { surface = String(surfaceOf?.(agent) ?? '') } catch { surface = '' }
+      if (!isHerAgent(agent, herDir) && surface !== 'work') return
       const r = attachIdentity(agent, root, { canRemind, remindPrompt, inboxText, surfaceOf, contextOf })
       if (r.ok) {
         state.ok = true

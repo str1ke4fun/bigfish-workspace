@@ -1,3 +1,16 @@
+## 未发布 — 2026-11-24
+
+**主动看屏与工作委派 P1/P2**
+
+- `look_screen`：陪伴会话可以在当前轮次主动抓一帧屏幕，返回路径后用 `read_image` 看；presence 关、停流、没有新帧时明确拒绝，不回旧图。
+- 工作委派：新增 `work` 面、`her_work` / `her_work_status` / `her_worker` / `her_worker_control` / `her_ask_user`；工头是鱼本人，cwd 为用户显式给出的目录；worker 通过宿主 `ctx.subagents` 的 spawn provider 派 durable 子会话。
+- `WorkUnit` 状态：`work-sessions.json` / `work-units.json` 原子写、0600；结算只写一次；重启后 `running` 记 `unknown`，不假装完成；inspect 请求结构化结果，build 用 closing text。
+- `work-guard`（G）：worker 的 `read` / `write` / `edit` / `glob` / `grep` 路径必须 realpath 在工作目录内；`~/.ssh`、`~/.aws`、`~/.dsh`、`~/.dsh-fish`、`/etc/shadow` 与 `curl` / `wget` / `ssh` / `rsync` / `git push` / `git reset --hard` 等裸外发和危险命令拒绝；命中写有界、脱敏的 `guardHits`。这是代码级 denylist，不是内核隔离；P4 再做读/网络隔离。
+- 受信闸：微信只接受 `work.wx.dispatchChats` 里的私聊（当前 `cat不到flag的cat`），群和未配置聊天拒绝；桌宠只接受 `say.js` 标记的受信轮次，屏幕采集/OCR 触发的轮次不能派活。
+- 微信汇总：`wx.notifyOwner` 固定发 `work.wx.ownerChat`，压平换行、500 字、秘密命中改通用文案；状态机只在派出/等待/完成/卡住时发。
+- 工作事件面仍写 `web`，不升 schema；工头写 `growth_commit` 不喂 presence/absence；worker 不写事件流。
+- 验证：`src/dsh-fish` 1243 全绿；`src/dsh-wx` 175 全绿。真实模型/微信收发与 preset 真机派活仍需部署后验收。
+
 ## 未发布 — 2026-11-20
 
 **审查与日志修复：耳朵去重、发送者归属、陪伴会话存活、OCR 行归属、日志可诊断性**

@@ -66,6 +66,7 @@ import { normalizeKeyword, searchSticker } from './sticker-search.js'
 import { completeFromOcrLines } from './ocr-complete.js'
 import { WxToolError, registerWxToolErrorAdapter, wrapWxTool, wxFailure, wxWithText } from './tool-error.js'
 import { createSendGate } from './send-gate.js'
+import { ownerNoticeText } from './notify-owner.js'
 import {
   applyWxSendBookkeeping,
   boundedText,
@@ -1908,10 +1909,24 @@ export function apply(ctx, config = {}) {
     isWxSession: (sessionId) => isWxSession(sessionId),
     // 会话还在创建中 / 尚未落到 wxSessionId 或会话池时也能认出来。
     isReservedSession: (id) => reservedWxSessions.has(String(id ?? '')),
-    currentChat: (sessionId) => (isWxSession(sessionId)
-      ? (chatNameOfSession(sessionId) || recentChats().at(-1) || '')
-      : ''),
+    // 派活闸用：只认这条会话真正归属的聊天，不拿 recentChats 猜。
+    // 群 worker 在名字尚未落账时宁可返回空（拒绝派活），也不能蹭到最近私聊。
+    currentChat: (sessionId) => (isWxSession(sessionId) ? (chatNameOfSession(sessionId) || '') : ''),
     isRecentChat: (sessionId, chat, withinMs) => isWxSession(sessionId) && isRecentChat(chat, withinMs),
+    // 工作汇总回到固定的主人私聊：走正常发送闸和串行锁，不跟随派活来源。
+    notifyOwner: async ({ text, chat } = {}) => {
+      const target = String(chat ?? '').trim()
+      if (!target) return { ok: false, why: 'no-chat' }
+      let guard = null
+      try { guard = ctx.get?.('fishGuard') ?? null } catch { guard = null }
+      const prepared = ownerNoticeText(text, { looksLikeSecret: guard?.looksLikeSecret })
+      if (!prepared.ok) return { ok: false, why: prepared.why }
+      try {
+        return await withSendLock(() => sendToChat({ chat: target, text: prepared.text }))
+      } catch (err) {
+        return { ok: false, why: String(err?.message ?? err).slice(0, 160) }
+      }
+    },
     grantReminder: ({ id, chat, text, sessionId, dueAt, ttlMs } = {}) => {
       if (!isWxSession(sessionId)) return { ok: false, why: '定时提醒只能在微信这条会话里定。' }
       const c = canSend(chat)

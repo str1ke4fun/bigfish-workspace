@@ -226,6 +226,29 @@ test('屏幕陪伴开着但没配置 ffmpeg：红，并说清去哪里填', asyn
   })
 })
 
+test('自检显示工作委派后端、守卫与未知状态', async () => {
+  await withRoot(async (root) => {
+    const r = await runChecks({
+      root,
+      net: false,
+      host: {},
+      peers: [],
+      exposure: {
+        work: {
+          status: () => ({ backend: true, guard: { ok: true }, work: { units: 3, unknown: 1 } }),
+        },
+      },
+    })
+    const it = ITEM(r, 'work')
+    assert.ok(it, '要有一项工作委派')
+    assert.equal(it.ok, true)
+    assert.match(it.detail, /派活可用/)
+    assert.match(it.detail, /守卫已挂/)
+    assert.match(it.detail, /3 条 worker 记录/)
+    assert.match(it.detail, /1 条未知/)
+  })
+})
+
 test('源码守门：/owner POST 只认登录账号，不许覆盖领养人', async () => {
   const ob = await readFile(join(ROOT, 'lib', 'observe.js'), 'utf8')
   assert.ok(ob.includes('await saveAccount(me, root)'), '「测试登录」成功时要记下登录账号')

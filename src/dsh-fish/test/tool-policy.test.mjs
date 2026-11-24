@@ -12,10 +12,12 @@ test('全部面的常驻与按需可见矩阵不变', () => {
       'growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image',
       'wx_peek', 'wx_send', 'wx_context', 'wx_task_done', 'wx_task_snooze',
       'her_inbox', 'her_remind', 'her_reminders', 'her_remind_cancel',
+      'her_work', 'her_work_status',
     ],
     qq: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image'],
     bili: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image'],
-    screen: ['growth_commit', 'read_image', 'her_recall'],
+    screen: ['growth_commit', 'read_image', 'her_recall', 'look_screen', 'her_work', 'her_work_status'],
+    work: ['her_worker', 'her_worker_control', 'her_ask_user', 'growth_commit', 'her_recall', 'todo_write'],
   }
   const expectedCatalog = {
     web: [],
@@ -30,9 +32,10 @@ test('全部面的常驻与按需可见矩阵不变', () => {
     ],
     bili: [],
     screen: [],
+    work: [],
   }
 
-  for (const surface of ['web', 'wx', 'qq', 'bili', 'screen']) {
+  for (const surface of ['web', 'wx', 'qq', 'bili', 'screen', 'work']) {
     assert.deepEqual(resolveAllow({ surface, caps }), expectedAllow[surface], `${surface} 常驻矩阵变了`)
     assert.deepEqual(catalog({ surface, caps }).map((e) => e.name), expectedCatalog[surface], `${surface} 按需矩阵变了`)
   }
@@ -123,7 +126,7 @@ test('groupsFor 返回策略表里的组，不含空组', () => {
 
 test('screen 面能看图、翻旧事、记下想留的话，不挂说出口的工具', () => {
   const names = resolveAllow({ surface: 'screen', caps })
-  assert.deepEqual(new Set(names), new Set(['growth_commit', 'read_image', 'her_recall']))
+  assert.deepEqual(new Set(names), new Set(['growth_commit', 'read_image', 'her_recall', 'look_screen', 'her_work', 'her_work_status']))
   assert.equal(names.includes('her_leave'), false, '留话给他是聊天面的事，不混进陪看')
   assert.equal(names.includes('her_tools'), false, '屏幕面不展开工具目录')
   const web = resolveAllow({ surface: 'web', caps })

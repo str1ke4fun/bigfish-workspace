@@ -102,6 +102,8 @@ function resolveSurface(core, opts, raw, type) {
     }
   }
   const fromAgent = agentSurface(core, opts.agent)
+  // work 是会话/工具面，不是新的事件来源面；工作事实仍写 web。
+  if (fromAgent === 'work') return 'web'
   if (fromAgent !== null && fromAgent !== undefined) return fromAgent
   if (type === 'bili_reply') return undefined
   return 'core'
