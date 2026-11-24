@@ -172,6 +172,19 @@ test('桌宠派活只接受受信轮次；微信只接受名单里的私聊', as
   assert.equal(h2.created.length, 0)
 })
 
+test('并发派活同一个目录只建一条工头会话', async () => {
+  const h = await setup()
+  markTrustedTurn('screen-1', 1000)
+  const [a, b] = await Promise.all([
+    h.service.tools.her_work.execute({ dir: h.dir, task: '一' }, { agent: h.screen }),
+    h.service.tools.her_work.execute({ dir: h.dir, task: '二' }, { agent: h.screen }),
+  ])
+  assert.equal(a.ok, true)
+  assert.equal(b.ok, true)
+  assert.equal(h.created.length, 1)
+  assert.equal(a.sessionId, b.sessionId)
+})
+
 test('同目录复用，不同目录新建；continue 用最近的目录', async () => {
   const h = await setup()
   markTrustedTurn('screen-1', 1000)

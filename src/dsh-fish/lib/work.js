@@ -229,7 +229,7 @@ export function createWorkService({
     return rows.some((row) => String(row?.sessionId ?? row?.id ?? '') === String(sessionId))
   }
 
-  async function ensureBoss({ dir, origin = null }) {
+  async function ensureBossInner({ dir, origin = null }) {
     const existing = recordForDir(dir)
     if (existing?.sessionId) {
       reserve(existing.sessionId)
@@ -279,6 +279,14 @@ export function createWorkService({
       }
     })
     return { ok: true, sessionId, reused: false, dir }
+  }
+
+  // 同一目录的“查/建工头会话”也要串行，否则两个前台同时派活会建出两条。
+  let bossQueue = Promise.resolve()
+  function ensureBoss(input) {
+    const p = bossQueue.then(() => ensureBossInner(input), () => ensureBossInner(input))
+    bossQueue = p.catch(() => {})
+    return p
   }
 
   function workPrompt({ dir, task, origin }) {
