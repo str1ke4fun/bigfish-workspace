@@ -15,7 +15,7 @@ test('全部面的常驻与按需可见矩阵不变', () => {
     ],
     qq: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image'],
     bili: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image'],
-    screen: ['growth_commit', 'read_image', 'her_recall'],
+    screen: ['growth_commit', 'read_image', 'her_recall', 'look_screen'],
   }
   const expectedCatalog = {
     web: [],
@@ -123,7 +123,7 @@ test('groupsFor 返回策略表里的组，不含空组', () => {
 
 test('screen 面能看图、翻旧事、记下想留的话，不挂说出口的工具', () => {
   const names = resolveAllow({ surface: 'screen', caps })
-  assert.deepEqual(new Set(names), new Set(['growth_commit', 'read_image', 'her_recall']))
+  assert.deepEqual(new Set(names), new Set(['growth_commit', 'read_image', 'her_recall', 'look_screen']))
   assert.equal(names.includes('her_leave'), false, '留话给他是聊天面的事，不混进陪看')
   assert.equal(names.includes('her_tools'), false, '屏幕面不展开工具目录')
   const web = resolveAllow({ surface: 'web', caps })

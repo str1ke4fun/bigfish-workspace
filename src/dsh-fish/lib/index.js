@@ -37,6 +37,7 @@ import {
 import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
 import { registerPresenceSpeak } from './presence-speak.js'
+import { registerLookScreen } from './look-screen.js'
 import { createScreenService } from './screen.js'
 import { createPetView, petSurfaceAllowed } from './pet-view.js'
 import { startFrameStream, detectHostCapture } from './host-capture.js'
@@ -518,6 +519,8 @@ export function apply(ctx, baseConfig = {}) {
         () => registerInbox(ctx, { core: fishCore ?? undefined, log: (...a) => logger.warn(...a) }),
         // 陪伴面唯一的输出工具：只在 screen 面可见。
         () => registerPresenceSpeak(ctx, { root, core: fishCore ?? {}, screen, log: (...a) => logger.warn(...a) }),
+        // 陪伴会话里主动看一眼此刻的屏幕；只返回路径，看图仍走 read_image。
+        () => registerLookScreen(ctx, { core: fishCore ?? {}, screen, log: (...a) => logger.warn(...a) }),
         // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
         () => registerHerTools(ctx, { core: fishCore, policy, caps }),
       ]) {

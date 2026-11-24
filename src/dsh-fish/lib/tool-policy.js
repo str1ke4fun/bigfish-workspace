@@ -61,6 +61,7 @@ export const OWN_TOOL_NAMES = Object.freeze([
   'her_remind_cancel',
   'her_inbox',
   'presence_speak',
+  'look_screen',
 ])
 
 const ALWAYS = 'always'
@@ -112,6 +113,7 @@ function screenEntries() {
     tool('growth_commit', s, ALWAYS, '', '把此刻想留下的话写下', 'write'),
     tool('read_image', s, ALWAYS, '', '看一张图', 'read', ['hasImageRoute']),
     tool('her_recall', s, ALWAYS, '', '翻自己过去记下的事', 'read'),
+    tool('look_screen', s, ALWAYS, '', '看一眼此刻的屏幕', 'read'),
   ]
 }
 
