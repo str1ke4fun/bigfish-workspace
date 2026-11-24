@@ -6,22 +6,37 @@ Electron + React 19 + `dsh-pet-component` 的 Windows 桌宠。它只做表现�
 
 ## 前置条件
 
-- Windows（`electron-builder --win` 打 portable 包）。
+- Windows 10/11 x64（`electron-builder --win` 打 portable 包）。
 - Node.js 22.6+（`node --test --experimental-strip-types` 需要；实测 Node 24）。
-- 首次构建前需要联网执行 `npm install`（依赖含 Electron）。
+- Git（克隆本仓库、从上游同步素材）。
+- 首次 `npm install` 需要联网（依赖含 Electron）。
+- 运行时的状态与说话依赖 WSL 侧的 8788 工作台和 8710 DSH；没有它们时桌宠只会待机。
 
-## 从零构建
+## 快速验证（不下载完整素材）
 
-在 **Windows** 的仓库根目录执行：
+仓库只随源码附带 1 段待机动画 `assets/webm/待机呼吸休闲.webm`（441,437 B）。
+干净 clone 后不联网也能验证窗口、透明、视频解码和待机循环：
 
 ```powershell
-cd D:\fish-handoff\desktop-pet
+cd <仓库>\desktop-pet
+npm install
+npm run build
+npm start
+```
+
+此时只有待机动作；切到工作/思考等状态或点动作菜单会提示素材缺失，这是预期。
+完整动作和打包需要先同步其余 113 段素材。
+
+## 完整构建
+
+```powershell
+cd <仓库>\desktop-pet
 
 # 1. 安装依赖
 npm install
 
-# 2. 同步动画素材（见下一节；assets/webm/ 不进 Git）
-node scripts/sync-assets.mjs --from D:\bigfish-desktop-pet\assets\webm
+# 2. 从上游同步其余 113 段动画（约 56 MB；已存在的文件默认保留）
+npm run assets:fetch
 
 # 3. 构建渲染进程 / 主进程 / preload
 npm run build
@@ -36,40 +51,87 @@ npm run dist:win
 npm start
 ```
 
-## 素材来源（`assets/webm/`）
+## 素材来源与许可
 
-动画素材**不进入 Git**（`desktop-pet/.gitignore` 忽略 `assets/webm/`），
-因为它是大肥鱼形象、按 CC BY-NC-SA 4.0 授权，见 `assets/ATTRIBUTION.md`。
-干净 checkout 里没有这些文件，`npm run dist:win` 会先跑 `scripts/check-assets.mjs` 并拒绝缺素材的构建。
+| 内容 | 是否入库 | 来源 |
+|---|---|---|
+| `assets/webm/待机呼吸休闲.webm`（441,437 B） | **是** | dsh-pet v0.4.9，CC BY-NC-SA 4.0 |
+| 其余 113 个 `.webm` | 否 | 上游 `dsh-pet/assets/webm`，由 `npm run assets:fetch` 同步 |
 
-实际使用的素材快照是 **dsh-pet v0.4.9**，共 **114 个 `.webm` 文件**。素材来源以
-[`dsh-pet v0.4.9`](https://github.com/PC2005-cloud/dsh-pet/tree/v0.4.9) 标签为准；本地开发机可直接使用
-`D:\bigfish-desktop-pet\assets\webm`（WSL 路径为 `/mnt/d/bigfish-desktop-pet/assets/webm`）。
+- 上游：<https://github.com/PC2005-cloud/dsh-pet>，标签固定 **v0.4.9**，素材路径
+  `dsh-pet/assets/webm`（不是仓库根目录的 `assets/webm`）。
+- 许可：**CC BY-NC-SA 4.0**（署名、非商业、相同方式共享）。署名见 `assets/ATTRIBUTION.md`。
+- **本仓库只分发 1 段待机动画**；其余 113 段不由本仓库或本仓库的 Release 托管。
+- **这 1 段已进入 Git 历史**。作为非商业项目、保留署名没有问题；如果以后要商用或公开分发，
+  必须把它替换成自有素材，或另行取得授权。同步下来的其余素材同样受 CC BY-NC-SA 约束。
+- `assets/webm/` 中除这段待机外的文件仍被 `.gitignore` 忽略，**不要把同步结果提交进仓库**。
+
+### 一条命令同步（推荐）
 
 ```powershell
-cd D:\fish-handoff\desktop-pet
-
-# 先对本地素材做完整性检查，不复制文件
-node scripts/check-assets.mjs --from "D:\bigfish-desktop-pet\assets\webm"
-
-# 检查通过后再同步到 assets/webm/
-node scripts/sync-assets.mjs --from "D:\bigfish-desktop-pet\assets\webm"
+cd <仓库>\desktop-pet
+npm run assets:fetch
 ```
 
-WSL 中可直接复用同一批素材：
+脚本默认用 `git clone --depth 1 --branch v0.4.9 --filter=blob:none --sparse` 只取上游的
+`dsh-pet/assets/webm`，缓存放在 `%TEMP%\bigfish-pet-assets\dsh-pet-v0.4.9`，
+然后调用 `sync-assets.mjs` 补齐缺的文件。已存在的本地文件默认保留，方便换成自定义动画；
+`npm run assets:fetch -- --force` 才会用上游文件覆盖。脚本不会删除任何目录。
+
+### 手工从上游仓库转移
+
+PowerShell：
+
+```powershell
+$repo = Join-Path $env:TEMP 'dsh-pet-v0.4.9'
+git clone --depth 1 --branch v0.4.9 --filter=blob:none --sparse `
+  https://github.com/PC2005-cloud/dsh-pet.git $repo
+git -C $repo sparse-checkout set dsh-pet/assets/webm
+
+cd <仓库>\desktop-pet
+node scripts/check-assets.mjs --from (Join-Path $repo 'dsh-pet\assets\webm')
+node scripts/sync-assets.mjs  --from (Join-Path $repo 'dsh-pet\assets\webm')
+```
+
+WSL / Git Bash：
 
 ```bash
-cd /mnt/d/fish-handoff/desktop-pet
-node scripts/check-assets.mjs --from /mnt/d/bigfish-desktop-pet/assets/webm
+tmp="$(mktemp -d)"
+git clone --depth 1 --branch v0.4.9 --filter=blob:none --sparse \
+  https://github.com/PC2005-cloud/dsh-pet.git "$tmp/dsh-pet"
+git -C "$tmp/dsh-pet" sparse-checkout set dsh-pet/assets/webm
+
+cd <仓库>/desktop-pet
+node scripts/check-assets.mjs --from "$tmp/dsh-pet/dsh-pet/assets/webm"
+node scripts/sync-assets.mjs  --from "$tmp/dsh-pet/dsh-pet/assets/webm"
 ```
 
-若从发布包取素材，先从对应版本的 `resources/app.asar` 解包，再把 `--from` 指向解包后的
-`assets/webm`。`check-assets.mjs` 与 `sync-assets.mjs` 都取
-`assets/config.json` 和 `assets/actions.json` 的并集并去重；缺失任一引用都会列出文件名并失败，
-不会自动扫描或暗中登记目录里的其他 webm。
+### npm 包备选
+
+没有 git 或想从 npm 取同一份素材：
+
+```powershell
+npm pack dsh-pet@0.4.9
+tar -xzf dsh-pet-0.4.9.tgz package/assets/webm
+node scripts/check-assets.mjs --from package/assets/webm
+node scripts/sync-assets.mjs  --from package/assets/webm
+```
+
+### 自定义动画
+
+- **替换默认动作**：把同名 webm 放进 `assets/webm/`，`assets:fetch` 默认跳过已存在的文件，
+  不会覆盖你的版本。
+- **新增动作**：把 webm 放进 `assets/webm/`，在 `config.json` 或 `actions.json` 登记；
+  再运行 `assets:fetch` 补齐其余上游文件。
+- 若要提交自定义素材，需要 `git add -f`（默认被 `.gitignore` 忽略）。
+- 新增 `actions.json` 条目会改变「114 个文件名」的固定名单，需要同步更新
+  `test/config.test.ts` 里的期望；只替换同名默认动画不需要改测试。
+
+`check-assets.mjs` 与 `sync-assets.mjs` 都取 `assets/config.json` 和 `assets/actions.json`
+的并集并去重；缺失任一引用都会列出文件名并失败，不会自动扫描或暗中登记目录里的其他 webm。
 
 当前目录登记 **114 段素材、113 条动作**：`睡觉-开始` 与 `睡觉-循环` 合并成一条 `seq` 动作，
-`睡觉-起来` 保持单独动作。`assets/actions.json` 进 Git，`assets/webm/` 仍被忽略。
+`睡觉-起来` 保持单独动作。`assets/actions.json` 进 Git，其余 `assets/webm/` 仍被忽略。
 
 ## 手动动作注册与播放
 
@@ -168,14 +230,15 @@ assets/skins/
   （`dragging` 是手势态，不算在内），每个值对应 `webm/<动画名>.webm`，文件必须存在。
 - 默认皮肤不放进 `skins/`，仍用 `assets/config.json` + `assets/webm/`。
 - 壳启动时扫描一次皮肤目录；新增皮肤后要重启壳才会出现在工作台下拉里。
-- **素材不进 Git**：默认动画 `assets/webm/` 与皮肤目录里的 `assets/skins/<id>/webm/` 都已被
-  `desktop-pet/.gitignore` 忽略；`skin.json` 与 `ATTRIBUTION.md` 仍可提交。
+- **除随源码附带的待机动画外，素材不进 Git**：皮肤目录里的 `assets/skins/<id>/webm/`
+  仍被 `desktop-pet/.gitignore` 忽略；`skin.json` 与 `ATTRIBUTION.md` 可以提交。
 
 ## 许可
 
 - 播放器组件 `dsh-pet-component` 0.2.5、动作协议参考 `dsh-pet`：MIT。
 - 角色形象与动画素材：**CC BY-NC-SA 4.0**，署名与非商业性使用要求见
-  `assets/ATTRIBUTION.md`。用于商业用途或公开分发前必须替换为自有素材或另行取得授权。
+  `assets/ATTRIBUTION.md`。**本仓库随源码附带 1 段待机动画，且已进入 Git 历史**；
+  用于商业用途或公开分发前必须把这 1 段以及同步得到的其余素材替换为自有素材，或另行取得授权。
 
 ## 目录
 
@@ -183,7 +246,7 @@ assets/skins/
 desktop-pet/
   electron/       主进程：窗口、穿透、轮询、右键菜单、平台探测
   renderer/       React 渲染进程：<Pet>、动作控制器、对话、样式
-  assets/         config.json、ATTRIBUTION.md、webm/（gitignored）、skins/<id>/（webm/ gitignored）
-  scripts/        sync-assets.mjs、check-assets.mjs
-  test/           Node 单测（controller/poller/pointer/chat/config/skin.test.ts）
+  assets/         config.json、ATTRIBUTION.md、webm/（仅待机动画入库，其余 gitignored）
+  scripts/        fetch-assets.mjs、sync-assets.mjs、check-assets.mjs
+  test/           Node 单测（controller/poller/pointer/chat/config/skin/assets-sync 等）
 ```

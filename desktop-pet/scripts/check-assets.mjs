@@ -103,6 +103,7 @@ const missing = names.filter((name) => !existsSync(path.join(fromDir, `${name}.w
 if (missing.length > 0) {
   console.error(`assets missing: ${missing.length} files in ${fromDir}`)
   for (const name of missing) console.error(`  - ${name}.webm`)
+  console.error('提示：在 desktop-pet 下运行 `npm run assets:fetch` 可从上游 dsh-pet v0.4.9 同步其余素材。')
   process.exit(1)
 }
 

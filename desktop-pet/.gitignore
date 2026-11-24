@@ -2,5 +2,7 @@ node_modules/
 dist-electron/
 dist-renderer/
 release/
-assets/webm/
+# 只随源码带 1 段待机动画做最小验证；其余 113 段由脚本从上游同步，不入库。
+assets/webm/*
+!assets/webm/待机呼吸休闲.webm
 assets/skins/*/webm/

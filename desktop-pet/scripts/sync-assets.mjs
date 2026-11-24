@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 只把 assets/config.json 与 assets/actions.json 引用的动画复制到 assets/webm/。
-// assets/webm/ 不进 Git，构建前用 --from 指向本地 dsh-pet 素材目录。
+// assets/webm/ 默认不进 Git；--skip-existing 会保留输出目录里已有的文件（自定义动画）。
 import {
   copyFileSync,
   existsSync,
@@ -12,7 +12,6 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const outDir = path.join(root, 'assets', 'webm')
 
 function fail(message) {
   console.error(message)
@@ -90,31 +89,54 @@ function referencedAnimations(config, registry) {
   return names
 }
 
-const fromIndex = process.argv.indexOf('--from')
-const from = fromIndex === -1 ? undefined : process.argv[fromIndex + 1]
-if (!from) {
-  fail('用法: node scripts/sync-assets.mjs --from <dsh-pet assets/webm 目录>')
+function argValue(flag) {
+  const index = process.argv.indexOf(flag)
+  return index === -1 ? undefined : process.argv[index + 1]
 }
+
+const from = argValue('--from')
+const out = argValue('--out')
+const skipExisting = process.argv.includes('--skip-existing')
+if (!from) {
+  fail('用法: node scripts/sync-assets.mjs --from <dsh-pet assets/webm 目录> [--out <输出目录>] [--skip-existing]')
+}
+if (process.argv.includes('--out') && !out) fail('--out 需要一个目录')
 
 const fromDir = path.resolve(from)
 if (!existsSync(fromDir) || !statSync(fromDir).isDirectory()) {
   fail(`素材目录不存在: ${fromDir}`)
 }
+const outDir = out ? path.resolve(out) : path.join(root, 'assets', 'webm')
 
 const config = readJson(path.join(root, 'assets', 'config.json'), 'config.json')
 const registry = readJson(path.join(root, 'assets', 'actions.json'), 'actions.json')
 const names = referencedAnimations(config, registry)
-const missing = names.filter((name) => !existsSync(path.join(fromDir, `${name}.webm`)))
+
+const missing = []
+const copies = []
+let kept = 0
+for (const name of names) {
+  const dest = path.join(outDir, `${name}.webm`)
+  if (skipExisting && existsSync(dest)) {
+    kept += 1
+    continue
+  }
+  const source = path.join(fromDir, `${name}.webm`)
+  if (!existsSync(source)) {
+    missing.push(name)
+    continue
+  }
+  copies.push([source, dest])
+}
 
 if (missing.length > 0) {
-  console.error(`缺少 ${missing.length} 个动画文件:`)
+  console.error(`缺少 ${missing.length} 个动画文件（源目录和输出目录都没有）:`)
   for (const name of missing) console.error(`  - ${name}.webm`)
   process.exit(1)
 }
 
 mkdirSync(outDir, { recursive: true })
-for (const name of names) {
-  copyFileSync(path.join(fromDir, `${name}.webm`), path.join(outDir, `${name}.webm`))
-}
+for (const [source, dest] of copies) copyFileSync(source, dest)
 
-console.log(`synced ${names.length} files -> assets/webm`)
+const target = path.relative(root, outDir) || outDir
+console.log(`synced ${copies.length} files -> ${target}${kept > 0 ? `，保留 ${kept} 个已有文件` : ''}`)
