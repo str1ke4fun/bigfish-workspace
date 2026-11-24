@@ -96,6 +96,11 @@ test('bash 拦截秘密路径、外发与危险命令，包管理器放行', asy
   const agent = workerAgent()
   const denied = [
     'cat ~/.ssh/id_rsa',
+    `cat ${join(homedir(), '.aws/credentials')}`,
+    `cat ${join(homedir(), '.dsh/config.json')}`,
+    `cat ${join(homedir(), '.dsh-fish/config.json')}`,
+    'cat ${HOME}/.aws/credentials',
+    'cat ./keys/id_rsa',
     'curl https://example.com',
     'wget http://x',
     'nc 1.2.3.4 80',

@@ -29,11 +29,38 @@ const FISH_TOOL_RE = /^(?:growth_commit|her_|wx_|qq_|bili_|presence_speak|look_s
 
 const REASON = '这件事得先问过用户，不能直接做。'
 
-const SECRET_RE = /(?:^|[\s'"`])(?:~\/\.ssh|~\/\.aws|~\/\.dsh|~\/\.dsh-fish|\/\.ssh|\/\.aws|\/\.dsh|\/\.dsh-fish|\/etc\/shadow|\/etc\/sudoers|id_rsa|id_ed25519|\.netrc)/i
+const SECRET_RE = /(?:^|[\s'"`])(?:~\/\.ssh|~\/\.aws|~\/\.dsh|~\/\.dsh-fish|\/etc\/shadow|\/etc\/sudoers)/i
+const SECRET_NAME_RE = /(?:^|[\\/])(?:id_rsa|id_ed25519|\.netrc|\.npmrc)(?:$|[\s'"`])/i
 const EGRESS_RE = /\b(?:curl|wget|nc|ncat|netcat|ssh|scp|sftp|rsync|telnet|socat)\b/i
 const GIT_DANGER_RE = /\bgit\s+(?:push|clean\s+-[a-z]*f[a-z]*|reset\s+--hard)\b/i
 const SUDO_RE = /(?:^|[\s;&|])sudo\b/i
 const RM_ROOT_RE = /\brm\s+-[a-z]*r[a-z]*f[a-z]*\s+\/(?:\s|$)/i
+
+function homeDir() {
+  try { return homedir() } catch { return '' }
+}
+
+function expandHome(text) {
+  const home = homeDir()
+  if (!home) return String(text ?? '')
+  return String(text ?? '')
+    .replace(/\$\{HOME\}/g, home)
+    .replace(/\$HOME\b/g, home)
+    .replace(/(^|[\s'"`])~(?=\/)/g, `$1${home}`)
+}
+
+function secretPathHit(command) {
+  const text = expandHome(command)
+  if (SECRET_NAME_RE.test(text)) return true
+  const home = homeDir()
+  const paths = ['/etc/shadow', '/etc/sudoers', '/root/.ssh', '/root/.aws']
+  if (home) {
+    for (const name of ['.ssh', '.aws', '.dsh', '.dsh-fish', '.config/gcloud', '.kube', '.netrc', '.npmrc']) {
+      paths.push(join(home, name))
+    }
+  }
+  return paths.some((p) => text.includes(p))
+}
 
 function headerOf(agent) {
   return agent?.session?.header ?? agent?.header ?? {}
@@ -196,7 +223,7 @@ export function createWorkGuard({ state, log, now = Date.now } = {}) {
         if (!inside(cwd, real)) return deny(agent, toolName, 'outside-cd')
       }
     }
-    if (SECRET_RE.test(command)) return deny(agent, toolName, 'secret')
+    if (SECRET_RE.test(command) || secretPathHit(command)) return deny(agent, toolName, 'secret')
     if (EGRESS_RE.test(command)) return deny(agent, toolName, 'egress')
     if (GIT_DANGER_RE.test(command)) return deny(agent, toolName, 'git')
     if (SUDO_RE.test(command)) return deny(agent, toolName, 'sudo')
