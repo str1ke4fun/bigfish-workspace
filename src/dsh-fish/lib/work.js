@@ -222,9 +222,10 @@ export function createWorkService({
   }
 
   function latestRecord() {
-    const rows = Object.values(sessions()).filter(Boolean)
-    rows.sort((a, b) => Date.parse(b?.lastUsedAt ?? 0) - Date.parse(a?.lastUsedAt ?? 0))
-    return rows[0] ?? null
+    const rows = Object.entries(sessions()).filter(([, r]) => r && typeof r === 'object')
+    rows.sort((a, b) => Date.parse(b[1]?.lastUsedAt ?? 0) - Date.parse(a[1]?.lastUsedAt ?? 0))
+    const [dir, rec] = rows[0] ?? []
+    return rec ? { ...rec, dir: String(rec.dir ?? dir ?? '') } : null
   }
 
   function isWorkSession(sessionId) {
