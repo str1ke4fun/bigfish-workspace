@@ -65,7 +65,12 @@ async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'wo
   const ctx = {
     get: (name) => {
       if (name === 'wx') return wx
-      if (name === 'permissionPresets') return { current: () => permission }
+      if (name === 'permissionPresets') return {
+        current: () => {
+          if (permission === 'THROW') throw new Error('permission unavailable')
+          return permission
+        },
+      }
       return null
     },
     on: () => () => {},
@@ -191,6 +196,11 @@ test('her_worker：非工头拒绝、权限校验、preset 与 outputSchema', as
   const badPerm = await h2.service.tools.her_worker.execute({ task: 'x' }, { agent: h2.boss })
   assert.equal(badPerm.ok, false)
   assert.match(badPerm.note, /workspace-write/)
+
+  const h3 = await setup({ permission: 'THROW' })
+  await seedBoss(h3)
+  const unknownPerm = await h3.service.tools.her_worker.execute({ task: 'x' }, { agent: h3.boss })
+  assert.equal(unknownPerm.ok, false)
 
   const inspect = await h.service.tools.her_worker.execute({ mode: 'inspect', task: '看看' }, { agent: h.boss })
   assert.equal(inspect.ok, true)

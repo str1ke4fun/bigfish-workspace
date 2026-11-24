@@ -558,7 +558,13 @@ export function createWorkService({
       try {
         const pp = ctx?.get?.('permissionPresets')
         if (pp && typeof pp.current === 'function') {
-          const current = pp.current(agent.session)
+          let current = ''
+          try {
+            current = pp.current(agent.session)
+          } catch {
+            // 权限服务在但读不出来：不把“目录内受控”建立在猜测上。
+            return { ok: false, code: 'BAD_PERMISSION', note: whyText('BAD_PERMISSION') }
+          }
           if (current !== 'workspace-write') {
             return { ok: false, code: 'BAD_PERMISSION', note: whyText('BAD_PERMISSION') }
           }
