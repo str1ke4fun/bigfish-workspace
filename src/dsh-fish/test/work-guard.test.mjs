@@ -68,6 +68,9 @@ test('读写路径必须在工作目录内，符号链接按 realpath 判断', a
   assert.equal(guard.check({ toolName: 'read', args: { file_path: join(outside, 'secret.txt') }, agent }).ok, false)
   assert.equal(guard.check({ toolName: 'read', args: { file_path: 'link/secret.txt' }, agent }).ok, false)
   assert.equal(guard.check({ toolName: 'glob', args: { pattern: '*', path: '../outside' }, agent }).ok, false)
+  assert.equal(guard.check({ toolName: 'glob', args: { pattern: '../**' }, agent }).ok, false)
+  assert.equal(guard.check({ toolName: 'glob', args: { pattern: '/etc/**' }, agent }).ok, false)
+  assert.equal(guard.check({ toolName: 'glob', args: { pattern: '**/*.js' }, agent }).ok, true)
   assert.equal(guard.check({ toolName: 'grep', args: { pattern: 'x', path: cwd }, agent }).ok, true)
 })
 

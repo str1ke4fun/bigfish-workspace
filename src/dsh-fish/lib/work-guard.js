@@ -155,6 +155,13 @@ export function createWorkGuard({ state, log, now = Date.now } = {}) {
     const header = headerOf(agent)
     const cwdRaw = String(header.cwd ?? '')
     if (!cwdRaw) return deny(agent, toolName, 'no-cwd')
+    // glob 的 pattern 本身也能用 ../ 或绝对路径逃出工作目录。
+    if (toolName === 'glob') {
+      const pattern = String(args?.pattern ?? '')
+      if (isAbsolute(pattern) || /(^|[\\/])\.\.([\\/]|$)/.test(pattern)) {
+        return deny(agent, toolName, 'outside-pattern')
+      }
+    }
     const cwd = realResolve(cwdRaw)
     const raw = toolName === 'glob' || toolName === 'grep'
       ? (args?.path ?? cwd)
