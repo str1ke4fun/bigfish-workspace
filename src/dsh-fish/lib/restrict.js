@@ -73,6 +73,9 @@ const WEB_FALLBACK_EXCLUDE = new Set([
   'her_work', 'her_work_status', 'her_worker', 'her_worker_control', 'her_ask_user',
 ])
 
+/** worker 的 restrict 失败时的兜底：至少不让鱼工具执行。 */
+const FISH_LIKE_RE = /^(?:growth_commit|her_|wx_|qq_|bili_|presence_speak|look_screen)/
+
 /** 归一化目录，用于判断"这条会话是不是她的屋子"。Windows 大小写不敏感。 */
 function normDir(p) {
   if (!p) return ''
@@ -268,8 +271,54 @@ export function registerToolRestrict(ctx, {
         onResult?.({ ok: true, applied, why: 'worker', allow, guard: false })
       } catch (err) {
         failed = String(err?.message ?? err).slice(0, 300)
-        say(`[dsh-fish] worker 工具面收窄失败：${failed}`)
-        onResult?.({ ok: false, applied, failed, why: 'failed', allow: [] })
+        // 先按宿主报错里的 known 名单自愈；再不行就挂一条只拦鱼工具的守卫。
+        const healed = adoptKnownFromError(failed)
+        const known = new Set(lastKnownTools ?? [])
+        const usable = healed ? allow.filter((n) => known.has(n)) : []
+        if (usable.length > 0) {
+          try {
+            const dispose = scopedTools.restrict({ allow: usable })
+            try { agent.ctx.effect?.(() => dispose) } catch { /* ignore */ }
+            agentStates.set(agent, {
+              surface: 'worker',
+              hostNames: namesForPolicy,
+              allow: new Set(usable),
+              revealed: new Set(),
+              restrictDispose: typeof dispose === 'function' ? dispose : null,
+              guardDispose: null,
+              applyRestrict: null,
+            })
+            applied += 1
+            say(`[dsh-fish] worker 工具面：按宿主已知名单收窄到 ${usable.length} 个`)
+            onResult?.({ ok: true, applied, why: 'worker', allow: usable, guard: false })
+            return
+          } catch (retryErr) {
+            failed = String(retryErr?.message ?? retryErr).slice(0, 300)
+          }
+        }
+        let guardOk = false
+        try {
+          if (typeof scopedTools.guard === 'function') {
+            const disposeGuard = scopedTools.guard((exec) => (
+              FISH_LIKE_RE.test(String(exec?.name ?? '')) ? '这件事我做不到。' : undefined
+            ))
+            guardOk = typeof disposeGuard === 'function'
+            try { agent.ctx.effect?.(() => disposeGuard) } catch { /* ignore */ }
+            agentStates.set(agent, {
+              surface: 'worker',
+              hostNames: namesForPolicy,
+              allow: new Set(allow),
+              revealed: new Set(),
+              restrictDispose: null,
+              guardDispose: guardOk ? disposeGuard : null,
+              applyRestrict: null,
+            })
+          }
+        } catch (guardErr) {
+          failed = String(guardErr?.message ?? guardErr).slice(0, 300)
+        }
+        say(`[dsh-fish] worker 工具面收窄失败：${failed}${guardOk ? '（已挂鱼工具兜底守卫）' : ''}`)
+        onResult?.({ ok: false, applied, failed, why: 'failed', allow, guard: guardOk })
       }
       return
     }
