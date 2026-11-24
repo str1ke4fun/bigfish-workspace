@@ -26,7 +26,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
+import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, planChatNavigation, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { isContactWhy } from './contact.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
@@ -1148,12 +1148,25 @@ export function apply(ctx, config = {}) {
     if (!s.parsed.ok) throw new WxToolError('WX_WINDOW_UNAVAILABLE', '[没看清。屏幕可能慢半拍]')
     if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
 
-    if (!sameName(s.parsed.current, navigateTo)) {
-      const target = s.parsed.chats.find((c) => sameName(c.name, navigateTo))
-      if (!target) throw new WxToolError('WX_CHAT_NOT_FOUND', '[这个会话现在说不了]')
+    const nav = planChatNavigation({ parsed: s.parsed, target: navigateTo, tree: s.tree })
+    if (nav.action === 'unreadable') {
+      throw new WxToolError(
+        'WX_WINDOW_UNAVAILABLE',
+        '[没看清。屏幕可能慢半拍]',
+        `发送闸：会话列表没读全（${nav.treeStatus}，${nav.chatCount} 个会话），找不到「${navigateTo}」。`,
+      )
+    }
+    if (nav.action === 'missing') {
+      throw new WxToolError(
+        'WX_CHAT_NOT_FOUND',
+        '[这个会话现在说不了]',
+        `发送闸：侧栏里没有「${navigateTo}」（树健康，${nav.chatCount} 个会话）。`,
+      )
+    }
+    if (nav.action === 'navigate') {
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset()
-      await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+      await run(['click', String(nav.target.box.cx), String(nav.target.box.cy), '1'])
       await sleep(700)
       s = await look({ confirm: false })
       if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
@@ -1349,12 +1362,17 @@ export function apply(ctx, config = {}) {
     if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不发送。')
     if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不发。' + fresh.notice().trim())
 
-    if (!sameName(s.parsed.current, allowed.chat)) {
-      const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
-      if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不发送。`)
+    const nav = planChatNavigation({ parsed: s.parsed, target: allowed.chat, tree: s.tree })
+    if (nav.action === 'unreadable') {
+      throw new Error(`屏幕可能慢半拍，会话列表没读全（${nav.treeStatus}），先不发送。`)
+    }
+    if (nav.action === 'missing') {
+      throw new Error(`会话列表里没有「${allowed.chat}」，不发送。`)
+    }
+    if (nav.action === 'navigate') {
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset()
-      await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+      await run(['click', String(nav.target.box.cx), String(nav.target.box.cy), '1'])
       await sleep(700)
       s = await look({ confirm: false })
       if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不发。' + fresh.notice().trim())
@@ -1438,12 +1456,17 @@ export function apply(ctx, config = {}) {
     if (want) {
       const allowed = canSendWithPolicy(p, want)
       if (!allowed.ok) throw new Error(allowed.why)
-      if (!sameName(s.parsed.current, allowed.chat)) {
-        const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
-        if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不采集。`)
+      const nav = planChatNavigation({ parsed: s.parsed, target: allowed.chat, tree: s.tree })
+      if (nav.action === 'unreadable') {
+        throw new Error(`屏幕可能慢半拍，会话列表没读全（${nav.treeStatus}），先不采集。`)
+      }
+      if (nav.action === 'missing') {
+        throw new Error(`会话列表里没有「${allowed.chat}」，不采集。`)
+      }
+      if (nav.action === 'navigate') {
         await run(['clean'], 30_000).catch(() => '')
         fresh.reset()
-        await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+        await run(['click', String(nav.target.box.cx), String(nav.target.box.cy), '1'])
         await sleep(700)
         s = await look({ confirm: false })
         if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不收。' + fresh.notice().trim())
@@ -1493,12 +1516,17 @@ export function apply(ctx, config = {}) {
     if (!s.parsed.ok) throw new Error('读不到微信窗口，无法确认会话，不搜索。')
     if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不找。' + fresh.notice().trim())
 
-    if (!sameName(s.parsed.current, allowed.chat)) {
-      const target = s.parsed.chats.find((c) => sameName(c.name, allowed.chat))
-      if (!target) throw new Error(`会话列表里没有「${allowed.chat}」，不搜索。`)
+    const nav = planChatNavigation({ parsed: s.parsed, target: allowed.chat, tree: s.tree })
+    if (nav.action === 'unreadable') {
+      throw new Error(`屏幕可能慢半拍，会话列表没读全（${nav.treeStatus}），先不搜索。`)
+    }
+    if (nav.action === 'missing') {
+      throw new Error(`会话列表里没有「${allowed.chat}」，不搜索。`)
+    }
+    if (nav.action === 'navigate') {
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset()
-      await run(['click', String(target.box.cx), String(target.box.cy), '1'])
+      await run(['click', String(nav.target.box.cx), String(nav.target.box.cy), '1'])
       await sleep(700)
       s = await look({ confirm: false })
       if (fresh.stale) throw new Error('屏幕可能慢半拍，确认不了会话，先不找。' + fresh.notice().trim())

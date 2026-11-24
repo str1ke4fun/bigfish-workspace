@@ -102,6 +102,38 @@ export function treeHealth(raw, parsed) {
 }
 
 /**
+ * 发送/采集前决定怎么到目标会话。
+ *
+ * `parsed.ok` 只说明树头在；`treeHealth` 才能说明会话列表读全了没有。
+ * 树 partial（窗口在、会话列表 0 行）时按名字找不到目标，不是「不能发」，
+ * 而是「这次没看清」，调用方应该按可重试错误处理，而不是报名单拒绝。
+ *
+ * @returns {{action:'current'}|{action:'navigate',target:object,chatCount:number}|{action:'unreadable',reason:string,treeStatus:string,chatCount:number}|{action:'missing',chatCount:number}}
+ */
+export function planChatNavigation({ parsed, target, tree } = {}) {
+  const want = String(target ?? '').trim()
+  if (!parsed?.ok) {
+    return { action: 'unreadable', reason: 'parse-not-ok', treeStatus: 'unknown', chatCount: 0 }
+  }
+  if (sameName(parsed.current, want)) return { action: 'current' }
+
+  const chats = Array.isArray(parsed.chats) ? parsed.chats : []
+  const hit = chats.find((chat) => sameName(chat?.name, want)) ?? null
+  if (hit) return { action: 'navigate', target: hit, chatCount: chats.length }
+
+  const health = tree ?? treeHealth('', null)
+  if (health?.ok !== true || chats.length === 0) {
+    return {
+      action: 'unreadable',
+      reason: `tree-${String(health?.status ?? 'unknown')}`,
+      treeStatus: String(health?.status ?? 'unknown'),
+      chatCount: chats.length,
+    }
+  }
+  return { action: 'missing', chatCount: chats.length }
+}
+
+/**
  * OCR 名字对账：微信侧栏会把长名字截断成「星晓家园10号楼13...」，OCR 只能读到前一段。
  * 只在名单里找到**唯一**一个以它开头的名字时才改写成全名；找不到或撞名就原样返回。
  * 不做模糊匹配、不做包含匹配——对不上宁可不动，也不把消息递到错的会话。
