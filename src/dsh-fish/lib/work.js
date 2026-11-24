@@ -68,6 +68,22 @@ const FAIL_TEXT = {
   EMPTY_TASK: '还没说要做什么。',
 }
 
+const STATE_TEXT = {
+  idle: '没在忙',
+  running: '在做',
+  waiting: '在等你',
+  unknown: '不确定',
+}
+const UNIT_TEXT = {
+  queued: '还在准备',
+  running: '在做',
+  done: '做完了',
+  blocked: '卡住了',
+  failed: '没做成',
+  aborted: '停了',
+  unknown: '不知道',
+}
+
 function whyText(code, why = '') {
   const head = FAIL_TEXT[code] ?? '没做成。'
   return why ? `${head}（${String(why).slice(0, 120)}）` : head
@@ -516,7 +532,7 @@ export function createWorkService({
     output: commonOutput,
     project: (out) => {
       if (!out?.ok) return { text: `没看到：${out?.note || out?.why || '还没有工作'}` }
-      const head = `在 ${out.dirBasename || '工作'}：${out.activity}`
+      const head = `在 ${out.dirBasename || '工作'}：${STATE_TEXT[out.activity] ?? out.activity}`
       return { text: out.lastSummary ? `${head}；${out.lastSummary}` : head }
     },
     async execute(args = {}, exec = {}) {
@@ -678,7 +694,7 @@ export function createWorkService({
     project: (out) => {
       if (!out?.ok) return { text: `没做成：${out?.note || out?.why || '没接上'}` }
       if (out.action === 'list') return { text: `现在有 ${out.units?.length ?? 0} 条 worker 记录。` }
-      if (out.action === 'get') return { text: `状态：${out.status}${out.summary ? `；${out.summary}` : ''}` }
+      if (out.action === 'get') return { text: `状态：${UNIT_TEXT[out.status] ?? out.status}${out.summary ? `；${out.summary}` : ''}` }
       if (out.action === 'interrupt') return { text: '叫停了。' }
       return { text: '带到了。' }
     },
