@@ -285,8 +285,8 @@ export function createWorkService({
       }).join('、')}`)
     }
     if (rec.bossSummary) lines.push(`最近汇报：${rec.bossSummary}`)
-    lines.push('用户问“那两个 agent”或“做得怎么样”时，先用 her_work_status 看这里的状态，不要靠屏幕 OCR 猜名字。')
-    lines.push('用户说“接着推进 / 让他们做”时，先用 her_work 在同一个目录再派一件；先给建议，等他同意。')
+    lines.push('这里只是你 DSH 侧的工作。用户问屏幕上其他 agent 时，先 look_screen 看一眼，再 read_image；不要拿这份记录去猜屏幕上的东西。')
+    lines.push('用户说“接着推进 / 让他们做”时，是你自己在 DSH 侧用 her_work 再派一件；不要去操作屏幕上的 Claude Code。')
     return lines.join('\n')
   }
 
@@ -589,7 +589,7 @@ export function createWorkService({
 
   const herWorkStatus = defineTool({
     name: 'her_work_status',
-    description: '用户问“他们做完没 / 怎么样了 / 那两个 agent 呢”时用这个。它会给你 worker 的标签和状态；不要靠屏幕 OCR 猜名字。只给状态和工头自己的汇报，不翻 worker 原始记录。',
+    description: '只查你在 DSH 侧派出去的工作。用户问屏幕上的其他 agent（比如宿主机的 Claude Code）时，用 look_screen 看屏幕，不要在这里找。只给状态和工头自己的汇报，不翻 worker 原始记录。',
     parameters: toJsonSchema({
       dir: { type: 'string', required: false, description: '想看哪个目录；不填就看最近一次。' },
     }),

@@ -15,6 +15,9 @@ function setup({ surface = 'screen', captureNow } = {}) {
 }
 
 test('look_screen 只在 screen 面可见，别的面拒绝', async () => {
+  const { def: screenDef } = setup()
+  assert.match(screenDef.description, /屏幕上有什么/)
+  assert.match(screenDef.description, /read_image/)
   assert.ok(resolveAllow({ surface: 'screen', caps: {} }).includes('look_screen'))
   for (const s of ['web', 'wx', 'qq', 'bili', 'work']) {
     assert.equal(resolveAllow({ surface: s, caps: {} }).includes('look_screen'), false, s)

@@ -82,6 +82,15 @@ export const WORK_SECTION = 'fish:work'
 export const WORK_ORDER = 8840
 
 /**
+ * 「看屏幕」段（2026-11-24）。
+ *
+ * 只给 screen 面：用户问屏幕上有什么/其他 agent 怎么样时，先 look_screen 再看图。
+ * 屏幕上的 agent 不是 DSH 侧 worker；推进仍只在 DSH 侧派工。
+ */
+export const SCREEN_SECTION = 'fish:screen'
+export const SCREEN_ORDER = 8830
+
+/**
  * owner 身份事实段（person-memory Phase 1 Task 4）。
  *
  * 和身份段分开：身份是“她是谁”，这一段是“哪些名字是他”。
@@ -300,6 +309,23 @@ export function attachIdentity(agent, root, { canRemind, remindPrompt, inboxText
         if (surface !== 'screen') return ''
         const body = String(workText?.(agent) ?? '').trim()
         return body ? '## 手边的工作\n\n' + body : ''
+      },
+    })
+    // 看屏幕：只给陪伴会话。屏幕上的 agent 不是 DSH worker，先看再说。
+    sp.section({
+      name: SCREEN_SECTION,
+      order: SCREEN_ORDER,
+      text: () => {
+        let surface = ''
+        try { surface = String(surfaceOf?.(agent) ?? '') } catch { surface = '' }
+        if (surface !== 'screen') return ''
+        return [
+          '## 看屏幕',
+          '',
+          '用户问“屏幕上有什么 / 那两个 agent 怎么样 / 现在呢”时，先 look_screen 看一眼，再 read_image 读。',
+          '看到什么说什么；看不清就说看不清。屏幕上的 agent 不是你 DSH 侧的 worker，不能替它们派活。',
+          '要推进就在 DSH 侧用 her_work 派自己的活；不要去操作屏幕上的 Claude Code。',
+        ].join('\n')
       },
     })
     // 哪些名字是他。只在 web / wx / screen 出现；没有 owner 文档时是空串。

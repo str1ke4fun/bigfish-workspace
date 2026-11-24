@@ -13,7 +13,8 @@
 - 汇报来源：`work-sessions.json` 新增 `bossSummary`，只取工头 `turn/end` 最后一条 assistant 文本；`her_work_status` 和微信只读它。worker 的 `summary` / `report` 留在 `work-units.json` 供工头复查，不再作为用户可见汇报。
 - `her_worker_control.get` 不再返回原始 `report`，改为一段人话回述（摘要/文件数/验证数/blockers）。
 - 陪伴会话在存在工作会话时挂 `fish:work` 处境：目录、worker 标签/状态、最近一次工头汇报；不含 worker 原始记录。工具描述改成场景句，用户说“那两个 agent 做完没/接着推进”时不再需要点名工具。
-- 验证：`src/dsh-fish` 1245 全绿；`src/dsh-wx` 182 全绿。真实模型/微信收发与“屏幕上那两个 agent”问法仍需部署后验收。
+- 屏幕上的其他 agent（如宿主机 Claude Code）不接入会话状态：用户问时先 `look_screen` 看一眼，再 `read_image` 读，按画面汇报；看不清就如实说。推进仍只在 DSH 侧用 `her_work` / `her_worker`，不操作屏幕上的 Claude Code。
+- 验证：`src/dsh-fish` 1246 全绿；`src/dsh-wx` 182 全绿。真实模型/微信收发与“屏幕上那两个 agent”问法仍需部署后验收。
 
 ## 未发布 — 2026-11-20
 

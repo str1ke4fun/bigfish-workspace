@@ -38,8 +38,9 @@ export function registerLookScreen(ctx, { core, screen, log } = {}) {
   return registerTool(ctx, defineTool({
     name: 'look_screen',
     description:
-      '真的想现在看一眼屏幕时才调用；不要连续反复调用。' +
-      '拿到路径后用 read_image 看，不要凭记忆回答此刻的画面。',
+      '用户问“屏幕上有什么 / 那两个 agent 怎么样 / 现在呢”时，先调用这个看一眼屏幕，' +
+      '拿到路径后用 read_image 看；看到什么说什么，看不清就说看不清，不要凭记忆或猜。' +
+      '屏幕上的画面不是你自己的工作记录；不要连续反复调用。',
     parameters: toJsonSchema({}),
     output: {
       schema: {
