@@ -16,3 +16,10 @@ test('空汇总拒绝；秘密命中改成通用文案', () => {
   assert.equal(secret.ok, true)
   assert.equal(secret.text, '做完了，详情在电脑上')
 })
+
+test('微信汇总不留代码块、路径和 Markdown 记号', () => {
+  const r = ownerNoticeText('完成。**做了什么** 新建 `/tmp/fish-work-test/hello.txt` ```hello``` 和 /home/str1k3/proj/a.js')
+  assert.equal(r.ok, true)
+  assert.doesNotMatch(r.text, /```|\*\*|\/tmp\/|\/home\//)
+  assert.match(r.text, /详情在电脑上/)
+})

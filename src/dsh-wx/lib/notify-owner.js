@@ -7,6 +7,20 @@
 
 export const OWNER_NOTICE_LIMIT = 500
 export const OWNER_NOTICE_SECRET_TEXT = '做完了，详情在电脑上'
+export const OWNER_NOTICE_DETAIL_TEXT = '（详情在电脑上）'
+
+/** 微信只收结论：去掉代码块、路径和 Markdown 记号，完整内容留在工头会话。 */
+function scrubDetail(text) {
+  let out = String(text ?? '')
+  out = out.replace(/```[\s\S]*?```/g, OWNER_NOTICE_DETAIL_TEXT)
+  out = out.replace(/`([^`]*)`/g, (_m, inner) => (
+    /[\\/]/.test(inner) || [...inner].length > 40 ? OWNER_NOTICE_DETAIL_TEXT : inner
+  ))
+  out = out.replace(/[A-Za-z]:\\[^\s，。；、）】"'`]+/g, OWNER_NOTICE_DETAIL_TEXT)
+  out = out.replace(/(?:\/[\w.@-]+){2,}/g, OWNER_NOTICE_DETAIL_TEXT)
+  out = out.replace(/\*\*|__/g, '')
+  return out
+}
 
 /**
  * @param {string} text
@@ -16,6 +30,7 @@ export const OWNER_NOTICE_SECRET_TEXT = '做完了，详情在电脑上'
 export function ownerNoticeText(text, { looksLikeSecret } = {}) {
   let body = String(text ?? '').replace(/\s*\n+\s*/g, ' ').trim()
   if (!body) return { ok: false, why: 'empty' }
+  body = scrubDetail(body)
   if ([...body].length > OWNER_NOTICE_LIMIT) {
     body = [...body].slice(0, OWNER_NOTICE_LIMIT).join('')
   }

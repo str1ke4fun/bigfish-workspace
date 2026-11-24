@@ -325,6 +325,7 @@ export function createWorkService({
       `任务：${task}`,
       `来源：${source}`,
       '完成后汇总；不要自己换目录；worker 不直接找用户。',
+      '给用户的汇总要短，一两句话就够；不要贴代码、路径、命令或 worker 原文。',
     ].join('\n')
   }
 
@@ -360,7 +361,8 @@ export function createWorkService({
     const active = state.activeCounts(sessionId)
     const waiting = rec.state === 'waiting'
     const pending = pendingSettle.get(sessionId) ?? []
-    const said = firstText(lastAssistant.get(sessionId), rec.lastSummary)
+    const heard = firstText(lastAssistant.get(sessionId))
+    const said = firstText(heard, rec.lastSummary)
 
     if (waiting) {
       await maybeNotify(sessionId, `在等你：${rec.waitingQuestion || '有个问题'}`, 'waiting')
@@ -378,8 +380,8 @@ export function createWorkService({
         return parts.length ? parts.join('；') : (firstText(said) || '没有更多细节')
       }
       const text = bad.length
-        ? `卡住了：${summarize(bad)}${good.length ? `；另有 ${good.length} 件做完了` : ''}`
-        : `做完了：${summarize(good)}`
+        ? `卡住了：${firstText(heard, summarize(bad))}${good.length ? `；另有 ${good.length} 件做完了` : ''}`
+        : `做完了：${firstText(heard, summarize(good))}`
       await maybeNotify(sessionId, text, `settle:${pending.map((p) => p.unitId).join(',')}`)
       pendingSettle.delete(sessionId)
       await state.mutateSessions((s) => {
