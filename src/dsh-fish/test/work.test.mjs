@@ -14,7 +14,7 @@ import {
 
 const TRUSTED_CHAT = 'cat不到flag的cat'
 
-async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'workspace-write' } = {}) {
+async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'workspace-write', archived = [] } = {}) {
   const base = await mkdtemp(join(tmpdir(), 'fish-work-'))
   const root = join(base, 'fish')
   const dir = join(base, 'proj')
@@ -71,6 +71,7 @@ async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'wo
           return permission
         },
       }
+      if (name === 'workspaceRegistry') return { archivedSessionIds: archived }
       return null
     },
     on: () => () => {},
@@ -99,7 +100,7 @@ async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'wo
   return {
     root, dir, state, service, backendCalls, created, prompted, notified,
     settle: (v) => settle(v), boss, screen, wxAgent, surfaceById,
-    ctx, core, config, guard, wx,
+    ctx, core, config, guard, wx, archived,
   }
 }
 
@@ -170,6 +171,19 @@ test('桌宠派活只接受受信轮次；微信只接受名单里的私聊', as
   const wxDenied = await h2.service.tools.her_work.execute({ dir: h2.dir, task: '群派活' }, { agent: h2.wxAgent })
   assert.equal(wxDenied.ok, false)
   assert.equal(h2.created.length, 0)
+})
+
+test('工头会话被归档后同目录新建，而不是把话投进死会话', async () => {
+  const h = await setup()
+  markTrustedTurn('screen-1', 1000)
+  const first = await h.service.tools.her_work.execute({ dir: h.dir, task: '一' }, { agent: h.screen })
+  assert.equal(first.ok, true)
+  h.surfaceById.delete(first.sessionId)
+  h.archived.push(first.sessionId)
+  const second = await h.service.tools.her_work.execute({ dir: h.dir, task: '二' }, { agent: h.screen })
+  assert.equal(second.ok, true)
+  assert.notEqual(second.sessionId, first.sessionId)
+  assert.equal(h.created.length, 2)
 })
 
 test('并发派活同一个目录只建一条工头会话', async () => {

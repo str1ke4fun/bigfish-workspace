@@ -240,6 +240,11 @@ export function createWorkService({
 
   async function sessionAlive(sessionId) {
     if (!sessionId) return false
+    try {
+      const reg = ctx?.get?.('workspaceRegistry')
+      const archived = reg?.archivedSessionIds
+      if (Array.isArray(archived) && archived.map(String).includes(String(sessionId))) return false
+    } catch { /* 拿不到归档列表时按宿主列表判断 */ }
     let rows = null
     try { rows = await core?.sessions?.list?.({}) } catch { rows = null }
     if (!Array.isArray(rows) || rows.length === 0) return true
