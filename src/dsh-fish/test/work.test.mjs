@@ -24,13 +24,14 @@ async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'wo
   const prompted = []
   const notified = []
   const backendCalls = { spawn: [], message: [], interrupt: [] }
-  let settle
+  const settlers = []
   const backend = {
     available: () => true,
     capabilities: () => ({ structuredOutput: true }),
     async spawn(input) {
       backendCalls.spawn.push(input)
-      return { ok: true, childId: `child-${backendCalls.spawn.length}`, result: new Promise((r) => { settle = r }), dispose: async () => {} }
+      const result = new Promise((r) => { settlers.push(r) })
+      return { ok: true, childId: `child-${backendCalls.spawn.length}`, result, dispose: async () => {} }
     },
     async message(input) { backendCalls.message.push(input); return { ok: true, messageId: 'm1' } },
     async interrupt(input) { backendCalls.interrupt.push(input); return { ok: true, accepted: true } },
@@ -101,7 +102,8 @@ async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'wo
   surfaceById.set('wx-1', 'wx')
   return {
     root, dir, state, service, backendCalls, created, prompted, notified,
-    settle: (v) => settle(v), boss, screen, wxAgent, surfaceById,
+    settle: (v) => settlers.at(-1)?.(v),
+    settleAt: (i, v) => settlers[i]?.(v), boss, screen, wxAgent, surfaceById,
     ctx, core, config, guard, wx, archived,
   }
 }
@@ -343,6 +345,22 @@ test('结算写 WorkUnit，通知状态机区分派出/完成/等待', async () 
   await tick()
   assert.match(h.notified.at(-1)?.text ?? '', /等你/)
   assert.match(h.notified.at(-1)?.text ?? '', /要删吗/)
+})
+
+test('两个 worker 同时结算时汇总不丢', async () => {
+  const h = await setup()
+  await seedBoss(h)
+  const a = await h.service.tools.her_worker.execute({ mode: 'inspect', task: '甲' }, { agent: h.boss })
+  const b = await h.service.tools.her_worker.execute({ mode: 'inspect', task: '乙' }, { agent: h.boss })
+  h.settleAt(0, { stopReason: 'completed', output: [{ type: 'text', text: '甲好了' }], structured: { summary: '甲好了', done: true } })
+  h.settleAt(1, { stopReason: 'completed', output: [{ type: 'text', text: '乙好了' }], structured: { summary: '乙好了', done: true } })
+  await waitSettled(h, a.unitId)
+  await waitSettled(h, b.unitId)
+  await tick()
+  await h.service.onSessionEvent(h.boss, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+  await tick()
+  assert.match(h.notified.at(-1)?.text ?? '', /甲好了/)
+  assert.match(h.notified.at(-1)?.text ?? '', /乙好了/)
 })
 
 test('her_worker_control：已结算不能 message，list/get 不返回原始日志', async () => {

@@ -178,7 +178,7 @@ export function createWorkService({
   if (!backend) throw new Error('work service requires backend')
 
   const lastAssistant = new Map()
-  const pendingSettle = new Map()
+  const pendingSettle = new Map() // bossSessionId -> [{unitId, ok, summary}]
   const lastNotified = new Map()
   const requestedSchema = new Map()
   const timers = new Map()
@@ -358,7 +358,7 @@ export function createWorkService({
     if (!rec) return
     const active = state.activeCounts(sessionId)
     const waiting = rec.state === 'waiting'
-    const pending = pendingSettle.get(sessionId) ?? null
+    const pending = pendingSettle.get(sessionId) ?? []
     const said = firstText(lastAssistant.get(sessionId), rec.lastSummary)
 
     if (waiting) {
@@ -369,11 +369,17 @@ export function createWorkService({
         const row = Object.values(s).find((x) => x?.sessionId === sessionId)
         if (row) row.state = 'running'
       })
-    } else if (pending) {
-      const text = pending.ok
-        ? `做完了：${firstText(pending.summary, said, '没有更多细节')}`
-        : `卡住了：${firstText(pending.summary, said, '没有更多细节')}`
-      await maybeNotify(sessionId, text, `settle:${pending.unitId}`)
+    } else if (pending.length > 0) {
+      const bad = pending.filter((p) => !p.ok)
+      const good = pending.filter((p) => p.ok)
+      const summarize = (list) => {
+        const parts = list.map((p) => firstText(p.summary)).filter(Boolean)
+        return parts.length ? parts.join('；') : (firstText(said) || '没有更多细节')
+      }
+      const text = bad.length
+        ? `卡住了：${summarize(bad)}${good.length ? `；另有 ${good.length} 件做完了` : ''}`
+        : `做完了：${summarize(good)}`
+      await maybeNotify(sessionId, text, `settle:${pending.map((p) => p.unitId).join(',')}`)
       pendingSettle.delete(sessionId)
       await state.mutateSessions((s) => {
         const row = Object.values(s).find((x) => x?.sessionId === sessionId)
@@ -441,11 +447,14 @@ export function createWorkService({
       closingText: settle.closingText ?? settle.diagnostic ?? '',
     })
     if (!unit) return
-    const ok = unit.status === 'done'
-    pendingSettle.set(bossSessionId, {
-      unitId, ok,
-      summary: firstText(unit.summary, settle.closingText, settle.diagnostic, ''),
-    })
+    if (unit.status !== 'aborted') {
+      const list = pendingSettle.get(bossSessionId) ?? []
+      list.push({
+        unitId, ok: unit.status === 'done',
+        summary: firstText(unit.summary, settle.closingText, settle.diagnostic, ''),
+      })
+      pendingSettle.set(bossSessionId, list)
+    }
     await state.mutateSessions((s) => {
       const row = Object.values(s).find((x) => x?.sessionId === bossSessionId)
       if (row) {
@@ -678,8 +687,6 @@ export function createWorkService({
           failureKind: 'timeout',
           summary: '超时了',
           settledAt: new Date(now()).toISOString(),
-        }).then(() => {
-          pendingSettle.set(sessionId, { unitId: unit.id, ok: false, summary: '超时了' })
         }).catch(() => {})
       }, Math.max(60_000, timeout))
       timer.unref?.()
