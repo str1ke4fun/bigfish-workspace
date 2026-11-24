@@ -186,6 +186,16 @@ export function createWorkGuard({ state, log, now = Date.now } = {}) {
       const workdir = realResolve(resolve(cwd, String(args.workdir)))
       if (!inside(cwd, workdir)) return deny(agent, toolName, 'outside-workdir')
     }
+    // `cd /etc && cat shadow` 这种相对路径逃逸：只检查 cd 的目标，不做完整 shell 解析。
+    if (cwdRaw) {
+      const cwd = realResolve(cwdRaw)
+      for (const m of command.matchAll(/\b(?:cd|pushd)\s+([^\s;&|]+)/g)) {
+        const target = m[1].replace(/^['"]|['"]$/g, '')
+        if (!target || target === '-') continue
+        const real = realResolve(resolve(cwd, target))
+        if (!inside(cwd, real)) return deny(agent, toolName, 'outside-cd')
+      }
+    }
     if (SECRET_RE.test(command)) return deny(agent, toolName, 'secret')
     if (EGRESS_RE.test(command)) return deny(agent, toolName, 'egress')
     if (GIT_DANGER_RE.test(command)) return deny(agent, toolName, 'git')

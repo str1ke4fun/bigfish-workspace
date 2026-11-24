@@ -115,6 +115,8 @@ test('bash 拦截秘密路径、外发与危险命令，包管理器放行', asy
     assert.equal(guard.check({ toolName: 'bash', args: { command }, agent }).ok, true, command)
   }
   assert.equal(guard.check({ toolName: 'bash', args: { command: 'cat shadow', workdir: '/etc' }, agent }).ok, false)
+  assert.equal(guard.check({ toolName: 'bash', args: { command: 'cd /etc && cat shadow' }, agent }).ok, false)
+  assert.equal(guard.check({ toolName: 'bash', args: { command: 'cd src && ls' }, agent }).ok, true)
   assert.equal(guard.check({ toolName: 'bash', args: { command: 'ls', workdir: '.' }, agent }).ok, true)
 })
 
