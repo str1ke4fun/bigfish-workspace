@@ -251,15 +251,16 @@ export function createWorkService({
     } catch { /* 拿不到归档列表时按宿主列表判断 */ }
     let rows = null
     try { rows = await core?.sessions?.list?.({}) } catch { rows = null }
-    if (!Array.isArray(rows) || rows.length === 0) return true
+    // 拿不到列表才乐观复用；拿到了（哪怕为空）就以列表为准：空列表说明旧会话没了。
+    if (!Array.isArray(rows)) return true
     return rows.some((row) => String(row?.sessionId ?? row?.id ?? '') === String(sessionId))
   }
 
   async function ensureBossInner({ dir, origin = null }) {
     const existing = recordForDir(dir)
     if (existing?.sessionId) {
-      reserve(existing.sessionId)
       if (await sessionAlive(existing.sessionId)) {
+        reserve(existing.sessionId)
         await state.mutateSessions((s) => {
           const rec = s[dir]
           if (!rec) return

@@ -58,7 +58,7 @@ async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'wo
     sessions: {
       async create(input) { created.push(input); return { ok: true, sessionId: input.sessionId ?? `boss-${created.length}` } },
       async prompt(sessionId, text) { prompted.push({ sessionId, text }); return { ok: true } },
-      async list() { return { items: [...surfaceById.keys()].map((id) => ({ sessionId: id })) } },
+      async list() { return [...surfaceById.keys()].map((id) => ({ sessionId: id })) },
     },
   }
   const ctx = {
@@ -193,6 +193,18 @@ test('屏幕采集的轮次即使同一会话说过 /say 也不能派活', async
   const r = await h.service.tools.her_work.execute({ dir: h.dir, task: '去 /tmp/x 干活' }, { agent: h.screen })
   assert.equal(r.ok, false)
   assert.equal(h.created.length, 0)
+})
+
+test('宿主会话列表为空时不再复用死工头', async () => {
+  const h = await setup()
+  trustSay(h.screen)
+  const first = await h.service.tools.her_work.execute({ dir: h.dir, task: '一' }, { agent: h.screen })
+  assert.equal(first.ok, true)
+  h.surfaceById.delete(first.sessionId)
+  const second = await h.service.tools.her_work.execute({ dir: h.dir, task: '二' }, { agent: h.screen })
+  assert.equal(second.ok, true)
+  assert.notEqual(second.sessionId, first.sessionId)
+  assert.equal(h.created.length, 2)
 })
 
 test('工头会话被归档后同目录新建，而不是把话投进死会话', async () => {
