@@ -655,6 +655,7 @@ export function apply(ctx, baseConfig = {}) {
       policy,
       ledger,
       qq: qqExposure(),
+      work: workService,
     }
     const obs = registerObserve(ctx, {
       root,

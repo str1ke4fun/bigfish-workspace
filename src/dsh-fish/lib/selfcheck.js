@@ -327,6 +327,25 @@ export async function runChecks(o = {}) {
     push('tool-ledger', '工具台账', { ok: true, detail: `台账没挂上${legacyText}` })
   }
 
+  // 12. 工作委派（2026-11-24）：后端可用、守卫挂上、有没有未知状态。
+  let workStatus = null
+  try { workStatus = X?.work?.status?.() ?? null } catch { workStatus = null }
+  if (workStatus && typeof workStatus === 'object') {
+    const backendOk = workStatus.backend === true
+    const guardOk = workStatus.guard?.ok === true
+    const units = Number(workStatus.work?.units ?? 0) || 0
+    const unknown = Number(workStatus.work?.unknown ?? 0) || 0
+    push('work', '工作委派', {
+      ok: backendOk && guardOk,
+      detail: `派活${backendOk ? '可用' : '不可用'} · 守卫${guardOk ? '已挂' : '没挂'} · ${units} 条 worker 记录${unknown ? `（${unknown} 条未知）` : ''}`,
+      fix: backendOk
+        ? (guardOk ? '' : 'work-guard 没挂上；她仍可聊天，但不能派 worker。')
+        : '宿主没有 subagents/spawn；她仍可聊天，但不能派 worker。',
+    })
+  } else {
+    push('work', '工作委派', { ok: true, detail: '没挂上' })
+  }
+
   const bad = items.filter((x) => !x.ok)
   return {
     ok: bad.length === 0,
