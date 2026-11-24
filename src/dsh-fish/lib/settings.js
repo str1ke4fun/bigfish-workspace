@@ -209,6 +209,25 @@ export const DEFAULTS = {
   ui: {
     ownerHintDismissed: false, // 用户手动关掉「B 站登录还没存」提示卡后记为 true
   },
+
+  // 工作委派（2026-11-24）
+  // 只放环境/权限参数，不是“她喜不喜欢干活”。worker 的工具上限由 preset 决定。
+  work: {
+    wx: {
+      // 只有名单里的私聊能派活和收汇总；空 = 微信派活关闭（fail closed）。
+      dispatchChats: [],
+      // 汇总固定发这里，不跟随最后一次派活来源。
+      ownerChat: '',
+    },
+    delegation: {
+      bossKind: 'fish',              // fish | agent（agent 为 P3，v1 不启用）
+      backend: 'subagent',           // fish = subagent；agent = team
+      structuredOutput: 'inspect-only', // inspect-only | all | none
+      maxActive: 2,
+      maxBuild: 1,
+      runTimeoutMs: 1_800_000,       // 30 分钟
+    },
+  },
 }
 
 /**
@@ -219,7 +238,7 @@ export const DEFAULTS = {
 export const CONFIG_PATCH_KEYS = [
   'growthDays', 'wakesPerDay', 'window', 'daily', 'diary', 'absenceAfterDays',
   'avoid', 'browse', 'video', 'comment', 'notify', 'chat', 'memory',
-  'tools', 'observe', 'ui', 'presence', 'pet',
+  'tools', 'observe', 'ui', 'presence', 'pet', 'work',
 ]
 
 const LIMITS = {
@@ -392,6 +411,21 @@ export function normalizeConfig(raw = {}) {
   cfg.chat = { ...DEFAULTS.chat, ...cfg.chat }
   cfg.ui = { ...DEFAULTS.ui, ...cfg.ui }
   cfg.ui.ownerHintDismissed = Boolean(cfg.ui.ownerHintDismissed)
+
+  // 工作委派：嵌套组逐层补全；名单去重；枚举/数值只接受明确值。
+  cfg.work = { ...DEFAULTS.work, ...(cfg.work && typeof cfg.work === 'object' ? cfg.work : {}) }
+  cfg.work.wx = { ...DEFAULTS.work.wx, ...(cfg.work.wx && typeof cfg.work.wx === 'object' ? cfg.work.wx : {}) }
+  cfg.work.wx.dispatchChats = dedupe(cfg.work.wx.dispatchChats)
+  cfg.work.wx.ownerChat = String(cfg.work.wx.ownerChat ?? '').trim()
+  cfg.work.delegation = { ...DEFAULTS.work.delegation, ...(cfg.work.delegation && typeof cfg.work.delegation === 'object' ? cfg.work.delegation : {}) }
+  cfg.work.delegation.bossKind = cfg.work.delegation.bossKind === 'agent' ? 'agent' : 'fish'
+  cfg.work.delegation.backend = cfg.work.delegation.backend === 'team' ? 'team' : 'subagent'
+  cfg.work.delegation.structuredOutput = ['inspect-only', 'all', 'none'].includes(cfg.work.delegation.structuredOutput)
+    ? cfg.work.delegation.structuredOutput
+    : DEFAULTS.work.delegation.structuredOutput
+  cfg.work.delegation.maxActive = Math.max(1, Math.min(8, Math.round(Number(cfg.work.delegation.maxActive) || DEFAULTS.work.delegation.maxActive)))
+  cfg.work.delegation.maxBuild = Math.max(0, Math.min(4, Math.round(Number(cfg.work.delegation.maxBuild) || 0)))
+  cfg.work.delegation.runTimeoutMs = Math.max(60_000, Math.min(24 * 3600_000, Math.round(Number(cfg.work.delegation.runTimeoutMs) || DEFAULTS.work.delegation.runTimeoutMs)))
 
   return cfg
 }

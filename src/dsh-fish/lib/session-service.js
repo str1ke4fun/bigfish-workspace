@@ -49,9 +49,11 @@ export function createSessionService({ ctx, surface, root = '', log } = {}) {
     }
   }
 
-  async function create({ title = '', cwd = '', preset = '', surface: face = '', agentId = '' } = {}) {
+  async function create({ title = '', cwd = '', preset = '', surface: face = '', agentId = '', requirePreset = false } = {}) {
     const sc = readService(ctx, 'sessionController')
     if (!sc?.create) return { ok: false, why: 'NO_SESSION_CONTROLLER' }
+    const wantPreset = String(preset ?? '').trim()
+    if (requirePreset && !wantPreset) return { ok: false, why: 'PRESET_REQUIRED' }
 
     const requested = String(agentId || randomUUID())
     reserve(requested, face)
@@ -77,16 +79,22 @@ export function createSessionService({ ctx, surface, root = '', log } = {}) {
     // 与 outing.js 的 ensureBiliSession 同一套回退顺序。
     const attempts = []
     if (wsId) {
-      if (preset) attempts.push({ workspaceId: wsId, sessionId: requested, agentPreset: preset })
+      if (wantPreset) attempts.push({ workspaceId: wsId, sessionId: requested, agentPreset: wantPreset })
       attempts.push({ workspaceId: wsId, sessionId: requested })
       attempts.push({ workspaceId: wsId })
     } else if (cwd) {
-      if (preset) attempts.push({ cwd, sessionId: requested, agentPreset: preset })
+      if (wantPreset) attempts.push({ cwd, sessionId: requested, agentPreset: wantPreset })
       attempts.push({ cwd, sessionId: requested })
       attempts.push({ cwd })
     } else {
-      if (preset) attempts.push({ sessionId: requested, agentPreset: preset })
+      if (wantPreset) attempts.push({ sessionId: requested, agentPreset: wantPreset })
       attempts.push({ sessionId: requested })
+    }
+    // 工头会话**不允许**回落到全工具组合：preset 没被接受就直接失败。
+    if (requirePreset) {
+      for (let i = attempts.length - 1; i >= 0; i -= 1) {
+        if (attempts[i].agentPreset !== wantPreset) attempts.splice(i, 1)
+      }
     }
 
     let created = null
