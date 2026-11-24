@@ -289,6 +289,18 @@ test('并发派 build 不会超过 maxBuild', async () => {
   assert.equal([a.ok, b.ok].filter(Boolean).length, 1)
 })
 
+test('worker 的 cwd 跟工头实际 cwd 走，并重新校验', async () => {
+  const h = await setup()
+  await seedBoss(h)
+  const sub = join(h.dir, 'sub')
+  await mkdir(sub, { recursive: true })
+  h.boss.session.header.cwd = sub
+  const r = await h.service.tools.her_worker.execute({ mode: 'inspect', task: '看看' }, { agent: h.boss })
+  assert.equal(r.ok, true)
+  assert.equal(h.backendCalls.spawn[0].dir, sub)
+  assert.equal(h.state.readUnits().units[0].dir, sub)
+})
+
 test('worker 启动失败建 failed unit，不假装 running', async () => {
   const h = await setup()
   await seedBoss(h)

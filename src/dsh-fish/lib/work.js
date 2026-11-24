@@ -606,6 +606,11 @@ export function createWorkService({
       if (!rec) return { ok: false, code: 'NOT_BOSS', note: whyText('NOT_BOSS') }
       const dir = String(headerOf(agent).cwd ?? '')
       if (!dir) return { ok: false, code: 'NO_DIR', note: whyText('NO_DIR') }
+      const validDir = validateWorkDir(dir, { root })
+      if (!validDir.ok) {
+        return { ok: false, code: 'BAD_DIR', note: `${whyText('BAD_DIR')} ${validDir.why}` }
+      }
+      const workDir = validDir.real
       let pp = null
       try { pp = ctx?.get?.('permissionPresets') ?? null } catch { pp = null }
       if (!pp || typeof pp.current !== 'function') {
@@ -641,7 +646,7 @@ export function createWorkService({
 
       const label = String(args.label ?? '').trim()
       const unit = await state.createUnit({
-        dir: rec.dir ?? dir,
+        dir: workDir,
         bossSessionId: sessionId,
         bossKind: 'fish',
         backend: 'subagent',
@@ -654,9 +659,9 @@ export function createWorkService({
       const wantSchema = mode === 'inspect' && structured !== 'none'
       const spawnInput = {
         parent: agent,
-        dir: rec.dir ?? dir,
+        dir: workDir,
         preset: mode === 'inspect' ? 'fish-work-inspect' : 'fish-work-build',
-        prompt: workerPrompt({ dir: rec.dir ?? dir, task, mode, reviewOf: args.reviewOf, followUpOf: args.followUpOf }),
+        prompt: workerPrompt({ dir: workDir, task, mode, reviewOf: args.reviewOf, followUpOf: args.followUpOf }),
         label,
         signal: new AbortController().signal,
       }
