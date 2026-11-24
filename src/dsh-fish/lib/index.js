@@ -559,12 +559,9 @@ export function apply(ctx, baseConfig = {}) {
         surfaceOf: (session) => {
           try { return fishCore?.surface?.current?.({ session }) ?? '' } catch { return '' }
         },
-        isHerSession: (session) => {
-          try {
-            if (isHerAgent({ session }, herDir)) return true
-            return fishCore?.surface?.current?.({ session }) === 'work'
-          } catch { return false }
-        },
+        // 桌宠只认她自己的屋子/陪伴会话。工头 work 会话不进桌宠：
+        // 工作状态视觉留到后续桌宠事件设计里单独做。
+        isHerSession: (session) => isHerAgent({ session }, herDir),
         scheduleHooks: fishCore?.schedule,
       })
       disposers.push(() => petSources.dispose())

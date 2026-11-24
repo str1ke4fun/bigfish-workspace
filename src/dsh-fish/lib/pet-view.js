@@ -29,7 +29,7 @@ const PET_ACTION_TTL_MAX_MS = 60_000
 const PET_ACTION_CATALOG_LIMIT = 256
 const PET_ACTION_ID_RE = /^[a-z0-9-]{1,32}$/
 
-const PET_SURFACES = new Set(['web', 'screen', 'work'])
+const PET_SURFACES = new Set(['web', 'screen'])
 const PET_ACTION_MOTION_SET = new Set(PET_ACTION_MOTIONS)
 const PET_CUE_KINDS = new Set(['speak', 'replied'])
 const PET_REST_OVERRIDES = new Set(['auto', 'sleep', 'wake', 'awake'])

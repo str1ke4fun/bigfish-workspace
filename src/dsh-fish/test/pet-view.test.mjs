@@ -33,6 +33,7 @@ test('优先级与同档最近', () => {
 test('只接受 web/screen', () => {
   assert.equal(petSurfaceAllowed('web'), true)
   assert.equal(petSurfaceAllowed('screen'), true)
+  assert.equal(petSurfaceAllowed('work'), false)
   assert.equal(petSurfaceAllowed('bili'), false)
   assert.equal(petSurfaceAllowed('wx'), false)
   assert.equal(petSurfaceAllowed(''), false)
