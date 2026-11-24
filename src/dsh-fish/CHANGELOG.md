@@ -6,10 +6,14 @@
 - 工作委派：新增 `work` 面、`her_work` / `her_work_status` / `her_worker` / `her_worker_control` / `her_ask_user`；工头是鱼本人，cwd 为用户显式给出的目录；worker 通过宿主 `ctx.subagents` 的 spawn provider 派 durable 子会话。
 - `WorkUnit` 状态：`work-sessions.json` / `work-units.json` 原子写、0600；结算只写一次；重启后 `running` 记 `unknown`，不假装完成；inspect 请求结构化结果，build 用 closing text。
 - `work-guard`（G）：worker 的 `read` / `write` / `edit` / `glob` / `grep` 路径必须 realpath 在工作目录内；`~/.ssh`、`~/.aws`、`~/.dsh`、`~/.dsh-fish`、`/etc/shadow` 与 `curl` / `wget` / `ssh` / `rsync` / `git push` / `git reset --hard` 等裸外发和危险命令拒绝；命中写有界、脱敏的 `guardHits`。这是代码级 denylist，不是内核隔离；P4 再做读/网络隔离。
-- 受信闸：微信只接受 `work.wx.dispatchChats` 里的私聊（当前 `cat不到flag的cat`），群和未配置聊天拒绝；桌宠只接受 `say.js` 标记的受信轮次，屏幕采集/OCR 触发的轮次不能派活。
-- 微信汇总：`wx.notifyOwner` 固定发 `work.wx.ownerChat`，压平换行、500 字、秘密命中改通用文案；状态机只在派出/等待/完成/卡住时发。
+- 受信闸：微信只接受 `work.wx.dispatchChats` 里的私聊（当前 `cat不到flag的cat`），群和未配置聊天拒绝；桌宠只接受当前轮次最新 user/message 的 `rpcId` 以 `say-` 开头的受信轮次，屏幕采集/OCR 触发的轮次不能派活。
+- 微信汇总：`wx.notifyOwner` 固定发 `work.wx.ownerChat`，压平换行、500 字、去代码块/路径/Markdown、秘密命中改通用文案；状态机只在派出/等待/完成/卡住时发。
 - 工作事件面仍写 `web`，不升 schema；工头写 `growth_commit` 不喂 presence/absence；worker 不写事件流。
-- 验证：`src/dsh-fish` 1243 全绿；`src/dsh-wx` 176 全绿。真实模型/微信收发与 preset 真机派活仍需部署后验收。
+- 桌宠边界：`PET_SURFACES` 只留 `web` / `screen`；工头 `work` 会话不再进桌宠气泡或活动。工作状态视觉留到后续桌宠事件设计。
+- 汇报来源：`work-sessions.json` 新增 `bossSummary`，只取工头 `turn/end` 最后一条 assistant 文本；`her_work_status` 和微信只读它。worker 的 `summary` / `report` 留在 `work-units.json` 供工头复查，不再作为用户可见汇报。
+- `her_worker_control.get` 不再返回原始 `report`，改为一段人话回述（摘要/文件数/验证数/blockers）。
+- 陪伴会话在存在工作会话时挂 `fish:work` 处境：目录、worker 标签/状态、最近一次工头汇报；不含 worker 原始记录。工具描述改成场景句，用户说“那两个 agent 做完没/接着推进”时不再需要点名工具。
+- 验证：`src/dsh-fish` 1245 全绿；`src/dsh-wx` 182 全绿。真实模型/微信收发与“屏幕上那两个 agent”问法仍需部署后验收。
 
 ## 未发布 — 2026-11-20
 

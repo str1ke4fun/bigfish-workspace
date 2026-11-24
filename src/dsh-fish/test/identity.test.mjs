@@ -28,6 +28,8 @@ import {
   OWNER_SECTION,
   REMIND_ORDER,
   REMIND_SECTION,
+  WORK_ORDER,
+  WORK_SECTION,
   WAKE_ORDER,
   WAKE_SECTION,
   attachIdentity,
@@ -77,7 +79,7 @@ test('identityText：读到文件内容，改文件后（mtime 变）能拿到�
   assert.equal(identityText(root), '第二版身份')
 })
 
-test('attachIdentity：挂五段——身份 + 处境 + 提醒说明 + 任务摘要 + 关于他', () => {
+test('attachIdentity：挂六段——身份 + 处境 + 提醒说明 + 任务摘要 + 工作处境 + 关于他', () => {
   resetIdentityCache()
   clearWakeSection()
   const root = tmp()
@@ -88,7 +90,7 @@ test('attachIdentity：挂五段——身份 + 处境 + 提醒说明 + 任务摘
   const agent = { ctx: { systemPrompt: { section: (o) => calls.push(o) } } }
   const r = attachIdentity(agent, root, { inboxText: () => 't_1｜测试群A｜未回' })
   assert.equal(r.ok, true)
-  assert.equal(calls.length, 5, '身份 + 处境 + 提醒说明 + 任务摘要 + 关于他')
+  assert.equal(calls.length, 6, '身份 + 处境 + 提醒说明 + 任务摘要 + 工作处境 + 关于他')
   const sec = calls[0]
   assert.equal(sec.name, IDENTITY_SECTION)
   assert.equal(sec.order, IDENTITY_ORDER)
@@ -121,17 +123,24 @@ test('attachIdentity：挂五段——身份 + 处境 + 提醒说明 + 任务摘
   assert.equal(typeof inbox.text, 'function')
   assert.equal(inbox.text(), '## 还没回完的\n\nt_1｜测试群A｜未回')
 
-  // 第五段：关于他（owner 身份事实）。没有「关于他.md」时也是空串。
-  const owner = calls[4]
+  // 第五段：手边的工作。没有工作处境时是空串。
+  const work = calls[4]
+  assert.equal(work.name, WORK_SECTION)
+  assert.equal(work.order, WORK_ORDER)
+  assert.equal(typeof work.text, 'function')
+  assert.equal(work.text(), '')
+
+  // 第六段：关于他（owner 身份事实）。没有「关于他.md」时也是空串。
+  const owner = calls[5]
   assert.equal(owner.name, OWNER_SECTION)
   assert.equal(owner.order, OWNER_ORDER)
   assert.equal(typeof owner.text, 'function')
   assert.equal(owner.text(), '')
 
   assert.equal(attachIdentity(agent, root, { inboxText: () => '' }).ok, true)
-  assert.equal(calls[8].name, INBOX_SECTION, '第二次 attach 的五段从下标 5 开始')
-  assert.equal(calls[8].text(), '')
-  assert.equal(calls[9].name, OWNER_SECTION)
+  assert.equal(calls[9].name, INBOX_SECTION, '第二次 attach 的六段从下标 6 开始')
+  assert.equal(calls[9].text(), '')
+  assert.equal(calls[11].name, OWNER_SECTION)
 })
 
 test('writeSelfDoc 额外写「关于他.md」，身份文档里不出现别名', async () => {
@@ -199,9 +208,9 @@ test('attachIdentity：不是微信那条会话时，提醒说明和任务摘要
   assert.equal(calls[2].text(), '')
   assert.equal(calls[3].text(), '')
   assert.equal(attachIdentity(agent, root, { canRemind: () => true, inboxText: () => 't_1' }).ok, true)
-  assert.match(calls[7].text(), /过一会儿提醒/)
-  assert.doesNotMatch(calls[7].text(), /her_remind|wx_send|permit|宿主/)
-  assert.match(calls[8].text(), /t_1/)
+  assert.match(calls[8].text(), /过一会儿提醒/)
+  assert.doesNotMatch(calls[8].text(), /her_remind|wx_send|permit|宿主/)
+  assert.match(calls[9].text(), /t_1/)
 })
 
 test('处境段按会话分开：home 和 B 站出门会话各看各的，互不串', () => {
@@ -237,6 +246,30 @@ test('处境段按会话分开：home 和 B 站出门会话各看各的，互不
   assert.equal(biliWake(), '')
 })
 
+test('attachIdentity：fish:work 只给 screen 面，空时不存在', () => {
+  const sections = []
+  const agent = { ctx: { systemPrompt: { section: (o) => sections.push(o) } } }
+  attachIdentity(agent, tmp(), { surfaceOf: () => 'screen', workText: () => '目录：/tmp/x' })
+  const work = sections.find((s) => s.name === WORK_SECTION)
+  assert.ok(work)
+  assert.match(work.text(), /手边的工作/)
+  assert.match(work.text(), /\/tmp\/x/)
+
+  const web = []
+  attachIdentity({ ctx: { systemPrompt: { section: (o) => web.push(o) } } }, tmp(), {
+    surfaceOf: () => 'web',
+    workText: () => '目录：/tmp/x',
+  })
+  assert.equal(web.find((s) => s.name === WORK_SECTION).text(), '')
+
+  const empty = []
+  attachIdentity({ ctx: { systemPrompt: { section: (o) => empty.push(o) } } }, tmp(), {
+    surfaceOf: () => 'screen',
+    workText: () => '',
+  })
+  assert.equal(empty.find((s) => s.name === WORK_SECTION).text(), '')
+})
+
 test('attachIdentity：没有 systemPrompt 时返回 ok:false，不抛', () => {
   const r = attachIdentity({ ctx: {} }, tmp())
   assert.equal(r.ok, false)
@@ -264,7 +297,7 @@ test('registerIdentity：只给她那个 agent 挂（按 cwd 判），别人不�
   handler({ agent: { session: { header: { cwd: join(root, 'other') } }, ctx: { systemPrompt: { section: (o) => others.push(o) } } } })
   handler({ agent: { session: { header: { cwd: '' } }, ctx: { systemPrompt: { section: (o) => others.push(o) } } } })
 
-  assert.equal(mine.length, 5, '她那条会话必须挂上（身份 + 处境 + 提醒说明 + 任务摘要 + 关于他五段）')
+  assert.equal(mine.length, 6, '她那条会话必须挂上（身份 + 处境 + 提醒说明 + 任务摘要 + 工作处境 + 关于他六段）')
   assert.equal(others.length, 0, '用户自己的会话不许挂')
 })
 

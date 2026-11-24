@@ -118,7 +118,7 @@ async function seedBoss(h, sessionId = 'boss-1', dir = h.dir) {  h.surfaceById.s
       backend: 'subagent',
       state: 'running',
       waitingQuestion: null,
-      lastSummary: '',
+      bossSummary: '',
       createdAt: new Date(1000).toISOString(),
       lastUsedAt: new Date(1000).toISOString(),
     }
@@ -353,6 +353,11 @@ test('结算写 WorkUnit，通知状态机区分派出/完成/等待', async () 
   h.settle({ stopReason: 'completed', output: [{ type: 'text', text: '看完了' }], structured: { summary: '看完了', done: true } })
   await waitSettled(h, r.unitId)
   await tick()
+  const beforeBoss = await h.service.tools.her_work_status.execute({}, { agent: h.screen })
+  assert.equal(beforeBoss.ok, true)
+  assert.equal(beforeBoss.lastSummary, '', '工头还没说话时，不能把 worker 原文当汇报')
+  assert.equal(beforeBoss.workers[0].label, '看看')
+  assert.equal(beforeBoss.workers[0].status, 'done')
   await h.service.onSessionEvent(h.boss, {
     type: 'assistant/message',
     data: { message: { content: [{ type: 'text', text: '看完了，没问题。' }] } },
@@ -360,6 +365,9 @@ test('结算写 WorkUnit，通知状态机区分派出/完成/等待', async () 
   await h.service.onSessionEvent(h.boss, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
   await tick()
   assert.match(h.notified.at(-1)?.text ?? '', /做完/)
+  assert.match(h.notified.at(-1)?.text ?? '', /看完了，没问题/)
+  const afterBoss = await h.service.tools.her_work_status.execute({}, { agent: h.screen })
+  assert.equal(afterBoss.lastSummary, '看完了，没问题。')
   const unit = h.state.readUnits().units[0]
   assert.equal(unit.status, 'done')
   assert.equal(unit.summary, '看完了')
@@ -383,8 +391,30 @@ test('两个 worker 同时结算时汇总不丢', async () => {
   await tick()
   await h.service.onSessionEvent(h.boss, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
   await tick()
-  assert.match(h.notified.at(-1)?.text ?? '', /甲好了/)
-  assert.match(h.notified.at(-1)?.text ?? '', /乙好了/)
+  const text = h.notified.at(-1)?.text ?? ''
+  assert.match(text, /2 件都完了/)
+  assert.doesNotMatch(text, /甲好了|乙好了/, '没有工头人话时，不能把 worker 原文透传')
+})
+
+test('陪伴会话的工作处境只含标签/状态/工头汇报', async () => {
+  const h = await setup()
+  await seedBoss(h)
+  const a = await h.service.tools.her_worker.execute({ mode: 'inspect', task: '补测试', label: '补测试' }, { agent: h.boss })
+  await h.service.tools.her_worker.execute({ mode: 'inspect', task: '查日志', label: '查日志' }, { agent: h.boss })
+  h.settleAt(0, { stopReason: 'completed', structured: { summary: '测试补上了', done: true } })
+  await waitSettled(h, a.unitId)
+  await h.state.mutateSessions((s) => {
+    s[h.dir].bossSummary = '两个都跑过一遍，测试补上了，日志那边还在等构建。'
+  })
+  const text = h.service.promptSection(h.screen)
+  assert.match(text, /补测试/)
+  assert.match(text, /查日志/)
+  assert.match(text, /做完了/)
+  assert.match(text, /在做/)
+  assert.match(text, /最近汇报/)
+  assert.doesNotMatch(text, /report|filesChanged/)
+  assert.equal(h.service.promptSection(h.boss), '')
+  assert.equal(h.service.promptSection(h.wxAgent), '')
 })
 
 test('her_worker_control：已结算不能 message，list/get 不返回原始日志', async () => {
@@ -399,7 +429,11 @@ test('her_worker_control：已结算不能 message，list/get 不返回原始日
   const msg = await h.service.tools.her_worker_control.execute({ action: 'message', unitId: started.unitId, text: '继续' }, { agent: h.boss })
   assert.equal(msg.ok, true)
 
-  h.settle({ stopReason: 'completed', output: [{ type: 'text', text: '好了' }] })
+  h.settle({
+    stopReason: 'completed',
+    output: [{ type: 'text', text: '好了' }],
+    structured: { summary: '登录页修好了', filesChanged: ['a.js', 'b.js'], verification: ['npm test'], blockers: [], done: true },
+  })
   await waitSettled(h, started.unitId)
   await tick()
   const settled = await h.service.tools.her_worker_control.execute({ action: 'message', unitId: started.unitId, text: '再继续' }, { agent: h.boss })
@@ -408,6 +442,9 @@ test('her_worker_control：已结算不能 message，list/get 不返回原始日
 
   const got = await h.service.tools.her_worker_control.execute({ action: 'get', unitId: started.unitId }, { agent: h.boss })
   assert.equal(got.ok, true)
-  assert.equal(got.summary, '好了')
+  assert.match(got.summary, /登录页修好了/)
+  assert.match(got.summary, /动了 2 个文件/)
+  assert.match(got.summary, /验证了 1 项/)
+  assert.equal('report' in got, false, '不把 report 原始 JSON 交给模型')
   assert.equal('logs' in got, false)
 })

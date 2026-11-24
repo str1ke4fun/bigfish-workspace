@@ -501,6 +501,10 @@ export function apply(ctx, baseConfig = {}) {
         contextOf: ({ agent, surface }) => {
           try { return fishCore?.context?.render?.({ agent, surface, section: 'owner' }) ?? '' } catch { return '' }
         },
+        // 手边的工作：只给陪伴会话；没有工作会话时返回空串。
+        workText: (agent) => {
+          try { return workService?.promptSection?.(agent) ?? '' } catch { return '' }
+        },
         log: (...a) => logger.info(...a),
       })
       if (typeof off === 'function') disposers.push(off)

@@ -73,6 +73,15 @@ export const INBOX_SECTION = 'fish:inbox'
 export const INBOX_ORDER = 8850
 
 /**
+ * 「手边的工作」段（2026-11-24）。
+ *
+ * 只给 screen 面（桌宠陪伴会话）：目录、worker 标签/状态、最近一次工头汇报。
+ * 不含 worker summary/report/日志；没有工作会话时返回空串。桌宠 UI 不读这一段。
+ */
+export const WORK_SECTION = 'fish:work'
+export const WORK_ORDER = 8840
+
+/**
  * owner 身份事实段（person-memory Phase 1 Task 4）。
  *
  * 和身份段分开：身份是“她是谁”，这一段是“哪些名字是他”。
@@ -230,7 +239,7 @@ export function resetIdentityCache() {
  * 把身份段挂到某个 agent 的 system prompt 上。
  * @param {object} agent
  * @param {string} root
- * @param {{canRemind?: (agent:object)=>boolean, remindPrompt?: ()=>string, inboxText?: ()=>string, surfaceOf?: (agent:object)=>string}} [opts]
+ * @param {{canRemind?: (agent:object)=>boolean, remindPrompt?: ()=>string, inboxText?: ()=>string, surfaceOf?: (agent:object)=>string, workText?: (agent:object)=>string}} [opts]
  *   canRemind：这条会话是不是微信那条。不是的话，提醒说明返回空串——
  *   QQ / 网页里的她看不到「去微信发提醒」这段，免得把通道说明带错地方。
  *   remindPrompt：按 wx 的机械投递开关现选说明；缺省按当前默认的机械路径。
@@ -238,7 +247,7 @@ export function resetIdentityCache() {
  *   surfaceOf：这次会话在哪个面（web/wx/screen/bili/qq）；`fish:owner` 只在前三个面渲染。
  * @returns {{ ok: boolean, why?: string }}
  */
-export function attachIdentity(agent, root, { canRemind, remindPrompt, inboxText, surfaceOf, contextOf } = {}) {
+export function attachIdentity(agent, root, { canRemind, remindPrompt, inboxText, surfaceOf, contextOf, workText } = {}) {
   const sp = agent?.ctx?.systemPrompt
   if (!sp || typeof sp.section !== 'function') {
     return { ok: false, why: '宿主的 agent.ctx 上没有 systemPrompt.section（版本不支持）' }
@@ -281,6 +290,18 @@ export function attachIdentity(agent, root, { canRemind, remindPrompt, inboxText
         return body ? '## 还没回完的\n\n' + body : ''
       },
     })
+    // 手边的工作：只给陪伴会话；没有工作会话时是空串。
+    sp.section({
+      name: WORK_SECTION,
+      order: WORK_ORDER,
+      text: () => {
+        let surface = ''
+        try { surface = String(surfaceOf?.(agent) ?? '') } catch { surface = '' }
+        if (surface !== 'screen') return ''
+        const body = String(workText?.(agent) ?? '').trim()
+        return body ? '## 手边的工作\n\n' + body : ''
+      },
+    })
     // 哪些名字是他。只在 web / wx / screen 出现；没有 owner 文档时是空串。
     // screen 的支持由实现保证，Phase 1 的测试按 D28 不断言，等 presence 的面表落地。
     sp.section({
@@ -319,7 +340,7 @@ export function attachIdentity(agent, root, { canRemind, remindPrompt, inboxText
  *
  * @returns {() => void} 卸载函数；挂不上时返回一个空函数，不抛
  */
-export function registerIdentity(ctx, { root, herDir, log, surfaceOf, contextOf } = {}) {
+export function registerIdentity(ctx, { root, herDir, log, surfaceOf, contextOf, workText } = {}) {
   const state = { ok: false, applied: 0, why: '' }
   /** 这条会话是不是 dsh-wx 的微信会话。拿不到服务就先当不是，下一轮再求值。 */
   const canRemind = (agent) => {
@@ -360,7 +381,7 @@ export function registerIdentity(ctx, { root, herDir, log, surfaceOf, contextOf 
       let surface = ''
       try { surface = String(surfaceOf?.(agent) ?? '') } catch { surface = '' }
       if (!isHerAgent(agent, herDir) && surface !== 'work') return
-      const r = attachIdentity(agent, root, { canRemind, remindPrompt, inboxText, surfaceOf, contextOf })
+      const r = attachIdentity(agent, root, { canRemind, remindPrompt, inboxText, surfaceOf, contextOf, workText })
       if (r.ok) {
         state.ok = true
         state.applied += 1

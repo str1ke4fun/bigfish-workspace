@@ -88,8 +88,34 @@ const UNIT_TEXT = {
   unknown: '不知道',
 }
 
-function whyText(code, why = '') {
-  const head = FAIL_TEXT[code] ?? '没做成。'
+/** 工头看 worker 的人话回述；不把 report 原始 JSON 交给模型。 */
+function humanUnitSummary(unit) {
+  const report = unit?.report
+  if (!report || typeof report !== 'object') return unit?.summary || '没有更多细节'
+  const parts = []
+  if (report.summary) parts.push(String(report.summary))
+  if (Array.isArray(report.filesChanged) && report.filesChanged.length) {
+    parts.push(`动了 ${report.filesChanged.length} 个文件`)
+  }
+  if (Array.isArray(report.verification) && report.verification.length) {
+    parts.push(`验证了 ${report.verification.length} 项`)
+  }
+  if (Array.isArray(report.blockers) && report.blockers.length) {
+    parts.push(`卡在：${report.blockers.join('；')}`)
+  }
+  if (report.done === false) parts.push('结论：还没做完')
+  return firstText(parts.join('；'), unit?.summary, '没有更多细节')
+}
+
+function workerBrief(unit) {
+  return {
+    label: firstText(unit?.label, unit?.mode === 'build' ? '改东西' : '看看'),
+    mode: unit?.mode ?? null,
+    status: unit?.status ?? 'unknown',
+  }
+}
+
+function whyText(code, why = '') {  const head = FAIL_TEXT[code] ?? '没做成。'
   return why ? `${head}（${String(why).slice(0, 120)}）` : head
 }
 
@@ -163,6 +189,11 @@ function firstText(...values) {
   return ''
 }
 
+/** 工头的人话汇报：压平换行、限 2000 字；这是唯一用户可见的汇报来源。 */
+function flattenSummary(text) {
+  return [...String(text ?? '').replace(/\s*\n+\s*/g, ' ').trim()].slice(0, 2000).join('')
+}
+
 /**
  * @param {{
  *   ctx?: object, core?: object, config?: object, getConfig?: Function,
@@ -182,6 +213,7 @@ export function createWorkService({
   const lastNotified = new Map()
   const requestedSchema = new Map()
   const timers = new Map()
+  const inflightSettlements = new Set()
   // 派活的“查上限 + 建 unit + spawn”必须串行；模型一轮里可能并发发两个调用。
   let spawnQueue = Promise.resolve()
   function serialSpawn(fn) {
@@ -234,6 +266,28 @@ export function createWorkService({
 
   function isWorkSession(sessionId) {
     return recordForSession(sessionId) !== null
+  }
+
+  /**
+   * 陪伴会话的「手边的工作」处境：只给 screen 面，只含目录、worker 标签/状态、
+   * 工头自己的汇报；不含 worker summary/report/日志。
+   */
+  function promptSection(agent) {
+    if (surfaceOf(agent) !== 'screen') return ''
+    const rec = latestRecord()
+    if (!rec) return ''
+    const units = state.unitsForBoss(rec.sessionId).slice(-5)
+    const lines = [`目录：${rec.dir || ''}`]
+    if (units.length) {
+      lines.push(`worker：${units.map((u) => {
+        const brief = workerBrief(u)
+        return `${brief.label}（${UNIT_TEXT[brief.status] ?? brief.status}）`
+      }).join('、')}`)
+    }
+    if (rec.bossSummary) lines.push(`最近汇报：${rec.bossSummary}`)
+    lines.push('用户问“那两个 agent”或“做得怎么样”时，先用 her_work_status 看这里的状态，不要靠屏幕 OCR 猜名字。')
+    lines.push('用户说“接着推进 / 让他们做”时，先用 her_work 在同一个目录再派一件；先给建议，等他同意。')
+    return lines.join('\n')
   }
 
   function reserveKnown() {
@@ -298,7 +352,7 @@ export function createWorkService({
         backend: 'subagent',
         state: 'running',
         waitingQuestion: null,
-        lastSummary: '',
+        bossSummary: '',
         lastReport: null,
         createdAt: at,
         lastUsedAt: at,
@@ -325,7 +379,7 @@ export function createWorkService({
       `任务：${task}`,
       `来源：${source}`,
       '完成后汇总；不要自己换目录；worker 不直接找用户。',
-      '给用户的汇总要短，一两句话就够；不要贴代码、路径、命令或 worker 原文。',
+      '你给用户的汇报会直接显示给他：说人话，一两句话；不要贴 report 字段、JSON、文件清单、命令或 worker 原文。',
     ].join('\n')
   }
 
@@ -358,42 +412,37 @@ export function createWorkService({
   async function handleTurnEnd(sessionId, event) {
     const rec = recordForSession(sessionId)
     if (!rec) return
+    // 结算写盘可能和工头的 turn/end 同时发生：先等完在途结算，再看计数。
+    if (inflightSettlements.size > 0) {
+      await Promise.allSettled([...inflightSettlements])
+    }
     const active = state.activeCounts(sessionId)
     const waiting = rec.state === 'waiting'
     const pending = pendingSettle.get(sessionId) ?? []
     const heard = firstText(lastAssistant.get(sessionId))
-    const said = firstText(heard, rec.lastSummary)
+    const bossText = flattenSummary(heard)
 
     if (waiting) {
       await maybeNotify(sessionId, `在等你：${rec.waitingQuestion || '有个问题'}`, 'waiting')
     } else if (active.active > 0) {
       await maybeNotify(sessionId, `已派出 ${active.active} 个 worker，还在做`, `active:${active.active}`)
-      await state.mutateSessions((s) => {
-        const row = Object.values(s).find((x) => x?.sessionId === sessionId)
-        if (row) row.state = 'running'
-      })
     } else if (pending.length > 0) {
       const bad = pending.filter((p) => !p.ok)
       const good = pending.filter((p) => p.ok)
-      const summarize = (list) => {
-        const parts = list.map((p) => firstText(p.summary)).filter(Boolean)
-        return parts.length ? parts.join('；') : (firstText(said) || '没有更多细节')
-      }
       const text = bad.length
-        ? `卡住了：${firstText(heard, summarize(bad))}${good.length ? `；另有 ${good.length} 件做完了` : ''}`
-        : `做完了：${firstText(heard, summarize(good))}`
+        ? `卡住了：${bossText || '详情在电脑上'}${good.length ? `；另有 ${good.length} 件做完了` : ''}`
+        : `做完了：${bossText || `${pending.length} 件都完了，详情在电脑上`}`
       await maybeNotify(sessionId, text, `settle:${pending.map((p) => p.unitId).join(',')}`)
       pendingSettle.delete(sessionId)
-      await state.mutateSessions((s) => {
-        const row = Object.values(s).find((x) => x?.sessionId === sessionId)
-        if (row) row.state = 'idle'
-      })
-    } else {
-      await state.mutateSessions((s) => {
-        const row = Object.values(s).find((x) => x?.sessionId === sessionId)
-        if (row && row.state !== 'waiting') row.state = 'idle'
-      })
     }
+
+    await state.mutateSessions((s) => {
+      const row = Object.values(s).find((x) => x?.sessionId === sessionId)
+      if (!row) return
+      if (bossText) row.bossSummary = bossText
+      if (waiting) return
+      row.state = active.active > 0 ? 'running' : 'idle'
+    })
     lastAssistant.delete(sessionId)
   }
 
@@ -411,7 +460,7 @@ export function createWorkService({
       return
     }
     if (event?.type === 'turn/end') {
-      void handleTurnEnd(sessionId, event).catch((err) => {
+      return handleTurnEnd(sessionId, event).catch((err) => {
         log?.(`[dsh-fish] 工作通知状态机失败：${String(err?.message ?? err).slice(0, 160)}`)
       })
     }
@@ -452,18 +501,12 @@ export function createWorkService({
     if (!unit) return
     if (unit.status !== 'aborted') {
       const list = pendingSettle.get(bossSessionId) ?? []
-      list.push({
-        unitId, ok: unit.status === 'done',
-        summary: firstText(unit.summary, settle.closingText, settle.diagnostic, ''),
-      })
+      list.push({ unitId, ok: unit.status === 'done' })
       pendingSettle.set(bossSessionId, list)
     }
     await state.mutateSessions((s) => {
       const row = Object.values(s).find((x) => x?.sessionId === bossSessionId)
-      if (row) {
-        row.lastSummary = unit.summary || row.lastSummary || ''
-        row.state = row.state === 'waiting' ? 'waiting' : 'running'
-      }
+      if (row) row.state = row.state === 'waiting' ? 'waiting' : 'running'
     })
   }
 
@@ -483,7 +526,7 @@ export function createWorkService({
 
   const herWork = defineTool({
     name: 'her_work',
-    description: '用户给了工作目录和一件要做的事时，去那条工作会话里开始做。目录必须由用户明确给出；不知道就先问。',
+    description: '用户说“去 / 帮我 / 让他们接着做 / 再推进一下”时，把目录和任务交给工作会话。不要等用户报工具名；目录必须由用户明确给出，不知道就先问。',
     parameters: toJsonSchema({
       dir: { type: 'string', required: false, description: '用户给出的绝对目录。' },
       task: { type: 'string', required: true, description: '要做的事。' },
@@ -546,15 +589,20 @@ export function createWorkService({
 
   const herWorkStatus = defineTool({
     name: 'her_work_status',
-    description: '看看工作做到哪了。只给状态和最近的汇总，不翻 worker 的原始记录。',
+    description: '用户问“他们做完没 / 怎么样了 / 那两个 agent 呢”时用这个。它会给你 worker 的标签和状态；不要靠屏幕 OCR 猜名字。只给状态和工头自己的汇报，不翻 worker 原始记录。',
     parameters: toJsonSchema({
       dir: { type: 'string', required: false, description: '想看哪个目录；不填就看最近一次。' },
     }),
     output: commonOutput,
     project: (out) => {
       if (!out?.ok) return { text: `没看到：${out?.note || out?.why || '还没有工作'}` }
-      const head = `在 ${out.dirBasename || '工作'}：${STATE_TEXT[out.activity] ?? out.activity}`
-      return { text: out.lastSummary ? `${head}；${out.lastSummary}` : head }
+      const parts = [`在 ${out.dirBasename || '工作'}：${STATE_TEXT[out.activity] ?? out.activity}`]
+      const workers = (out.workers ?? [])
+        .map((w) => `${w.label}（${UNIT_TEXT[w.status] ?? w.status}）`)
+        .join('、')
+      if (workers) parts.push(workers)
+      if (out.lastSummary) parts.push(`最近汇报：${out.lastSummary}`)
+      return { text: parts.join('；') }
     },
     async execute(args = {}, exec = {}) {
       const agent = exec.agent
@@ -572,6 +620,7 @@ export function createWorkService({
       }
       if (!rec) return { ok: false, code: 'NO_SESSION', note: '还没有工作会话。' }
       const counts = state.activeCounts(rec.sessionId)
+      const units = state.unitsForBoss(rec.sessionId).slice(-5)
       return {
         ok: true,
         dir: Object.entries(sessions()).find(([, v]) => v?.sessionId === rec.sessionId)?.[0] ?? '',
@@ -579,7 +628,8 @@ export function createWorkService({
         sessionId: rec.sessionId,
         activeWorkers: counts.active,
         activity: rec.state || 'idle',
-        lastSummary: rec.lastSummary || '',
+        lastSummary: rec.bossSummary || '',
+        workers: units.map(workerBrief),
         waiting: rec.state === 'waiting',
         at: now(),
       }
@@ -588,7 +638,7 @@ export function createWorkService({
 
   const herWorker = defineTool({
     name: 'her_worker',
-    description: '把一件具体的事派给 worker。inspect 只读检查，build 可以改文件、跑命令。不要自己指定目录。',
+    description: '把一件具体的事派给 worker。inspect 只读检查，build 可以改文件、跑命令。不要自己指定目录。用户问还能推进什么时，先看最近汇报和还停着的 worker，再决定派一个跟进。',
     parameters: toJsonSchema({
       mode: { type: 'string', required: false, enum: ['inspect', 'build'], description: '缺省 inspect。' },
       task: { type: 'string', required: true, description: '交给 worker 的具体任务。' },
@@ -683,9 +733,11 @@ export function createWorkService({
       await state.updateUnit(unit.id, { status: 'running', backendRef: { childId } })
       if (wantSchema) requestedSchema.set(unit.id, true)
       backend.onSettle(started.result, (settle) => {
-        void finishUnit({ unitId: unit.id, childId, bossSessionId: sessionId, settle, mode }).catch((err) => {
+        const task = finishUnit({ unitId: unit.id, childId, bossSessionId: sessionId, settle, mode }).catch((err) => {
           log?.(`[dsh-fish] worker 结算写入失败：${String(err?.message ?? err).slice(0, 160)}`)
         })
+        inflightSettlements.add(task)
+        task.finally(() => inflightSettlements.delete(task))
       })
       const timeout = Number(getPath(cfg(), 'work.delegation.runTimeoutMs') ?? 1_800_000)
       const timer = setTimeout(() => {
@@ -707,7 +759,7 @@ export function createWorkService({
 
   const herWorkerControl = defineTool({
     name: 'her_worker_control',
-    description: '看看 worker 在做什么、给还在跑的 worker 带句话，或者叫停它。已经结束的 worker 不能续聊。',
+    description: '看看 worker 在做什么、给还在跑的 worker 带句话，或者叫停它。已经结束的 worker 不能续聊；get 只给你一段人话回述，不是原始字段。',
     parameters: toJsonSchema({
       action: { type: 'string', required: true, enum: ['message', 'interrupt', 'list', 'get'], description: '要做什么。' },
       unitId: { type: 'string', required: false, description: 'message / interrupt / get 时必填。' },
@@ -757,10 +809,7 @@ export function createWorkService({
           unitId: unit.id,
           childId: unit.backendRef?.childId ?? '',
           status: unit.status,
-          stopReason: unit.stopReason ?? null,
-          failureKind: unit.failureKind ?? null,
-          summary: unit.summary ?? '',
-          report: unit.report ?? null,
+          summary: humanUnitSummary(unit),
           updatedAt: unit.updatedAt,
         }
       }
@@ -866,6 +915,7 @@ export function createWorkService({
     register,
     reserveKnown,
     isWorkSession,
+    promptSection,
     onSessionEvent,
     reconcile,
     status,
