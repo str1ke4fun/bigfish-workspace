@@ -9,7 +9,7 @@
 - 受信闸：微信只接受 `work.wx.dispatchChats` 里的私聊（当前 `cat不到flag的cat`），群和未配置聊天拒绝；桌宠只接受 `say.js` 标记的受信轮次，屏幕采集/OCR 触发的轮次不能派活。
 - 微信汇总：`wx.notifyOwner` 固定发 `work.wx.ownerChat`，压平换行、500 字、秘密命中改通用文案；状态机只在派出/等待/完成/卡住时发。
 - 工作事件面仍写 `web`，不升 schema；工头写 `growth_commit` 不喂 presence/absence；worker 不写事件流。
-- 验证：`src/dsh-fish` 1235 全绿；`src/dsh-wx` 175 全绿。真实模型/微信收发与 preset 真机派活仍需部署后验收。
+- 验证：`src/dsh-fish` 1238 全绿；`src/dsh-wx` 175 全绿。真实模型/微信收发与 preset 真机派活仍需部署后验收。
 
 ## 未发布 — 2026-11-20
 
