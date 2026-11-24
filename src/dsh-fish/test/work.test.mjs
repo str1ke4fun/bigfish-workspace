@@ -203,6 +203,25 @@ test('her_worker：非工头拒绝、权限校验、preset 与 outputSchema', as
   assert.equal('outputSchema' in h.backendCalls.spawn[1], false)
 })
 
+test('worker 启动失败建 failed unit，不假装 running', async () => {
+  const h = await setup()
+  await seedBoss(h)
+  const backend = {
+    available: () => true,
+    capabilities: () => ({}),
+    spawn: async () => ({ ok: false, code: 'START_FAILED', why: 'boom' }),
+  }
+  const svc = createWorkService({
+    ctx: h.ctx, core: h.core, config: h.config, state: h.state, backend, guard: h.guard, wx: h.wx, root: h.root,
+  })
+  const r = await svc.tools.her_worker.execute({ mode: 'inspect', task: 'x' }, { agent: h.boss })
+  assert.equal(r.ok, false)
+  const unit = h.state.readUnits().units[0]
+  assert.equal(unit.status, 'failed')
+  assert.equal(unit.failureKind, 'start')
+  assert.match(unit.summary, /boom/)
+})
+
 test('her_worker 并行上限：总 2、build 1；宿主没有 subagents 时失败且不建 unit', async () => {
   const h = await setup()
   await seedBoss(h)

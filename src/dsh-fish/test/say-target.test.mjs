@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveSaySession, sayToHer } from '../lib/say.js'
+import { isTrustedTurn } from '../lib/work.js'
 import { appendEvent } from '../lib/store.js'
 import { resetContactCache } from '../lib/contact.js'
 
@@ -94,6 +95,14 @@ async function withSayRoot(fn) {
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 }
+
+test('say 这一轮结束后受信标记清掉，不留给下一轮屏幕采集', async () => {
+  await withSayRoot(async (root) => {
+    const r = await sayToHer(fakeCtx(), '在吗', { root, waitMs: 500 })
+    assert.equal(r.ok, true)
+    assert.equal(isTrustedTurn(r.sessionId), false)
+  })
+})
 
 test('回落 home 时 note 要说清楚：这句进了主页会话', async () => {
   await withSayRoot(async (root) => {

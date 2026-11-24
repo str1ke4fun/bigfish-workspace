@@ -32,7 +32,7 @@ import { slashed } from './posix.js'
 import { refreshSelfDoc } from './selfdoc.js'
 import { looksLikeRewriting } from './guard.js'
 import { classifyReaction } from './refuse.js'
-import { markTrustedTurn } from './work.js'
+import { markTrustedTurn, clearTrustedTurn } from './work.js'
 
 // 等她说完最多等这么久。一次回话通常 8–30 秒；75 秒还没结束就先把
 // 已落盘的交出去（她可能在调工具，也可能卡住了），不让人干等到超时。
@@ -364,5 +364,7 @@ export async function sayToHer(ctx, text, deps = {}) {
     return { ok: false, note: `没送到：${String(err?.message ?? err).slice(0, 120)}`, said: [], herReply: '' }
   } finally {
     clearTimeout(kill)
+    // 受信标记只属于这一轮：prompt 失败或这一轮结束都不该留到下一轮。
+    clearTrustedTurn(sessionId)
   }
 }
