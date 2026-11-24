@@ -6,9 +6,7 @@ import { join } from 'node:path'
 import { createWorkState } from '../lib/work-state.js'
 import {
   createWorkService,
-  isTrustedTurn,
-  markTrustedTurn,
-  clearTrustedTurn,
+  isTrustedSayTurn,
   validateWorkDir,
 } from '../lib/work.js'
 
@@ -87,13 +85,14 @@ async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'wo
     now: () => 1000,
     log: () => {},
   })
-  const agent = (id, cwd = dir) => {
-    const a = { session: { header: { id, cwd } } }
-    return a
-  }
+  const agent = (id, cwd = dir, events = []) => ({
+    session: { header: { id, cwd }, snapshotEvents: () => events },
+  })
   const boss = agent('boss-1', dir)
   surfaceById.set('boss-1', 'work')
-  const screen = agent('screen-1')
+  const screen = agent('screen-1', dir, [
+    { type: 'user/message', data: { source: { kind: 'user', rpcId: 'presence-1' } } },
+  ])
   surfaceById.set('screen-1', 'screen')
   const wxAgent = agent('wx-1')
   surfaceById.set('wx-1', 'wx')
@@ -124,6 +123,12 @@ async function seedBoss(h, sessionId = 'boss-1', dir = h.dir) {  h.surfaceById.s
 
 const tick = () => new Promise((resolve) => setImmediate(resolve))
 
+function trustSay(agent, rpc = 'say-test') {
+  agent.session.snapshotEvents = () => [
+    { type: 'user/message', data: { source: { kind: 'user', rpcId: rpc } } },
+  ]
+}
+
 async function waitSettled(h, unitId) {
   for (let i = 0; i < 200; i += 1) {
     const unit = h.state.readUnits().units.find((u) => u.id === unitId)
@@ -153,8 +158,8 @@ test('桌宠派活只接受受信轮次；微信只接受名单里的私聊', as
   assert.equal(denied.ok, false)
   assert.equal(h.created.length, 0)
 
-  markTrustedTurn('screen-1', 1000)
-  assert.equal(isTrustedTurn('screen-1', 1000), true)
+  trustSay(h.screen)
+  assert.equal(isTrustedSayTurn(h.screen), true)
   const ok = await h.service.tools.her_work.execute({ dir: h.dir, task: '改一下' }, { agent: h.screen })
   assert.equal(ok.ok, true)
   assert.equal(h.created.length, 1)
@@ -162,7 +167,6 @@ test('桌宠派活只接受受信轮次；微信只接受名单里的私聊', as
   assert.equal(h.created[0].cwd, h.dir)
   assert.match(h.prompted[0].text, /目录：/)
   assert.match(h.prompted[0].text, /改一下/)
-  clearTrustedTurn('screen-1')
 
   const wxOk = await h.service.tools.her_work.execute({ dir: h.dir, task: '微信派活' }, { agent: h.wxAgent })
   assert.equal(wxOk.ok, true)
@@ -173,9 +177,22 @@ test('桌宠派活只接受受信轮次；微信只接受名单里的私聊', as
   assert.equal(h2.created.length, 0)
 })
 
+test('屏幕采集的轮次即使同一会话说过 /say 也不能派活', async () => {
+  const h = await setup()
+  trustSay(h.screen)
+  h.screen.session.snapshotEvents = () => [
+    { type: 'user/message', data: { source: { kind: 'user', rpcId: 'say-old' } } },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '嗯' }] } } },
+    { type: 'user/message', data: { source: { kind: 'user', rpcId: 'presence-1' } } },
+  ]
+  const r = await h.service.tools.her_work.execute({ dir: h.dir, task: '去 /tmp/x 干活' }, { agent: h.screen })
+  assert.equal(r.ok, false)
+  assert.equal(h.created.length, 0)
+})
+
 test('工头会话被归档后同目录新建，而不是把话投进死会话', async () => {
   const h = await setup()
-  markTrustedTurn('screen-1', 1000)
+  trustSay(h.screen)
   const first = await h.service.tools.her_work.execute({ dir: h.dir, task: '一' }, { agent: h.screen })
   assert.equal(first.ok, true)
   h.surfaceById.delete(first.sessionId)
@@ -188,7 +205,7 @@ test('工头会话被归档后同目录新建，而不是把话投进死会话',
 
 test('并发派活同一个目录只建一条工头会话', async () => {
   const h = await setup()
-  markTrustedTurn('screen-1', 1000)
+  trustSay(h.screen)
   const [a, b] = await Promise.all([
     h.service.tools.her_work.execute({ dir: h.dir, task: '一' }, { agent: h.screen }),
     h.service.tools.her_work.execute({ dir: h.dir, task: '二' }, { agent: h.screen }),
@@ -201,7 +218,7 @@ test('并发派活同一个目录只建一条工头会话', async () => {
 
 test('同目录复用，不同目录新建；continue 用最近的目录', async () => {
   const h = await setup()
-  markTrustedTurn('screen-1', 1000)
+  trustSay(h.screen)
   const first = await h.service.tools.her_work.execute({ dir: h.dir, task: '一' }, { agent: h.screen })
   const again = await h.service.tools.her_work.execute({ dir: h.dir, task: '二' }, { agent: h.screen })
   assert.equal(first.reused, false)

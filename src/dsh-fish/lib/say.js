@@ -32,7 +32,6 @@ import { slashed } from './posix.js'
 import { refreshSelfDoc } from './selfdoc.js'
 import { looksLikeRewriting } from './guard.js'
 import { classifyReaction } from './refuse.js'
-import { markTrustedTurn, clearTrustedTurn } from './work.js'
 
 // 等她说完最多等这么久。一次回话通常 8–30 秒；75 秒还没结束就先把
 // 已落盘的交出去（她可能在调工具，也可能卡住了），不让人干等到超时。
@@ -288,8 +287,6 @@ export async function sayToHer(ctx, text, deps = {}) {
     const waitMs = Math.max(500, Math.min(deps.waitMs ?? REPLY_WAIT_MS, 120_000))
     const turn = waitTurnEnd(ctx, sessionId, waitMs)
 
-    // 用户直接对她说的话才算受信轮次；屏幕采集/OCR 触发的轮次不走这里。
-    try { markTrustedTurn(sessionId) } catch { /* 标记失败不影响这句话 */ }
     await sc.prompt(
       { requestId: `say-${dk}-${Date.now()}`, sessionId, mode: 'queue', content: [{ type: 'text', text: content }] },
       ac.signal,
@@ -364,7 +361,5 @@ export async function sayToHer(ctx, text, deps = {}) {
     return { ok: false, note: `没送到：${String(err?.message ?? err).slice(0, 120)}`, said: [], herReply: '' }
   } finally {
     clearTimeout(kill)
-    // 受信标记只属于这一轮：prompt 失败或这一轮结束都不该留到下一轮。
-    clearTrustedTurn(sessionId)
   }
 }

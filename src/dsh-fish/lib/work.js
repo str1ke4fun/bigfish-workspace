@@ -20,24 +20,28 @@ import { toJsonSchema } from './toolschema.js'
 import { assistantTextOf } from './turnend.js'
 import { looksLikeSecret } from './guard.js'
 
-const TRUST_TTL_MS = 5 * 60_000
-const trustedTurns = new Map()
-
-/** 桌宠受信轮次：say.js 在她把这句话递进去之前调用。 */
-export function markTrustedTurn(sessionId, at = Date.now()) {
-  const id = String(sessionId ?? '')
-  if (id) trustedTurns.set(id, Number(at) || Date.now())
-}
-
-export function clearTrustedTurn(sessionId) {
-  trustedTurns.delete(String(sessionId ?? ''))
-}
-
-export function isTrustedTurn(sessionId, at = Date.now()) {
-  const id = String(sessionId ?? '')
-  const seen = trustedTurns.get(id)
-  if (!seen) return false
-  return (Number(at) || Date.now()) - seen <= TRUST_TTL_MS
+/**
+ * 这一轮是不是用户直接对桌宠说的话（say.js 发出的 prompt）。
+ *
+ * 只看当前会话最近一条 user/message 的来源，不按会话存标记：屏幕采集/
+ * presence 的 prompt 与 /say 共用同一条陪伴会话，会话级标记会被它们蹭用。
+ */
+export function isTrustedSayTurn(agent) {
+  const session = agent?.session
+  let events = null
+  try {
+    events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : session?.events
+  } catch {
+    events = null
+  }
+  if (!Array.isArray(events)) return false
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i]
+    if (event?.type !== 'user/message') continue
+    const source = event?.data?.source
+    return source?.kind === 'user' && /^say-/.test(String(source?.rpcId ?? ''))
+  }
+  return false
 }
 
 const INSPECT_SCHEMA = {
@@ -388,7 +392,6 @@ export function createWorkService({
     // 宿主给的是 Session；测试和旧调用也可能直接给 Agent（{session:{header}}）。
     const holder = session?.session ? session : { session }
     const sessionId = String(holder?.session?.header?.id ?? holder?.session?.id ?? '')
-    if (event?.type === 'turn/end') clearTrustedTurn(sessionId)
     if (!sessionId) return
     let surface = null
     try { surface = surfaceOf(holder) } catch { surface = null }
@@ -482,7 +485,7 @@ export function createWorkService({
       const sessionId = sessionIdOf(agent)
       let origin = null
       if (surface === 'screen') {
-        if (!isTrustedTurn(sessionId, now())) {
+        if (!isTrustedSayTurn(agent)) {
           return { ok: false, code: 'NOT_TRUSTED', note: whyText('NOT_TRUSTED') }
         }
         origin = { surface: 'screen', chat: '' }
