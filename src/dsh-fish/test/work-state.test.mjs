@@ -150,6 +150,19 @@ test('guardHits 有界、脱敏、终态后不再追加', async () => {
   assert.equal(await state.appendGuardHit('wu_g', 'bash: 迟到'), false)
 })
 
+test('结构化报告命中秘密时整份丢掉，只留通用文案', async () => {
+  const root = await tempRoot()
+  const state = createWorkState({ root, now: () => 1000, looksLikeSecret: () => ({ hit: true }) })
+  await state.createUnit(unitInput({ id: 'wu_secret' }))
+  const unit = await state.settleUnit('wu_secret', {
+    stopReason: 'completed',
+    structured: { summary: '看了 token', filesChanged: ['/home/u/.ssh/id_rsa'], done: true },
+    requestedSchema: true,
+  })
+  assert.equal(unit.summary, '详情在电脑上')
+  assert.equal(unit.report, null)
+})
+
 test('sessions 映射原子读写，保留最近 20 个目录', async () => {
   const root = await tempRoot()
   const state = createWorkState({ root, now: () => 1000 })

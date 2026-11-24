@@ -277,13 +277,15 @@ export function createWorkState({ root, now = Date.now, log, looksLikeSecret } =
       const unit = data.units.find((u) => u.id === id)
       if (!unit || TERMINAL.has(unit.status)) return null
       const mapped = mapSettlement(settlement)
-      const summary = secret(mapped.summary) ? '详情在电脑上' : mapped.summary
+      const reportText = mapped.report ? JSON.stringify(mapped.report) : ''
+      const leak = secret(mapped.summary) || (reportText !== '' && secret(reportText))
+      const summary = leak ? '详情在电脑上' : mapped.summary
       Object.assign(unit, {
         status: mapped.status,
         stopReason: mapped.stopReason,
         failureKind: mapped.failureKind,
         summary,
-        report: mapped.report,
+        report: leak ? null : mapped.report,
         settledAt: iso(now()),
         updatedAt: iso(now()),
       })
