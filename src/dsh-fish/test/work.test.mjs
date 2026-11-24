@@ -213,6 +213,16 @@ test('her_worker：非工头拒绝、权限校验、preset 与 outputSchema', as
   assert.equal('outputSchema' in h.backendCalls.spawn[1], false)
 })
 
+test('并发派 build 不会超过 maxBuild', async () => {
+  const h = await setup()
+  await seedBoss(h)
+  const [a, b] = await Promise.all([
+    h.service.tools.her_worker.execute({ mode: 'build', task: 'a' }, { agent: h.boss }),
+    h.service.tools.her_worker.execute({ mode: 'build', task: 'b' }, { agent: h.boss }),
+  ])
+  assert.equal([a.ok, b.ok].filter(Boolean).length, 1)
+})
+
 test('worker 启动失败建 failed unit，不假装 running', async () => {
   const h = await setup()
   await seedBoss(h)

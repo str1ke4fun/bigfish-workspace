@@ -162,6 +162,13 @@ export function createWorkService({
   const lastNotified = new Map()
   const requestedSchema = new Map()
   const timers = new Map()
+  // 派活的“查上限 + 建 unit + spawn”必须串行；模型一轮里可能并发发两个调用。
+  let spawnQueue = Promise.resolve()
+  function serialSpawn(fn) {
+    const p = spawnQueue.then(fn, fn)
+    spawnQueue = p.catch(() => {})
+    return p
+  }
 
   function cfg() {
     try {
@@ -547,6 +554,7 @@ export function createWorkService({
     output: commonOutput,
     project: (out) => ({ text: out?.ok ? '派出去了。' : `没派出去：${out?.note || out?.why || '没接上'}` }),
     async execute(args = {}, exec = {}) {
+      return serialSpawn(async () => {
       const agent = exec.agent
       const surface = surfaceOf(agent)
       if (surface !== 'work') return { ok: false, code: 'NOT_BOSS', note: whyText('NOT_BOSS') }
@@ -645,6 +653,7 @@ export function createWorkService({
       timers.set(unit.id, timer)
 
       return { ok: true, unitId: unit.id, childId, mode, note: 'worker 派出去了' }
+      })
     },
   })
 
