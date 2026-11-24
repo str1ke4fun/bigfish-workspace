@@ -63,11 +63,14 @@ async function setup({ surface = 'screen', chat = TRUSTED_CHAT, permission = 'wo
   const ctx = {
     get: (name) => {
       if (name === 'wx') return wx
-      if (name === 'permissionPresets') return {
-        current: () => {
-          if (permission === 'THROW') throw new Error('permission unavailable')
-          return permission
-        },
+      if (name === 'permissionPresets') {
+        if (permission === 'MISSING') return null
+        return {
+          current: () => {
+            if (permission === 'THROW') throw new Error('permission unavailable')
+            return permission
+          },
+        }
       }
       if (name === 'workspaceRegistry') return { archivedSessionIds: archived }
       return null
@@ -245,6 +248,11 @@ test('her_worker：非工头拒绝、权限校验、preset 与 outputSchema', as
   await seedBoss(h3)
   const unknownPerm = await h3.service.tools.her_worker.execute({ task: 'x' }, { agent: h3.boss })
   assert.equal(unknownPerm.ok, false)
+
+  const h4 = await setup({ permission: 'MISSING' })
+  await seedBoss(h4)
+  const noPerm = await h4.service.tools.her_worker.execute({ task: 'x' }, { agent: h4.boss })
+  assert.equal(noPerm.ok, false)
 
   const inspect = await h.service.tools.her_worker.execute({ mode: 'inspect', task: '看看' }, { agent: h.boss })
   assert.equal(inspect.ok, true)

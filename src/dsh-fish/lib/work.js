@@ -596,21 +596,21 @@ export function createWorkService({
       if (!rec) return { ok: false, code: 'NOT_BOSS', note: whyText('NOT_BOSS') }
       const dir = String(headerOf(agent).cwd ?? '')
       if (!dir) return { ok: false, code: 'NO_DIR', note: whyText('NO_DIR') }
+      let pp = null
+      try { pp = ctx?.get?.('permissionPresets') ?? null } catch { pp = null }
+      if (!pp || typeof pp.current !== 'function') {
+        return { ok: false, code: 'BAD_PERMISSION', note: whyText('BAD_PERMISSION') }
+      }
+      let current = ''
       try {
-        const pp = ctx?.get?.('permissionPresets')
-        if (pp && typeof pp.current === 'function') {
-          let current = ''
-          try {
-            current = pp.current(agent.session)
-          } catch {
-            // 权限服务在但读不出来：不把“目录内受控”建立在猜测上。
-            return { ok: false, code: 'BAD_PERMISSION', note: whyText('BAD_PERMISSION') }
-          }
-          if (current !== 'workspace-write') {
-            return { ok: false, code: 'BAD_PERMISSION', note: whyText('BAD_PERMISSION') }
-          }
-        }
-      } catch { /* 拿不到权限服务时交给 sandbox 兜底 */ }
+        current = pp.current(agent.session)
+      } catch {
+        // 权限服务在但读不出来：不把“目录内受控”建立在猜测上。
+        return { ok: false, code: 'BAD_PERMISSION', note: whyText('BAD_PERMISSION') }
+      }
+      if (current !== 'workspace-write') {
+        return { ok: false, code: 'BAD_PERMISSION', note: whyText('BAD_PERMISSION') }
+      }
 
       if (guard?.status?.().ok !== true) {
         return { ok: false, code: 'NO_GUARD', note: whyText('NO_GUARD') }
