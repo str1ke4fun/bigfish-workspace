@@ -114,6 +114,8 @@ test('bash 拦截秘密路径、外发与危险命令，包管理器放行', asy
   for (const command of ['npm install', 'pnpm add x', 'pip install x', 'npm test']) {
     assert.equal(guard.check({ toolName: 'bash', args: { command }, agent }).ok, true, command)
   }
+  assert.equal(guard.check({ toolName: 'bash', args: { command: 'cat shadow', workdir: '/etc' }, agent }).ok, false)
+  assert.equal(guard.check({ toolName: 'bash', args: { command: 'ls', workdir: '.' }, agent }).ok, true)
 })
 
 test('命中写入 guardHits（脱敏），且 pre-execute 对 worker 返回 deny', async () => {

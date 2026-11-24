@@ -178,6 +178,14 @@ export function createWorkGuard({ state, log, now = Date.now } = {}) {
   function checkShell({ agent, toolName, args }) {
     const command = String(args?.command ?? '')
     if (!command.trim()) return deny(agent, toolName, 'empty-command')
+    const header = headerOf(agent)
+    const cwdRaw = String(header.cwd ?? '')
+    if (args?.workdir !== undefined && args?.workdir !== null && String(args.workdir).trim() !== '') {
+      if (!cwdRaw) return deny(agent, toolName, 'no-cwd')
+      const cwd = realResolve(cwdRaw)
+      const workdir = realResolve(resolve(cwd, String(args.workdir)))
+      if (!inside(cwd, workdir)) return deny(agent, toolName, 'outside-workdir')
+    }
     if (SECRET_RE.test(command)) return deny(agent, toolName, 'secret')
     if (EGRESS_RE.test(command)) return deny(agent, toolName, 'egress')
     if (GIT_DANGER_RE.test(command)) return deny(agent, toolName, 'git')
