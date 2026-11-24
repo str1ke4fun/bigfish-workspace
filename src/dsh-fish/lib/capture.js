@@ -222,7 +222,10 @@ export function registerCapture(ctx, deps = {}) {
           //   1. inWake()：sc.prompt 入队那几秒；
           //   2. wakeSectionFor(agent)：整个唤醒/收盘/出门回合（fish:wake 段挂着）。
           // 只要挂着处境段，就不是真人来找她。写入统一走 markSeen（seen + contact:<source>）。
-          if (!inWake() && !wakeSectionFor(exec?.agent)) {
+          // 工作面例外：工头写工作日志不算“他来找我”，不喂 presence/absence。
+          let writeSurface = ''
+          try { writeSurface = String(deps.core?.surface?.current?.(exec?.agent) ?? '') } catch { writeSurface = '' }
+          if (writeSurface !== 'work' && !inWake() && !wakeSectionFor(exec?.agent)) {
             await markSeen(root, { source: channelOfAgent(exec?.agent) }).catch(() => {})
           }
 

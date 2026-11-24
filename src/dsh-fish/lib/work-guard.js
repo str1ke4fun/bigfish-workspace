@@ -24,6 +24,8 @@ export const WORKER_HOST_TOOLS = Object.freeze([
 
 const PATH_TOOLS = new Set(['read', 'write', 'edit', 'read_image', 'glob', 'grep'])
 const SHELL_TOOLS = new Set(['bash', 'pwsh'])
+/** 鱼侧工具名：worker 不是她，即使 restrict 没收干净也不能调用。 */
+const FISH_TOOL_RE = /^(?:growth_commit|her_|wx_|qq_|bili_|presence_speak|look_screen)/
 
 const REASON = '这件事得先问过用户，不能直接做。'
 
@@ -187,6 +189,7 @@ export function createWorkGuard({ state, log, now = Date.now } = {}) {
       }
       return { ok: true }
     }
+    if (FISH_TOOL_RE.test(name)) return deny(agent, name, 'fish-tool')
     if (SHELL_TOOLS.has(name)) return checkShell({ agent, toolName: name, args })
     if (PATH_TOOLS.has(name)) return checkPath({ agent, toolName: name, args })
     return { ok: true }

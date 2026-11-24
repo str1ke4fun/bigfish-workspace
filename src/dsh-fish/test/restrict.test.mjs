@@ -131,12 +131,30 @@ test('只有她的 agent 被收窄，别人的会话一个都不碰', () => {
   assert.equal(hers.calls.length, 1, '她这条应该被限制一次')
   // D37：presence_speak 在 HER_TOOLS 里（要过宿主 restrictableNames），
   // 但无策略的 web 兜底路径显式排除它——它只在 screen 面可见。
-  assert.deepEqual(hers.calls[0].allow, HER_TOOLS.filter((n) => n !== 'presence_speak'), '只写 allow，不在清单里的一律挡掉')
+  const webGuess = HER_TOOLS.filter((n) => ![
+    'presence_speak', 'look_screen',
+    'her_work', 'her_work_status', 'her_worker', 'her_worker_control', 'her_ask_user',
+  ].includes(n))
+  assert.deepEqual(hers.calls[0].allow, webGuess, '只写 allow，不在清单里的一律挡掉')
   assert.equal(hers.calls[0].deny, undefined, '不用 deny：宿主将来新增工具时 allow 会自动挡住它')
 })
 
-test('额外放行会并进 allow，且去重', () => {
+test('worker 只留 preset 宿主工具，不装兜底 guard', () => {
   const ctx = fakeCtx()
+  registerToolRestrict(ctx, {
+    herDir: 'C:\\h',
+    workerMatch: (agent) => agent?.session?.header?.id === 'worker-1',
+    workerNames: ['read', 'bash', 'structured_output'],
+    log: () => {},
+  })
+  const worker = fakeAgent('D:\\proj', { withGuard: false })
+  worker.agent.session.header.id = 'worker-1'
+  ctx.emit('agent/created', { agent: worker.agent })
+  assert.deepEqual(worker.calls[0].allow, ['read', 'bash', 'structured_output'])
+  assert.equal(worker.guards.length, 0, 'worker 不装 restrict.js 的兜底 guard（会误杀 structured_output）')
+})
+
+test('额外放行会并进 allow，且去重', () => {  const ctx = fakeCtx()
   registerToolRestrict(ctx, { herDir: 'C:\\h', extra: ['web_search', 'web_search', ' read_image '], log: () => {} })
   const hers = fakeAgent('C:\\h')
   ctx.emit('agent/created', { agent: hers.agent })

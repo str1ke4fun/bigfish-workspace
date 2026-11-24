@@ -9,7 +9,7 @@
 //
 // This is a pure module: no imports and no I/O.
 
-export const SURFACES = ['web', 'wx', 'qq', 'bili', 'screen']
+export const SURFACES = ['web', 'wx', 'qq', 'bili', 'screen', 'work']
 
 const SURFACE_SET = new Set(SURFACES)
 
@@ -22,7 +22,9 @@ function agentCwd(agent) {
 }
 
 // screen 必须进 priority，否则 core-service 注册的 cwd matcher 永远不会被探测。
-export function createSurfaceRegistry({ log, priority = ['bili', 'wx', 'qq', 'screen', 'web'] } = {}) {
+// work 在 web 之前：工头 cwd 是用户目录，不会被 web 的 home matcher 命中，
+// 但 reserve/matcher 优先仍应显式表达。
+export function createSurfaceRegistry({ log, priority = ['bili', 'wx', 'qq', 'screen', 'work', 'web'] } = {}) {
   const handlers = new Map() // surfaceId -> { match, sections }
   const reserved = new Map() // sessionId -> surfaceId
 

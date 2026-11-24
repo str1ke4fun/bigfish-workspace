@@ -38,6 +38,10 @@ import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
 import { registerPresenceSpeak } from './presence-speak.js'
 import { registerLookScreen } from './look-screen.js'
+import { createWorkState } from './work-state.js'
+import { createSubagentBackend } from './work-backend.js'
+import { createWorkGuard, WORKER_HOST_TOOLS } from './work-guard.js'
+import { createWorkService } from './work.js'
 import { createScreenService } from './screen.js'
 import { createPetView, petSurfaceAllowed } from './pet-view.js'
 import { startFrameStream, detectHostCapture } from './host-capture.js'
@@ -357,6 +361,59 @@ export function apply(ctx, baseConfig = {}) {
     // 策略表的目录/解析入口只准备一份：收窄（restrict.js）和 `her_tools` 共用，
     // 避免两边各拼一个对象后行为悄悄分叉。
     const policy = { resolveAllow, catalog, loadTargets, groupsFor, entriesFor, describeEntry }
+
+    // ---- 工作委派：状态 / subagent 后端 / 读守卫 ----
+    // 必须在 registerToolRestrict 之前：worker 的 agent/created 要用 workerMatch。
+    let workService = null
+    let workGuard = null
+    try {
+      const workState = createWorkState({
+        root,
+        looksLikeSecret,
+        log: (...a) => logger.warn(...a),
+      })
+      const workBackend = createSubagentBackend({
+        getService: () => {
+          try { return ctx.get?.('subagents') ?? null } catch { return null }
+        },
+        log: (...a) => logger.warn(...a),
+      })
+      workGuard = createWorkGuard({ state: workState, log: (...a) => logger.warn(...a) })
+      let liveConfig = config
+      try {
+        const offCfg = fishCore?.config?.onChange?.(({ config: next } = {}) => {
+          if (next) liveConfig = next
+        })
+        if (typeof offCfg === 'function') disposers.push(offCfg)
+      } catch { /* 配置订阅失败时用启动快照 */ }
+      workService = createWorkService({
+        ctx,
+        core: fishCore,
+        getConfig: () => liveConfig,
+        state: workState,
+        backend: workBackend,
+        guard: workGuard,
+        root,
+        log: (...a) => logger.warn(...a),
+      })
+      if (fishCore) fishCore.work = workService
+      workService.reserveKnown()
+      try {
+        fishCore?.surface?.register({
+          id: 'work',
+          match: ({ id }) => workService.isWorkSession(id),
+        })
+      } catch (err) {
+        logger.warn('[dsh-fish] work 面 matcher 没挂上', err?.message ?? err)
+      }
+      const offGuard = workGuard.register(ctx)
+      if (typeof offGuard === 'function') disposers.push(offGuard)
+      void workService.reconcile()
+    } catch (err) {
+      workService = null
+      logger.warn('[dsh-fish] 工作委派没挂上', err?.message ?? err)
+    }
+
     try {
       const off = registerToolRestrict(ctx, {
         herDir,
@@ -370,6 +427,11 @@ export function apply(ctx, baseConfig = {}) {
         // agent/created 现读（B 站 3 个工具就是贡献进来的）。
         ownTools: () => [...policyOwnTools(), 'her_tools'],
         enabled: config?.tools?.restrict !== false,
+        // worker 只保留 preset 给的宿主工具，隐藏全局鱼工具；执行侧由 work-guard 兜底。
+        workerMatch: (agent) => {
+          try { return workGuard?.isWorkerSession?.(agent) === true } catch { return false }
+        },
+        workerNames: WORKER_HOST_TOOLS,
         log: (...a) => logger.info(...a),
         onResult: (r) => { restrictState = r },
       })
@@ -497,7 +559,12 @@ export function apply(ctx, baseConfig = {}) {
         surfaceOf: (session) => {
           try { return fishCore?.surface?.current?.({ session }) ?? '' } catch { return '' }
         },
-        isHerSession: (session) => isHerAgent({ session }, herDir),
+        isHerSession: (session) => {
+          try {
+            if (isHerAgent({ session }, herDir)) return true
+            return fishCore?.surface?.current?.({ session }) === 'work'
+          } catch { return false }
+        },
         scheduleHooks: fishCore?.schedule,
       })
       disposers.push(() => petSources.dispose())
@@ -523,6 +590,8 @@ export function apply(ctx, baseConfig = {}) {
         () => registerLookScreen(ctx, { core: fishCore ?? {}, screen, log: (...a) => logger.warn(...a) }),
         // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
         () => registerHerTools(ctx, { core: fishCore, policy, caps }),
+        // 工作委派：her_work / her_work_status / her_worker / her_worker_control / her_ask_user。
+        () => (workService ? workService.register(ctx) : undefined),
       ]) {
         try {
           const d = reg()
