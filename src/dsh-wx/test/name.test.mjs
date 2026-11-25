@@ -74,3 +74,19 @@ test('matchOne 先精确、再折叠、撞名回 ambiguous', () => {
   assert.equal(matchOne('周末海边', ['🌊周末海边🏖️'], { tiers: ['exact', 'folded', 'skeleton'] }).status, 'resolved')
   assert.equal(sameName('❤️读书群', '❤️读书群'), true)
 })
+
+test('matchOne 的 candidate 前缀只接受候选更长，skeleton 需要非空且 ≥2 字素', () => {
+  const tiers = ['exact', 'folded', 'skeleton']
+  // 候选比输入长：OCR 截断的正常补全
+  assert.equal(matchOne('星晓家园10号楼', ['星晓家园10号楼1302'], { tiers, prefix: 'candidate' }).status, 'exact')
+  // 输入比候选长：不能反向缩成白名单里的短名
+  assert.equal(matchOne('读书群2', ['读书群'], { tiers, prefix: 'candidate' }).status, 'unknown')
+  // 显式对称 prefix 仍保留旧语义（目前没有调用方依赖它）
+  assert.equal(matchOne('读书群2', ['读书群'], { tiers, prefix: true }).status, 'exact')
+  // 纯 emoji/符号名的 skeleton 为空，不能互相改写
+  assert.equal(matchOne('😀', ['🌊'], { tiers }).status, 'unknown')
+  assert.equal(matchOne('???', ['🌊'], { tiers }).status, 'unknown')
+  assert.equal(matchOne('周末海边', ['🌊'], { tiers }).status, 'unknown')
+  // 1 个字素的骨架不参与
+  assert.equal(matchOne('群', ['群'], { tiers: ['skeleton'] }).status, 'unknown')
+})

@@ -60,6 +60,20 @@ test('reconcileChatName 仍保留截断前缀行为', () => {
   assert.equal(reconcileChatName('星', names), '星')
 })
 
+test('reconcileChatName 保留候选更长的 emoji 截断前缀', () => {
+  assert.equal(reconcileChatName('🌊周末海...', ['🌊周末海边🏖️']), '🌊周末海边🏖️')
+})
+
+test('reconcileChatName 不把比白名单更长的 OCR 名反向改短', () => {
+  assert.equal(reconcileChatName('读书群2', ['读书群']), '读书群2')
+  assert.equal(reconcileChatName('家庭群(2)', ['家庭群']), '家庭群(2)')
+})
+
+test('reconcileChatName 不拿空 skeleton 改写纯 emoji/符号名', () => {
+  assert.equal(reconcileChatName('😀', ['🌊']), '😀')
+  assert.equal(reconcileChatName('???', ['🌊']), '???')
+})
+
 test('planChatNavigation 命中多行返回 ambiguous，不点第一行', () => {
   const rows = [
     { name: '❤️读书群', box: { cx: 1, cy: 1 } },

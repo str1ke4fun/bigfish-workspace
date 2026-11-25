@@ -160,17 +160,24 @@ export function tierKey(value, tier) {
  * 然后按 tiers 顺序逐层过滤（默认 exact → folded）；某一层命中多个立即
  * ambiguous，不再下降到更宽的层；全部落空返回 unknown。
  *
- * `prefix: true` 允许前缀匹配（候选以输入开头或输入以候选开头），但较短一方
- * 至少要有 2 个字素，避免单字/单个 emoji 把整组候选都吸进来。
+ * `prefix` 允许前缀匹配，但较短一方至少要有 2 个字素，避免单字/单个 emoji 把整组
+ * 候选都吸进来。`prefix: true` 对称（两边任一方向前缀都算）；`prefix: 'candidate'`
+ * 只接受候选比输入长（候选以输入开头），用于 OCR 截断；`prefix: 'input'` 只接受
+ * 输入比候选长。截断对账必须用 `'candidate'`，否则「家庭群(2)」会被反向缩成「家庭群」。
+ *
+ * skeleton 层只在输入和候选的骨架都非空、且各 ≥ 2 个字素时参与（design §4.1）；
+ * 纯 emoji/符号名的骨架是空串，不能靠骨架互相改写。
  *
  * @param {string} input
  * @param {string[]} candidates
- * @param {{ tiers?: Array<'exact'|'folded'|'skeleton'>, prefix?: boolean }} [opts]
+ * @param {{ tiers?: Array<'exact'|'folded'|'skeleton'>, prefix?: boolean|'candidate'|'input' }} [opts]
  * @returns {{ status: 'exact'|'folded'|'resolved'|'ambiguous'|'unknown', match: string|null, matches: string[] }}
  */
 export function matchOne(input, candidates, opts = {}) {
   const tiers = opts.tiers ?? ['exact', 'folded']
-  const prefix = opts.prefix === true
+  const prefixMode = opts.prefix === true
+    ? 'both'
+    : (opts.prefix === 'candidate' || opts.prefix === 'input' ? opts.prefix : null)
   const list = Array.isArray(candidates) ? candidates : []
 
   if (tiers.includes('folded')) {
@@ -183,11 +190,18 @@ export function matchOne(input, candidates, opts = {}) {
     const keyFn = TIER_KEYS[tier]
     if (!keyFn) throw new Error(`unknown name tier: ${tier}`)
     const key = keyFn(input)
+    // skeleton 只留字母/数字；空骨架（纯 emoji/符号）或 1 个字素不参与，避免互相改写。
+    if (tier === 'skeleton' && (!key || graphemeLength(key) < 2)) continue
     const hits = list.filter((candidate) => {
       const candidateKey = keyFn(candidate)
+      if (tier === 'skeleton' && (!candidateKey || graphemeLength(candidateKey) < 2)) return false
       if (candidateKey === key) return true
-      if (!prefix) return false
-      if (!candidateKey.startsWith(key) && !key.startsWith(candidateKey)) return false
+      if (!prefixMode) return false
+      const candidateExtends = candidateKey.startsWith(key)
+      const inputExtends = key.startsWith(candidateKey)
+      if (prefixMode === 'candidate' && !candidateExtends) return false
+      if (prefixMode === 'input' && !inputExtends) return false
+      if (prefixMode === 'both' && !candidateExtends && !inputExtends) return false
       return Math.min(graphemeLength(candidateKey), graphemeLength(key)) >= 2
     })
     if (hits.length === 1) {

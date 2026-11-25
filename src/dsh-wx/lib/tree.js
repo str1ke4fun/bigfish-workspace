@@ -154,7 +154,9 @@ export function reconcileChatName(name, names = []) {
   const clean = String(name ?? '').trim().replace(/\s+/g, ' ')
   if (!clean) return ''
   const list = (names ?? []).map((n) => String(n ?? '').trim()).filter(Boolean)
-  const hit = matchOne(clean, list, { tiers: ['exact', 'folded', 'skeleton'], prefix: true })
+  // 只允许「候选全名以 OCR 输入开头」（候选比输入长）；反向前缀会把「家庭群(2)」
+  // 缩成白名单里的「家庭群」，导致递错会话，必须 fail closed。
+  const hit = matchOne(clean, list, { tiers: ['exact', 'folded', 'skeleton'], prefix: 'candidate' })
   if (hit.status === 'unknown' || hit.status === 'ambiguous' || !hit.match) return clean
   return hit.match
 }
