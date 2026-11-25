@@ -173,6 +173,8 @@ export function planChatNavigation({ parsed, target, tree } = {}) {
   return { action: 'missing', chatCount: chats.length }
 }
 
+const TRUNCATED = /(?:\.{2,}|…)\s*$/u
+
 /**
  * OCR 名字对账：微信侧栏会把长名字截断成「星晓家园10号楼13...」，OCR 只能读到前一段。
  * 依次按 exact → folded（只差 VS 变体）→ skeleton（只留字母/数字）匹配；
@@ -185,7 +187,12 @@ export function reconcileChatName(name, names = []) {
   const list = (names ?? []).map((n) => String(n ?? '').trim()).filter(Boolean)
   // 只允许「候选全名以 OCR 输入开头」（候选比输入长）；反向前缀会把「家庭群(2)」
   // 缩成白名单里的「家庭群」，导致递错会话，必须 fail closed。
-  const hit = matchOne(clean, list, { tiers: ['exact', 'folded', 'skeleton'], prefix: 'candidate' })
+  // 带省略号的输入还必须对应严格更长的候选：`家人...` 不能认成 `家人`。
+  const hit = matchOne(clean, list, {
+    tiers: ['exact', 'folded', 'skeleton'],
+    prefix: 'candidate',
+    requireLonger: TRUNCATED.test(clean),
+  })
   if (hit.status === 'unknown' || hit.status === 'ambiguous' || !hit.match) return clean
   return hit.match
 }

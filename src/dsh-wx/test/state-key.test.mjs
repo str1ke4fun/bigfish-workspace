@@ -170,6 +170,21 @@ test('迁移 I/O：备份写不下去时原文件不动，失败写日志且下�
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { c_0123456789ab: 3 })
 })
 
+test('迁移 I/O：stateKey 为空的条目跳过，并在日志里报告丢弃数量', () => {
+  const dir = tempDir()
+  const file = join(dir, 'mentions.json')
+  writeFileSync(file, JSON.stringify({ 好群: 3, 撞名群: 9 }))
+  const logs = []
+  const out = migrateStateFiles({
+    keyOf: (n) => (n === '撞名群' ? '' : 'c_0123456789ab'),
+    files: { mentions: file, proactive: join(dir, 'proactive.json'), recent: join(dir, 'recent-chats.json') },
+    log: (m) => logs.push(m),
+  })
+  assert.equal(out[0].status, 'migrated')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { c_0123456789ab: 3 })
+  assert.match(logs.join('\n'), /1 个条目因为没有稳定会话身份.*丢弃/)
+})
+
 test('迁移 I/O：proactive 与 recent 旧形状也按 chatId 写回', () => {
   const dir = tempDir()
   const proactive = join(dir, 'proactive.json')

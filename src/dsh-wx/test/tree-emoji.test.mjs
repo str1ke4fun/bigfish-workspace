@@ -64,6 +64,13 @@ test('reconcileChatName 保留候选更长的 emoji 截断前缀', () => {
   assert.equal(reconcileChatName('🌊周末海...', ['🌊周末海边🏖️']), '🌊周末海边🏖️')
 })
 
+test('reconcileChatName 不把截断名缩成等长的短名', () => {
+  assert.equal(reconcileChatName('家人...', ['家人']), '家人...')
+  assert.equal(reconcileChatName('家人…', ['家人']), '家人…')
+  // 真正更长的全名仍然可以补全。
+  assert.equal(reconcileChatName('家人...', ['家人群聊2023']), '家人群聊2023')
+})
+
 test('reconcileChatName 不把比白名单更长的 OCR 名反向改短', () => {
   assert.equal(reconcileChatName('读书群2', ['读书群']), '读书群2')
   assert.equal(reconcileChatName('家庭群(2)', ['家庭群']), '家庭群(2)')

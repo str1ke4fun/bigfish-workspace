@@ -145,6 +145,29 @@ const shortError = (err) => String(err?.message ?? err).slice(0, 120)
 export function migrateStateFiles({ keyOf = (v) => v, files = {}, log = () => {} } = {}) {
   const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
   const allChatIds = (keys) => keys.length === 0 || keys.every(isChatIdKey)
+  // 迁移会跳过 stateKey 为空的条目（撞名/空名没有稳定身份）。只影响临时状态，
+  // 但必须在日志里说清楚丢了几条，不能静默吞掉（spec §5.2）。
+  const droppedByEmptyKey = (kind, raw) => {
+    const emptyKey = (name) => {
+      try { return !String(keyOf(name) ?? '').trim() } catch { return true }
+    }
+    if (kind === 'mentions') {
+      return Object.entries(raw)
+        .filter(([name, value]) => Number.isFinite(Number(value)) && !isChatIdKey(name) && emptyKey(name)).length
+    }
+    if (kind === 'proactive') {
+      const used = isObject(raw.used) ? raw.used : {}
+      return Object.entries(used)
+        .filter(([name, value]) => Number.isFinite(Number(value)) && !isChatIdKey(name) && emptyKey(name)).length
+    }
+    if (kind === 'recent') {
+      return (Array.isArray(raw) ? raw : []).filter((item) => {
+        const name = String(item?.chat ?? '').trim()
+        return Boolean(name) && Number.isFinite(Number(item?.at)) && !isChatIdKey(name) && emptyKey(name)
+      }).length
+    }
+    return 0
+  }
   const migrateOne = (kind, file, migrate, valid, keyedByChatId) => {
     const backup = `${file}.v1.bak`
     const marker = `${file}.migrated`
@@ -180,6 +203,7 @@ export function migrateStateFiles({ keyOf = (v) => v, files = {}, log = () => {}
         return { kind, file, status: 'backup-failed' }
       }
     }
+    const dropped = droppedByEmptyKey(kind, raw)
     try {
       const next = migrate(raw, keyOf)
       const tmp = `${file}.migrate.tmp`
@@ -195,7 +219,8 @@ export function migrateStateFiles({ keyOf = (v) => v, files = {}, log = () => {}
       // 已经迁移成功；键形状本身幂等，标记写不下只影响排查，但必须留下日志。
       log(`状态迁移已写入 ${kind}（${file}），但标记写不下去：` + shortError(err))
     }
-    log(`状态迁移：${kind}（${file}）改用 chatId 键，旧文件备份在 ${backup}`)
+    log(`状态迁移：${kind}（${file}）改用 chatId 键，旧文件备份在 ${backup}` +
+      (dropped ? `；${dropped} 个条目因为没有稳定会话身份（stateKey 为空）被丢弃` : ''))
     return { kind, file, status: 'migrated' }
   }
 

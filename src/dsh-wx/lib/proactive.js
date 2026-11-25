@@ -5,7 +5,8 @@
  *   - 只对 allowChats 里的群生效；生效软上限 = proactiveChats[群] ?? proactivePerDay；
  *   - 软上限范围 0..50，0 表示不主动；超过软上限仍可发到 hardBreaker（默认 50）；
  *   - 被 @ 的窗口内、noMentionChats、以及没开 requireMention 时，都不消耗额度；
- *   - 状态按本地日期存 `{ day, used: { 群名: 条数 } }`，跨天清空；
+ *   - 状态按本地日期存 `{ day, used: { <chatId>: 条数 } }`（键是目录 chatId，
+ *     不是群名，见 spec §4.4/§5.2），跨天清空；
  *   - 坏状态只让主动路径失败关闭，不绕过 @/免 @ 路径。
  *
  * 纯模块：所有判定不读写文件，读写只有 loadState / saveState 两个入口。

@@ -165,12 +165,16 @@ export function tierKey(value, tier) {
  * 只接受候选比输入长（候选以输入开头），用于 OCR 截断；`prefix: 'input'` 只接受
  * 输入比候选长。截断对账必须用 `'candidate'`，否则「家庭群(2)」会被反向缩成「家庭群」。
  *
+ * `requireLonger` 用于带省略号的截断输入：只有 exact 层允许「和已存截断别名相等」；
+ * folded/skeleton 层必须比输入严格更长（候选键以输入键开头且字素数更多），
+ * 等于或更短的候选一律不算命中，避免 `家人...` 认成 `家人`。
+ *
  * skeleton 层只在输入和候选的骨架都非空、且各 ≥ 2 个字素时参与（design §4.1）；
  * 纯 emoji/符号名的骨架是空串，不能靠骨架互相改写。
  *
  * @param {string} input
  * @param {string[]} candidates
- * @param {{ tiers?: Array<'exact'|'folded'|'skeleton'>, prefix?: boolean|'candidate'|'input' }} [opts]
+ * @param {{ tiers?: Array<'exact'|'folded'|'skeleton'>, prefix?: boolean|'candidate'|'input', requireLonger?: boolean }} [opts]
  * @returns {{ status: 'exact'|'folded'|'resolved'|'ambiguous'|'unknown', match: string|null, matches: string[] }}
  */
 export function matchOne(input, candidates, opts = {}) {
@@ -178,6 +182,7 @@ export function matchOne(input, candidates, opts = {}) {
   const prefixMode = opts.prefix === true
     ? 'both'
     : (opts.prefix === 'candidate' || opts.prefix === 'input' ? opts.prefix : null)
+  const requireLonger = opts.requireLonger === true
   const list = Array.isArray(candidates) ? candidates : []
 
   if (tiers.includes('folded')) {
@@ -195,8 +200,14 @@ export function matchOne(input, candidates, opts = {}) {
     const hits = list.filter((candidate) => {
       const candidateKey = keyFn(candidate)
       if (tier === 'skeleton' && (!candidateKey || graphemeLength(candidateKey) < 2)) return false
-      if (candidateKey === key) return true
+      if (candidateKey === key) {
+        // 截断输入只有 exact 层能靠“和已存截断别名相等”命中；
+        // folded/skeleton 的相等只说明候选不比输入长，不能当作全名。
+        return !(requireLonger && tier !== 'exact')
+      }
       if (!prefixMode) return false
+      // 截断输入必须对应更长的候选：等于或更短都不是全名。
+      if (requireLonger && graphemeLength(candidateKey) <= graphemeLength(key)) return false
       const candidateExtends = candidateKey.startsWith(key)
       const inputExtends = key.startsWith(candidateKey)
       if (prefixMode === 'candidate' && !candidateExtends) return false

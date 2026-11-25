@@ -50,14 +50,19 @@ const isTempChatId = (chatId) => str(chatId).startsWith('c_tmp_')
  */
 export function uniquePrefix(name, names = []) {
   const list = [...new Set((names ?? []).map(displayName).filter(Boolean))]
-  // 先认精确相等：完整名字即使只有 1 个字素，尾部也可能是合法的 VS/肤色。
+  // 先认精确相等：已存的截断别名（带省略号）本身仍是强证据。
   const exact = list.find((n) => nameKey(n) === nameKey(name))
   if (exact) return exact
   if (!looksTruncated(name)) return ''
   const base = cleanTruncated(stripEllipsis(name))
   if (!base || graphemeLength(base) < 2) return ''
   const baseFold = foldedKey(base)
-  const hits = list.filter((n) => foldedKey(n).startsWith(baseFold))
+  const baseLen = graphemeLength(baseFold)
+  // 截断只说明真名比输入长；候选必须严格更长，`家人` 不能算 `家人...` 的全名。
+  const hits = list.filter((n) => {
+    const nk = foldedKey(n)
+    return nk.startsWith(baseFold) && graphemeLength(nk) > baseLen
+  })
   return hits.length === 1 ? hits[0] : ''
 }
 
@@ -182,11 +187,18 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       for (const { e, names } of pool) {
         const hit = names.find((n) => {
           const nk = keyFn(n)
-          if (nk === key) return true
+          // 截断输入只有 exact 层能靠“和已存截断别名相等”命中；folded/skeleton
+          // 的相等只说明候选不比输入长，不能把 `家人...` 认成 `家人`。
+          if (nk === key) return !(truncatedInput && tier !== 'exact')
           if (!prefix) return false
-          // 截断只说明真名比输入长：候选必须以输入开头。
+          // 截断只说明真名比输入长：候选必须以输入开头，且严格更长。
           // 反方向（候选更短）只在非截断的显式前缀调用里成立。
-          if (truncatedInput ? !nk.startsWith(key) : (!nk.startsWith(key) && !key.startsWith(nk))) return false
+          if (truncatedInput) {
+            return nk.startsWith(key) &&
+              graphemeLength(nk) > graphemeLength(key) &&
+              graphemeLength(key) >= 2
+          }
+          if (!nk.startsWith(key) && !key.startsWith(nk)) return false
           return Math.min(graphemeLength(nk), graphemeLength(key)) >= 2
         })
         if (hit) hits.push(e)
@@ -222,9 +234,17 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       }
     }
     let changed = false
-    for (const list of groups.values()) {
+    for (const [key, list] of groups) {
       const unique = [...new Set(list)]
       if (unique.length < 2) continue
+      // 每个撞名组写一条，便于排查“为什么两个写法合到了一起”。
+      if (typeof log === 'function') {
+        log('directory-name-collision ' + JSON.stringify({
+          foldedKey: key,
+          chatIds: unique.map((e) => e.chatId),
+          names: unique.map((e) => e.displayName || e.fullName || ''),
+        }))
+      }
       for (const e of unique) {
         if (e.resolvedBy === 'duplicate-name') continue
         if (e.nameConfidence === 'ambiguous' && e.resolvedBy === 'folded-collision') continue
@@ -300,6 +320,22 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       const name = norm(row?.name)
       if (name) inputCounts.set(name, (inputCounts.get(name) ?? 0) + 1)
     }
+    // 同一页里出现两种不同写法、折叠键却相同：页面上同时看到了两个视觉相同的会话。
+    // 折叠合并会把它们并成一个条目，之后只出现一行时就会把发送递到另一个群。
+    // 先把这些 foldedKey 记下来，处理时按 folded-collision fail closed。
+    const foldedInputs = new Map()
+    for (const row of chats) {
+      const name = norm(row?.name)
+      if (!name) continue
+      const fk = foldedKey(name)
+      if (!fk) continue
+      const spellings = foldedInputs.get(fk) ?? new Set()
+      spellings.add(name)
+      foldedInputs.set(fk, spellings)
+    }
+    const pageFoldCollisions = new Set(
+      [...foldedInputs].filter(([, spellings]) => spellings.size > 1).map(([fk]) => fk),
+    )
     const seenInput = new Map()
 
     // 完整扫描只看到一个名字：说明侧栏里并没有两个同名会话。
@@ -322,6 +358,7 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
     const upsert = (rawName, row = {}) => {
       const name = norm(rawName)
       if (!name) return null
+      const pageCollision = pageFoldCollisions.has(foldedKey(name))
       const occurrence = seenInput.get(name) ?? 0
       seenInput.set(name, occurrence + 1)
       if ((inputCounts.get(name) ?? 0) > 1) {
@@ -356,7 +393,7 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       const fullNameMatches = fullName && nameKey(fullName) !== nameKey(name) ? findMatches(fullName) : []
       const matches = [...new Set([...nameMatches, ...fullNameMatches])]
       if (matches.length > 1) {
-        markAmbiguous(matches)
+        markAmbiguous(matches, pageCollision ? 'folded-collision' : 'name-collision')
         touched.push(...matches)
         return null
       }
@@ -369,6 +406,28 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
         e.chatId = idSeed ? chatIdFor(chatIdSeed(idSeed)) : tempIdFor(rawName)
         if (!byId().has(e.chatId)) entries.push(e)
         else e = byId().get(e.chatId)
+      }
+
+      // 同一页里的两种写法折叠到同一个条目：这是两个不同群的强证据。
+      // 不写别名、不复制任何一行的预览/未读/置顶/位置，条目标 folded-collision。
+      // 已经标过的条目也保持 fail closed：后续只看到一种写法的快照不能把它洗回 exact。
+      if (pageCollision || (e.nameConfidence === 'ambiguous' && e.resolvedBy === 'folded-collision')) {
+        if (!(e.nameConfidence === 'ambiguous' && e.resolvedBy === 'duplicate-name')) {
+          e.nameConfidence = 'ambiguous'
+          e.resolvedBy = 'folded-collision'
+          e.lastSeenAt = at
+        }
+        if (pageCollision && typeof log === 'function') {
+          log('name-collision ' + JSON.stringify({
+            from: name,
+            chatId: e.chatId,
+            why: 'folded-collision',
+            spellings: [...(foldedInputs.get(foldedKey(name)) ?? [])],
+          }))
+        }
+        dirty = true
+        touched.push(e)
+        return e
       }
 
       // 折叠命中保留已存规范名，新写法进 aliases；
@@ -407,6 +466,10 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
           e.nameConfidence = 'exact'
           e.resolvedBy = str(row.resolvedBy) || e.resolvedBy || 'sidebar'
         }
+      }
+      // 折叠命中（只差 VS/零宽写法）时留一条调试日志，方便排查两个写法怎么合到了一起。
+      if (nameKey(name) !== nameKey(e.displayName) && foldedKey(name) === foldedKey(e.displayName)) {
+        emitNameMatch(name, e, 'folded')
       }
       if (direct.has(norm(name)) || direct.has(norm(e.fullName))) e.kind = 'dm'
       else if (row.kind) e.kind = str(row.kind)
@@ -485,15 +548,22 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
     const r = lookup(name, { ...opts, prefix: opts.prefix === true || looksTruncated(name) })
     let status = r.status
     if (status !== 'ambiguous') {
-      if (r.entry) status = looksTruncated(name) ? 'resolved' : r.status
-      else status = looksTruncated(name) ? 'truncated' : 'unknown'
+      if (r.entry) {
+        // 截断输入只有解析到可发送的全名才算 resolved；只匹配到它自己的截断别名
+        // （nameConfidence 还是 truncated）时，仍然是 truncated。
+        const usable = r.entry.nameConfidence === 'exact' || r.entry.nameConfidence === 'resolved'
+        status = looksTruncated(name) ? (usable ? 'resolved' : 'truncated') : r.status
+      } else {
+        status = looksTruncated(name) ? 'truncated' : 'unknown'
+      }
     }
     if (r.entry && (r.tier === 'folded' || r.tier === 'skeleton')) emitNameMatch(name, r.entry, r.tier)
     return {
       status,
       matches: r.matches.map(cloneEntry),
       match: r.entry ? cloneEntry(r.entry) : null,
-      chatId: r.entry ? str(r.entry.chatId) : '',
+      // 未解析到可发送全名的截断输入没有稳定身份，调用方不能拿它当发送目标。
+      chatId: r.entry && status !== 'truncated' ? str(r.entry.chatId) : '',
       displayName: r.entry ? displayName(r.entry.displayName || r.entry.fullName || '') : '',
     }
   }

@@ -43,6 +43,18 @@ const symbolName = ocrSnapshot({
   rows: [{ name: '???', lines: ['???', '[You were mentioned]', 'new message'], confidence: 82, nameConfidence: 73 }],
 })
 assert.equal(ocrMentionHits(symbolName).length, 0, 'symbol-shaped OCR names are rejected even with high confidence')
+// ©/® 是 \p{Emoji} 覆盖的合法名字字符，不能被“纯符号”规则误杀（spec §4.1/§4.5）。
+const copyrightName = ocrSnapshot({
+  ok: true,
+  rows: [
+    { name: '©', lines: ['©', '[You were mentioned]', 'new message'], confidence: 82, nameConfidence: 73 },
+    { name: '©️公告群', lines: ['©️公告群', '[2]', '[You were mentioned]', '张三: 在吗'], confidence: 82, nameConfidence: 73 },
+  ],
+})
+assert.deepEqual(copyrightName.chats.map((x) => x.name), ['©', '©️公告群'],
+  '© is a name character, not OCR noise')
+assert.equal(ocrMentionHits(copyrightName).length, 2,
+  'explicit @ badges on © names are accepted')
 assert.deepEqual(mentionHits(scan, ['大肥鱼'], [], ['项目群', '普通群']).map((x) => x.chat), ['项目群'])
 
 const triggerOnly = ocrSnapshot({

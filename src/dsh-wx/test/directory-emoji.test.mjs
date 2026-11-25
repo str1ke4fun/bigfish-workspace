@@ -84,6 +84,24 @@ test('加载时折叠撞名不覆盖 duplicate-name 临时条目的自愈', () =
   assert.notEqual(byId.get('c_real').resolvedBy, 'folded-collision')
 })
 
+test('加载时折叠撞名写 directory-name-collision 日志（每组一条）', () => {
+  const file = temp()
+  writeFileSync(file, JSON.stringify({
+    version: 1,
+    chats: [
+      { chatId: 'c_a', displayName: '❤️读书群', fullName: '❤️读书群', nameConfidence: 'exact' },
+      { chatId: 'c_b', displayName: '❤读书群', fullName: '❤读书群', nameConfidence: 'exact' },
+      { chatId: 'c_c', displayName: '另一个群', fullName: '另一个群', nameConfidence: 'exact' },
+    ],
+  }), 'utf8')
+  const logs = []
+  createDirectory({ file, now: () => T, log: (m) => logs.push(m) })
+  const collisions = logs.filter((m) => m.startsWith('directory-name-collision'))
+  assert.equal(collisions.length, 1)
+  assert.match(collisions[0], /c_a/)
+  assert.match(collisions[0], /c_b/)
+})
+
 test('加载时折叠撞名标 folded-collision，不删除、不合并', () => {
   const dir = seeded([
     { chatId: 'c_a', displayName: '❤️读书群', fullName: '❤️读书群', nameConfidence: 'exact' },
@@ -97,6 +115,78 @@ test('加载时折叠撞名标 folded-collision，不删除、不合并', () => 
   }
   const again = createDirectory({ file: dir.file, now: () => T, log: () => {} })
   assert.equal(again.all().length, 2, '重新加载也不合并')
+})
+
+test('截断名不能解析成等长的短名：家人... 不并进 家人', () => {
+  const dir = seeded([
+    { chatId: 'c_family', displayName: '家人', fullName: '家人', aliases: [], nameConfidence: 'exact' },
+  ])
+  const before = dir.entry('家人')
+  const result = dir.merge({ chats: [{ name: '家人...', preview: '甲: 新消息', unread: 7, pinned: true }] })
+  assert.equal(result.ok, true)
+  // 必须保持 truncated，不能别名成 家人，也不能把另一行的元数据抄进来。
+  const hit = dir.lookupName('家人...')
+  assert.equal(hit.status, 'truncated')
+  assert.equal(hit.chatId, '')
+  assert.equal(dir.sendableTarget('家人...'), null)
+  assert.equal(dir.stateKey('家人...') === before.chatId, false)
+  const family = dir.entry('家人')
+  assert.equal(family.displayName, '家人')
+  assert.equal(family.unread, 0)
+  assert.equal(family.lastPreview, '')
+  assert.equal(family.pinned, false)
+  assert.equal(family.aliases.includes('家人...'), false)
+  assert.equal(family.chatId, before.chatId)
+  const trunc = dir.all().find((e) => e.displayName === '家人...')
+  assert.ok(trunc, '截断观察要落成自己的条目')
+  assert.equal(trunc.nameConfidence, 'truncated')
+  assert.equal(trunc.chatId.startsWith('c_tmp_'), true)
+})
+
+test('同一页出现两种折叠写法：条目标 folded-collision，不合并、不抄元数据', () => {
+  const dir = seeded([])
+  const result = dir.merge({
+    chats: [
+      { name: '❤️读书群', preview: '甲: 一', unread: 3 },
+      { name: '❤读书群', preview: '乙: 二', unread: 9, pinned: true },
+    ],
+  })
+  assert.equal(result.ok, true)
+  const entries = dir.all()
+  assert.equal(entries.length, 1, '同页两种写法不能被当成两个群')
+  const e = entries[0]
+  assert.equal(e.nameConfidence, 'ambiguous')
+  assert.equal(e.resolvedBy, 'folded-collision')
+  assert.equal(e.aliases.includes('❤读书群'), false, '不能把第二种写法写进别名')
+  assert.equal(e.unread, 0, '不能复制任何一行的未读')
+  assert.equal(e.lastPreview, '', '不能复制任何一行的预览')
+  assert.equal(e.pinned, false, '不能复制置顶')
+  assert.equal(e.position, 0)
+  assert.equal(dir.stateKey('❤️读书群'), '')
+  assert.equal(dir.stateKey('❤读书群'), '')
+  assert.equal(dir.sendableTarget('❤️读书群'), null)
+  assert.equal(dir.sendableTarget('❤读书群'), null)
+  // 后续只看到一种写法的快照不能把 fail-closed 洗回 exact。
+  dir.merge({ chats: [{ name: '❤️读书群', preview: '甲: 一', unread: 3 }] })
+  const again = dir.entry('❤️读书群')
+  assert.equal(again.nameConfidence, 'ambiguous')
+  assert.equal(again.resolvedBy, 'folded-collision')
+  assert.equal(dir.sendableTarget('❤️读书群'), null)
+  // 重新加载仍然是同一行，不会被加载扫描或下一次合并恢复成可发送。
+  const reloaded = createDirectory({ file: dir.file, now: () => T, log: () => {} })
+  assert.equal(reloaded.sendableTarget('❤️读书群'), null)
+})
+
+test('单页只有一个写法时仍按折叠别名合并', () => {
+  const dir = seeded([{
+    chatId: 'c_heart', displayName: '❤️读书群', fullName: '❤️读书群',
+    aliases: [], nameConfidence: 'exact',
+  }])
+  dir.merge({ chats: [{ name: '❤读书群', preview: '' }] })
+  const e = dir.entry('❤️读书群')
+  assert.equal(e.nameConfidence, 'exact')
+  assert.equal(e.aliases.includes('❤读书群'), true)
+  assert.equal(dir.sendableTarget('❤读书群')?.chatId, 'c_heart')
 })
 
 test('截断行不能前缀并进更短的不相干会话', () => {
