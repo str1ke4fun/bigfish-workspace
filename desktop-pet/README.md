@@ -237,14 +237,14 @@ assets/skins/
 
 待机时演什么不再由 `triggers.json` 里的一条 `when: "ambient"` 决定，改由按 presence 模式分档的氛围策略驱动；`triggers.json` 仍管 speak / activity / scene / date 等事件。
 
-- **默认策略**：`assets/ambient.json`（随源码入库）。顶层是 `quietHours` 和 `modes.{off,event,ambient,work}`；每个模式一段 `items`（`action`、`weight`、`enabled`、`cooldownSec`、`minIdleSec`）和 `frequency`（`intervalMinSec`、`intervalMaxSec`、`minGapSec`、`maxPerIdle`、`maxPerDay`、`settleSec`、`actionCooldownSec`）。
+- **默认策略**：`assets/ambient.json`（随源码入库）。顶层是 `version`、`quietHours` 和 `modes.{off,event,ambient,work}`；每个模式一段 `enabled`、`items`（`action`、`weight`、`enabled`、`cooldownSec`、`minIdleSec`）和 `frequency`（`intervalMinSec`、`intervalMaxSec`、`minGapSec`、`maxPerIdle`、`maxPerDay`、`settleSec`、`actionCooldownSec`）。
 - **皮肤覆盖**：`assets/skins/<id>/ambient.json` 可选，按模式整段替换默认策略；皮肤没写的模式继续用默认。默认文件缺失、JSON 坏了或根形状不对时，壳保留上一份目录；单条动作不在当前动作目录只丢那一条，其它照常可用。
-- **选择规则**：presence 没开时固定用 `off`；presence 开着就按当前 `presence.mode`（`ambient` / `work` / `event`）选。只在空闲、没有 scene 与 activity 时播；安静时段会把下一次整体推到结束之后，再加一次抖动。
-- **默认值**：`event` 默认关闭；`work` 默认整套 19 个动作、20–40 分钟一次、每次空闲最多 4 个、每天最多 16 个；`off` 8–20 分钟 / 10 / 30；`ambient` 12–25 分钟 / 6 / 20。安静时段默认 23:00–07:00（结束后再等 0–10 分钟抖动）。
+- **选择规则**：presence 没开时固定用 `off`；presence 开着就按当前 `presence.mode`（`ambient` / `work` / `event`）选。只在空闲、没有 scene 与 activity 时播；安静时段会把下一次整体推到结束之后，固定再等 `afterJitterSec`（默认 600 秒）。
+- **默认值**：`event` 默认关闭；`work` 默认整套 19 个动作、20–40 分钟一次、每次空闲最多 4 个、每天最多 16 个；`off` 8–20 分钟 / 10 / 30；`ambient` 12–25 分钟 / 6 / 20。安静时段默认 23:00–07:00（结束后固定再等 `afterJitterSec`，默认 600 秒）。
 - **用户覆盖**：存在 `config.pet.ambient`，形状同上，只需写要覆盖的模式。
   - `GET /api/fish/pet/ambient` 返回壳上报的 `defaults`、用户 `overrides`、合并后的 `effective`、可选动作 `actions` 与归一化 `errors`。
   - `POST /api/fish/pet/ambient` 的 body 是一个 `{ op }` 操作：`set-enabled`（`mode`、`enabled`）、`set-frequency`（`mode`、`patch`）、`replace-mode`（`mode`、`policy`）、`add-item`（`mode`、`action` 及可选 `weight` / `enabled` / `cooldownSec` / `minIdleSec`）、`set-item`（`mode`、`action`、`patch`）、`remove-item`（`mode`、`action`）、`reset`（可带 `mode`；不带则清空全部覆盖）。
-  - 壳还没上报动作目录时，写入接受但标记为未校验；上报之后未知动作会被拒绝或丢弃。每次成功改动 `revision` +1，壳凭它重新拉取。这个接口只写 `config`，不调模型、不写事件流。
+  - 壳还没上报动作目录时，接受写入，但暂不做动作存在性校验；上报之后未知动作会被拒绝或丢弃。每次成功改动 `revision` +1，下一轮 `/pet/state` 会带上新的覆盖，壳每拍按它选策略。这个接口只写 `config`，不调模型、不写事件流。
 - **工作台 UI 暂缓**：目前没有图形编辑器，改氛围用上面的 API，或直接改 `config.pet.ambient` / `assets/ambient.json`。
 - **旧 trigger 兼容**：`when: "ambient"` 仍能被解析，旧皮肤或旧触发表照常工作；但仓库默认 `assets/triggers.json` 已不再包含这一条，`date:*` 等其它 trigger 不变。
 

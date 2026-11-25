@@ -481,8 +481,8 @@ POST /api/fish/pet/ambient
 ```
 
 - `GET` 返回：`revision`、`defaults`（壳最近一次 hello 上报的默认策略）、`overrides`（服务端用户策略）、`effective`（合并结果）、当前动作目录（`id / label / group`）、校验错误。
-- 每次写入 `revision++`；壳下一轮 `/pet/state` 看到 revision 变化就重新载入。
-- 服务端用最近一次 hello 上报的动作目录校验 action id；壳还没上报时先接受并标记 `unverified`，壳端再丢弃未知项。
+- 每次写入 `revision++`；壳每个 `/pet/state` 轮询都读 `settings.ambient`，不按 revision 判断是否重新载入。
+- 服务端用最近一次 hello 上报的动作目录校验 action id；壳还没上报时先接受但不校验（V1 无显式标记），壳端再丢弃未知项。
 - `set-frequency` / `add-item` / `set-item` / `remove-item` 需要“当前生效 mode”作为基线：优先用 override，没有就用 defaults；两边都没有时返回 `NO_BASE_POLICY`。
 - `replace-mode` 可以不带 defaults，直接把给定 mode 作为完整 override。
 
