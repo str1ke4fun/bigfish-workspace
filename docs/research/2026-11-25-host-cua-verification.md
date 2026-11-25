@@ -66,9 +66,23 @@
 | D4 | TTL 15 分钟 | 设计定稿；单测覆盖到期 |
 | D5 | G2 通过（V1/V3/V4/V5 均有结论；V2 DSH MCP 仅验证，不生产） | 本记录 |
 
+## 部署状态（2026-11-25）
+
+- 分支 `feat/host-cua-managed` 已 ff 合入 `main`；提交：
+  - `06c34da` dsh-fish core
+  - `9add297` workbench
+  - `5e1866b` desktop-pet
+  - `405ede0` docs
+  - `d224ec0` 验证记录
+  - `b101a59` driver-exit error phase
+- `dsh-web.service` 与 `fish-workbench.service` 已通过 `kill -TERM` + `Restart=always` 重启（`systemctl restart` 需要交互式授权，未用）。
+- 线上 `dsh-fish 0.9.1`；`/api/fish/host-cua/status` 正常；managed 启动/停止、驱动 session 7、驱动被杀后 `phase=error`、再次启动恢复均实测。
+- 新桌宠 `release/win-unpacked` 已构建，`resources/host-cua` 存在；用 `--user-data-dir` 临时启动验证 hello 上报与稳定目录复制，随后停止。**用户当前运行的旧桌宠未替换**，所以托盘/窗口还没有新徽标；工作台托管卡已可用。
+- `desktop-pet/package-lock.json` 是本地 `npm install` 生成，未提交。
+
 ## 未验证边界
 
-- 桌宠新包的 Windows 首次运行/自动复制/hello 实际启动验收。
+- 新桌宠替换旧桌宠后的托盘/徽标视觉验收（临时 `--user-data-dir` 启动已验证 hello/复制）。
 - Chrome/Terminal 的后台 click（本记录只测 type_text）。
 - 真实模型在她的会话里调用 `look_window`/`host_*`（工具级与驱动级已测，模型侧未跑）。
 - 最小化/DRM/DPI 的 PrintWindow 全矩阵。
