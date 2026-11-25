@@ -219,3 +219,17 @@ test('工作台时间统一走本地格式化', () => {
     assert.doesNotMatch(s, /\$\{info\.at \|\| ''\}/, f)
   }
 })
+
+test('桌宠页有托管模式卡，开关走 host-cua/mode 并点名终端/浏览器风险', () => {
+  const s = src('pet.js')
+  assert.match(s, /fish\('host-cua\/status'\)/)
+  assert.match(s, /postFish\('host-cua\/mode'/)
+  assert.match(s, /托管/)
+  assert.match(s, /15 分钟/)
+  assert.match(s, /background|后台/)
+  assert.match(s, /detail/)
+  assert.match(s, /input/)
+  assert.match(s, /终端/)
+  assert.match(s, /shell|网页/)
+  assert.match(s, /actionCount|已操作/)
+})

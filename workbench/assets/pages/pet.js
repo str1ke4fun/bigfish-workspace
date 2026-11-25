@@ -111,6 +111,25 @@ function build(root, ctx) {
     hint('终端里可能有凭据：工作模式首次开启前请确认当前窗口没有敏感内容。', 'meta'),
   )
 
+  // ---- 1c. 宿主托管 ----
+  SPEC.hostCuaCard = card('托管模式', {
+    note: '15 分钟后自动结束；关掉立即停止。只允许白名单应用，只做后台操作，不抢前台；每个应用能看多少/能不能输入由内容粒度和输入许可决定。',
+  })
+  SPEC.hostCuaStatus = el('div', { class: 'meta', text: '正在读状态…' })
+  SPEC.hostCuaApps = el('div', { class: 'meta' })
+  SPEC.hostCuaNote = el('div', { class: 'meta' })
+  SPEC.hostCuaObserve = el('button', { class: 'small', type: 'button', text: '允许看窗口', onclick: () => setHostCua('observe') })
+  SPEC.hostCuaManaged = el('button', { class: 'small', type: 'button', text: '开启托管', onclick: () => startHostCua() })
+  SPEC.hostCuaStop = el('button', { class: 'small', type: 'button', text: '立即停止', onclick: () => setHostCua('off') })
+  SPEC.hostCuaStop.hidden = true
+  SPEC.hostCuaCard.body.append(
+    SPEC.hostCuaStatus,
+    SPEC.hostCuaApps,
+    el('div', { class: 'row' }, SPEC.hostCuaObserve, SPEC.hostCuaManaged, SPEC.hostCuaStop),
+    SPEC.hostCuaNote,
+    hint('终端输入等于 shell，浏览器输入等于网页操作；只有你在这里点开并确认后才生效。', 'meta'),
+  )
+
   // ---- 2. 动作试演 ----
   SPEC.actionsCard = card('动作试演', {
     note: '点一下只是让桌宠演一遍，不调用模型，也不写事件流。',
@@ -232,7 +251,7 @@ function build(root, ctx) {
     hint('换了会话，前面的评论和对话仍在原会话里，不会被删。'),
   )
 
-  root.append(SPEC.statusCard.root, SPEC.presenceCard.root, SPEC.actionsCard.root, SPEC.looksCard.root, SPEC.companionCard.root, SPEC.note)
+  root.append(SPEC.statusCard.root, SPEC.presenceCard.root, SPEC.hostCuaCard.root, SPEC.actionsCard.root, SPEC.looksCard.root, SPEC.companionCard.root, SPEC.note)
 }
 
 function timeText(ms) {
@@ -398,6 +417,7 @@ async function load() {
   SPEC.state = data
   render()
   void loadPresenceMeta()
+  void loadHostCuaMeta()
 }
 
 function renderPresence(presence) {
@@ -459,6 +479,61 @@ async function stopPresence() {
   const mode = SPEC.state?.presence?.mode
   if (mode) await setPresence(mode, false)
   else await load()
+}
+
+async function loadHostCuaMeta() {
+  const r = await fish('host-cua/status')
+  if (!r.ok || r.data?.ok === false) {
+    SPEC.hostCuaStatus.textContent = '托管接口不可达；可能还没部署或版本较旧。'
+    SPEC.hostCuaApps.textContent = ''
+    SPEC.hostCuaObserve.disabled = true
+    SPEC.hostCuaManaged.disabled = true
+    SPEC.hostCuaStop.hidden = true
+    return
+  }
+  renderHostCua(r.data)
+}
+
+function renderHostCua(s = {}) {
+  const mode = String(s.mode ?? 'off')
+  const phase = String(s.phase ?? 'off')
+  const on = mode !== 'off'
+  const remain = Number(s.remainingMs) > 0 ? Math.ceil(Number(s.remainingMs) / 60_000) : 0
+  const driver = s.driver?.connected ? `驱动 ${s.driver.version || ''}` : '驱动没连'
+  const actions = Number(s.actions?.count) || 0
+  const modeLabel = mode === 'managed' ? '托管' : mode === 'observe' ? '看窗口' : '关'
+  SPEC.hostCuaStatus.textContent = on
+    ? `正在${modeLabel} · 还剩 ${remain} 分钟 · ${driver} · 已操作 ${actions} 次`
+    : `托管没开${s.lastError ? `（上次：${s.lastError}）` : ''}`
+  const apps = Array.isArray(s.apps) ? s.apps : []
+  SPEC.hostCuaApps.textContent = apps.length
+    ? '应用：' + apps.map((a) => `${a.app}（${a.detail}/${a.input}）`).join('、')
+    : '没有可用的白名单应用。'
+  SPEC.hostCuaObserve.hidden = mode === 'managed'
+  SPEC.hostCuaObserve.disabled = mode === 'managed'
+  SPEC.hostCuaManaged.hidden = on
+  SPEC.hostCuaStop.hidden = !on
+  SPEC.hostCuaNote.textContent = phase === 'error' && s.lastError ? `上次错误：${s.lastError}` : ''
+}
+
+async function setHostCua(mode) {
+  SPEC.hostCuaNote.textContent = mode === 'off' ? '正在停止…' : '正在开启…'
+  const r = await postFish('host-cua/mode', { mode, actor: 'workbench' })
+  if (!r.ok || r.data?.ok === false) {
+    SPEC.hostCuaNote.textContent = writeError(r)
+    return
+  }
+  SPEC.hostCuaNote.textContent = ''
+  await load()
+}
+
+function startHostCua() {
+  const apps = Array.isArray(SPEC.state?.hostCua?.apps) ? SPEC.state.hostCua.apps : []
+  const names = apps.length ? apps.map((a) => a.app).join(' / ') : '白名单应用'
+  const ok = window.confirm(
+    `开启后她可以在 ${names} 里后台点击和打字；终端输入等于 shell，浏览器输入等于网页操作。15 分钟自动结束。继续？`,
+  )
+  if (ok) void setHostCua('managed')
 }
 
 async function act(payload, btn) {

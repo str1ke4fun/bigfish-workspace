@@ -32,6 +32,9 @@ export const ROUTES = [
   { path: 'pet/config', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'pet/rotate', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'pet/rest', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
+  // 宿主托管：状态只读，开关是工作台写操作；桌宠用同一路由只能 off。
+  { path: 'host-cua/status', methods: { GET: 'P1' }, upstream: 'fish' },
+  { path: 'host-cua/mode', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024, sideEffect: true },
   // 氛围策略：读默认/覆盖/合并结果，写用户的模式启停、频率与动作池。
   { path: 'pet/ambient', methods: { GET: 'P1', POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'diary', methods: { GET: 'P1' }, upstream: 'fish' },

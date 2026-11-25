@@ -133,3 +133,14 @@ test('桌宠氛围策略走 fish 上游：GET P1、POST P2', () => {
   assert.equal(route.upstream, 'fish')
   assert.equal(route.maxBody, 64 * 1024)
 })
+
+test('host-cua 路由只开状态读与模式写', () => {
+  const status = ROUTES.find((r) => r.path === 'host-cua/status')
+  assert.equal(status.methods.GET, 'P1')
+  assert.equal(status.upstream, 'fish')
+  const mode = ROUTES.find((r) => r.path === 'host-cua/mode')
+  assert.equal(mode.methods.POST, 'P2')
+  assert.equal(mode.upstream, 'fish')
+  assert.equal(mode.sideEffect, true)
+  assert.equal(mode.maxBody, 64 * 1024)
+})

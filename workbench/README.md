@@ -99,7 +99,8 @@ P1 只放 `GET`：
 - B 站：`owner`、`bili/status`、`history`、`comment`、`comment-body`、`cover`、`outings`、`risk`、`ledger`、`sheet`、`footprint`；
 - 记忆：`events`、`diary`、`reports`、`beliefs`、`templates`；
 - 工具与规则：`tools`、`config`、`rules`、`selfcheck`；
-- 数据：`log`、`paths`、`update`、`avatar/info`、`avatar`、`log/export`、`backup`。
+- 数据：`log`、`paths`、`update`、`avatar/info`、`avatar`、`log/export`、`backup`；
+- 宿主托管：`host-cua/status`（她·桌宠页的托管卡）。
 
 P2 放开的写方法（都要求同源 `Origin`，跨站直接 403）：
 
@@ -119,6 +120,7 @@ P2 放开的写方法（都要求同源 `Origin`，跨站直接 403）：
 | `avatar` | POST | 上传/移除头像，4MB；原图上限 2MB 在页面侧先拦 |
 | `wx/scan` | POST | 微信会话目录补扫（通道页按钮；不是扫码登录） |
 | `risk` | POST | `{clear:true}` 解冻，页面二次确认 |
+| `host-cua/mode` | POST | 开启 observe/managed 或停止；终端/浏览器可输入，确认框点名风险；桌宠只能发 `{mode:"off",actor:"pet"}` |
 
 确认弹层只是 UX，不是安全边界；上游自己的 `confirm` 字面量必须原样传递。
 通道页的 QQ / 微信 / 语音 / 画面走工作台本地 `/api/*`，不经 BFF。
