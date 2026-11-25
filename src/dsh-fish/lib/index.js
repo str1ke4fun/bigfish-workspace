@@ -38,6 +38,10 @@ import { wrapRenderOnly, wrapTool } from './tool-result.js'
 import { registerHerTools } from './tools.js'
 import { registerPresenceSpeak } from './presence-speak.js'
 import { registerLookScreen } from './look-screen.js'
+import { registerLookWindow } from './look-window.js'
+import { registerHostCuaTools } from './host-cua-tools.js'
+import { createPrintWindow } from './host-window.js'
+import { createHostCua } from './host-cua.js'
 import { createWorkState } from './work-state.js'
 import { createSubagentBackend } from './work-backend.js'
 import { createWorkGuard, WORKER_HOST_TOOLS } from './work-guard.js'
@@ -58,7 +62,7 @@ import { logBoot, makeLogger } from './log.js'
 export const name = 'dsh-fish'
 
 /** 版本号：只用于日志导出（排查时第一件事是确认跑的是哪一版）。 */
-export const VERSION = '0.9.0'
+export const VERSION = '0.9.1'
 
 /**
  * 桌宠二期的事实源接线。抽成显式边界，便于用假的 bus/petView 验证
@@ -226,6 +230,10 @@ export function apply(ctx, baseConfig = {}) {
   async function boot() {
     logBoot(root, `${VERSION} · ${process.version} · ${process.platform}`)
     const { config } = await loadConfig(root)
+    // 宿主托管：状态机 + 驱动生命周期 + P0 PrintWindow。默认 off，工作台点击才开。
+    const hostCua = createHostCua({ root, config, log: (...a) => logger.warn(...a) })
+    const printWindow = createPrintWindow({ log: (...a) => logger.warn(...a) })
+    disposers.push(() => hostCua.dispose())
     // 她自己的房间必须先存在：她的会话 cwd 指向这里（不是 root），
     // 这样她不会一睁眼就站在自己的 events.jsonl 旁边。
     const herDir = await ensureHer(root)
@@ -589,6 +597,13 @@ export function apply(ctx, baseConfig = {}) {
         () => registerPresenceSpeak(ctx, { root, core: fishCore ?? {}, screen, log: (...a) => logger.warn(...a) }),
         // 陪伴会话里主动看一眼此刻的屏幕；只返回路径，看图仍走 read_image。
         () => registerLookScreen(ctx, { core: fishCore ?? {}, screen, log: (...a) => logger.warn(...a) }),
+        // 宿主托管：P0 按窗口看一眼 + P1 四个窄工具。默认 off，工具可见但执行会拒绝。
+        () => registerLookWindow(ctx, { mode: hostCua, printWindow, root, config, log: (...a) => logger.warn(...a) }),
+        () => registerHostCuaTools(ctx, {
+          hostCua, root, config,
+          guard: { looksLikeSecret, sanitizeForeign },
+          log: (...a) => logger.warn(...a),
+        }),
         // 工具目录：先只留常用工具，其余靠这个工具自己查、自己打开。
         () => registerHerTools(ctx, { core: fishCore, policy, caps }),
         // 工作委派：her_work / her_work_status / her_worker / her_worker_control / her_ask_user。
@@ -664,6 +679,7 @@ export function apply(ctx, baseConfig = {}) {
       exposure,
       screen,
       petView,
+      hostCua,
       persistPetRest: async ({ action, awakeUntil } = {}) => {
         const body = action === 'awake' && Number.isFinite(awakeUntil)
           ? { override: 'awake', awakeUntil, at: Date.now() }

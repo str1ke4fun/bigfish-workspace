@@ -130,6 +130,20 @@
 
 本辑的边界：没有做 `dsh-bili` 拆包、事件 v3 跨面记忆；QQ 的定时活动仍按旧调度运行。`/selfcheck` 新增面登记、工具策略、工具台账三项，只报状态，不改行为。
 
+## 宿主托管（0.9.1）
+
+工作台「她 · 桌宠」页的“托管模式”卡可以临时允许她按窗口看、并在白名单应用里做后台点击/输入。默认全关，15 分钟自动结束，重启服务也回到关闭。
+
+- 看：`look_window` 用 Windows `PrintWindow` 按窗口抓一帧，落 `~/.dsh-fish/media/`，不抢前台、不置顶；不需要驱动、不需要桌宠。
+- 控制：托管开启后，`dsh-fish` 经 WSL interop 启动桌宠安装包附带的 `cua-driver.exe mcp --direct`，只允许 `list_windows` / `get_window_state` / `click` / `type_text` / `press_key` 五个工具名。
+- 窄工具：`look_window`、`host_look`、`host_click`、`host_type`、`host_key`；后四个按需加载（`her_tools load group:"host"`），只在 managed 且该应用 `input=allow` 时执行。
+- 内容粒度：`detail` 分 `full / structure / image / none`。`structure` 不给截图、正文 label/value 脱敏、标题隐藏；`none` 只确认窗口存在，输入工具拒绝。
+- 默认白名单：`Code.exe`、`WindowsTerminal.exe`、`notepad.exe`、`chrome.exe`。P1 明确接受终端/浏览器可输入：终端输入等于 shell，浏览器输入等于网页操作；工作台开启时会点名这个风险。
+- 防线：只走 background；不移动物理光标、不注册全局键盘钩子、不抢前台；每次动作前复核窗口白名单；输入预算 40 次/会话、8 次/10 秒、5000 字符/会话；客户端拒绝 `move_cursor`、`bring_to_front`、`set_window_frame` 等工具名；spawn 驱动前剔除带凭据的环境变量。
+- 状态：`GET /api/fish/host-cua/status`、`POST /api/fish/host-cua/mode`（工作台）；桌宠只能读状态和发 `{mode:"off",actor:"pet"}`。
+- 审计：`~/.dsh-fish/host-cua/audit-YYYY-MM-DD.jsonl` 记模式切换和每次调用，不记正文。**稳定期仍保留全局 `tool-ledger`**：`host_look` 的 full 树、`host_type` 的输入文本会落在 `tool-ledger/`，并随 `/backup` 导出；`/log/export` 不含台账内容。托管稳定后再收缩。
+- 驱动来源：桌宠构建时由 `desktop-pet/scripts/fetch-host-cua.mjs` 按 SHA256 拉取 `cua-driver 0.55.0`，首次运行复制到 `%LOCALAPPDATA%\bigfish\host-cua\<version>`；桌宠不启动驱动，只经 `/pet/hello` 上报路径。遥测由 `dsh-fish` 第一次解析驱动时关闭。
+
 ## 数据在哪
 
 全部在 `~/.dsh-fish/`：

@@ -534,3 +534,34 @@ test('/pet/state.settings.ambient 回显持久化覆盖，气泡设置与其它 
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 })
+
+test('host-cua 路由：状态可读，pet 只能停，pet/state 带紧凑视图', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView()
+  const calls = []
+  const hostCua = {
+    status: () => ({ ok: true, mode: 'observe', phase: 'on', apps: [{ app: 'Code.exe', detail: 'full', input: 'allow' }] }),
+    setMode: async ({ mode, actor }) => { calls.push([mode, actor]); return { ok: true, status: { ok: true, mode, phase: mode === 'off' ? 'off' : 'on' } } },
+    petState: () => ({ mode: 'observe', phase: 'on', remainingMs: 1000, driverConnected: false, actionCount: 2, lastActionAt: 9 }),
+    refreshRegistration: async () => true,
+  }
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView, hostCua })
+
+  const st = await callRoute(ctx.routes, '/host-cua/status', 'GET')
+  assert.equal(st.status, 200)
+  assert.equal(st.body.mode, 'observe')
+  assert.equal(st.body.apps[0].input, 'allow')
+
+  const denied = await callRoute(ctx.routes, '/host-cua/mode', 'POST', { mode: 'managed', actor: 'pet' })
+  assert.equal(denied.status, 400)
+  assert.equal(calls.length, 0)
+
+  const ok = await callRoute(ctx.routes, '/host-cua/mode', 'POST', { mode: 'observe', actor: 'workbench' })
+  assert.equal(ok.status, 200)
+  assert.deepEqual(calls[0], ['observe', 'workbench'])
+
+  const pet = await callRoute(ctx.routes, '/pet/state', 'GET')
+  assert.equal(pet.body.hostCua.actionCount, 2)
+  assert.equal(pet.body.hostCua.mode, 'observe')
+})

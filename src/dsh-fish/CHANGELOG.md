@@ -1,3 +1,16 @@
+## 0.9.1 — 2026-11-25
+
+**宿主托管 P0/P1：按窗口看、受控后台点击/输入**
+
+- `look_window`：工作台开启 observe/managed 后，按 HWND 用 Windows `PrintWindow` 抓一帧落 `media/`；不依赖驱动、不抢前台、不置顶。列表脚本在 Windows 侧先按 allow/deny 过滤，被拒应用的标题不进入 WSL。
+- 托管模式：`off / observe / managed` 状态机，15 分钟 TTL；工作台 `POST /host-cua/mode` 开启，桌宠只能发 `off`。驱动由桌宠安装包附带、首次运行复制到 `%LOCALAPPDATA%\bigfish\host-cua\<version>`，`dsh-fish` 经 WSL interop spawn `cua-driver.exe mcp --direct`。
+- 五个窄工具：`look_window`、`host_look`、`host_click`、`host_type`、`host_key`；后四个只在 managed 且 `input=allow` 时执行，固定 background，不传 foreground。
+- 内容粒度：`detail` 分 `full / structure / image / none`；`structure` 无截图、正文 label/value 脱敏、标题隐藏；`none` 不调 `get_window_state` 且拒绝输入。
+- 输入许可：`input` 与 `detail` 分开，`defaultInput=deny`；P1 明确接受 `Code.exe`、`WindowsTerminal.exe`、`notepad.exe`、`chrome.exe` 可输入（终端=shell、浏览器=网页操作），工作台开启确认框点名风险。
+- 防线：客户端只允许 5 个驱动工具名；spawn 用 `scrubEnv` 剔除凭据/`DSH_*`；输入预算 40 次/会话、8 次/10 秒、5000 字符/会话；`status.actions` 与桌宠 `actionCount` 可见。
+- 审计：`host-cua/audit-YYYY-MM-DD.jsonl` 记 mode/调用/窗口/结果/耗时，不记正文；稳定期仍保留全局 `tool-ledger`（含 full 树、type 文本），后续再收缩。
+- 验证：`src/dsh-fish` 1323 全绿；`workbench` 134 全绿；`desktop-pet` 220 全绿；Windows 实测驱动 MCP、PrintWindow、后台 type/click、光标/前台不变。真实模型/微信收发不在本版验收范围。
+
 ## 未发布 — 2026-11-24
 
 **主动看屏与工作委派 P1/P2**

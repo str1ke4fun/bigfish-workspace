@@ -9,6 +9,8 @@
  */
 
 import { readConfig, writeConfig, paths, readJson } from './store.js'
+import { DEFAULT_HOST_APPS, DEFAULT_HOST_DENY } from './host-window.js'
+import { HOST_CUA_DETAILS, HOST_CUA_INPUTS, normalizeAppKey } from './host-cua-detail.js'
 
 /** 所有可调项。加新项就在这里加，下面读配置会自动补全。 */
 export const DEFAULTS = {
@@ -230,6 +232,31 @@ export const DEFAULTS = {
       runTimeoutMs: 1_800_000,       // 30 分钟
     },
   },
+
+  // 宿主托管（2026-11-25）
+  // detail 管看多少，input 管能不能点/输入；终端/浏览器是显式接受可输入的。
+  hostCua: {
+    ttlMs: 15 * 60_000,
+    exe: '',
+    apps: [...DEFAULT_HOST_APPS],
+    deny: [...DEFAULT_HOST_DENY],
+    maxTextChars: 2000,
+    defaultDetail: 'structure',
+    detail: {
+      'Code.exe': 'full',
+      'WindowsTerminal.exe': 'full',
+      'notepad.exe': 'full',
+      'chrome.exe': 'full',
+    },
+    defaultInput: 'deny',
+    input: {
+      'Code.exe': 'allow',
+      'WindowsTerminal.exe': 'allow',
+      'notepad.exe': 'allow',
+      'chrome.exe': 'allow',
+    },
+    budget: { maxActions: 40, maxActionsPer10s: 8, maxTypedChars: 5000 },
+  },
 }
 
 /**
@@ -240,7 +267,7 @@ export const DEFAULTS = {
 export const CONFIG_PATCH_KEYS = [
   'growthDays', 'wakesPerDay', 'window', 'daily', 'diary', 'absenceAfterDays',
   'avoid', 'browse', 'video', 'comment', 'notify', 'chat', 'memory',
-  'tools', 'observe', 'ui', 'presence', 'pet', 'work',
+  'tools', 'observe', 'ui', 'presence', 'pet', 'work', 'hostCua',
 ]
 
 const LIMITS = {
@@ -268,6 +295,11 @@ const LIMITS = {
   'memory.sleepKeep': [0, 100],
   'memory.beliefsShown': [1, 8],
   'rules.holdDays': [1, 30],
+  'hostCua.ttlMs': [60_000, 3_600_000],
+  'hostCua.maxTextChars': [32, 4000],
+  'hostCua.budget.maxActions': [1, 200],
+  'hostCua.budget.maxActionsPer10s': [1, 60],
+  'hostCua.budget.maxTypedChars': [0, 20_000],
   'rules.cooldownDays': [1, 30],
   // presence 的 fps / sceneThreshold 是小数，不能进这个 Math.round 的循环；
   // 这里只放整数项，小数项由 normalizeConfig 原样保留。
@@ -305,6 +337,18 @@ function clampNum(v, [lo, hi], dflt) {
   const n = Number(v)
   if (!Number.isFinite(n)) return dflt
   return Math.max(lo, Math.min(hi, n))
+}
+
+/** detail/input 映射：key 归一、value 必须在白名单里，坏条目直接丢掉。 */
+function normalizePolicyMap(map, allowed) {
+  const out = {}
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return out
+  for (const [key, value] of Object.entries(map)) {
+    const norm = normalizeAppKey(key)
+    if (!norm || !allowed.includes(value)) continue
+    out[norm] = value
+  }
+  return out
 }
 
 /**
@@ -401,6 +445,17 @@ export function normalizeConfig(raw = {}) {
   }
   cfg.presence.work.allow = dedupe(cfg.presence.work.allow)
   cfg.presence.work.deny = dedupe(cfg.presence.work.deny)
+
+  // 宿主托管：嵌套组补全 + 名单去重 + detail/input 映射校验。
+  cfg.hostCua = { ...DEFAULTS.hostCua, ...(cfg.hostCua && typeof cfg.hostCua === 'object' && !Array.isArray(cfg.hostCua) ? cfg.hostCua : {}) }
+  cfg.hostCua.exe = String(cfg.hostCua.exe ?? '').trim()
+  cfg.hostCua.apps = dedupe(cfg.hostCua.apps)
+  cfg.hostCua.deny = dedupe(cfg.hostCua.deny)
+  cfg.hostCua.defaultDetail = HOST_CUA_DETAILS.includes(cfg.hostCua.defaultDetail) ? cfg.hostCua.defaultDetail : 'structure'
+  cfg.hostCua.defaultInput = HOST_CUA_INPUTS.includes(cfg.hostCua.defaultInput) ? cfg.hostCua.defaultInput : 'deny'
+  cfg.hostCua.detail = normalizePolicyMap(cfg.hostCua.detail, HOST_CUA_DETAILS)
+  cfg.hostCua.input = normalizePolicyMap(cfg.hostCua.input, HOST_CUA_INPUTS)
+  cfg.hostCua.budget = { ...DEFAULTS.hostCua.budget, ...(cfg.hostCua.budget && typeof cfg.hostCua.budget === 'object' ? cfg.hostCua.budget : {}) }
 
   // 她的工具面：preset 名 trim（空 = 用宿主默认组合），allow 去重去空
   // 不改 allow 的语义——它只是"额外放行"，真正的收窄由 preset 完成。

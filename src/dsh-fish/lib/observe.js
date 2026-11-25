@@ -886,6 +886,31 @@ export function registerObserve(ctx, deps = {}) {
       return send(res, 200, r ?? { ok: false, note: '没切成。' })
     }],
 
+    // ---- 宿主托管（工作台触发；桌宠只读状态/停）----
+    ['/host-cua/status', async (req, res) => {
+      if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' })
+      const svc = deps.hostCua
+      if (!svc?.status) return send(res, 200, { ok: false, note: '宿主托管没在跑。' })
+      return send(res, 200, svc.status())
+    }],
+    ['/host-cua/mode', async (req, res) => {
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+      const svc = deps.hostCua
+      if (!svc?.setMode) return send(res, 200, { ok: false, note: '宿主托管没在跑。' })
+      let body = {}
+      try { body = JSON.parse(await readBody(req, 64_000) || '{}') } catch { return send(res, 400, { error: 'body 不是 JSON' }) }
+      const mode = String(body?.mode ?? '')
+      const actor = body?.actor === 'pet' ? 'pet' : 'workbench'
+      if (!['off', 'observe', 'managed'].includes(mode)) return send(res, 400, { error: 'mode 只能是 off/observe/managed' })
+      if (actor === 'pet' && mode !== 'off') return send(res, 400, { error: '桌宠只能停止托管' })
+      try {
+        const r = await svc.setMode({ mode, actor })
+        return send(res, r.ok ? 200 : 409, r.status ?? r)
+      } catch (err) {
+        return send(res, 500, { error: String(err?.message ?? err).slice(0, 200) })
+      }
+    }],
+
     // ---- 桌宠薄壳（BFF-only，不进公开文档）----
     // 桌宠窗口只跟这些路由打交道：状态是易失活动 + 场景 + cue + 动作；
     // 动作和休息覆盖都是用户点出来的，只写 petView，不调模型、不碰 events.jsonl。
@@ -906,6 +931,7 @@ export function registerObserve(ctx, deps = {}) {
       return send(res, 200, {
         at,
         presence,
+        hostCua: deps.hostCua?.petState?.() ?? null,
         activity: s.activity,
         action: s.action,
         actions: Array.isArray(s.actions) ? s.actions : [],
@@ -940,6 +966,9 @@ export function registerObserve(ctx, deps = {}) {
       try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
       catch { return send(res, 400, { ok: false, note: 'body 不是 JSON' }) }
       pet.noteHello({ version: body?.version, skins: body?.skins, actions: body?.actions, ambient: body?.ambient })
+      if (body?.hostCua) {
+        try { await deps.hostCua?.refreshRegistration?.(body.hostCua) } catch { /* ignore */ }
+      }
       return send(res, 200, { ok: true })
     }],
     ['/pet/config', async (req, res) => {

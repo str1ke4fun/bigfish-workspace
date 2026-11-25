@@ -57,7 +57,7 @@ afterEach(() => {
 })
 
 test('贡献 3 个 bili 工具：8 条可见；撤销后回到 5', () => {
-  assert.equal(OWN_TOOL_NAMES.length, 14, '内置自有工具是 14 个（新增工作委派 5 个）')
+  assert.equal(OWN_TOOL_NAMES.length, 19, '内置自有工具是 19 个（工作委派 5 + 宿主托管 5）')
   const r = accept(contribute({ id: 't1-bili', tools: BILI }, { hostNames: HOST }))
 
   assert.equal(entriesFor('bili').length, 8, 'bili core 5 条 + 贡献 3 条')

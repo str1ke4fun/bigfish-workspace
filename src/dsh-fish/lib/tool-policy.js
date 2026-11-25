@@ -67,6 +67,11 @@ export const OWN_TOOL_NAMES = Object.freeze([
   'her_worker',
   'her_worker_control',
   'her_ask_user',
+  'look_window',
+  'host_look',
+  'host_click',
+  'host_type',
+  'host_key',
 ])
 
 const ALWAYS = 'always'
@@ -194,6 +199,18 @@ function qqDeferred() {
   ]
 }
 
+/** web 面的宿主托管：看一眼常驻，输入工具按需打开。 */
+function hostEntries() {
+  const s = 'web'
+  return [
+    tool('look_window', s, ALWAYS, '', '按窗口看一眼', 'read'),
+    tool('host_look', s, DEFERRED, 'host', '看一个窗口的结构或画面', 'read'),
+    tool('host_click', s, DEFERRED, 'host', '在窗口里点一下', 'navigate'),
+    tool('host_type', s, DEFERRED, 'host', '在窗口里打一段字', 'navigate'),
+    tool('host_key', s, DEFERRED, 'host', '在窗口里按一个键', 'navigate'),
+  ]
+}
+
 /**
  * 内置表。一个工具只有一个 surface；deferred 一定有 group；
  * always 的 group 为空串（`groupsFor` 会跳过）。
@@ -204,6 +221,7 @@ function qqDeferred() {
  */
 const BUILTIN = Object.freeze([
   ...coreEntries('web'),
+  ...hostEntries(),
 
   // screen 面只给 read_image + her_recall；她直接说话，不调输出工具。
   ...screenEntries(),

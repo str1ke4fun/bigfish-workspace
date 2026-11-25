@@ -7,7 +7,7 @@ const CORE = ['growth_commit', 'her_recall', 'her_leave', 'her_tools']
 
 test('全部面的常驻与按需可见矩阵不变', () => {
   const expectedAllow = {
-    web: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image'],
+    web: ['growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image', 'look_window'],
     wx: [
       'growth_commit', 'her_recall', 'her_leave', 'her_tools', 'read_image',
       'wx_peek', 'wx_send', 'wx_context', 'wx_task_done', 'wx_task_snooze',
@@ -20,7 +20,7 @@ test('全部面的常驻与按需可见矩阵不变', () => {
     work: ['her_worker', 'her_worker_control', 'her_ask_user', 'growth_commit', 'her_recall', 'todo_write'],
   }
   const expectedCatalog = {
-    web: [],
+    web: ['host_look', 'host_click', 'host_type', 'host_key'],
     wx: [
       'wx_see', 'wx_click', 'wx_type', 'wx_key', 'wx_ocr',
       'wx_sticker_scan', 'wx_sticker_list', 'wx_sticker_find', 'wx_sticker_tag',
@@ -132,4 +132,15 @@ test('screen 面能看图、翻旧事、记下想留的话，不挂说出口的�
   const web = resolveAllow({ surface: 'web', caps })
   assert.equal(web.includes('presence_speak'), false, 'presence_speak 不该出现在 web 面')
   assert.equal(names.includes('presence_speak'), false, '陪看时她自然说话，不调工具')
+})
+
+test('host-cua：look_window 常驻，输入工具在 host 组', () => {
+  const always = resolveAllow({ surface: 'web', hostNames: null })
+  assert.ok(always.includes('look_window'))
+  assert.ok(!always.includes('host_click'))
+  const cat = catalog({ surface: 'web', hostNames: null })
+  for (const n of ['host_look', 'host_click', 'host_type', 'host_key']) {
+    assert.equal(cat.find((e) => e.name === n)?.group, 'host')
+  }
+  assert.equal(loadTargets({ surface: 'web', caps, hostNames: null, group: 'host' }).ok, true)
 })
