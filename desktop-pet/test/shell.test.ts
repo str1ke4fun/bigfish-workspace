@@ -8,6 +8,7 @@ import { noteLocalLook, resolveRemoteLook, readRemoteLook } from '../electron/lo
 import type { ActionDefinition } from '../electron/actions.ts'
 import { buildMenuModel, type MenuCallbacks, type MenuState } from '../electron/menu-model.ts'
 import type { TriggerDefinition } from '../electron/triggers.ts'
+import type { AmbientCatalog } from '../electron/ambient.ts'
 
 type ElectronMock = {
   appPath: string
@@ -107,6 +108,8 @@ registerHooks({
                   ? Promise.resolve([{
                       when: 'speak', pool: ['wave'], w: [1], once: false, minGapSec: 0, inAmbient: false,
                     }])
+                : channel === 'pet:get-ambient-catalog'
+                  ? Promise.resolve({ version: 1, quietHours: null, modes: {} })
                 : Promise.resolve({ ok: true, actions: [] })
             },
           }
@@ -593,7 +596,7 @@ test('触发桥：trigger catalog 走独立推送频道', async () => {
   assert.deepEqual(sent, [['pet:trigger-catalog', catalog]])
 })
 
-test('pet:ready 启动补发先给 action/trigger catalog，再给缓存 state', async () => {
+test('pet:ready 启动补发先给 action/trigger/ambient catalog，再给缓存 state', async () => {
   const main = await loadMainModule()
   const { win, sent } = fakeWindow()
   const actions: ActionDefinition[] = [registered('swing', '荡秋千', '玩耍')]
@@ -605,14 +608,16 @@ test('pet:ready 启动补发先给 action/trigger catalog，再给缓存 state',
     minGapSec: 0,
     inAmbient: false,
   }]
+  const ambient = { version: 1, quietHours: null, modes: {} }
 
-  main.sendPetReadySnapshot(win, actions, triggers, () => {
+  main.sendPetReadySnapshot(win, actions, triggers, ambient, () => {
     sent.push(['pet:state', { at: 123 }])
   })
 
   assert.deepEqual(sent.map(([channel]) => channel), [
     'pet:action-catalog',
     'pet:trigger-catalog',
+    'pet:ambient-catalog',
     'pet:state',
   ])
 })
@@ -696,6 +701,7 @@ test('动作重载：成功后推 catalog、停旧动作并立即 hello；失败
     version: '0.1.0',
     skins: [{ id: '', name: '默认' }],
     actions: [{ id: 'wave', label: '挥手', group: '回应' }],
+    ambient: { version: 1, quietHours: null, modes: {} },
   }])
 
   await writeFile(join(assets, 'actions.json'), '{ nope')
@@ -997,6 +1003,7 @@ test('动作重载：只使用最后提交成功的皮肤，不用被拒绝的�
     version: '0.1.0',
     skins: [{ id: '', name: '默认' }],
     actions: [{ id: 'default-wave', label: '默认挥手', group: '回应' }],
+    ambient: { version: 1, quietHours: null, modes: {} },
   })
   assert.match(warnings.join('\n'), /rejected-skin/)
 })
@@ -1053,6 +1060,7 @@ test('动作重载：旧 reload 在较新皮肤提交后完成也不覆盖新 ca
     version: '0.1.0',
     skins: [{ id: '', name: '默认' }],
     actions: [{ id: 'default-wave', label: '默认挥手', group: '回应' }],
+    ambient: { version: 1, quietHours: null, modes: {} },
   }])
   assert.deepEqual(
     sent.filter(([channel]) => channel === 'pet:action-catalog'),
@@ -1195,6 +1203,7 @@ test('皮肤切换：单个事件日志证明 hello 确认后才提交 skin 与 
     version: '0.1.0',
     skins: [{ id: '', name: '默认' }],
     actions: [{ id: 'start-wave', label: '起始挥手', group: '回应' }],
+    ambient: { version: 1, quietHours: null, modes: {} },
   }])
 })
 
@@ -1409,6 +1418,117 @@ test('preload 暴露 action/trigger catalog API，并兼容旧 motion 字符串�
     ['pet:action-request', 'waving'],
     ['pet:action-request', { action: 'wave' }],
   ])
+})
+
+test('preload 暴露 ambient catalog 订阅与主动拉取', async () => {
+  await loadMainModule()
+  await import('../electron/preload.ts')
+  const bridge = electronMock.exposed.petBridge as {
+    onAmbientCatalog(handler: (catalog: unknown) => void): () => void
+    getAmbientCatalog(): Promise<unknown>
+  }
+
+  electronMock.rendererInvokes.length = 0
+  const catalogs: unknown[] = []
+  const unsubscribe = bridge.onAmbientCatalog((catalog) => catalogs.push(catalog))
+  const payload = { version: 1, quietHours: null, modes: {} }
+  electronMock.rendererListeners.get('pet:ambient-catalog')![0]({}, payload)
+
+  assert.deepEqual(catalogs, [payload])
+  unsubscribe()
+  assert.deepEqual(await bridge.getAmbientCatalog(), { version: 1, quietHours: null, modes: {} })
+  assert.deepEqual(electronMock.rendererInvokes, ['pet:get-ambient-catalog'])
+})
+
+test('ambient catalog 从磁盘载入并推给 renderer / hello', async (t) => {
+  const main = await loadFreshMainModule('ambient-startup')
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  const helloBodies = captureHello(t)
+
+  await writeFile(join(assets, 'webm', 'wave.webm'), '')
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'wave', label: '挥手', anim: 'wave', group: '回应' }],
+  }))
+  await writeFile(join(assets, 'ambient.json'), JSON.stringify({
+    version: 1,
+    quietHours: { start: '23:00', end: '07:00', afterJitterSec: 0 },
+    modes: {
+      off: { enabled: false, items: [] },
+      work: { enabled: true, items: [{ action: 'wave' }], frequency: { minGapSec: 600 } },
+    },
+  }))
+
+  const { win, sent } = fakeWindow()
+  assert.equal(await main.applySkin('', { win, assetsRoot: assets }), true)
+
+  const getAmbient = electronMock.ipcHandled.get('pet:get-ambient-catalog')
+  assert.equal(typeof getAmbient, 'function')
+  const catalog = await getAmbient!() as AmbientCatalog
+  assert.equal(catalog.version, 1)
+  assert.ok(catalog.modes.off)
+  assert.ok(catalog.modes.work)
+  assert.equal(catalog.modes.work.enabled, true)
+  assert.deepEqual(catalog.modes.work.items.map((item) => item.action), ['wave'])
+  assert.equal(catalog.modes.work.frequency.minGapSec, 600)
+  assert.deepEqual(catalog.quietHours, { start: '23:00', end: '07:00', afterJitterSec: 0 })
+
+  assert.deepEqual(sent.filter(([channel]) => channel === 'pet:ambient-catalog'), [
+    ['pet:ambient-catalog', catalog],
+  ])
+  assert.deepEqual((helloBodies.at(-1) as { ambient: unknown }).ambient, catalog)
+})
+
+test('动作重载同时刷新 ambient catalog；坏文件保留上一份且不阻塞动作', async (t) => {
+  const main = await loadFreshMainModule('ambient-reload')
+  const { root, assets } = await actionFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  electronMock.appPath = root
+  captureHello(t)
+  const warnings = captureWarnings(t)
+
+  await writeFile(join(assets, 'webm', 'wave.webm'), '')
+  await writeFile(join(assets, 'config.json'), '{}')
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'wave', label: '挥手', anim: 'wave', group: '回应' }],
+  }))
+  await writeFile(join(assets, 'ambient.json'), JSON.stringify({
+    version: 1,
+    modes: { work: { enabled: true, items: [{ action: 'wave' }] } },
+  }))
+
+  const { win, sent } = fakeWindow()
+  assert.equal(await main.applySkin('', { win, assetsRoot: assets }), true)
+  const getAmbient = electronMock.ipcHandled.get('pet:get-ambient-catalog')
+  assert.ok(getAmbient)
+  assert.equal(((await getAmbient()) as AmbientCatalog).modes.work.enabled, true)
+
+  await writeFile(join(assets, 'ambient.json'), JSON.stringify({
+    version: 1,
+    modes: { work: { enabled: false, items: [{ action: 'wave' }] } },
+  }))
+  sent.length = 0
+  const changed = await main.reloadRegisteredActions(win, assets)
+  assert.equal(changed.ok, true)
+  assert.equal(((await getAmbient()) as AmbientCatalog).modes.work.enabled, false)
+  assert.equal(sent.some(([channel]) => channel === 'pet:ambient-catalog'), true)
+
+  await writeFile(join(assets, 'actions.json'), JSON.stringify({
+    actions: [{ id: 'wave', label: '新挥手', anim: 'wave', group: '回应' }],
+  }))
+  await writeFile(join(assets, 'ambient.json'), '{ nope')
+  sent.length = 0
+  const second = await main.reloadRegisteredActions(win, assets)
+
+  assert.equal(second.ok, true)
+  assert.deepEqual(second.actions, [{ id: 'wave', label: '新挥手', group: '回应' }])
+  const kept = (await getAmbient()) as AmbientCatalog
+  assert.equal(kept.modes.work.enabled, false)
+  assert.deepEqual(kept.modes.work.items.map((item) => item.action), ['wave'])
+  assert.equal(sent.some(([channel]) => channel === 'pet:ambient-catalog'), false)
+  assert.match(warnings.join('\n'), /氛围目录/)
 })
 
 test('打开链接：命令行带 bigfishpet:// 才算，大小写不敏感', async () => {

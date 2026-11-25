@@ -83,6 +83,8 @@ declare global {
       getActionCatalog?(): Promise<unknown>
       onTriggerCatalog?(handler: (catalog: unknown) => void): () => void
       getTriggerCatalog?(): Promise<unknown>
+      onAmbientCatalog?(handler: (catalog: unknown) => void): () => void
+      getAmbientCatalog?(): Promise<unknown>
       onActionStop?(handler: () => void): () => void
       onActionError?(handler: (error: unknown) => void): () => void
       setIgnoreMouse?(ignore: boolean): void

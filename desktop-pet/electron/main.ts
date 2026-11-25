@@ -11,6 +11,12 @@ import {
   type ReadTriggerCatalog,
   type TriggerDefinition,
 } from './triggers'
+import {
+  emptyAmbientCatalog,
+  filterAmbientCatalog,
+  readAmbientCatalog,
+  type AmbientCatalog,
+} from './ambient'
 import { sendChat } from '../renderer/chat'
 import { applyIgnoreMouse, clampWindowToDisplays, createPetWindow, flushPosition, resetPetPosition, resizePetWindow } from './window'
 import { DEFAULT_LOOK, noteLocalLook, readRemoteLook, resolveRemoteLook, type BubbleLook, type LookSyncState } from './look'
@@ -109,6 +115,8 @@ interface TriggerCatalogState {
 }
 /** 与动作目录分开保存，并记录归属皮肤/加载序号；触发表损坏不能阻塞手动动作。 */
 let triggerCatalog: TriggerCatalogState = { triggers: [], ownerSkinId: '', ownerRevision: -1 }
+/** 壳侧氛围目录；坏文件只丢本次更新，不能阻塞动作/皮肤。 */
+let ambientCatalog: AmbientCatalog = emptyAmbientCatalog()
 
 /**
  * 皮肤推送缓存：首推可能早于渲染进程注册 `onSkin`（和 `pet:state` 同样的竞态）。
@@ -232,15 +240,18 @@ export function toHelloPayload(
   version: string,
   skins: readonly ScannedSkin[],
   actions: readonly ActionDefinition[],
+  ambient: AmbientCatalog,
 ): {
   version: string
   skins: Array<{ id: string; name: string }>
   actions: PetActionCatalogEntry[]
+  ambient: AmbientCatalog
 } {
   return {
     version,
     skins: skins.map(({ id, name }) => ({ id, name })),
     actions: actionCatalogEntries(actions),
+    ambient,
   }
 }
 
@@ -261,6 +272,12 @@ export function sendTriggerCatalog(win: BrowserWindow | null, triggers: readonly
   }
 }
 
+export function sendAmbientCatalog(win: BrowserWindow | null, catalog: AmbientCatalog): void {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('pet:ambient-catalog', catalog)
+  }
+}
+
 export function sendActionStop(win: BrowserWindow | null): void {
   if (win && !win.isDestroyed()) win.webContents.send('pet:action-stop')
 }
@@ -270,10 +287,12 @@ export function sendPetReadySnapshot(
   win: BrowserWindow | null,
   actions: readonly ActionDefinition[],
   triggers: readonly TriggerDefinition[],
+  ambient: AmbientCatalog,
   resendState: () => void,
 ): void {
   sendActionCatalog(win, actions)
   sendTriggerCatalog(win, triggers)
+  sendAmbientCatalog(win, ambient)
   resendState()
 }
 
@@ -376,7 +395,7 @@ function enqueueHello<T>(work: () => Promise<T>): Promise<T> {
 
 /** 心跳：窗口真的起来了才让服务端判 online。失败静默，不刷屏。 */
 export async function sendHello(): Promise<boolean> {
-  return enqueueHello(() => postHello(toHelloPayload(app.getVersion(), skinCatalog, actionCatalog)))
+  return enqueueHello(() => postHello(toHelloPayload(app.getVersion(), skinCatalog, actionCatalog, ambientCatalog)))
     .catch(() => false)
 }
 
@@ -504,6 +523,14 @@ function triggerActionIds(actions: readonly ActionDefinition[]): Set<string> {
   return new Set(actions.map((action) => action.id))
 }
 
+/** 只是提交一份已校验的目录；按当前动作目录裁 item，变化时才推给 renderer。 */
+function setAmbientCatalog(catalog: AmbientCatalog, win: BrowserWindow | null = petWindow): void {
+  const next = filterAmbientCatalog(catalog, triggerActionIds(actionCatalog))
+  const changed = JSON.stringify(ambientCatalog) !== JSON.stringify(next)
+  ambientCatalog = next
+  if (changed) sendAmbientCatalog(win, next)
+}
+
 /**
  * 读取候选触发表；整份文件损坏时只回退同一皮肤/序号下的上一份，
  * 跨皮肤或新序号只重读默认表，避免复用旧皮肤的覆盖项。
@@ -550,6 +577,28 @@ async function loadTriggerCandidate(
 }
 
 /**
+ * 读取候选氛围目录；整份文件损坏时沿用上一份（按新动作目录裁剪）。
+ * 氛围目录错误绝不能冒泡到动作/皮肤提交路径。
+ */
+async function loadAmbientCandidate(
+  assetsRoot: string,
+  skinId: string,
+  revision: number,
+  actions: readonly ActionDefinition[],
+  readAmbient: typeof readAmbientCatalog = readAmbientCatalog,
+): Promise<AmbientCatalog> {
+  const actionIds = triggerActionIds(actions)
+  try {
+    return filterAmbientCatalog(await readAmbient(assetsRoot, skinId, actionIds), actionIds)
+  } catch (error) {
+    console.warn(
+      `[desktop-pet] 氛围目录没载入（皮肤 ${skinId || '默认'}，序号 ${revision}），沿用上一份：${errorText(error)}`,
+    )
+    return filterAmbientCatalog(ambientCatalog, actionIds)
+  }
+}
+
+/**
  * 手动重载只读磁盘一次。失败时保留上一份 catalog，播放器收到 stop，
  * 并把可读原因送到 renderer；成功才推 catalog、立即 hello。
  */
@@ -558,6 +607,7 @@ export async function reloadRegisteredActions(
   assetsRoot: string = appFile('assets'),
   readCatalog: ReadActionCatalog = readActionCatalog,
   readTriggers: ReadTriggerCatalog = readTriggerCatalog,
+  readAmbient: typeof readAmbientCatalog = readAmbientCatalog,
 ): Promise<PetActionReloadResult> {
   const skinId = activeSkinId
   const triggerRevision = triggerCatalog.ownerSkinId === skinId ? triggerCatalog.ownerRevision : -1
@@ -583,13 +633,23 @@ export async function reloadRegisteredActions(
         error: '动作目录已被更新的重载或皮肤切换替代，未提交旧结果。',
       }
     }
+    // 氛围目录与触发/动作共用一次重载；坏文件只保留上一份，不阻塞下面的动作提交。
+    const nextAmbient = await loadAmbientCandidate(assetsRoot, skinId, triggerRevision, next, readAmbient)
+    if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
+      return {
+        ok: false,
+        stale: true,
+        actions: actionCatalogEntries(actionCatalog),
+        error: '动作目录已被更新的重载或皮肤切换替代，未提交旧结果。',
+      }
+    }
     const nextCatalog = mergeActionCatalogs(next, [])
     setActionCatalog(nextCatalog, win)
     lastActionError = null
     const published = await enqueueHello(async () => {
       // 排队期间皮肤可能刚提交；执行时必须用最新 ownership 复核，不能把旧 catalog 补发到新皮肤之后。
       if (generation !== actionCatalogGeneration || skinId !== activeSkinId) return false
-      const ok = await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog))
+      const ok = await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog, nextAmbient))
       if (!ok && generation === actionCatalogGeneration && skinId === activeSkinId) {
         setActionCatalog(previousCatalog, win)
       }
@@ -609,6 +669,7 @@ export async function reloadRegisteredActions(
       return { ok: false, actions: actionCatalogEntries(actionCatalog), error: why }
     }
     setTriggerCatalog(nextTriggers, win)
+    setAmbientCatalog(nextAmbient, win)
     return { ok: true, actions: actionCatalogEntries(actionCatalog) }
   } catch (error) {
     if (generation !== actionCatalogGeneration || skinId !== activeSkinId) {
@@ -649,6 +710,7 @@ export interface ApplySkinOptions {
   assetsRoot?: string
   readCatalog?: ReadActionCatalog
   readTriggers?: ReadTriggerCatalog
+  readAmbient?: typeof readAmbientCatalog
 }
 
 export async function applySkin(id: string, options: ApplySkinOptions = {}): Promise<boolean> {
@@ -658,6 +720,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
   const assetsRoot = options.assetsRoot ?? appFile('assets')
   const loadCatalog = options.readCatalog ?? readActionCatalog
   const loadTriggers = options.readTriggers ?? readTriggerCatalog
+  const loadAmbient = options.readAmbient ?? readAmbientCatalog
 
   async function applyValidatedSkin(config: unknown, uri: string): Promise<boolean> {
     let nextActions: ActionDefinition[]
@@ -669,6 +732,8 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
     if (revision !== skinRevision) return false
     const nextTriggers = await loadTriggerCandidate(assetsRoot, id, revision, nextActions, loadTriggers)
     if (revision !== skinRevision) return false
+    const nextAmbient = await loadAmbientCandidate(assetsRoot, id, revision, nextActions, loadAmbient)
+    if (revision !== skinRevision) return false
 
     // 新皮肤会替换全部动画映射；先让播放器结束旧 generation 的借用槽。
     sendActionStop(win)
@@ -676,7 +741,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
     // hello 是候选皮肤/目录的服务端确认点；确认前不推给 renderer，失败或已被替代时 UI 保持原基线。
     const published = await enqueueHello(async () => {
       if (revision !== skinRevision) return false
-      return await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog))
+      return await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog, nextAmbient))
     })
     if (revision !== skinRevision) return false
     if (!published) {
@@ -690,6 +755,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
     skinForwarder.onSkin({ id, revision, config, uri })
     setActionCatalog(nextCatalog, win)
     setTriggerCatalog(nextTriggers, win)
+    setAmbientCatalog(nextAmbient, win)
     activeSkinId = id
     actionCatalogGeneration += 1
     return true
@@ -942,7 +1008,13 @@ const stateForwarder = createStateForwarder((state) => {
 ipcMain.on('pet:ready', () => {
   // 皮肤可能早于渲染进程订阅就绪：就绪后补发最近一份。
   skinForwarder.ready()
-  sendPetReadySnapshot(petWindow, actionCatalog, triggerCatalog.triggers, () => stateForwarder.resend())
+  sendPetReadySnapshot(
+    petWindow,
+    actionCatalog,
+    triggerCatalog.triggers,
+    filterAmbientCatalog(ambientCatalog, triggerActionIds(actionCatalog)),
+    () => stateForwarder.resend(),
+  )
   if (lastSkinError && petWindow && !petWindow.isDestroyed()) {
     petWindow.webContents.send('pet:skin-error', lastSkinError)
   }
@@ -954,6 +1026,9 @@ ipcMain.handle('pet:get-look', () => petLook)
 ipcMain.handle('pet:get-action-catalog', () => mergeActionCatalogs(actionCatalog, []))
 ipcMain.handle('pet:get-trigger-catalog', () => (
   mergeTriggers(filterTriggerCatalog(triggerCatalog.triggers, triggerActionIds(actionCatalog)), [])
+))
+ipcMain.handle('pet:get-ambient-catalog', () => (
+  filterAmbientCatalog(ambientCatalog, triggerActionIds(actionCatalog))
 ))
 ipcMain.handle('pet:actions-reload', () => reloadRegisteredActions())
 
@@ -1105,6 +1180,14 @@ if (gotInstanceLock) app
       0,
       actionCatalog,
       readTriggerCatalog,
+    )
+    // 氛围目录排在动作之后载入；文件缺失/损坏时保持空目录，不影响动作与触发。
+    ambientCatalog = await loadAmbientCandidate(
+      appFile('assets'),
+      activeSkinId,
+      0,
+      actionCatalog,
+      readAmbientCatalog,
     )
     startPetWindow()
     createPetTray()

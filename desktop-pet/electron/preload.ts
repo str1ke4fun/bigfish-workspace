@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { TriggerDefinition } from './triggers'
+import type { AmbientCatalog } from '../shared/ambient-model'
 
 type Unsubscribe = () => void
 type PetActionMessage =
@@ -73,6 +74,19 @@ const bridge = {
 
   getTriggerCatalog(): Promise<TriggerDefinition[]> {
     return ipcRenderer.invoke('pet:get-trigger-catalog')
+  },
+
+  /** 氛围目录与动作/触发表分开推送；启动早于订阅时用 getAmbientCatalog 主动拉。 */
+  onAmbientCatalog(handler: (catalog: AmbientCatalog) => void): Unsubscribe {
+    const listener = (_event: Electron.IpcRendererEvent, catalog: AmbientCatalog): void => handler(catalog)
+    ipcRenderer.on('pet:ambient-catalog', listener)
+    return () => {
+      ipcRenderer.removeListener('pet:ambient-catalog', listener)
+    }
+  },
+
+  getAmbientCatalog(): Promise<AmbientCatalog> {
+    return ipcRenderer.invoke('pet:get-ambient-catalog')
   },
 
   /** 菜单 stop、重新载入或 skin 切换时，主进程要求当前播放 generation 失效。 */
