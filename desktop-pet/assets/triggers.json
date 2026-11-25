@@ -36,11 +36,6 @@
       "pool": ["asset-061"]
     },
     {
-      "when": "ambient",
-      "pool": ["asset-110", "asset-099"],
-      "minGapSec": 300
-    },
-    {
       "when": "date:12-25",
       "pool": ["asset-107"],
       "inAmbient": true

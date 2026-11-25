@@ -16,6 +16,12 @@
 - 屏幕上的其他 agent（如宿主机 Claude Code）不接入会话状态：用户问时先 `look_screen` 看一眼，再 `read_image` 读，按画面汇报；看不清就如实说。推进仍只在 DSH 侧用 `her_work` / `her_worker`，不操作屏幕上的 Claude Code。
 - 验证：`src/dsh-fish` 1246 全绿；`src/dsh-wx` 182 全绿。真实模型/微信收发与“屏幕上那两个 agent”问法仍需部署后验收。
 
+### 桌宠氛围策略（2026-11-25）
+
+- 待机动作从单条 `ambient` trigger 改为按 presence 模式分档的策略：壳随源码带 `assets/ambient.json`（`off` / `event` / `ambient` / `work` 四档，含动作池、权重、间隔、每次空闲/每天上限与安静时段），`assets/skins/<id>/ambient.json` 可按模式覆盖。`event` 默认关；`work` 默认整套 19 个动作、20–40 分钟一次 / 每次空闲 4 个 / 每天 16 个；`off` 8–20 / 10 / 30；`ambient` 12–25 / 6 / 20；安静时段默认 23:00–07:00。
+- 用户覆盖存在 `config.pet.ambient`，经 `GET/POST /api/fish/pet/ambient` 读写（`set-enabled` / `set-frequency` / `replace-mode` / `add-item` / `set-item` / `remove-item` / `reset`）；只写配置，不调模型、不写事件流。工作台 UI 暂缓，先用 API/JSON。
+- 默认 `assets/triggers.json` 移除 `when: "ambient"`；解析器仍接受它，旧皮肤/旧触发表照常可用，`date:*` 等 trigger 不变。
+
 ## 未发布 — 2026-11-20
 
 **审查与日志修复：耳朵去重、发送者归属、陪伴会话存活、OCR 行归属、日志可诊断性**
