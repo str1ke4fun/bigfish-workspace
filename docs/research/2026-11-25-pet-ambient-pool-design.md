@@ -206,7 +206,7 @@ if (rng() < p) {
 
 每个 tick：
   if (!ambientEligible) { nextAmbientAt = null; return }
-  if (quietHours) { nextAmbientAt = max(nextAmbientAt, quietEnd + random(5–15min)); return }
+  if (quietHours) { nextAmbientAt = max(nextAmbientAt, quietEnd + afterJitterSec); return }
   if (now < nextAmbientAt) return
   if (todayCount >= maxPerDay) return
   playAmbient()
@@ -234,7 +234,7 @@ if (rng() < p) {
 | 每个空闲段上限 | 3 次 | 防止长时间 idle 一直演 |
 | 每日上限 | 6–8 次 | 安全阀；不是目标值 |
 | 用户交互后冷静期 | 5 分钟 | 点击/聊天/拖动/手动动作后 |
-| 安静时段 | 23:00–07:00 | 沿用现状；结束后再加 5–15 分钟随机延迟 |
+| 安静时段 | 23:00–07:00 | 沿用现状；结束后固定再等 `afterJitterSec`（默认 600 秒，非随机） |
 | 同动作冷却 | 2 小时 | 避免重复 |
 
 #### 4.2.5 持久化与测试
@@ -371,7 +371,7 @@ desktop-pet/assets/skins/<id>/ambient.json      皮肤覆盖
 
 工作模式不再限制成 5–7 条：默认允许完整池，只是间隔更长、每日上限更低。这样她在工作模式的长空闲里也能自己玩，你如果觉得吵，再在 `ambient.json` 里把 `work.pool` 收窄。
 
-`event` 仍然默认关闭；这是“打游戏陪玩时不要跑来跑去”的唯一硬规则。如果你以后想让她在游戏间隙动一下，把 `event.enabled` 改成 true 并给一个很小的池子即可。
+`event` 仍然默认关闭，并且触发引擎对 `event` 有硬保护：即使通过 API 把它改成 `enabled: true`，也不会自动播 ambient。这是“打游戏陪玩时不要跑来跑去”的硬规则。如果你以后想让她在游戏间隙动一下，用手动动作，或临时切到 `ambient` 模式。
 
 #### 4.3.4 想更安静的工作模式：一个可选配置
 

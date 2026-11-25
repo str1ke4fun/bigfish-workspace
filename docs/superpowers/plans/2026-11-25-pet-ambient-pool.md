@@ -33,6 +33,71 @@
 
 ---
 
+## 执行状态（2026-11-25）
+
+**已实现并本地合并到 `main`：`8626113 → 97ff2d3`。未推送、未部署。**
+
+- 合并后测试：`src/dsh-fish` **1275 通过 / 0 失败**；`workbench` **132 通过 / 0 失败**；`desktop-pet` **215 通过 / 0 失败**。
+- `npm run build` / `tsc` **未运行**：WSL 侧没有 `desktop-pet/node_modules`；Windows 构建与真机 manual gate 仍待执行。
+- 最终 review：opus 全分支 review 给出 “With fixes”；两处 Important（壳侧默认频率为 0/无上限、服务端 partial override/`enabled` 合并与壳侧不一致）已由 fix wave `97ff2d3` 修复，并通过 scoped re-review。
+
+### 实际执行顺序与提交
+
+| 执行序 | 任务 | 提交 |
+| ---: | --- | --- |
+| 1 | Task 1 服务端数据层 | `62f5e41`, `ce0098a` |
+| 2 | Task 2 配置默认值 + hello | `a3f0396` |
+| 3 | Task 3 `/pet/ambient` + BFF | `5a4618e`, `d50cde5` |
+| 4 | Task 4 壳侧模型/解析 | `6f90bf6` |
+| 5 | Task 5 主进程/preload/IPC | `b9f7c86` |
+| 6 | Task 6 默认 `ambient.json` | `c313dc9` |
+| 7 | **Task 8** 触发引擎调度 | `a370545`, `e0995dd` |
+| 8 | **Task 9** Seen 持久化 | `ab32b05` |
+| 9 | **Task 7** Renderer 策略选择 | `50ff323` |
+| 10 | Task 10 移除 legacy trigger + 文档 | `a016839`, `5e5e7df` |
+| 11 | Task 11 验证 | 无提交（单测已完成，build/manual gate 待做） |
+| — | 最终 review fix wave | `97ff2d3` |
+
+### 与计划的偏差
+
+- **Task 8 先于 Task 7/9 执行**：Task 7 需要 Task 8 新增的 `TriggerEngineConfig.ambient` 类型；若按 7→8 顺序，类型检查会失败。Task 8 不依赖 App，先做更安全。
+- **Task 3 额外修复 `/pet/hello` 丢 `ambient`**：Task 2 review 发现 `observe.js` 没有把 `body.ambient` 转给 `petView.noteHello`；已并入 Task 3 并加路由测试。
+- **BFF 使用固定 `pet/ambient` + `POST {op}`**：BFF 只支持一个可选 pattern 段，RESTful `:mode/:action` 不可用。
+- **Task 8 fix round**：补了 policy 模式下 date trigger 的 quiet-hours gate、`event` belt-and-braces guard、day-rollover re-arm、非数组 `items` 防护和 presence-on work 测试。
+- **最终 fix wave**：壳侧 `DEFAULT_AMBIENT_FREQUENCY` 对齐 600/1800/300/2/8；服务端改为保留 partial override 并做字段级 merge，缺失 `enabled` 默认 true；`settings.ambient.quietHours` 非空覆盖生效；`reset` 无 mode 同时清 `quietHours`；`structuredClone` 深拷贝默认值；README/注释/default 测试同步。
+
+### 已验证与未验证
+
+已验证（WSL，Node 单测）：
+
+- 服务端策略校验/合并/CRUD、真实 config 持久化 reset、`/pet/ambient` GET/POST、hello 默认策略转发。
+- 壳侧 ambient 解析/合并、IPC/hello catalog、presence-mode 选策略、触发引擎调度、Seen 持久化、默认 `ambient.json`。
+- 合并后 `main` 上三套测试全绿。
+
+未验证（必须另行做）：
+
+- Windows `npm install && npm run build`（Vite/Electron/tsc）。
+- Windows 真机 manual gate：event 模式 60 分钟不播 ambient；work 模式长空闲按间隔播；off/ambient 节奏与上限；quiet hours + 交互后冷静期；API 增删动作/改权重/改频率；`pet.size/skin/bubbleOpacity/bubbleWidth` 不被覆盖；坏 `ambient.json` 不影响手动动作；透明/解码/闪烁/点击穿透。
+- 未推送、未部署、未重启服务。
+
+### 已延后 / 已 park
+
+- Parked minor：非空但格式错误的 `settings.ambient.quietHours` 会回退到硬编码 23:00–07:00（`afterJitterSec: 0`），而不是 catalog 的 600 秒；失败安全，若以后把“手改服务端 quietHours”作为正式路径再修。
+- 延后 minor：quietHours-only 皮肤文件目前会抛错（`modes` 必需）；启动路径 ambient 加载缺直接测试；`emptyPetSeen`/`trigger-engine` 有少量辅助函数重复；`markReady` 在三个订阅 effect 中重复；本地 `parseAmbientCatalog` 与主进程同名；`fakeCtx` 的 deepMerge 不模拟 replace-unit（由真实 config-service 测试补偿）。
+- 设计稿的两处旧描述（安静后随机 5–15 分钟、event 可在游戏间隙播放）已在本轮文档更新中修正，与 README/代码一致。
+
+### 执行裁定
+
+1. BFF 用固定 `pet/ambient` + `{op}`，不用动态段；代价：以后要动态路径需适配层。
+2. `config.ambient` 为空时保留 legacy `ambient` trigger；策略存在时策略优先；代价：旧皮肤继续可用，不会双播。
+3. 先执行 Task 8 再 Task 7/9；代价：任务编号与计划顺序不同，行为不变。
+4. 氛围重载并入 `pet:actions-reload`；代价：用户使用现有入口。
+5. desktop-pet 单测可在无 `node_modules` 下运行，只延后 build/tsc；代价：类型错误可能在 Windows 构建暴露。
+6. 最终 parked：坏 `quietHours` 覆盖回退硬编码默认；代价：丢失 catalog 的 600 秒抖动。
+7. 最终 parked：设计稿旧描述与代码不一致；本轮已修正文档，代价：若其他副本未同步会误导。
+
+---
+
 ### Task 1: 服务端氛围策略纯数据层
 
 **Files:**
