@@ -359,3 +359,76 @@ test('petView 缺席时桌宠路由都返回 200 ok:false，不 500', async () =
   assert.equal(rest.body.ok, false)
   assert.equal(rest.body.note, '桌宠状态没在跑。')
 })
+
+test('/pet/ambient GET 返回默认、覆盖、合并结果和动作目录', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  petView.noteHello({
+    actions: [{ id: 'asset-109', label: '伸懒腰', group: '日常' }],
+    ambient: {
+      version: 1, quietHours: null,
+      modes: { work: { enabled: true, items: [{ action: 'asset-109', weight: 1 }], frequency: { intervalMinSec: 1200, intervalMaxSec: 2400, maxPerIdle: 4, maxPerDay: 16 } } },
+    },
+  })
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const r = await callRoute(ctx.routes, '/pet/ambient', 'GET')
+  assert.equal(r.status, 200)
+  assert.equal(r.body.ok, true)
+  assert.equal(r.body.defaults.modes.work.items[0].action, 'asset-109')
+  assert.equal(r.body.effective.work.enabled, true)
+  assert.deepEqual(r.body.actions.map((a) => a.id), ['asset-109'])
+})
+
+test('/pet/hello 转发 ambient 默认策略，GET /pet/ambient 能读到', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const hello = await callRoute(ctx.routes, '/pet/hello', 'POST', {
+    version: '0.2.0',
+    actions: [{ id: 'asset-109', label: '伸懒腰', group: '日常' }],
+    ambient: {
+      version: 1, quietHours: null,
+      modes: { work: { enabled: true, items: [{ action: 'asset-109', weight: 2 }] } },
+    },
+  })
+  assert.equal(hello.status, 200)
+
+  const r = await callRoute(ctx.routes, '/pet/ambient', 'GET')
+  assert.equal(r.status, 200)
+  assert.equal(r.body.defaults.modes.work.items[0].weight, 2)
+})
+
+test('/pet/ambient POST add-item 写 config.pet.ambient，不覆盖其他 pet 键', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  petView.noteHello({
+    actions: [{ id: 'asset-109', label: '伸懒腰', group: '日常' }, { id: 'asset-087', label: '照镜子', group: '日常' }],
+    ambient: { version: 1, quietHours: null, modes: { work: { enabled: true, items: [{ action: 'asset-109', weight: 1 }], frequency: { intervalMinSec: 1200, intervalMaxSec: 2400, maxPerIdle: 4, maxPerDay: 16 } } } },
+  })
+  await ctx.fishCore.config.patch({ pet: { size: 320, skin: 'x', ambient: null } })
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  const r = await callRoute(ctx.routes, '/pet/ambient', 'POST', {
+    op: 'add-item', mode: 'work', action: 'asset-087', weight: 3,
+  })
+  assert.equal(r.status, 200)
+  assert.equal(r.body.ok, true)
+  const cfg = await ctx.fishCore.config.get()
+  assert.equal(cfg.pet.size, 320)
+  assert.equal(cfg.pet.skin, 'x')
+  assert.equal(cfg.pet.ambient.modes.work.items.length, 2)
+})
+
+test('/pet/ambient 拒绝未知 op / 未知 mode / 非 JSON', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView: createPetView() })
+  assert.equal((await callRoute(ctx.routes, '/pet/ambient', 'POST', { op: 'nope' })).status, 400)
+  assert.equal((await callRoute(ctx.routes, '/pet/ambient', 'POST', { op: 'reset', mode: 'boss' })).status, 400)
+  assert.equal((await callRoute(ctx.routes, '/pet/ambient', 'GET')).status, 200)
+})

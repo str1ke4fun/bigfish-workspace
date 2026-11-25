@@ -125,3 +125,11 @@ test('upstreamPath 按拆包前后前缀生成', () => {
     assert.equal(r.upstream, 'bili', `${p} 应走 dsh-bili`)
   }
 })
+
+test('桌宠氛围策略走 fish 上游：GET P1、POST P2', () => {
+  const route = ROUTES.find((r) => r.path === 'pet/ambient')
+  assert.equal(route.methods.GET, 'P1')
+  assert.equal(route.methods.POST, 'P2')
+  assert.equal(route.upstream, 'fish')
+  assert.equal(route.maxBody, 64 * 1024)
+})

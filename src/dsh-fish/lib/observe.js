@@ -54,6 +54,8 @@ import { decodeBase64Image, saveImage } from './media.js'
 import { LOG_KEEP, LOG_MAX_BYTES, buildBundle, clearLog, logLine, logsDir, redactConfig, tailLog } from './log.js'
 // 「有没有新版」（2026-10-25 用户要求）：只读、只出网、不落盘。
 import { checkUpdate, REPO_URL, normalizeVersion } from './update.js'
+// 桌宠氛围策略的纯数据层：默认由壳上报，覆盖存在 config.pet.ambient。
+import { applyAmbientOp, effectiveAmbientModes, normalizeAmbientConfig } from './pet-ambient.js'
 
 /**
  * 引导文案：别人第一次装，本机没有现成 cookie。
@@ -916,6 +918,8 @@ export function registerObserve(ctx, deps = {}) {
           skin: String(cfg?.pet?.skin ?? ''),
           bubbleOpacity: clampBubbleOpacity(cfg?.pet?.bubbleOpacity),
           bubbleWidth: clampBubbleWidth(cfg?.pet?.bubbleWidth),
+          // 用户覆盖（不是壳默认）；工作台编辑器读这里。
+          ambient: cfg?.pet?.ambient ?? null,
         },
         companion: deps.screen?.companionInfo?.() ?? null,
         pet: {
@@ -935,7 +939,7 @@ export function registerObserve(ctx, deps = {}) {
       let body = {}
       try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
       catch { return send(res, 400, { ok: false, note: 'body 不是 JSON' }) }
-      pet.noteHello({ version: body?.version, skins: body?.skins, actions: body?.actions })
+      pet.noteHello({ version: body?.version, skins: body?.skins, actions: body?.actions, ambient: body?.ambient })
       return send(res, 200, { ok: true })
     }],
     ['/pet/config', async (req, res) => {
@@ -1005,6 +1009,55 @@ export function registerObserve(ctx, deps = {}) {
       const r = pet.act({ motion: body?.motion, action: body?.action, text: body?.text, ttlMs: body?.ttlMs })
       if (!r.ok) return send(res, 400, r)
       return send(res, 200, r)
+    }],
+    // 氛围策略：GET 返回壳默认 + 用户覆盖 + 合并结果（工作台只读编辑器）；
+    // POST 是用户显式改策略（按模式启停、频率、动作池），只写 config，不调模型。
+    ['/pet/ambient', async (req, res) => {
+      const pet = deps.petView
+      if (!pet?.snapshot) return send(res, 200, { ok: false, note: '桌宠状态没在跑。' })
+      const cfg = await (ctx.get?.('fishCore')?.config?.get?.() ?? null)
+      const normalized = normalizeAmbientConfig(cfg?.pet?.ambient)
+      const overrides = normalized.config
+      const defaults = pet.ambientDefaults?.() ?? null
+      const snapshot = pet.snapshot() ?? {}
+      const actions = Array.isArray(snapshot.actions) ? snapshot.actions : []
+      // 默认策略由壳上报，同样过一遍归一化收集 errors（坏字段不挡读，只提示）。
+      const errors = [...normalized.errors, ...normalizeAmbientConfig(defaults).errors]
+
+      if (req.method === 'GET') {
+        return send(res, 200, {
+          ok: true,
+          revision: overrides.revision,
+          defaults,
+          overrides,
+          effective: effectiveAmbientModes(overrides, defaults),
+          actions,
+          errors,
+        })
+      }
+      if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })
+
+      let body = {}
+      try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
+      catch { return send(res, 400, { ok: false, why: 'BAD_JSON', errors: [] }) }
+
+      // 动作目录还没上报（壳刚启动）时传 null：接受写入但标记未校验。
+      // 传空 Set 会把所有动作都判成未知，反而一个都加不进去。
+      const actionIds = actions.length > 0 ? new Set(actions.map((a) => a?.id)) : null
+      const result = applyAmbientOp(overrides, defaults, body, { actionIds })
+      if (!result.ok) {
+        return send(res, 400, { ok: false, why: result.why, errors: result.errors ?? [] })
+      }
+      // 只替换 ambient，保留 size / skin / 气泡等其它 pet 键。
+      const patch = { pet: { ...(cfg?.pet ?? {}), ambient: result.config } }
+      const r = await (ctx.get?.('fishCore')?.config?.patch?.(patch))
+      if (!r?.ok) return send(res, 200, { ok: false, note: '配置没写进去。' })
+      return send(res, 200, {
+        ok: true,
+        revision: result.config.revision,
+        modes: effectiveAmbientModes(result.config, defaults),
+        errors: result.errors ?? [],
+      })
     }],
     ['/pet/rest', async (req, res) => {
       if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' })

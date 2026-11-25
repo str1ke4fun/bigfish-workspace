@@ -32,6 +32,8 @@ export const ROUTES = [
   { path: 'pet/config', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'pet/rotate', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'pet/rest', methods: { POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
+  // 氛围策略：读默认/覆盖/合并结果，写用户的模式启停、频率与动作池。
+  { path: 'pet/ambient', methods: { GET: 'P1', POST: 'P2' }, upstream: 'fish', maxBody: 64 * 1024 },
   { path: 'diary', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'reports', methods: { GET: 'P1' }, upstream: 'fish' },
   { path: 'templates', methods: { GET: 'P1' }, upstream: 'fish' },
