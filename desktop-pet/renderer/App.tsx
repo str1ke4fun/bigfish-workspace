@@ -56,6 +56,12 @@ import {
   type PlaybackSource,
 } from './playback-adapter'
 import { reduceTriggers, type TriggerEngineConfig } from './trigger-engine'
+import {
+  emptyAmbientCatalog,
+  normalizeQuietHours,
+  selectAmbientPolicy,
+  type AmbientCatalog,
+} from '../shared/ambient-model'
 import type { ChatResult } from './chat'
 import {
   BUBBLE_OPACITY_DEFAULT,
@@ -116,9 +122,38 @@ const ASSET_BASE = 'pet-asset://local/webm'
 const PET_SIZE_DEFAULT = 400
 const SEEN_STORAGE_KEY = 'desktop-pet:seen'
 const BUBBLE_TIMEOUT_MS = 10_000
-/** 安静时段只影响 idle ambient/date；显式 cue、活动与手动动作不受影响。 */
-const TRIGGER_ENGINE_CONFIG: TriggerEngineConfig = {
-  quietHours: { startMinute: 23 * 60, endMinute: 7 * 60 },
+/** 安静时段的兜底值：目录还没到时沿用旧的 23:00–07:00、不额外抖动。 */
+const DEFAULT_QUIET_HOURS = {
+  startMinute: 23 * 60,
+  endMinute: 7 * 60,
+  afterJitterSec: 0,
+} as const
+
+/** `HH:MM` → 从零点起算的分钟；形状不合法返回 null。 */
+function clockMinute(value: unknown): number | null {
+  if (typeof value !== 'string') return null
+  const match = /^(\d{2}):(\d{2})$/.exec(value)
+  if (!match) return null
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  if (hour > 23 || minute > 59) return null
+  return hour * 60 + minute
+}
+
+/** 目录安静时段 → trigger engine 的分钟表示；缺失/坏值回落到默认段。 */
+function quietHoursConfig(
+  catalog: AmbientCatalog | null | undefined,
+): TriggerEngineConfig['quietHours'] {
+  const source = catalog?.quietHours
+  const startMinute = clockMinute(source?.start)
+  const endMinute = clockMinute(source?.end)
+  if (startMinute === null || endMinute === null) return { ...DEFAULT_QUIET_HOURS }
+  const jitter = source?.afterJitterSec
+  return {
+    startMinute,
+    endMinute,
+    afterJitterSec: typeof jitter === 'number' && Number.isFinite(jitter) && jitter >= 0 ? jitter : 0,
+  }
 }
 /** 对话的加载/失败气泡共用一个 key：失败时原地更新，不叠第二只气泡。 */
 const CHAT_BUBBLE_ID = 'chat'
@@ -334,6 +369,26 @@ function parseTriggerCatalog(raw: unknown): TriggerDefinition[] {
   return triggers
 }
 
+/** 主进程已规范化氛围目录；渲染侧再窄化一次，坏 mode/quietHours 不进入策略层。 */
+function parseAmbientCatalog(raw: unknown): AmbientCatalog {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return emptyAmbientCatalog()
+  const entry = raw as Record<string, unknown>
+  const modes: AmbientCatalog['modes'] = {}
+  const rawModes = entry.modes
+  if (rawModes && typeof rawModes === 'object' && !Array.isArray(rawModes)) {
+    for (const [mode, policy] of Object.entries(rawModes)) {
+      // selectAmbientPolicy 会再按规范补齐字段；这里只排除标量/数组。
+      if (!policy || typeof policy !== 'object' || Array.isArray(policy)) continue
+      modes[mode] = policy as AmbientCatalog['modes'][string]
+    }
+  }
+  return {
+    version: typeof entry.version === 'number' && Number.isFinite(entry.version) ? entry.version : 1,
+    quietHours: normalizeQuietHours(entry.quietHours),
+    modes,
+  }
+}
+
 export function App() {
   const [config, setConfig] = useState<DshPetConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -346,6 +401,8 @@ export function App() {
   const [actionCatalog, setActionCatalog] = useState<PlaybackAction[]>([])
   /** trigger 与动作目录分开保存，后续 trigger engine 只消费这一份。 */
   const [triggerCatalog, setTriggerCatalog] = useState<TriggerDefinition[]>([])
+  /** 氛围目录：按 presence.mode 选出的策略每拍交给 trigger engine；null 策略走旧路径。 */
+  const [ambientCatalog, setAmbientCatalog] = useState<AmbientCatalog>(() => emptyAmbientCatalog())
   const [playback, setPlayback] = useState<PlaybackState | null>(null)
   /** 借出 waving 时使用的 config 克隆；null = 直接使用当前皮肤 config。 */
   const [playbackConfig, setPlaybackConfig] = useState<DshPetConfig | null>(null)
@@ -372,6 +429,8 @@ export function App() {
   actionCatalogRef.current = actionCatalog
   const triggerCatalogRef = useRef<TriggerDefinition[]>(triggerCatalog)
   triggerCatalogRef.current = triggerCatalog
+  const ambientCatalogRef = useRef<AmbientCatalog>(ambientCatalog)
+  ambientCatalogRef.current = ambientCatalog
   const playbackRef = useRef<PlaybackState | null>(playback)
   playbackRef.current = playback
   /** 当前命令面动作是谁发起的；trigger 一次性动作与手动/skin loop 必须分开计忙。 */
@@ -397,6 +456,7 @@ export function App() {
   const pendingServerActionRef = useRef<string | null>(null)
   const actionCatalogReadyRef = useRef(false)
   const triggerCatalogReadyRef = useRef(false)
+  const ambientCatalogReadyRef = useRef(false)
   /** 迟到的对话请求不得关闭/抢占更新请求的气泡与动作。 */
   const chatRequestGenerationRef = useRef(0)
   const batchIdRef = useRef(0)
@@ -591,9 +651,13 @@ export function App() {
     let unsubscribe: (() => void) | undefined
 
     const markReady = (): void => {
-      const wasReady = actionCatalogReadyRef.current && triggerCatalogReadyRef.current
+      const wasReady = actionCatalogReadyRef.current
+        && triggerCatalogReadyRef.current
+        && ambientCatalogReadyRef.current
       actionCatalogReadyRef.current = true
-      if (!wasReady && triggerCatalogReadyRef.current) setCatalogEpoch((value) => value + 1)
+      if (!wasReady && triggerCatalogReadyRef.current && ambientCatalogReadyRef.current) {
+        setCatalogEpoch((value) => value + 1)
+      }
     }
 
     const receive = (raw: unknown): void => {
@@ -645,9 +709,13 @@ export function App() {
     let unsubscribe: (() => void) | undefined
 
     const markReady = (): void => {
-      const wasReady = actionCatalogReadyRef.current && triggerCatalogReadyRef.current
+      const wasReady = actionCatalogReadyRef.current
+        && triggerCatalogReadyRef.current
+        && ambientCatalogReadyRef.current
       triggerCatalogReadyRef.current = true
-      if (!wasReady && actionCatalogReadyRef.current) setCatalogEpoch((value) => value + 1)
+      if (!wasReady && actionCatalogReadyRef.current && ambientCatalogReadyRef.current) {
+        setCatalogEpoch((value) => value + 1)
+      }
     }
 
     const receive = (raw: unknown): void => {
@@ -672,6 +740,50 @@ export function App() {
         // 老 preload 没有 trigger API：保持空表，现有手动动作不受影响。
       })
     if (!window.petBridge?.onTriggerCatalog && !window.petBridge?.getTriggerCatalog) markReady()
+
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [])
+
+  // 氛围目录同样先订阅再主动拉一次；拉取失败也标 ready，手动动作不被目录卡住。
+  useEffect(() => {
+    let cancelled = false
+    let unsubscribe: (() => void) | undefined
+
+    const markReady = (): void => {
+      const wasReady = actionCatalogReadyRef.current
+        && triggerCatalogReadyRef.current
+        && ambientCatalogReadyRef.current
+      ambientCatalogReadyRef.current = true
+      if (!wasReady && actionCatalogReadyRef.current && triggerCatalogReadyRef.current) {
+        setCatalogEpoch((value) => value + 1)
+      }
+    }
+
+    const receive = (raw: unknown): void => {
+      markReady()
+      const next = parseAmbientCatalog(raw)
+      ambientCatalogRef.current = next
+      setAmbientCatalog(next)
+    }
+
+    try {
+      unsubscribe = window.petBridge?.onAmbientCatalog?.(receive)
+    } catch {
+      unsubscribe = undefined
+    }
+    void window.petBridge
+      ?.getAmbientCatalog?.()
+      .then((raw) => {
+        if (!cancelled) receive(raw)
+      })
+      .catch(() => {
+        if (!cancelled) markReady()
+        // 老 preload 没有 ambient API：保持空目录，null 策略回落到旧 trigger。
+      })
+    if (!window.petBridge?.onAmbientCatalog && !window.petBridge?.getAmbientCatalog) markReady()
 
     return () => {
       cancelled = true
@@ -889,12 +1001,24 @@ export function App() {
       unsubscribe = window.petBridge?.onState((raw) => {
         const state = raw as WirePetState | null
         // 目录未就绪时先不消费 scene/cue；就绪后的 catalogEpoch 会触发 ready 补发。
-        if (!actionCatalogReadyRef.current || !triggerCatalogReadyRef.current) return
+        if (
+          !actionCatalogReadyRef.current
+          || !triggerCatalogReadyRef.current
+          || !ambientCatalogReadyRef.current
+        ) return
         if (petStateSnapshotIsStale(state as PetState | null, manualStateFloorRef.current)) return
         const now = Date.now()
         latestStateRef.current = state as PetState | null
         const previous = seenRef.current ?? emptyPetSeen()
         const previousActionId = previous.lastActionId
+        // 每拍按 presence 选策略；目录/覆盖缺失时得到 null，引擎回落到旧 ambient trigger。
+        const presence = state?.presence ?? null
+        const ambient = selectAmbientPolicy(
+          ambientCatalogRef.current,
+          (state as PetState | null)?.settings?.ambient ?? null,
+          presence?.mode ?? '',
+          presence?.on === true,
+        )
 
         // presence.recent 只保留一期旧数据兼容；二期同一句事实走 cue，不能再独立挥手一次。
         const effect = decideEffects(
@@ -915,7 +1039,7 @@ export function App() {
           actions: actionCatalogRef.current,
           seen: previous,
           now,
-          config: TRIGGER_ENGINE_CONFIG,
+          config: { quietHours: quietHoursConfig(ambientCatalogRef.current), ambient },
           // 服务端显式 action 与用户动作同级：先占住播放器，cue/scene 留到下一拍。
           manualBusy: busy.manualBusy
             || manualMotionLeaseBusy(manualMotionLeaseRef.current, now)

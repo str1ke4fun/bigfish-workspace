@@ -11,6 +11,8 @@
  *   播完回落稳态，不常驻、不锁死。
  */
 
+import type { AmbientOverrides } from '../shared/ambient-model.ts'
+
 /** 与 dsh-pet-component 的 14 个动作同名；`dragging` 是手势态，不走控制器。 */
 export type PetMotion =
   | 'idle'
@@ -78,6 +80,10 @@ export interface PetState {
   action: PetAction | null
   scene: PetScene | null
   cues: PetCue[]
+  /** 服务端设置回声；`ambient` 是用户覆盖，只覆盖显式给出的 mode。 */
+  settings?: {
+    ambient?: AmbientOverrides
+  }
 }
 
 /**
