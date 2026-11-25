@@ -49,12 +49,13 @@ const isTempChatId = (chatId) => str(chatId).startsWith('c_tmp_')
  * 前缀比较走折叠键和字素计数，避免把旗帜/ZWJ 序列切成半个代理。
  */
 export function uniquePrefix(name, names = []) {
-  const base = cleanTruncated(stripEllipsis(name))
-  if (!base || graphemeLength(base) < 2) return ''
   const list = [...new Set((names ?? []).map(displayName).filter(Boolean))]
+  // 先认精确相等：完整名字即使只有 1 个字素，尾部也可能是合法的 VS/肤色。
   const exact = list.find((n) => nameKey(n) === nameKey(name))
   if (exact) return exact
   if (!looksTruncated(name)) return ''
+  const base = cleanTruncated(stripEllipsis(name))
+  if (!base || graphemeLength(base) < 2) return ''
   const baseFold = foldedKey(base)
   const hits = list.filter((n) => foldedKey(n).startsWith(baseFold))
   return hits.length === 1 ? hits[0] : ''
@@ -153,7 +154,9 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
     const clean = displayName(name)
     if (!clean) return { status: 'unknown', matches: [], entry: null, tier: '' }
     const truncatedInput = looksTruncated(name)
-    const prefix = opts.prefix === true || truncatedInput
+    // 前缀只由调用方显式开启：merge 的 findMatches 不能在截断行上做前缀，
+    // 否则会把「家人群聊2023...」并进一个不相干的「家人」。
+    const prefix = opts.prefix === true
     const probe = truncatedInput ? (cleanTruncated(stripEllipsis(clean)) || clean) : clean
     if (!probe) return { status: 'unknown', matches: [], entry: null, tier: '' }
     const pool = entries
@@ -181,7 +184,9 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
           const nk = keyFn(n)
           if (nk === key) return true
           if (!prefix) return false
-          if (!nk.startsWith(key) && !key.startsWith(nk)) return false
+          // 截断只说明真名比输入长：候选必须以输入开头。
+          // 反方向（候选更短）只在非截断的显式前缀调用里成立。
+          if (truncatedInput ? !nk.startsWith(key) : (!nk.startsWith(key) && !key.startsWith(nk))) return false
           return Math.min(graphemeLength(nk), graphemeLength(key)) >= 2
         })
         if (hit) hits.push(e)
@@ -325,7 +330,8 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
         const existing = findMatches(name)
         markAmbiguous(existing, 'duplicate-name')
         touched.push(...existing)
-        const tempId = tempIdFor(`${name}#${occurrence}`)
+        // 种子用原始观察名（trim + 压空白），已有 c_tmp_* 不能因 NFC 清洗漂移。
+        const tempId = tempIdFor(`${chatIdSeed(rawName)}#${occurrence}`)
         let dup = byId().get(tempId)
         if (!dup) {
           dup = blankEntry(name, at)
@@ -371,7 +377,9 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       const promoteTo = storedTruncated ? (truncated ? resolvedFull : name) : ''
       if (promoteTo) {
         const seen = new Set(e.aliases ?? [])
-        for (const old of [e.displayName, e.fullName]) {
+        // 同时记住这次观察到的写法（通常是截断名），否则发送侧只靠前缀猜，
+        // 而前缀已收窄为显式 opt-in。
+        for (const old of [e.displayName, e.fullName, name]) {
           if (old && nameKey(old) !== nameKey(promoteTo)) seen.add(old)
         }
         e.aliases = [...seen].filter(Boolean).slice(-MAX_ALIASES)
@@ -473,7 +481,8 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
    * 截断名默认启用字素前缀；唯一命中记 resolved，没有唯一命中记 truncated。
    */
   function lookupName(name, opts = {}) {
-    const r = lookup(name, opts)
+    // 目录解析负责在截断名上开启字素前缀；底层 lookup 默认不做前缀。
+    const r = lookup(name, { ...opts, prefix: opts.prefix === true || looksTruncated(name) })
     let status = r.status
     if (status !== 'ambiguous') {
       if (r.entry) status = looksTruncated(name) ? 'resolved' : r.status
@@ -492,7 +501,8 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
   /** 会话身份键：能唯一解析时是目录 chatId；unknown 非空名按原始种子派生；其余为空。 */
   function stateKey(name) {
     const r = lookup(name, { tiers: ['exact', 'folded'] })
-    if (r.entry) return str(r.entry.chatId)
+    // 与 idFor 保持一致：ambiguous 条目没有稳定身份。
+    if (r.entry) return r.entry.nameConfidence === 'ambiguous' ? '' : str(r.entry.chatId)
     if (r.status === 'ambiguous') return ''
     const n = norm(name)
     return n ? chatIdFor(chatIdSeed(name)) : ''

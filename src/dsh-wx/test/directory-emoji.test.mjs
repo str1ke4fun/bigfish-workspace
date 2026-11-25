@@ -61,7 +61,14 @@ test('截断 emoji 名解析成全名，不留下半个代理', () => {
   dir.merge({ chats: [{ name: '🌊周末海边🏖️' }], knownNames: ['🌊周末海边🏖️'] })
   dir.merge({ chats: [{ name: '🌊周末海...' }] })
   assert.equal(dir.lookupName('🌊周末海...').displayName, '🌊周末海边🏖️')
-  assert.equal(JSON.stringify(dir.all()).includes('\uD83D'), false)
+  // 截断写法要作为别名存下来，发送侧才能不靠前缀猜到全名。
+  assert.deepEqual(
+    { chatName: dir.sendableTarget('🌊周末海...')?.chatName },
+    { chatName: '🌊周末海边🏖️' },
+  )
+  // JSON.stringify 会把孤立代理转成 ASCII 转义；直接检查原始字符串。
+  const raw = dir.all().flatMap((e) => [e.displayName, e.fullName, ...(e.aliases ?? [])]).join('\u0000')
+  assert.equal(/\p{Cs}/u.test(raw), false, '目录里不应留下孤立代理')
 })
 
 test('加载时折叠撞名不覆盖 duplicate-name 临时条目的自愈', () => {
@@ -71,4 +78,39 @@ test('加载时折叠撞名不覆盖 duplicate-name 临时条目的自愈', () =
   ])
   assert.equal(dir.entry('撞名群'), null)
   assert.equal(dir.stateKey('撞名群'), '')
+  const byId = new Map(dir.all().map((e) => [e.chatId, e]))
+  assert.equal(dir.all().length, 2, '加载扫描不能删除条目')
+  assert.equal(byId.get('c_tmp_x').resolvedBy, 'duplicate-name')
+  assert.notEqual(byId.get('c_real').resolvedBy, 'folded-collision')
+})
+
+test('加载时折叠撞名标 folded-collision，不删除、不合并', () => {
+  const dir = seeded([
+    { chatId: 'c_a', displayName: '❤️读书群', fullName: '❤️读书群', nameConfidence: 'exact' },
+    { chatId: 'c_b', displayName: '❤读书群', fullName: '❤读书群', nameConfidence: 'exact' },
+  ])
+  const entries = dir.all()
+  assert.equal(entries.length, 2, '不删除、不合并')
+  for (const e of entries) {
+    assert.equal(e.nameConfidence, 'ambiguous')
+    assert.equal(e.resolvedBy, 'folded-collision')
+  }
+  const again = createDirectory({ file: dir.file, now: () => T, log: () => {} })
+  assert.equal(again.all().length, 2, '重新加载也不合并')
+})
+
+test('截断行不能前缀并进更短的不相干会话', () => {
+  const dir = seeded([])
+  dir.merge({ chats: [{ name: '家人' }] })
+  const before = dir.entry('家人')
+  dir.merge({ chats: [{ name: '家人群聊2023...', preview: '甲: 新消息', unread: 7 }] })
+  const after = dir.entry('家人')
+  assert.equal(after.displayName, '家人')
+  assert.equal(after.unread, 0, '不能把另一行的未读写进来')
+  assert.equal(after.lastPreview, '', '不能把另一行的预览写进来')
+  assert.equal(after.aliases.includes('家人群聊2023...'), false)
+  assert.equal(dir.idFor('家人'), before.chatId)
+  assert.equal(dir.all().length, 2, '截断行应成为独立临时条目')
+  // 未解析的截断名不能发送到任何已有会话。
+  assert.equal(dir.sendableTarget('家人群聊2023...'), null)
 })
