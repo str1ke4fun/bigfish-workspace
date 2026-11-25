@@ -47,9 +47,11 @@ test('proactive 的 used 以 chatId 记账，额度按名字折叠查', () => {
   assert.equal(remaining(policy, next.state, 'c_heart', '2026-11-25', '❤读书群'), 1)
 })
 
-test('chatId 形状识别只认目录分配的 c_ + 12 hex', () => {
+test('chatId 形状识别认稳定 id 和 c_tmp_ 临时 id', () => {
   assert.equal(isChatIdKey('c_0123456789ab'), true)
   assert.equal(isChatIdKey(' c_0123456789ab '), true)
+  assert.equal(isChatIdKey('c_tmp_0123456789'), true)
+  assert.equal(isChatIdKey('c_tmp_012345678'), false)
   assert.equal(isChatIdKey('c_heart'), false)
   assert.equal(isChatIdKey('❤️读书群'), false)
   assert.equal(isChatIdKey(''), false)
@@ -86,6 +88,32 @@ test('迁移 I/O：旧名字键写回 chatId，留 0600 备份；再跑一次不
   assert.equal(second[0].status, 'already-chat-id')
   assert.equal(keyOfCalls, 0, '已是 chatId 的文件不能再走 keyOf')
   assert.equal(readFileSync(file, 'utf8'), afterFirst)
+})
+
+test('迁移 I/O：keyOf 给出 c_tmp_ 临时 id 时也按身份键处理，不重复哈希', () => {
+  const TEMP_ID = 'c_tmp_0123456789'
+  const dir = tempDir()
+  const file = join(dir, 'mentions.json')
+  const files = { mentions: file, proactive: join(dir, 'proactive.json'), recent: join(dir, 'recent-chats.json') }
+  writeFileSync(file, JSON.stringify({ '待补全群...': 4 }))
+  const first = migrateStateFiles({ keyOf: () => TEMP_ID, files, log: () => {} })
+  assert.equal(first[0].status, 'migrated')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { [TEMP_ID]: 4 })
+
+  let keyOfCalls = 0
+  const second = migrateStateFiles({
+    keyOf: () => { keyOfCalls += 1; return 'c_deadbeef0000' },
+    files,
+    log: () => {},
+  })
+  assert.equal(second[0].status, 'already-chat-id')
+  assert.equal(keyOfCalls, 0, 'c_tmp_ 键不能被当成名字再哈希')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { [TEMP_ID]: 4 })
+  // 纯函数本身也保持幂等。
+  assert.deepEqual(
+    migrateMentions({ [TEMP_ID]: 4 }, () => 'c_deadbeef0000'),
+    { [TEMP_ID]: 4 },
+  )
 })
 
 test('迁移 I/O：已是 chatId 键且没有标记也跳过；有标记但键变回名字仍会迁移', () => {

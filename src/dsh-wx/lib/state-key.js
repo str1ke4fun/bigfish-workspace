@@ -13,7 +13,8 @@ import { sanitizeName } from './name.js'
 
 const identity = (v) => v
 const keyString = (value) => String(value ?? '')
-const CHAT_ID_KEY = /^c_[0-9a-f]{12}$/
+// 稳定目录 id（c_ + 12 hex）和同名/截断条目在补全前分配的临时 id（c_tmp_ + 10 hex）都算身份键。
+const CHAT_ID_KEY = /^c_(?:tmp_[0-9a-f]{10}|[0-9a-f]{12})$/
 
 /** 目录 chatId 的形状。迁移必须先认形状再认标记，否则二次迁移会把 chatId 再哈希一遍。 */
 export function isChatIdKey(value) {
