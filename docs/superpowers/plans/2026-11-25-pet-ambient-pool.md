@@ -516,7 +516,7 @@ Expected: FAIL — `pet:get-ambient-catalog` not registered.
 - Add `loadAmbientCandidate(assetsRoot, skinId, revision, actions)` analogous to `loadTriggerCandidate`, keeping the previous catalog on failure.
 - `applySkin` and `reloadRegisteredActions` load the ambient candidate before publishing; update the hello payload `toHelloPayload` with `ambient: ambientCatalog`.
 - Startup loads ambient after actions; IPC `pet:get-ambient-catalog` returns a filtered copy; `pet:ambient-catalog` pushes on change.
-- Add a `pet:ambient-reload` handler only if you do not fold ambient into `pet:actions-reload`; prefer folding it into the existing reload so one menu item refreshes actions, triggers, and ambient.
+- Fold ambient into the existing `pet:actions-reload` path: one reload refreshes actions, triggers, and ambient. Do not add a separate reload IPC or menu item.
 - `preload.ts`: add types and `onAmbientCatalog` / `getAmbientCatalog`; if using the folded reload, no new reload method is required.
 - `App.tsx` window declaration: add the two bridge methods.
 
