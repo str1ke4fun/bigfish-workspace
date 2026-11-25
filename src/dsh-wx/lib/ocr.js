@@ -1,3 +1,5 @@
+import { hasNameCharacter } from './name.js'
+
 /**
  * Parse screenshot OCR rows into the conservative subset consumed by the ear.
  * OCR is inherently uncertain: a row is actionable only when its name and
@@ -22,7 +24,8 @@ export function parseOcrChats(rows, { trigger = [] } = {}) {
       .map(clean).filter(Boolean)
     if (lines.length < 2) continue
     const name = clean(row.name ?? lines[0])
-    if (!name || name.length > 80 || /^(?:Weixin|微信|Contacts|通讯录|Moments|朋友圈|Search|搜索)$/i.test(name)) continue
+    if (!name || name.length > 80 || !hasNameCharacter(name) ||
+        /^(?:Weixin|微信|Contacts|通讯录|Moments|朋友圈|Search|搜索)$/i.test(name)) continue
     const body = lines.slice(1)
     let unread = 0
     let mention = false

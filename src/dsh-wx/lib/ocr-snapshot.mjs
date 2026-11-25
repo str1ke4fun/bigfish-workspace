@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { hasNameCharacter, graphemeLength } from './name.js'
 
 const run = (file, args, input) => execFileSync(file, args, {
   input,
@@ -8,6 +9,45 @@ const run = (file, args, input) => execFileSync(file, args, {
   maxBuffer: 40 * 1024 * 1024,
   stdio: input ? ['pipe', 'pipe', 'ignore'] : ['ignore', 'pipe', 'ignore'],
 })
+
+const ASCII_NAME_CHARACTER = /^[A-Za-z0-9]$/
+const NON_ASCII_CHARACTER = /^[^\x00-\x7f]$/
+/** 不单独算名字字符的 emoji 组合尾巴：VS15/VS16、keycap、ZWJ、tag 字符。 */
+const EMOJI_MODIFIER = /^[︎️⃣‍\u{E0020}-\u{E007F}]$/u
+
+/** 按判断函数决定 OCR 词之间的空格去留。 */
+function joinWithoutSpaces(text, shouldJoin) {
+  let out = ''
+  let previous = '' // 最近一个非组合符字符，`🏖️` 要看回 `🏖`
+  let gap = false
+  for (const character of String(text ?? '')) {
+    if (/\s/u.test(character)) { gap = out !== ''; continue }
+    if (gap && !shouldJoin(previous, character)) out += ' '
+    out += character
+    if (!EMOJI_MODIFIER.test(character)) previous = character
+    gap = false
+  }
+  return out
+}
+
+/**
+ * 标题词拼接：拉丁词之间的空格是真实词距，保留；只要有一侧是汉字或
+ * emoji 等非 ASCII 名字字符，就当成同一个名字连起来。OCR 常把 `🌊` 和
+ * `周末海边` 分成两个词，全名里并没有空格。
+ * 时间戳在进入这里前已按 isClockWord 剔除，不会和标题粘连。
+ */
+const joinNameWords = (text) => joinWithoutSpaces(text,
+  (previous, character) => hasNameCharacter(previous) && hasNameCharacter(character) &&
+    !(ASCII_NAME_CHARACTER.test(previous) && ASCII_NAME_CHARACTER.test(character)))
+
+/**
+ * 整行 OCR 文本拼接：行内还混着时间戳，只把两侧都是非 ASCII 名字字符
+ * 的空格去掉（汉字/emoji/CJK 之间）；标题与 ASCII 时间之间必须留空格，
+ * 后面的 cleanRowLabel 才剥得掉时间。
+ */
+const joinLineWords = (text) => joinWithoutSpaces(text,
+  (previous, character) => hasNameCharacter(previous) && hasNameCharacter(character) &&
+    NON_ASCII_CHARACTER.test(previous) && NON_ASCII_CHARACTER.test(character))
 
 export function parseTsv(tsv, { minConfidence = 25, scale = 1 } = {}) {
   const lines = new Map()
@@ -34,8 +74,7 @@ export function parseTsv(tsv, { minConfidence = 25, scale = 1 } = {}) {
   }
   return [...lines.values()].map((line) => ({
     words: line.words.sort((a, b) => a.left - b.left),
-    text: line.words.sort((a, b) => a.left - b.left).map((word) => word.text).join(' ')
-      .replace(/(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, ''),
+    text: joinLineWords(line.words.sort((a, b) => a.left - b.left).map((word) => word.text).join(' ')),
     left: line.left,
     top: line.top,
     width: line.right - line.left,
@@ -48,7 +87,7 @@ const isTime = (text) => /^(?:(?:Yesterday|Today|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+
 const isUnread = (text) => /^\[?\d{1,3}\]?$/.test(text)
 const isMention = (text) => /\bYou were (?:mentioned|@ed)\b|@Me\b|有人@我/i.test(text)
 const cleanRowLabel = (text) => String(text ?? '').trim()
-  .replace(/^[|>®©•\s]+/, '')
+  .replace(/^[|>•\s]+/, '')
   .replace(/[=|\s]+(?:(?:Yesterday|Today)\s+)?(?:\d{1,2}[:.]\d{2}|(?:[01]\d|2[0-3])[0-5]\d)\s*$/i, '')
   .trim()
 const isNavigation = (text) => /^(?:Weixin|Contacts|Moments|Search|微信|通讯录|朋友圈|搜索)$/i.test(text)
@@ -108,7 +147,9 @@ const isClockWord = (text) => {
   // 只有日期/星期：11/05、2026/11/05、Monday、昨天、星期几
   return /^(?:Yesterday|Today|Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?|昨天|今天|星期[一二三四五六日天]|周[一二三四五六日天]|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)$/i.test(t)
 }
-const isNameWord = (text) => /[\p{L}\p{N}\p{Script=Han}]/u.test(text) && !isNavigation(text)
+const isNameWord = (text) => hasNameCharacter(text) && !isNavigation(text)
+/** 纯 emoji/旗帜/符号词：有名字字符，但没有字母或数字。 */
+const isEmojiOnlyWord = (text) => hasNameCharacter(text) && !/[\p{L}\p{N}]/u.test(String(text ?? ''))
 const stripMention = (text) => String(text ?? '')
   .replace(/\[?\s*(?:You were (?:mentioned|@ed)|@Me|有人@我)\s*\]?/ig, ' ')
   .trim()
@@ -128,15 +169,17 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
     const titleWords = words.filter((word) => word.left >= width * 0.33 && word.left < width * 0.68 &&
       !isClockWord(word.text) && isNameWord(word.text))
     if (!titleWords.length) return []
-    const rawName = titleWords.map((word) => word.text).join(' ')
-      .replace(/(?<=[\u3400-\u9fff])\s+(?=[\p{L}\p{N}])|(?<=[\p{L}\p{N}])\s+(?=[\u3400-\u9fff])/gu, '')
-      .replace(/(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, '').trim()
+    const rawName = joinNameWords(titleWords.map((word) => word.text).join(' '))
     // 微信会把侧栏里的长名字截断成「星晓家园10号楼13...」。去掉**末尾**省略号后
     // 仍按名字处理；中间还有省略号才说明读坏了，丢掉。全名对账在 index.js 的
     // reconcileChatName 里做（只认唯一前缀，找不到就不改名）。
     const name = rawName.replace(/\s*(?:\.{2,}|…)\s*$/u, '').trim()
     if (!name) return []
-    const nameConfidence = titleWords.reduce((sum, word) => sum + (Number(word.confidence) || 0), 0) / titleWords.length
+    // OCR 对 emoji 的置信度天然偏低；只含 emoji 的标题词不进均值，
+    // 除非整行标题都是 emoji（那就只能用它们的均值）。
+    const textWords = titleWords.filter((word) => !isEmojiOnlyWord(word.text))
+    const confidentWords = textWords.length ? textWords : titleWords
+    const nameConfidence = confidentWords.reduce((sum, word) => sum + (Number(word.confidence) || 0), 0) / confidentWords.length
     // 行带用垂直中心：标题行的 top 会被头像/高字形拉偏，中心和相邻行的间距才稳。
     const center = line.top + line.height / 2
     return [{ line, center, name, nameConfidence, hasTime: Boolean(time) }]
@@ -183,8 +226,9 @@ export function groupTimestampAnchoredRows(lines, width, height, origin = { x: 0
   if (!boundaries.length) return []
 
   /** 名字像不像会话标题；不像的行只占行带，不输出。 */
-  const nameLooksLikeChat = (name) => Boolean(name) && name.length <= 80 &&
-    !/^[\p{P}\p{S}\s]+$/u.test(name) &&
+  const nameLooksLikeChat = (name) => Boolean(name) && graphemeLength(name) <= 80 &&
+    hasNameCharacter(name) &&
+    !isNavigation(name) && !isClockWord(name) && !isTime(name) &&
     !/\[|\]|(?:\.{2,}|…)|:/.test(name) &&
     !/^(?:You|were|mentioned|@Me)$/i.test(name) &&
     !/^[\d\s.…_-]{4,}$/.test(name)
