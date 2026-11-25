@@ -72,10 +72,20 @@ export interface PetAction {
   ttlMs: number
 }
 
+export interface HostCuaState {
+  mode: 'observe' | 'managed'
+  phase: string
+  remainingMs: number
+  driverConnected: boolean
+  actionCount: number
+  lastActionAt: number
+}
+
 /** `GET /api/fish/pet/state` 的形状；标量状态可为 null，cues 缺省为空数组。 */
 export interface PetState {
   at: number
   presence: PetPresence | null
+  hostCua?: HostCuaState | null
   activity: PetActivity | null
   action: PetAction | null
   scene: PetScene | null
@@ -83,6 +93,25 @@ export interface PetState {
   /** 服务端设置回声；`ambient` 是用户覆盖，只覆盖显式给出的 mode。 */
   settings?: {
     ambient?: AmbientOverrides
+  }
+}
+
+/** 只读桌宠状态里的托管字段；缺字段/坏值返回 null，不炸。 */
+export function readHostCua(state: unknown): HostCuaState | null {
+  if (!state || typeof state !== 'object') return null
+  const raw = (state as Record<string, unknown>).hostCua
+  if (!raw || typeof raw !== 'object') return null
+  const h = raw as Record<string, unknown>
+  const mode = h.mode === 'managed' ? 'managed' : h.mode === 'observe' ? 'observe' : null
+  if (!mode) return null
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  return {
+    mode,
+    phase: typeof h.phase === 'string' ? h.phase : '',
+    remainingMs: num(h.remainingMs),
+    driverConnected: h.driverConnected === true,
+    actionCount: num(h.actionCount),
+    lastActionAt: num(h.lastActionAt),
   }
 }
 

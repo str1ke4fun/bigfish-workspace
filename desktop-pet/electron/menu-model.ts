@@ -17,6 +17,8 @@ export interface MenuState {
   scene: { kind: 'rest' | 'out' } | null
   /** 长唤醒到期时刻；null = 没有在长唤醒。 */
   awakeUntil: number | null
+  /** 宿主托管状态；null/off = 不显示。 */
+  hostCua?: { mode: 'observe' | 'managed'; actionCount: number } | null
 }
 
 export interface MenuCallbacks {
@@ -33,6 +35,8 @@ export interface MenuCallbacks {
   resetPosition: () => void
   presence: (mode: 'off' | 'event' | 'ambient' | 'work') => void
   openWorkbench: () => void
+  /** 桌宠只能停托管，不能开。 */
+  stopHostCua: () => void
   quit: () => void
 }
 
@@ -42,6 +46,7 @@ export interface MenuItemModel {
   label?: string
   separator?: boolean
   checked?: boolean
+  enabled?: boolean
   click?: () => void
   submenu?: MenuItemModel[]
 }
@@ -180,6 +185,15 @@ export function buildMenuModel(
   })
 
   if (kind === 'tray') {
+    if (state.hostCua) {
+      const label = state.hostCua.mode === 'managed' ? '托管中' : '看窗口中'
+      items.push({
+        label: `${label}${state.hostCua.actionCount ? ` · ${state.hostCua.actionCount} 次` : ''}`,
+        enabled: false,
+      })
+      items.push({ label: '停止托管', click: callbacks.stopHostCua })
+      items.push({ separator: true })
+    }
     if (state.presence) {
       const { on, mode } = state.presence
       items.push({

@@ -11,7 +11,9 @@ import type { TriggerDefinition } from '../electron/triggers'
 import {
   decideEffects,
   performedMotion,
+  readHostCua,
   reducePlayback,
+  type HostCuaState,
   type PerformedMotion,
   type PlaybackAction,
   type PlaybackEvent,
@@ -467,6 +469,7 @@ export function App() {
   const batchIdRef = useRef(0)
   const executedBatchRef = useRef(0)
   const [look, setLook] = useState({ opacity: BUBBLE_OPACITY_DEFAULT, width: 0 })
+  const [hostCua, setHostCua] = useState<HostCuaState | null>(null)
   /** 长回复逐句翻：同一个气泡原地换字，新消息取消上一轮。 */
   const pagerRef = useRef<ReturnType<typeof createPager> | null>(null)
   if (!pagerRef.current) {
@@ -1014,6 +1017,7 @@ export function App() {
         if (petStateSnapshotIsStale(state as PetState | null, manualStateFloorRef.current)) return
         const now = Date.now()
         latestStateRef.current = state as PetState | null
+        setHostCua(readHostCua(state))
         const previous = seenRef.current ?? emptyPetSeen()
         const previousActionId = previous.lastActionId
         // 每拍按 presence 选策略；目录/覆盖缺失时得到 null，引擎回落到旧 ambient trigger。
@@ -1373,19 +1377,29 @@ export function App() {
   }
 
   return (
-    <Pet
-      ref={petRef}
-      config={renderedConfig ?? activeConfig}
-      uri={renderedUri}
-      size={size}
-      motion={renderedMotion}
-      dialogue
-      onDialogue={handleDialogue}
-      onAnimationChange={handleAnimationChange}
-      onMotionChange={handleMotionChange}
-      onReady={handleReady}
-      onError={handlePetError}
-    />
+    <>
+      <Pet
+        ref={petRef}
+        config={renderedConfig ?? activeConfig}
+        uri={renderedUri}
+        size={size}
+        motion={renderedMotion}
+        dialogue
+        onDialogue={handleDialogue}
+        onAnimationChange={handleAnimationChange}
+        onMotionChange={handleMotionChange}
+        onReady={handleReady}
+        onError={handlePetError}
+      />
+      {hostCua ? (
+        <div
+          className="host-cua-badge"
+          title={`托管中 · 还剩 ${Math.max(0, Math.ceil(hostCua.remainingMs / 60_000))} 分钟`}
+        >
+          托管中{hostCua.actionCount > 0 ? ` · ${hostCua.actionCount}` : ''}
+        </div>
+      ) : null}
+    </>
   )
 }
 

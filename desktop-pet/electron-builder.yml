@@ -8,3 +8,6 @@ files:
 win:
   target:
     - portable
+extraResources:
+  - from: host-cua
+    to: host-cua

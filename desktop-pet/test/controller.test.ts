@@ -499,3 +499,11 @@ test('播放器：trigger 可用 loop override 强制一次性或循环，不依
     { type: 'play-motion', motion: 'waving', loop: false, replay: true },
   ])
 })
+
+test('readHostCua：解析托管状态与动作计数，缺字段不炸', async () => {
+  const { readHostCua } = await import('../renderer/controller.ts')
+  assert.equal(readHostCua({ hostCua: { mode: 'managed', phase: 'on', remainingMs: 1000, driverConnected: true, actionCount: 3, lastActionAt: 9 } }).mode, 'managed')
+  assert.equal(readHostCua({ hostCua: { mode: 'managed', actionCount: 3 } }).actionCount, 3)
+  assert.equal(readHostCua({}), null)
+  assert.equal(readHostCua({ hostCua: { mode: 'off' } }), null)
+})

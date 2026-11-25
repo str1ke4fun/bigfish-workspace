@@ -9,10 +9,11 @@
     "dev": "vite",
     "build": "vite build && vite build --mode electron-main && vite build --mode electron-preload",
     "start": "electron .",
-    "test": "node --test --experimental-strip-types test/config.test.ts test/actions.test.ts test/triggers.test.ts test/controller.test.ts test/trigger-engine.test.ts test/playback-adapter.test.ts test/poller.test.ts test/pointer.test.ts test/chat.test.ts test/skin.test.ts test/bubble-pages.test.ts test/shell.test.ts test/fetch-assets.test.ts test/assets-sync.test.ts test/ambient.test.ts",
+    "test": "node --test --experimental-strip-types test/config.test.ts test/actions.test.ts test/triggers.test.ts test/controller.test.ts test/trigger-engine.test.ts test/playback-adapter.test.ts test/poller.test.ts test/pointer.test.ts test/chat.test.ts test/skin.test.ts test/bubble-pages.test.ts test/shell.test.ts test/fetch-assets.test.ts test/assets-sync.test.ts test/ambient.test.ts test/host-cua.test.ts",
     "assets": "node scripts/sync-assets.mjs",
     "assets:fetch": "node scripts/fetch-assets.mjs",
-    "dist:win": "node scripts/check-assets.mjs && npm run build && electron-builder --win"
+    "dist:win": "node scripts/fetch-host-cua.mjs && node scripts/check-assets.mjs && npm run build && electron-builder --win",
+    "host-cua:fetch": "node scripts/fetch-host-cua.mjs"
   },
   "dependencies": {
     "dsh-pet-component": "0.2.5",

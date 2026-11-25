@@ -46,3 +46,19 @@ body {
   font: 13px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
   text-align: center;
 }
+
+/* 托管模式常驻小标记：只提示状态和操作次数，不拦截拖拽/点击。 */
+.host-cua-badge {
+  position: fixed;
+  top: 8px;
+  right: 10px;
+  z-index: 20;
+  padding: 2px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #fff;
+  background: rgba(210, 80, 60, 0.82);
+  pointer-events: none;
+  user-select: none;
+}

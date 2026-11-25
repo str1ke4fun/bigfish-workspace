@@ -6,3 +6,5 @@ release/
 assets/webm/*
 !assets/webm/待机呼吸休闲.webm
 assets/skins/*/webm/
+# cua-driver 二进制由 scripts/fetch-host-cua.mjs 按 SHA256 拉取，不入库。
+host-cua/

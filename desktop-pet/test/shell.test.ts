@@ -253,6 +253,7 @@ function callbacks(log: string[]): MenuCallbacks {
     rest: (id, action) => log.push(`rest:${action}:${id}`),
     presence: (mode) => log.push(`presence:${mode}`),
     openWorkbench: () => log.push('workbench'),
+    stopHostCua: () => log.push('stop-host-cua'),
     quit: () => log.push('quit'),
   }
 }
@@ -1551,4 +1552,14 @@ test('登记协议的目标：portable 用原始 exe，开发态带应用目录'
     { exec: 'C:\\e\\electron.exe', args: ['D:\\fish\\desktop-pet'] },
   )
   assert.deepEqual(protocolTarget({ execPath: 'C:\\app\\pet.exe' }), { exec: 'C:\\app\\pet.exe', args: [] })
+})
+
+test('桌宠只发停止托管，不自己开启', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const s = readFileSync(join(import.meta.dirname, '../electron/main.ts'), 'utf8')
+  assert.match(s, /host-cua\/mode/)
+  assert.match(s, /mode:\s*'off'/)
+  assert.match(s, /actor:\s*'pet'/)
+  assert.doesNotMatch(s, /host-cua\/mode[\s\S]{0,200}mode:\s*'managed'/)
 })

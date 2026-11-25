@@ -23,6 +23,7 @@ import { DEFAULT_LOOK, noteLocalLook, readRemoteLook, resolveRemoteLook, type Bu
 import { buildMenuModel, type MenuItemModel, type PetRestAction } from './menu-model'
 import { OPEN_PROTOCOL, protocolTarget } from './open-link'
 import { readPetSize, savePetSize } from './settings'
+import { installBundledHostCua, type HostCuaInfo } from './host-cua'
 import { clampPetSize } from './size'
 import {
   createSkinForwarder,
@@ -53,6 +54,7 @@ function skinMediaUri(id: string): string {
 
 const WORKBENCH_PET_URL = 'http://127.0.0.1:8788/#her/pet'
 const PRESENCE_MODE_URL = 'http://127.0.0.1:8788/api/fish/presence/mode'
+const HOST_CUA_MODE_URL = 'http://127.0.0.1:8788/api/fish/host-cua/mode'
 
 export interface PetRestScene {
   kind: 'rest' | 'out'
@@ -100,9 +102,13 @@ let petHidden = false
 let tray: Tray | null = null
 /** 最近一次 `/pet/state` 里的陪看状态，托盘菜单用。 */
 let lastPresence: { on: boolean; mode: string | null } | null = null
+/** 最近一次 /pet/state 里的托管状态；托盘据此显示停止项。 */
+let lastHostCua: { mode: 'observe' | 'managed'; actionCount: number } | null = null
 /** 最近一次 `/pet/state` 里的场景与长唤醒到期时刻，菜单据此显示「起来陪我/回去睡吧」。 */
 let lastScene: { kind: 'rest' | 'out' } | null = null
 let lastAwakeUntil: number | null = null
+/** 附带的 cua-driver 复制到稳定目录后的路径；只上报，不启动。 */
+let hostCuaInfo: HostCuaInfo | null = null
 /** 当前默认注册表 + 当前皮肤覆盖后的完整动作；菜单、渲染进程与 hello 共用。 */
 let actionCatalog: ActionDefinition[] = []
 let lastActionError: string | null = null
@@ -241,17 +247,20 @@ export function toHelloPayload(
   skins: readonly ScannedSkin[],
   actions: readonly ActionDefinition[],
   ambient: AmbientCatalog,
+  hostCua: HostCuaInfo | null = null,
 ): {
   version: string
   skins: Array<{ id: string; name: string }>
   actions: PetActionCatalogEntry[]
   ambient: AmbientCatalog
+  hostCua?: HostCuaInfo
 } {
   return {
     version,
     skins: skins.map(({ id, name }) => ({ id, name })),
     actions: actionCatalogEntries(actions),
     ambient,
+    ...(hostCua ? { hostCua } : {}),
   }
 }
 
@@ -395,7 +404,7 @@ function enqueueHello<T>(work: () => Promise<T>): Promise<T> {
 
 /** 心跳：窗口真的起来了才让服务端判 online。失败静默，不刷屏。 */
 export async function sendHello(): Promise<boolean> {
-  return enqueueHello(() => postHello(toHelloPayload(app.getVersion(), skinCatalog, actionCatalog, ambientCatalog)))
+  return enqueueHello(() => postHello(toHelloPayload(app.getVersion(), skinCatalog, actionCatalog, ambientCatalog, hostCuaInfo)))
     .catch(() => false)
 }
 
@@ -405,6 +414,26 @@ function startPetHeartbeat(): void {
   helloTimer = setInterval(() => {
     void sendHello()
   }, PET_HELLO_INTERVAL_MS)
+}
+
+/** 后台把附带的驱动复制到稳定目录；只上报路径，不启动进程。 */
+async function installHostCua(): Promise<void> {
+  if (process.platform !== 'win32') return
+  const localAppData = String(process.env.LOCALAPPDATA ?? '')
+  const bundledDir = app.isPackaged
+    ? join(process.resourcesPath, 'host-cua')
+    : join(app.getAppPath(), 'host-cua')
+  try {
+    const r = await installBundledHostCua({ bundledDir, localAppData })
+    if (r.ok && r.exe && r.version) {
+      hostCuaInfo = { version: r.version, exe: r.exe }
+      void sendHello()
+    } else {
+      console.warn(`[desktop-pet] host-cua 没装上：${r.code ?? 'unknown'}`)
+    }
+  } catch (error) {
+    console.warn(`[desktop-pet] host-cua 安装出错：${errorText(error)}`)
+  }
 }
 
 function stopPetHeartbeat(): void {
@@ -649,7 +678,7 @@ export async function reloadRegisteredActions(
     const published = await enqueueHello(async () => {
       // 排队期间皮肤可能刚提交；执行时必须用最新 ownership 复核，不能把旧 catalog 补发到新皮肤之后。
       if (generation !== actionCatalogGeneration || skinId !== activeSkinId) return false
-      const ok = await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog, nextAmbient))
+      const ok = await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog, nextAmbient, hostCuaInfo))
       if (!ok && generation === actionCatalogGeneration && skinId === activeSkinId) {
         setActionCatalog(previousCatalog, win)
       }
@@ -741,7 +770,7 @@ export async function applySkin(id: string, options: ApplySkinOptions = {}): Pro
     // hello 是候选皮肤/目录的服务端确认点；确认前不推给 renderer，失败或已被替代时 UI 保持原基线。
     const published = await enqueueHello(async () => {
       if (revision !== skinRevision) return false
-      return await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog, nextAmbient))
+      return await postHello(toHelloPayload(app.getVersion(), skinCatalog, nextCatalog, nextAmbient, hostCuaInfo))
     })
     if (revision !== skinRevision) return false
     if (!published) {
@@ -845,6 +874,7 @@ function toElectronItems(items: MenuItemModel[]): MenuItemConstructorOptions[] {
   return items.map((item) => {
     if (item.separator) return { type: 'separator' as const }
     const out: MenuItemConstructorOptions = { label: item.label }
+    if (item.enabled !== undefined) out.enabled = item.enabled
     if (item.submenu) out.submenu = toElectronItems(item.submenu)
     else if (item.checked !== undefined) {
       out.type = 'radio'
@@ -868,6 +898,20 @@ async function setPresence(mode: 'off' | 'event' | 'ambient' | 'work'): Promise<
     })
   } catch {
     // 工作台没起来就算了；下一拍状态会如实反映。
+  }
+}
+
+/** 桌宠只能停托管；开启入口只在工作台。失败静默，下一拍状态会如实反映。 */
+async function stopHostCua(): Promise<void> {
+  try {
+    await fetch(HOST_CUA_MODE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'off', actor: 'pet' }),
+      signal: AbortSignal.timeout(PET_REQUEST_TIMEOUT_MS),
+    })
+  } catch {
+    // 失败静默；TTL 仍会兜底。
   }
 }
 
@@ -934,6 +978,7 @@ function buildMenu(kind: 'context' | 'tray'): Menu {
       width: petLook.width,
       hidden: petHidden,
       presence: lastPresence,
+      hostCua: lastHostCua,
       scene: lastScene,
       awakeUntil: lastAwakeUntil,
     },
@@ -955,6 +1000,7 @@ function buildMenu(kind: 'context' | 'tray'): Menu {
       },
       presence: (mode) => void setPresence(mode),
       openWorkbench: () => void shell.openExternal(WORKBENCH_PET_URL),
+      stopHostCua: () => void stopHostCua(),
       quit: () => app.quit(),
     },
     kind,
@@ -1001,6 +1047,14 @@ const stateForwarder = createStateForwarder((state) => {
     }
     const awakeUntil = snapshot.awakeUntil
     lastAwakeUntil = typeof awakeUntil === 'number' && Number.isFinite(awakeUntil) ? awakeUntil : null
+    const hostCua = snapshot.hostCua
+    if (hostCua && typeof hostCua === 'object') {
+      const h = hostCua as Record<string, unknown>
+      const mode = h.mode === 'managed' ? 'managed' : h.mode === 'observe' ? 'observe' : null
+      lastHostCua = mode ? { mode, actionCount: Number(h.actionCount) || 0 } : null
+    } else {
+      lastHostCua = null
+    }
   }
   if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:state', state)
 })
@@ -1191,6 +1245,7 @@ if (gotInstanceLock) app
     )
     startPetWindow()
     createPetTray()
+    void installHostCua()
     // 窗口先建好再报到，服务端的 online 才真的代表「窗口起来了」。
     startPetHeartbeat()
 

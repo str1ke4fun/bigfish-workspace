@@ -51,6 +51,21 @@ npm run dist:win
 npm start
 ```
 
+## 附带的 host-cua（0.9.1）
+
+桌宠安装包附带 `cua-driver 0.55.0`，供工作台“托管模式”使用；桌宠自己不启动驱动。
+
+```powershell
+# 构建前拉取固定版本（按 SHA256 校验，约 80 MB；不入 Git）
+npm run host-cua:fetch
+```
+
+- 来源固定在 `dsh-cua-driver@0.1.2` 的 vendor；`host-cua/manifest.json` 记版本与 SHA256。
+- `electron-builder.yml` 的 `extraResources` 会把它放进 `resources/host-cua`。
+- 首次运行把文件复制到 `%LOCALAPPDATA%\bigfish\host-cua\0.55.0\`，只复制、不执行；完成后通过 `/api/fish/pet/hello` 上报 `{version, exe}`。
+- 遥测由 `dsh-fish` 第一次解析驱动后关闭，不在桌宠里跑任何驱动命令。
+- 托盘菜单在托管中显示“托管中 · N 次”和“停止托管”；桌宠只能停，不能开。开启入口只在工作台。
+
 ## 素材来源与许可
 
 | 内容 | 是否入库 | 来源 |
