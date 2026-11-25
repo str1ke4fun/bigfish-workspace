@@ -98,15 +98,23 @@ function normalizeFrequency(raw, errors, label) {
   return frequency
 }
 
-/** 同一 action 重复时后者覆盖前者，但保留首次出现的位置。 */
-function dedupeItems(items) {
+/** 同一 action 重复时后者覆盖前者，但保留首次出现的位置；重复只记提示，不中断操作。 */
+function dedupeItems(items, warn) {
   const order = []
   const byAction = new Map()
   for (const item of items) {
-    if (!byAction.has(item.action)) order.push(item.action)
+    if (byAction.has(item.action)) {
+      if (typeof warn === 'function') warn(item.action)
+    } else {
+      order.push(item.action)
+    }
     byAction.set(item.action, item)
   }
   return order.map((action) => byAction.get(action))
+}
+
+function duplicateWarner(errors, label) {
+  return (action) => errors.push(`${label}: duplicate item action ignored: ${action}`)
 }
 
 function normalizePolicy(raw, errors = [], label = 'policy') {
@@ -125,10 +133,53 @@ function normalizePolicy(raw, errors = [], label = 'policy') {
     errors.push(`${label}.items must be an array`)
   }
   return {
-    enabled: source.enabled === true,
-    items: dedupeItems(items),
+    enabled: source.enabled !== false,
+    items: dedupeItems(items, duplicateWarner(errors, label)),
     frequency: normalizeFrequency(source.frequency, errors, label),
   }
+}
+
+/**
+ * 覆盖形状：只保留显式给出的字段，不补默认值。
+ * 用于 `config.modes[mode]`——缺失 `enabled` 时不能擅自记成 false，
+ * 否则合并默认策略后会把壳实际开启的模式误报为关闭。
+ */
+function normalizePolicyOverride(raw, errors = [], label = 'policy') {
+  if (raw !== undefined && raw !== null && !isPlainObject(raw)) {
+    errors.push(`${label} must be an object`)
+    return {}
+  }
+  const source = isPlainObject(raw) ? raw : {}
+  const override = {}
+
+  if (typeof source.enabled === 'boolean') override.enabled = source.enabled
+
+  if (Array.isArray(source.items)) {
+    const items = []
+    source.items.forEach((entry, index) => {
+      const item = normalizeItem(entry)
+      if (item) items.push(item)
+      else errors.push(`${label}.items[${index}] is invalid`)
+    })
+    override.items = dedupeItems(items, duplicateWarner(errors, label))
+  } else if (source.items !== undefined && source.items !== null) {
+    errors.push(`${label}.items must be an array`)
+  }
+
+  if (isPlainObject(source.frequency)) {
+    const frequency = {}
+    for (const field of FREQUENCY_FIELDS) {
+      if (source.frequency[field] === undefined) continue
+      const n = toNumber(source.frequency[field])
+      if (!Number.isFinite(n)) continue
+      frequency[field] = n < 0 ? 0 : n
+    }
+    override.frequency = frequency
+  } else if (source.frequency !== undefined && source.frequency !== null) {
+    errors.push(`${label}.frequency must be an object`)
+  }
+
+  return override
 }
 
 function normalizeQuietHours(raw, errors) {
@@ -194,7 +245,7 @@ export function normalizeAmbientConfig(raw) {
         errors.push(`modes.${key} must be an object`)
         continue
       }
-      config.modes[key] = normalizePolicy(raw.modes[key], errors, `modes.${key}`)
+      config.modes[key] = normalizePolicyOverride(raw.modes[key], errors, `modes.${key}`)
     }
   } else if (raw.modes !== undefined && raw.modes !== null) {
     errors.push('modes must be an object')
@@ -203,8 +254,11 @@ export function normalizeAmbientConfig(raw) {
 }
 
 /**
- * 合并覆盖与默认：某模式只要 config 里有覆盖就用覆盖，否则回落 defaults。
- * 没有出现在任何一侧的模式不会出现在结果里（例如从没配置过的 off）。
+ * 合并覆盖与默认：逐字段叠加，语义与桌面壳 `mergeAmbientMode` 一致。
+ * - `enabled`：覆盖里显式布尔才生效，否则沿用默认；
+ * - `items`：覆盖里给出数组才整体替换，否则沿用默认；
+ * - `frequency`：默认频率逐字段被覆盖，再补齐、夹值、交换 min/max。
+ * 只出现在 config 或 defaults 一侧的模式也会给出完整策略（另一侧按设计默认补全）。
  */
 export function effectiveAmbientModes(config, defaults) {
   const modes = {}
@@ -216,11 +270,19 @@ export function effectiveAmbientModes(config, defaults) {
   }
   for (const mode of keys) {
     if (!AMBIENT_MODES.includes(mode)) continue
-    const override = isPlainObject(config?.modes) ? config.modes[mode] : undefined
-    const raw = isPlainObject(override)
-      ? override
-      : isPlainObject(defaults?.modes) ? defaults.modes[mode] : undefined
-    modes[mode] = normalizePolicy(raw, [], `modes.${mode}`)
+    const baseRaw = isPlainObject(defaults?.modes) ? defaults.modes[mode] : undefined
+    const base = normalizePolicy(baseRaw, [], `modes.${mode}`)
+    const overrideRaw = isPlainObject(config?.modes) ? config.modes[mode] : undefined
+    const override = normalizePolicyOverride(overrideRaw, [], `modes.${mode}`)
+    modes[mode] = {
+      enabled: typeof override.enabled === 'boolean' ? override.enabled : base.enabled,
+      items: Array.isArray(override.items) ? override.items : base.items,
+      frequency: normalizeFrequency(
+        { ...base.frequency, ...(isPlainObject(override.frequency) ? override.frequency : {}) },
+        [],
+        `modes.${mode}`,
+      ),
+    }
   }
   return modes
 }
@@ -229,13 +291,10 @@ function bad(why, errors) {
   return errors ? { ok: false, why, errors } : { ok: false, why }
 }
 
-/** 覆盖优先、默认兜底；两侧都没有（或都不是对象）就是没有基线。 */
-function basePolicy(base, defaults, mode) {
-  if (isPlainObject(base.modes[mode])) return base.modes[mode]
-  if (isPlainObject(defaults?.modes) && isPlainObject(defaults.modes[mode])) {
-    return defaults.modes[mode]
-  }
-  return undefined
+/** 存在性判断：config 覆盖或 defaults 任一侧有该模式即可作为基线。 */
+function hasBasePolicy(base, defaults, mode) {
+  return isPlainObject(base.modes[mode])
+    || (isPlainObject(defaults?.modes) && isPlainObject(defaults.modes[mode]))
 }
 
 /**
@@ -249,7 +308,7 @@ function basePolicy(base, defaults, mode) {
  * 失败：{ ok: false, why, errors? }
  */
 export function applyAmbientOp(config, defaults, op, options = {}) {
-  // actionIds === null（或没传）表示壳还没上报动作目录：接受写入，由上层标记未校验。
+  // actionIds === null（或没传）表示壳还没上报动作目录：接受写入但跳过动作校验。
   // 传了 Set（包括空 Set）则严格校验，未知动作一律拒绝。
   const actionIds = options?.actionIds == null ? null : toIdSet(options.actionIds)
   const isKnownAction = (action) => actionIds === null || actionIds.has(action)
@@ -261,7 +320,10 @@ export function applyAmbientOp(config, defaults, op, options = {}) {
   const errors = []
 
   if (op.op === 'reset' && op.mode == null) {
+    // 不带 mode 的 reset 清空全部覆盖：模式与安静时段一起回到目录默认。
     base.modes = {}
+    base.quietHours = null
+    base.version = 1
     base.revision = nonNegative(base.revision, 0) + 1
     return { ok: true, config: base, errors }
   }
@@ -272,7 +334,7 @@ export function applyAmbientOp(config, defaults, op, options = {}) {
   const mode = op.mode
 
   if (op.op === 'reset') {
-    if (basePolicy(base, defaults, mode) === undefined) return bad('NO_BASE_POLICY', errors)
+    if (!hasBasePolicy(base, defaults, mode)) return bad('NO_BASE_POLICY', errors)
     delete base.modes[mode]
     base.revision = nonNegative(base.revision, 0) + 1
     return { ok: true, config: base, errors }
@@ -287,9 +349,10 @@ export function applyAmbientOp(config, defaults, op, options = {}) {
       if (isKnownAction(item.action)) known.push(item)
       else errors.push(`unknown item action: ${item.action}`)
     }
-    policy.items = dedupeItems(known)
+    policy.items = dedupeItems(known, duplicateWarner(errors, `modes.${mode}`))
   } else {
-    const source = basePolicy(base, defaults, mode)
+    // 以“默认 + 已有覆盖”合并出的完整策略为基线，部分覆盖不会丢默认动作/频率。
+    const source = effectiveAmbientModes(base, defaults)[mode]
     if (source === undefined) return bad('NO_BASE_POLICY', errors)
     policy = normalizePolicy(source, errors, `modes.${mode}`)
 

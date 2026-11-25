@@ -87,13 +87,13 @@ export interface AmbientCatalogSource {
   modes?: Record<string, unknown> | null
 }
 
-/** 缺省频率：minGapSec / settleSec / actionCooldownSec 有设计默认值，其余为 0。 */
+/** 缺省频率：与服务端 `DEFAULT_FREQUENCY` 及设计默认值一致，避免半份皮肤策略无上限刷动作。 */
 export const DEFAULT_AMBIENT_FREQUENCY: AmbientFrequency = Object.freeze({
-  intervalMinSec: 0,
-  intervalMaxSec: 0,
+  intervalMinSec: 600,
+  intervalMaxSec: 1800,
   minGapSec: 300,
-  maxPerIdle: 0,
-  maxPerDay: 0,
+  maxPerIdle: 2,
+  maxPerDay: 8,
   settleSec: 300,
   actionCooldownSec: 7200,
 })

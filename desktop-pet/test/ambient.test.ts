@@ -55,6 +55,26 @@ test('皮肤同 mode 覆盖默认，缺失 mode 回落', () => {
   assert.equal(merged.modes.work.enabled, false)
 })
 
+test('皮肤 mode 只给 enabled + items 时频率回落设计默认值，不会无上限刷动作', () => {
+  const skin = {
+    modes: {
+      ambient: { enabled: true, items: [{ action: 'asset-109', weight: 2 }] },
+    },
+  }
+  const merged = mergeAmbientCatalogs(null, skin)
+  assert.equal(merged.modes.ambient.enabled, true)
+  assert.equal(merged.modes.ambient.items.length, 1)
+  assert.deepEqual(merged.modes.ambient.frequency, {
+    intervalMinSec: 600,
+    intervalMaxSec: 1800,
+    minGapSec: 300,
+    maxPerIdle: 2,
+    maxPerDay: 8,
+    settleSec: 300,
+    actionCooldownSec: 7200,
+  })
+})
+
 test('filter 按动作目录裁 item；空池保留但 enabled 不动', () => {
   const filtered = filterAmbientCatalog(base, new Set(['asset-087']))
   assert.equal(filtered.modes.work.items.length, 0)
@@ -165,4 +185,24 @@ test('仓库默认 ambient.json 解析出 4 个模式，event 默认关闭', asy
   assert.equal(catalog.modes.event.enabled, false)
   assert.equal(catalog.modes.work.items.length, 19)
   assert.equal(errors.length, 0)
+})
+
+test('仓库默认 ambient.json：off/ambient/work 共用同一动作池，频率与安静时段固定', async () => {
+  const raw = JSON.parse(await readFile(join(ASSETS_ROOT, 'ambient.json'), 'utf8'))
+  const { catalog } = parseAmbientCatalog(raw, { actionIds: ALL_ACTION_IDS, log: () => {} })
+
+  const pool = (mode: 'off' | 'ambient' | 'work') =>
+    catalog.modes[mode].items.map((item) => [item.action, item.weight])
+  assert.deepEqual(pool('off'), pool('work'))
+  assert.deepEqual(pool('ambient'), pool('work'))
+
+  const frequency = (mode: 'off' | 'ambient' | 'work') => {
+    const f = catalog.modes[mode].frequency
+    return [f.intervalMinSec, f.intervalMaxSec, f.minGapSec, f.maxPerIdle, f.maxPerDay]
+  }
+  assert.deepEqual(frequency('off'), [480, 1200, 300, 10, 30])
+  assert.deepEqual(frequency('ambient'), [720, 1500, 300, 6, 20])
+  assert.deepEqual(frequency('work'), [1200, 2400, 300, 4, 16])
+
+  assert.deepEqual(catalog.quietHours, { start: '23:00', end: '07:00', afterJitterSec: 600 })
 })

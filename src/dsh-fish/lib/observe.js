@@ -1041,7 +1041,7 @@ export function registerObserve(ctx, deps = {}) {
       try { body = JSON.parse(await readBody(req, 64_000) || '{}') }
       catch { return send(res, 400, { ok: false, why: 'BAD_JSON', errors: [] }) }
 
-      // 动作目录还没上报（壳刚启动）时传 null：接受写入但标记未校验。
+      // 动作目录还没上报（壳刚启动）时传 null：接受写入但跳过动作校验。
       // 传空 Set 会把所有动作都判成未知，反而一个都加不进去。
       const actionIds = actions.length > 0 ? new Set(actions.map((a) => a?.id)) : null
       const result = applyAmbientOp(overrides, defaults, body, { actionIds })

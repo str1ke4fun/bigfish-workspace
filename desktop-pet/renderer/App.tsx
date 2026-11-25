@@ -61,6 +61,7 @@ import {
   normalizeQuietHours,
   selectAmbientPolicy,
   type AmbientCatalog,
+  type AmbientOverrides,
 } from '../shared/ambient-model'
 import type { ChatResult } from './chat'
 import {
@@ -122,7 +123,7 @@ const ASSET_BASE = 'pet-asset://local/webm'
 const PET_SIZE_DEFAULT = 400
 const SEEN_STORAGE_KEY = 'desktop-pet:seen'
 const BUBBLE_TIMEOUT_MS = 10_000
-/** 安静时段的兜底值：目录还没到时沿用旧的 23:00–07:00、不额外抖动。 */
+/** 安静时段的兜底值：目录还没到时沿用旧的 23:00–07:00、不额外等待。 */
 const DEFAULT_QUIET_HOURS = {
   startMinute: 23 * 60,
   endMinute: 7 * 60,
@@ -140,11 +141,15 @@ function clockMinute(value: unknown): number | null {
   return hour * 60 + minute
 }
 
-/** 目录安静时段 → trigger engine 的分钟表示；缺失/坏值回落到默认段。 */
+/**
+ * 有效安静时段：服务端非 null 覆盖优先，否则用皮肤/默认目录，最后回落到 23:00–07:00。
+ * 服务端无法区分“没写”和“写成 null”，所以 null 只表示没有覆盖，不能当作“清空”。
+ */
 function quietHoursConfig(
   catalog: AmbientCatalog | null | undefined,
+  overrides: AmbientOverrides | null | undefined,
 ): TriggerEngineConfig['quietHours'] {
-  const source = catalog?.quietHours
+  const source = overrides?.quietHours ?? catalog?.quietHours
   const startMinute = clockMinute(source?.start)
   const endMinute = clockMinute(source?.end)
   if (startMinute === null || endMinute === null) return { ...DEFAULT_QUIET_HOURS }
@@ -1039,7 +1044,13 @@ export function App() {
           actions: actionCatalogRef.current,
           seen: previous,
           now,
-          config: { quietHours: quietHoursConfig(ambientCatalogRef.current), ambient },
+          config: {
+            quietHours: quietHoursConfig(
+              ambientCatalogRef.current,
+              (state as PetState | null)?.settings?.ambient ?? null,
+            ),
+            ambient,
+          },
           // 服务端显式 action 与用户动作同级：先占住播放器，cue/scene 留到下一拍。
           manualBusy: busy.manualBusy
             || manualMotionLeaseBusy(manualMotionLeaseRef.current, now)

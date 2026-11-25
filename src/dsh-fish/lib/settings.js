@@ -416,10 +416,11 @@ export function normalizeConfig(raw = {}) {
 
   // 桌宠窗口：只补全 pet 段，保留用户已存的 size / skin / 气泡设置。
   // ambient 必须是普通对象；坏值回落到默认空策略，避免把字符串带进策略层。
+  // 用深拷贝而不是展开：`modes` 是嵌套对象，浅拷贝会让默认配置和 DEFAULTS 共用同一份。
   const rawPet = cfg.pet && typeof cfg.pet === 'object' && !Array.isArray(cfg.pet) ? cfg.pet : {}
   cfg.pet = { ...DEFAULTS.pet, ...rawPet }
   if (!cfg.pet.ambient || typeof cfg.pet.ambient !== 'object' || Array.isArray(cfg.pet.ambient)) {
-    cfg.pet.ambient = { ...DEFAULTS.pet.ambient }
+    cfg.pet.ambient = structuredClone(DEFAULTS.pet.ambient)
   }
 
   // 工作委派：嵌套组逐层补全；名单去重；枚举/数值只接受明确值。

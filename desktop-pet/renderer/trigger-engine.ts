@@ -26,7 +26,7 @@ export interface TriggerQuietHours {
   startMinute: number
   /** 本地时间终点，不含；可小于起点表示跨午夜。 */
   endMinute: number
-  /** 安静时段结束后再额外等待的抖动秒数；缺省 0。 */
+  /** 安静时段结束后再额外固定等待的秒数；缺省 0。 */
   afterJitterSec?: number
 }
 
@@ -404,7 +404,7 @@ function ambientPolicyAction(
     seen.ambientNextAt = now + Math.max(settleMs, drawAmbientIntervalMs(policy, rng))
   }
 
-  // 安静时段优先于 nextAt：每次空闲拍都把下一次推到结束后，并叠加一次抖动。
+  // 安静时段优先于 nextAt：每次空闲拍都把下一次推到结束后，并叠加固定等待。
   if (quiet !== null && minuteInQuietHours(quiet, minute)) {
     const target = quietEndAt(quiet, now) + ambientSeconds(quiet.afterJitterSec) * 1000
     seen.ambientNextAt = Math.max(seen.ambientNextAt ?? target, target)

@@ -191,3 +191,10 @@ test('pet.ambient 坏值回落到空策略', () => {
   const cfg = normalizeConfig({ pet: { ambient: 'nope' } })
   assert.deepEqual(cfg.pet.ambient, { version: 1, revision: 0, quietHours: null, modes: {} })
 })
+
+test('pet.ambient 回落值是深拷贝，改写结果不会污染 DEFAULTS', () => {
+  const cfg = normalizeConfig({ pet: { ambient: 'nope' } })
+  cfg.pet.ambient.modes.work = { enabled: false }
+  cfg.pet.ambient.quietHours = { start: '01:00', end: '02:00', afterJitterSec: 0 }
+  assert.deepEqual(DEFAULTS.pet.ambient, { version: 1, revision: 0, quietHours: null, modes: {} })
+})
