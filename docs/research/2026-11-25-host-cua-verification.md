@@ -48,7 +48,7 @@
 - `desktop-pet/scripts/fetch-host-cua.mjs` 下载并校验 SHA256；`host-cua/` 82MB，未入 Git。
 - `electron-builder --win --dir` 在 WSL/Linux 上生成 `release/win-unpacked`，`resources/host-cua/cua-driver.exe` 存在；未签名，构建日志明确 `no code signing certificate configured`。
 - 首次运行复制到 `%LOCALAPPDATA%\bigfish\host-cua\0.55.0` 已用稳定目录手动验证；桌宠新包的自动复制/hello 未在 Windows 上实际启动验收（单测覆盖）。
-- 遥测：`telemetry disable` 由 dsh-fish 第一次解析驱动时执行；驱动启动 stderr 仍可能提示新版本 0.62.1，未自动更新。
+- 遥测：`telemetry disable` 由 dsh-fish 第一次解析驱动时执行；`cua-driver telemetry status` → `disabled (source: persisted)`。驱动启动 stderr 仍可能提示新版本 0.62.1，未自动更新。
 
 ## V7 安全边界
 
@@ -60,11 +60,11 @@
 
 | 编号 | 决定 | 依据 |
 | --- | --- | --- |
-| D1 | 生产用 dsh-fish 内置最小 MCP 客户端 | V0/V2；DSH MCP 62 工具全局注册，已验证不采用 |
+| D1 | 生产用 dsh-fish 内置最小 MCP 客户端 | V0/V1；DSH MCP 62 工具全局注册，设计审查不采用（V2 动态挂载未单独跑） |
 | D2 | 白名单保留 Code/Terminal/Notepad/Chrome；`detail=full`、`input=allow` | 用户显式接受；V3 显示 Terminal/Chrome 只能观察（工具如实返回） |
 | D3 | `max_elements=200`、`max_image_dimension=1280`；`captureId` + 图像坐标 | V4 |
 | D4 | TTL 15 分钟 | 设计定稿；单测覆盖到期 |
-| D5 | G2 通过（V1/V3/V4/V5 均有结论；V2 DSH MCP 仅验证，不生产） | 本记录 |
+| D5 | G2 通过（V1/V3/V4/V5/V6/V7 均有结论；V2 DSH MCP 动态挂载未跑，生产不使用） | 本记录 |
 
 ## 部署状态（2026-11-25）
 
