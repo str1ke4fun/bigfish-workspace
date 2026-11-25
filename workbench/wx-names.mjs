@@ -247,12 +247,13 @@ function resolvePolicyName(name, entries) {
   }
   // 精确/折叠都没命中：截断条目允许用「去省略号后的唯一前缀」指认，
   // 但它仍然不能作为可发送的规范名，只报 truncated。
+  // prefix 必须是 'candidate'：截断只说明真名比输入长，不能让更长的输入反向缩成旧前缀。
   const truncatedHits = []
   for (const pair of pairs) {
     if (String(pair.entry?.nameConfidence ?? '') !== 'truncated') continue
     const base = stripTruncated(pair.name)
     if (!base) continue
-    const r = impl.matchOne(clean, [base], { tiers: ['exact', 'folded'], prefix: true })
+    const r = impl.matchOne(clean, [base], { tiers: ['exact', 'folded'], prefix: 'candidate' })
     if (r.status === 'exact' || r.status === 'folded') truncatedHits.push(pair.entry)
   }
   const uniqueTruncated = [...new Set(truncatedHits)]

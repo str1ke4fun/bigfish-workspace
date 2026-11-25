@@ -645,7 +645,7 @@ async function saveWxScope(body) {
     chown -R str1k3:str1k3 ${H}/.dsh-wx
     cat ${WX_POLICY}
   `)
-  return { ok: r.ok, err: r.err, policy: next }
+  return { ok: r.ok, err: r.err, policy: next, warnings, bad: [] }
 }
 
 /** OneBot action with params（在 WSL 里跑，参数走单引号 JSON） */async function onebotCall(action, params = {}, timeout = 30_000) {

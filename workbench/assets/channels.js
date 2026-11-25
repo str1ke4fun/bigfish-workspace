@@ -446,7 +446,8 @@ export function initChannels({ isActive = () => false } = {}) {
       }
       const r = await api('/api/wx/scope', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       if (r.error) { alert(r.error); return }
-      renderWxScope({ ...(wxScopeState || {}), policy: r.policy })
+      // 用 POST 响应重画（policy + bad），不再沿用保存前的旧坏名。
+      renderWxScope({ ...(wxScopeState || {}), policy: r.policy, bad: Array.isArray(r.bad) ? r.bad : [] })
       const warn = Array.isArray(r.warnings) && r.warnings.length
         ? ` · 提示：${r.warnings.map((w) => `${w.name}（${w.why}）`).join('、')}`
         : ''

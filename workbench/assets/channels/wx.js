@@ -406,7 +406,9 @@ async function saveScope() {
   })
   const d = r.data || {}
   if (d.error || !r.ok) { SPEC.wxMsg.textContent = `没存上：${d.error || d.err || '接口没回话'}`; return }
-  renderScopeNow({ ...SPEC.scopeData, policy: d.policy })
+  // 用服务端 POST 响应里的 policy/bad 重画，避免继续显示保存前的旧坏名。
+  SPEC.scopeData = { ...SPEC.scopeData, policy: d.policy, bad: Array.isArray(d.bad) ? d.bad : [] }
+  renderScopeNow(SPEC.scopeData)
   const warn = Array.isArray(d.warnings) && d.warnings.length
     ? ` · 提示：${d.warnings.map((w) => `${w.name}（${w.why}）`).join('、')}`
     : ''

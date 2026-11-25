@@ -57,6 +57,14 @@ test('两个字面相同的条目、或多条截断条目都按撞名处理', ()
   assert.equal(canonicalizePolicyName('长名', truncated).status, 'ambiguous')
 })
 
+test('截断对账只接受目录名更长，不把更长的输入反向缩成旧前缀', () => {
+  const entries = [
+    { chatId: 'c_hike', displayName: '北京周末徒步群...', fullName: '', nameConfidence: 'truncated' },
+  ]
+  assert.deepEqual(canonicalizePolicyName('北京周末徒步群', entries), { status: 'truncated', name: '北京周末徒步群' })
+  assert.deepEqual(canonicalizePolicyName('北京周末徒步群2', entries), { status: 'unknown', name: '北京周末徒步群2' })
+})
+
 test('空名字和折叠撞名都按条报告，不静默丢', () => {
   const empty = sanitizePolicyList(['', '  '])
   assert.deepEqual(empty.kept, [])
