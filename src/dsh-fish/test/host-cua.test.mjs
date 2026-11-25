@@ -89,6 +89,7 @@ test('驱动退出会 fail closed', async () => {
   await svc.setMode({ mode: 'managed', actor: 'workbench' })
   onExit(new Error('boom'))
   assert.equal(svc.status().mode, 'off')
+  assert.equal(svc.status().phase, 'error')
   assert.match(svc.status().lastError, /boom/)
 })
 

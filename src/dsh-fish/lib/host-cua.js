@@ -237,10 +237,10 @@ export function createHostCua({
           if (disposed || client !== created) return
           client = null
           driver = null
+          mode.setMode({ mode: 'off', actor: 'system' })
           phase = 'error'
           lastError = `driver-exit: ${String(err?.message ?? err).slice(0, 200)}`
           void audit({ kind: 'mode', mode: 'off', action: 'error', reason: lastError })
-          mode.setMode({ mode: 'off', actor: 'system' })
         },
         log: (...args) => log(...args),
       })
@@ -262,10 +262,10 @@ export function createHostCua({
       return { ok: true, status: status() }
     } catch (err) {
       stopClient()
+      mode.setMode({ mode: 'off', actor: 'system' })
       phase = 'error'
       lastError = String(err?.message ?? err).slice(0, 300)
       void audit({ kind: 'mode', mode: 'off', action: 'error', reason: lastError })
-      mode.setMode({ mode: 'off', actor: 'system' })
       return { ok: false, code: err?.code ?? 'DRIVER_START_FAILED', status: status() }
     }
   }
