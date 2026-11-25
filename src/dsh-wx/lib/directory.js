@@ -21,6 +21,7 @@ import { dirname } from 'node:path'
 
 import { isIgnoredChat } from './capture.js'
 import { chatIdFor } from './ledger.js'
+import { chatIdSeed, cleanTruncated, displayName, foldedKey, graphemeLength, nameKey, sanitizeName, skeleton } from './name.js'
 import { parsePreviewSender } from './speaker.js'
 
 export const DIRECTORY_VERSION = 1
@@ -28,7 +29,7 @@ export const DEFAULT_DIRECTORY = '/home/str1k3/.dsh-wx/directory.json'
 export const MAX_ALIASES = 12
 
 const str = (v) => String(v ?? '').trim()
-const norm = (v) => str(v).replace(/\s+/g, ' ')
+const norm = displayName
 const nowIso = (now) => new Date(Number(now()) || Date.now()).toISOString()
 const TRUNCATED = /(?:\.{2,}|…)\s*$/u
 
@@ -38,21 +39,24 @@ export function stripEllipsis(name) {
 }
 export const looksTruncated = (name) => TRUNCATED.test(str(name))
 
-const tempIdFor = (name) => 'c_tmp_' + createHash('sha256').update(norm(name)).digest('hex').slice(0, 10)
+/** 历史临时 id：种子只做 trim + 压空白，保证已有 c_tmp_* 不漂移。 */
+const tempIdFor = (name) => 'c_tmp_' + createHash('sha256').update(chatIdSeed(name)).digest('hex').slice(0, 10)
 const isTempChatId = (chatId) => str(chatId).startsWith('c_tmp_')
 
 /**
  * 在权威名字（允许名单 / 已知全名）里找一个唯一前缀。
  * 找不到或撞名返回空；这里不做「包含」匹配。
+ * 前缀比较走折叠键和字素计数，避免把旗帜/ZWJ 序列切成半个代理。
  */
 export function uniquePrefix(name, names = []) {
-  const base = stripEllipsis(name)
-  if (base.length < 2) return ''
-  const list = [...new Set((names ?? []).map(norm).filter(Boolean))]
-  const exact = list.find((n) => n === norm(name))
+  const base = cleanTruncated(stripEllipsis(name))
+  if (!base || graphemeLength(base) < 2) return ''
+  const list = [...new Set((names ?? []).map(displayName).filter(Boolean))]
+  const exact = list.find((n) => nameKey(n) === nameKey(name))
   if (exact) return exact
   if (!looksTruncated(name)) return ''
-  const hits = list.filter((n) => n.startsWith(base))
+  const baseFold = foldedKey(base)
+  const hits = list.filter((n) => foldedKey(n).startsWith(baseFold))
   return hits.length === 1 ? hits[0] : ''
 }
 
@@ -83,16 +87,29 @@ function readEntries(file, log) {
     const chats = Array.isArray(raw?.chats) ? raw.chats : []
     return chats
       .filter((c) => c && typeof c === 'object' && str(c.chatId))
-      .map((c) => ({
-        ...blankEntry(str(c.displayName || c.fullName || c.chatId), str(c.firstSeenAt) || nowIso(Date.now)),
-        ...c,
-        aliases: Array.isArray(c.aliases) ? c.aliases.map(str).filter(Boolean).slice(0, MAX_ALIASES) : [],
-      }))
+      .map((c) => {
+        // 只清不可见字符，不剥省略号、不去 VS/ZWJ/肤色/keycap。
+        const shown = sanitizeName(String(c.displayName ?? ''))
+        const full = sanitizeName(String(c.fullName ?? ''))
+        const fallback = shown || full || str(c.chatId)
+        return {
+          ...blankEntry(fallback, str(c.firstSeenAt) || nowIso(Date.now)),
+          ...c,
+          displayName: shown || fallback,
+          fullName: full,
+          aliases: Array.isArray(c.aliases)
+            ? c.aliases.map((a) => sanitizeName(String(a ?? ''))).filter(Boolean).slice(0, MAX_ALIASES)
+            : [],
+        }
+      })
   } catch (err) {
     if (err?.code !== 'ENOENT') log?.('会话目录读不出来，按空目录处理：' + String(err?.message ?? err).slice(0, 120))
     return []
   }
 }
+
+/** 条目上可用于比较的名字（去重后）。 */
+const entryNames = (e) => [...new Set([e.displayName, e.fullName, ...(e.aliases ?? [])].map(displayName).filter(Boolean))]
 
 /**
  * @param {object} [opts]
@@ -104,16 +121,117 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
   let entries = readEntries(file, log)
   let dirty = false
 
-  const findMatches = (name) => {
-    const n = norm(name)
-    if (!n) return []
-    return entries.filter((e) => norm(e.fullName) === n || norm(e.displayName) === n ||
-      (e.aliases ?? []).some((a) => norm(a) === n))
+  const emitNameMatch = (from, entry, tier) => {
+    if (typeof log !== 'function' || !entry) return
+    // 只给调试日志，不进模型文案。
+    log('name-match ' + JSON.stringify({
+      from: String(from ?? ''),
+      to: entry.displayName || entry.fullName || '',
+      tier,
+      chatId: entry.chatId,
+    }))
   }
+
+  /** 唯一命中时再区分「规范名精确相等」和「只是折叠相等」。 */
+  const classifyUnique = (probe, entry, tier) => {
+    const canon = [entry.displayName, entry.fullName].filter(Boolean)
+    const pk = nameKey(probe)
+    if (canon.some((n) => nameKey(n) === pk)) return { status: 'exact', tier: 'exact' }
+    if (canon.some((n) => foldedKey(n) === foldedKey(probe))) return { status: 'folded', tier: 'folded' }
+    return { status: tier === 'skeleton' ? 'resolved' : tier, tier }
+  }
+
+  /**
+   * 条目级名字匹配。
+   *
+   * 折叠键先分组：同一 foldedKey 命中多个条目直接 ambiguous，即使其中一个
+   * 与输入精确相等也不挑。只有折叠唯一时才按 tiers 顺序分 exact/folded/skeleton。
+   * 前缀匹配按字素计数，较短一方至少 2 个字素，避免单个 emoji 吸走整组。
+   */
+  const lookup = (name, opts = {}) => {
+    const tiers = Array.isArray(opts.tiers) && opts.tiers.length ? opts.tiers : ['exact', 'folded']
+    const clean = displayName(name)
+    if (!clean) return { status: 'unknown', matches: [], entry: null, tier: '' }
+    const truncatedInput = looksTruncated(name)
+    const prefix = opts.prefix === true || truncatedInput
+    const probe = truncatedInput ? (cleanTruncated(stripEllipsis(clean)) || clean) : clean
+    if (!probe) return { status: 'unknown', matches: [], entry: null, tier: '' }
+    const pool = entries
+      .map((e) => ({ e, names: entryNames(e) }))
+      .filter((x) => x.names.length)
+
+    if (tiers.includes('folded')) {
+      const fk = foldedKey(probe)
+      const clashes = pool.filter(({ names }) => names.some((n) => foldedKey(n) === fk)).map((x) => x.e)
+      if (clashes.length > 1) return { status: 'ambiguous', matches: clashes, entry: null, tier: 'folded' }
+    }
+
+    for (const tier of tiers) {
+      const keyFn = tier === 'exact' ? nameKey : tier === 'folded' ? foldedKey : tier === 'skeleton' ? skeleton : null
+      if (!keyFn) throw new Error(`unknown name tier: ${tier}`)
+      // 精确层保留原始输入（含省略号），这样存过的截断写法本身仍是强证据；
+      // 更宽的层才用清理过尾巴的 probe 做前缀比较。
+      const tierProbe = tier === 'exact' ? clean : probe
+      const key = keyFn(tierProbe)
+      // 纯 emoji 名字的骨架为空；空键不能拿来前缀匹配，否则会吸走整组。
+      if (!key) continue
+      const hits = []
+      for (const { e, names } of pool) {
+        const hit = names.find((n) => {
+          const nk = keyFn(n)
+          if (nk === key) return true
+          if (!prefix) return false
+          if (!nk.startsWith(key) && !key.startsWith(nk)) return false
+          return Math.min(graphemeLength(nk), graphemeLength(key)) >= 2
+        })
+        if (hit) hits.push(e)
+      }
+      if (hits.length === 1) {
+        const classified = classifyUnique(tierProbe, hits[0], tier)
+        return { status: classified.status, matches: hits, entry: hits[0], tier: classified.tier }
+      }
+      if (hits.length > 1) return { status: 'ambiguous', matches: hits, entry: null, tier }
+    }
+
+    return { status: 'unknown', matches: [], entry: null, tier: '' }
+  }
+
+  const findMatches = (name) => lookup(name, { tiers: ['exact', 'folded'] }).matches
   const findByName = (name) => {
-    const matches = findMatches(name)
-    return matches.length === 1 ? matches[0] : null
+    const r = lookup(name, { tiers: ['exact', 'folded'] })
+    return r.status === 'ambiguous' ? null : r.entry
   }
+
+  /**
+   * 加载时扫描折叠撞名：排除临时条目，不覆盖 duplicate-name 的自愈标记。
+   * 只标 ambiguous，不删除、不合并。
+   */
+  const markFoldedCollisions = () => {
+    const groups = new Map()
+    for (const e of entries) {
+      if (isTempChatId(e.chatId)) continue
+      for (const key of new Set(entryNames(e).map(foldedKey).filter(Boolean))) {
+        const list = groups.get(key) ?? []
+        list.push(e)
+        groups.set(key, list)
+      }
+    }
+    let changed = false
+    for (const list of groups.values()) {
+      const unique = [...new Set(list)]
+      if (unique.length < 2) continue
+      for (const e of unique) {
+        if (e.resolvedBy === 'duplicate-name') continue
+        if (e.nameConfidence === 'ambiguous' && e.resolvedBy === 'folded-collision') continue
+        e.nameConfidence = 'ambiguous'
+        e.resolvedBy = 'folded-collision'
+        changed = true
+      }
+    }
+    if (changed) dirty = true
+  }
+  markFoldedCollisions()
+
   const markAmbiguous = (list, why = 'name-collision') => {
     let changed = false
     for (const e of new Set(list)) {
@@ -224,15 +342,12 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
         return dup
       }
       const ignored = isIgnoredChat(name, ignoreChats)
-      const clean = stripEllipsis(name)
       const truncated = looksTruncated(name)
-      const resolvedFull = uniquePrefix(name, authoritative)
-      const confidence = truncated ? (resolvedFull ? 'resolved' : 'truncated') : 'exact'
-      const fullName = !truncated ? name : resolvedFull
-      const displayName = fullName || name
+      const resolvedFull = truncated ? uniquePrefix(name, authoritative) : ''
+      const fullName = truncated ? resolvedFull : name
 
       const nameMatches = findMatches(name)
-      const fullNameMatches = fullName && fullName !== name ? findMatches(fullName) : []
+      const fullNameMatches = fullName && nameKey(fullName) !== nameKey(name) ? findMatches(fullName) : []
       const matches = [...new Set([...nameMatches, ...fullNameMatches])]
       if (matches.length > 1) {
         markAmbiguous(matches)
@@ -242,22 +357,49 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
       let e = matches[0] ?? null
       if (!e) {
         // 用全名派生 id；截断名用临时 id，解析后保留这个 id（台账不能换账本名）。
-        e = blankEntry(displayName, at)
-        e.chatId = fullName ? chatIdFor(fullName) : tempIdFor(name)
+        // 种子用原始观察名（trim + 压空白）：NFC 清洗不能移动已有 id。
+        const idSeed = truncated ? resolvedFull : str(rawName)
+        e = blankEntry(fullName || name, at)
+        e.chatId = idSeed ? chatIdFor(chatIdSeed(idSeed)) : tempIdFor(rawName)
         if (!byId().has(e.chatId)) entries.push(e)
         else e = byId().get(e.chatId)
       }
-      const seen = new Set(e.aliases ?? [])
-      if (name !== displayName) seen.add(name)
-      if (e.displayName && e.displayName !== displayName) seen.add(e.displayName)
-      if (fullName && e.fullName && e.fullName !== fullName) seen.add(e.fullName)
-      e.aliases = [...seen].filter(Boolean).slice(-MAX_ALIASES)
-      e.displayName = displayName
-      e.fullName = fullName || e.fullName
-      e.nameConfidence = e.fullName && confidence === 'truncated' ? 'resolved' : confidence
-      e.resolvedBy = e.fullName
-        ? (fullName && fullName !== name ? 'known-name-prefix' : row.resolvedBy || e.resolvedBy || 'sidebar')
-        : ''
+
+      // 折叠命中保留已存规范名，新写法进 aliases；
+      // 只有已存截断名、这次观察到非截断全名时才提升。
+      const storedTruncated = looksTruncated(e.displayName) || e.nameConfidence === 'truncated'
+      const promoteTo = storedTruncated ? (truncated ? resolvedFull : name) : ''
+      if (promoteTo) {
+        const seen = new Set(e.aliases ?? [])
+        for (const old of [e.displayName, e.fullName]) {
+          if (old && nameKey(old) !== nameKey(promoteTo)) seen.add(old)
+        }
+        e.aliases = [...seen].filter(Boolean).slice(-MAX_ALIASES)
+        e.displayName = promoteTo
+        e.fullName = promoteTo
+        e.nameConfidence = truncated ? 'resolved' : 'exact'
+        e.resolvedBy = truncated ? 'known-name-prefix' : (str(row.resolvedBy) || e.resolvedBy || 'sidebar')
+      } else {
+        const seen = new Set(e.aliases ?? [])
+        const known = new Set([e.displayName, e.fullName, ...seen].filter(Boolean).map(nameKey))
+        for (const observed of [name, fullName]) {
+          if (!observed || known.has(nameKey(observed))) continue
+          seen.add(observed)
+          known.add(nameKey(observed))
+        }
+        if (!e.displayName) e.displayName = fullName || name
+        if (!e.fullName && fullName) e.fullName = fullName
+        e.aliases = [...seen].filter(Boolean).slice(-MAX_ALIASES)
+        if (truncated) {
+          e.nameConfidence = e.fullName ? 'resolved' : 'truncated'
+          e.resolvedBy = resolvedFull && e.fullName === resolvedFull
+            ? 'known-name-prefix'
+            : (e.fullName ? (e.resolvedBy || '') : '')
+        } else {
+          e.nameConfidence = 'exact'
+          e.resolvedBy = str(row.resolvedBy) || e.resolvedBy || 'sidebar'
+        }
+      }
       if (direct.has(norm(name)) || direct.has(norm(e.fullName))) e.kind = 'dm'
       else if (row.kind) e.kind = str(row.kind)
       else if (!namesOnly && row.preview && /\S[:：]\s*\S/.test(String(row.preview))) e.kind = 'group'
@@ -317,22 +459,58 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
 
   const cloneEntry = (e) => ({ ...e, aliases: [...(e.aliases ?? [])] })
 
-  /** 稳定 chatId：目录里认识这个名字就用目录的；否则按全名派生（不入目录）。 */
+  /** 稳定 chatId：目录里认识这个名字就用目录的；否则按原始名字种子派生（不入目录）。 */
   function idFor(name) {
-    const matches = findMatches(name)
-    if (matches.length > 1) return ''
-    const e = matches[0] ?? null
-    if (e) return e.nameConfidence === 'ambiguous' ? '' : e.chatId
+    const r = lookup(name, { tiers: ['exact', 'folded'] })
+    if (r.status === 'ambiguous') return ''
+    if (r.entry) return r.entry.nameConfidence === 'ambiguous' ? '' : r.entry.chatId
     const n = norm(name)
-    return n ? chatIdFor(n) : ''
+    return n ? chatIdFor(chatIdSeed(name)) : ''
+  }
+
+  /**
+   * 目录级名字解析：返回命中状态、命中条目与规范名。
+   * 截断名默认启用字素前缀；唯一命中记 resolved，没有唯一命中记 truncated。
+   */
+  function lookupName(name, opts = {}) {
+    const r = lookup(name, opts)
+    let status = r.status
+    if (status !== 'ambiguous') {
+      if (r.entry) status = looksTruncated(name) ? 'resolved' : r.status
+      else status = looksTruncated(name) ? 'truncated' : 'unknown'
+    }
+    if (r.entry && (r.tier === 'folded' || r.tier === 'skeleton')) emitNameMatch(name, r.entry, r.tier)
+    return {
+      status,
+      matches: r.matches.map(cloneEntry),
+      match: r.entry ? cloneEntry(r.entry) : null,
+      chatId: r.entry ? str(r.entry.chatId) : '',
+      displayName: r.entry ? displayName(r.entry.displayName || r.entry.fullName || '') : '',
+    }
+  }
+
+  /** 会话身份键：能唯一解析时是目录 chatId；unknown 非空名按原始种子派生；其余为空。 */
+  function stateKey(name) {
+    const r = lookup(name, { tiers: ['exact', 'folded'] })
+    if (r.entry) return str(r.entry.chatId)
+    if (r.status === 'ambiguous') return ''
+    const n = norm(name)
+    return n ? chatIdFor(chatIdSeed(name)) : ''
+  }
+
+  /** 两个名字是否指同一个会话：两边都解析出非空身份且相同。 */
+  function sameEntry(a, b) {
+    const ka = stateKey(a)
+    const kb = stateKey(b)
+    return Boolean(ka) && ka === kb
   }
 
   /** 查询发送身份：同名一对多、截断、ambiguous 都 fail closed。 */
   function sendableLookup(name) {
-    const matches = findMatches(name)
-    if (matches.length > 1) return { status: 'ambiguous', target: null }
-    const e = matches[0] ?? null
-    if (!e) return { status: 'unknown', target: null }
+    const r = lookup(name, { tiers: ['exact', 'folded'] })
+    if (r.status === 'ambiguous') return { status: 'ambiguous', target: null }
+    if (!r.entry) return { status: looksTruncated(name) ? 'truncated' : 'unknown', target: null }
+    const e = r.entry
     if (e.nameConfidence !== 'exact' && e.nameConfidence !== 'resolved') {
       return { status: e.nameConfidence || 'ambiguous', target: null }
     }
@@ -393,7 +571,8 @@ export function createDirectory({ file = DEFAULT_DIRECTORY, now = Date.now, log 
   }
 
   return {
-    file, merge, idFor, sendableLookup, sendableName, sendableTarget, resolveName, entry, all, snapshot, stats, save, reset,
+    file, merge, lookupName, stateKey, sameEntry, idFor,
+    sendableLookup, sendableName, sendableTarget, resolveName, entry, all, snapshot, stats, save, reset,
   }
 }
 

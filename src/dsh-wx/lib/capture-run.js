@@ -21,6 +21,7 @@
 import { createHash } from 'node:crypto'
 
 import { chatIdFor } from './ledger.js'
+import { chatIdSeed } from './name.js'
 import { samePreviewText } from './speaker.js'
 import { alignSpeakers } from './speaker-align.js'
 import { sameName } from './tree.js'
@@ -109,7 +110,7 @@ export async function runCapture({
 
     // 3. 归一当前屏；chatId 以任务 / 目录 / 名字哈希为序。
     let messages = normalizeMessages(opened.parsed.messages, { now: nowFn() })
-    const chatId = str(job.chatId) || str(directory?.idFor?.(chat)) || chatIdFor(chat)
+    const chatId = str(job.chatId) || str(directory?.idFor?.(chat)) || chatIdFor(chatIdSeed(chat))
 
     // 4. OCR 只是补充发言人：失败、没行都照常入账。
     let ocrSenders = []
