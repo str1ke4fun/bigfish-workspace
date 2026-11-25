@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  AMBIENT_MODES, emptyAmbientConfig, effectiveAmbientModes, applyAmbientOp,
+  AMBIENT_MODES, emptyAmbientConfig, effectiveAmbientModes,
+  normalizeAmbientConfig, applyAmbientOp,
 } from '../lib/pet-ambient.js'
 
 const actionIds = new Set(['asset-109', 'asset-087', 'asset-070'])
@@ -95,4 +96,81 @@ test('effectiveAmbientModes：override 覆盖 defaults，缺失 mode 回落', ()
   assert.equal(modes.work.enabled, false)
   assert.equal(modes.off, undefined)
   assert.deepEqual(AMBIENT_MODES, ['off', 'event', 'ambient', 'work'])
+})
+
+test('replace-mode 省略的频率字段用设计默认值补齐', () => {
+  const r = applyAmbientOp(emptyAmbientConfig(), defaults, {
+    op: 'replace-mode', mode: 'event',
+    policy: { enabled: true, items: [{ action: 'asset-109' }], frequency: {} },
+  }, { actionIds })
+  assert.equal(r.ok, true)
+  assert.equal(r.config.modes.event.frequency.minGapSec, 300)
+  assert.equal(r.config.modes.event.frequency.settleSec, 300)
+  assert.equal(r.config.modes.event.frequency.actionCooldownSec, 7200)
+})
+
+test('replace-mode 重复 action 后者覆盖前者并保留首次位置', () => {
+  const r = applyAmbientOp(emptyAmbientConfig(), defaults, {
+    op: 'replace-mode', mode: 'ambient',
+    policy: {
+      enabled: true,
+      items: [
+        { action: 'asset-109', weight: 1 },
+        { action: 'asset-070', weight: 2 },
+        { action: 'asset-109', weight: 7 },
+      ],
+      frequency: {},
+    },
+  }, { actionIds })
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.config.modes.ambient.items.map((x) => x.action), ['asset-109', 'asset-070'])
+  assert.equal(r.config.modes.ambient.items[0].weight, 7)
+})
+
+test('reset 不带 mode 清空全部覆盖并推进 revision', () => {
+  let r = applyAmbientOp(emptyAmbientConfig(), defaults, {
+    op: 'add-item', mode: 'work', action: 'asset-087', weight: 2,
+  }, { actionIds })
+  r = applyAmbientOp(r.config, defaults, { op: 'reset' }, { actionIds })
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.config.modes, {})
+  assert.equal(r.config.revision, 2)
+})
+
+test('actionIds 为 null 时跳过动作校验照样写入；空 Set 仍然严格', () => {
+  const r = applyAmbientOp(emptyAmbientConfig(), defaults, {
+    op: 'add-item', mode: 'work', action: 'asset-unseen', weight: 2,
+  }, { actionIds: null })
+  assert.equal(r.ok, true)
+  assert.equal(r.config.modes.work.items.at(-1).action, 'asset-unseen')
+  const strict = applyAmbientOp(emptyAmbientConfig(), defaults, {
+    op: 'add-item', mode: 'work', action: 'asset-unseen',
+  }, { actionIds: new Set() })
+  assert.equal(strict.ok, false)
+  assert.equal(strict.why, 'UNKNOWN_ACTION')
+})
+
+test('set-item 只在 enabled 是布尔时改动它', () => {
+  const r = applyAmbientOp(emptyAmbientConfig(), defaults, {
+    op: 'set-item', mode: 'work', action: 'asset-109', patch: { enabled: 0 },
+  }, { actionIds })
+  assert.equal(r.ok, true)
+  assert.equal(r.config.modes.work.items[0].enabled, true)
+  const off = applyAmbientOp(r.config, defaults, {
+    op: 'set-item', mode: 'work', action: 'asset-109', patch: { enabled: false },
+  }, { actionIds })
+  assert.equal(off.config.modes.work.items[0].enabled, false)
+  const stayed = applyAmbientOp(off.config, defaults, {
+    op: 'set-item', mode: 'work', action: 'asset-109', patch: { enabled: 'false' },
+  }, { actionIds })
+  assert.equal(stayed.config.modes.work.items[0].enabled, false)
+})
+
+test('normalizeAmbientConfig 拒绝不存在的钟点，保留合法值', () => {
+  const bad = normalizeAmbientConfig({ quietHours: { start: '99:99', end: '07:00' } })
+  assert.equal(bad.config.quietHours, null)
+  const good = normalizeAmbientConfig({
+    quietHours: { start: '23:00', end: '07:30', afterJitterSec: 60 },
+  })
+  assert.deepEqual(good.config.quietHours, { start: '23:00', end: '07:30', afterJitterSec: 60 })
 })

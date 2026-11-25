@@ -17,15 +17,15 @@
 
 export const AMBIENT_MODES = ['off', 'event', 'ambient', 'work']
 
-/** 归一化后缺失频率字段的保守回落值。 */
+/** 归一化后缺失频率字段的设计默认值。 */
 const DEFAULT_FREQUENCY = {
   intervalMinSec: 600,
   intervalMaxSec: 1800,
-  minGapSec: 120,
+  minGapSec: 300,
   maxPerIdle: 2,
   maxPerDay: 8,
-  settleSec: 120,
-  actionCooldownSec: 3600,
+  settleSec: 300,
+  actionCooldownSec: 7200,
 }
 
 const ITEM_FIELDS = ['weight', 'enabled', 'cooldownSec', 'minIdleSec']
@@ -98,6 +98,17 @@ function normalizeFrequency(raw, errors, label) {
   return frequency
 }
 
+/** 同一 action 重复时后者覆盖前者，但保留首次出现的位置。 */
+function dedupeItems(items) {
+  const order = []
+  const byAction = new Map()
+  for (const item of items) {
+    if (!byAction.has(item.action)) order.push(item.action)
+    byAction.set(item.action, item)
+  }
+  return order.map((action) => byAction.get(action))
+}
+
 function normalizePolicy(raw, errors = [], label = 'policy') {
   const source = isPlainObject(raw) ? raw : {}
   if (raw !== undefined && raw !== null && !isPlainObject(raw)) {
@@ -115,7 +126,7 @@ function normalizePolicy(raw, errors = [], label = 'policy') {
   }
   return {
     enabled: source.enabled === true,
-    items,
+    items: dedupeItems(items),
     frequency: normalizeFrequency(source.frequency, errors, label),
   }
 }
@@ -126,7 +137,15 @@ function normalizeQuietHours(raw, errors) {
     errors.push('quietHours must be an object or null')
     return null
   }
-  const time = (value) => (typeof value === 'string' && /^\d{2}:\d{2}$/.test(value) ? value : null)
+  const time = (value) => {
+    if (typeof value !== 'string') return null
+    const match = /^(\d{2}):(\d{2})$/.exec(value)
+    if (!match) return null
+    const hours = Number(match[1])
+    const minutes = Number(match[2])
+    if (hours > 23 || minutes > 59) return null
+    return value
+  }
   const start = time(raw.start)
   const end = time(raw.end)
   if (!start || !end) {
@@ -222,19 +241,35 @@ function basePolicy(base, defaults, mode) {
 /**
  * 执行一个策略变更操作。返回新配置，输入永远不被改写。
  *
+ * - `reset` 不带 mode：清空全部 mode 覆盖；带 mode：只删该 mode。
+ * - `actionIds` 为 null（或没传）：壳还没上报动作目录，跳过动作存在性校验；
+ *   传 Set（包括空 Set）则严格校验。
+ *
  * 成功：{ ok: true, config, errors }（errors 里可能是被丢弃的未知动作等提示）
  * 失败：{ ok: false, why, errors? }
  */
 export function applyAmbientOp(config, defaults, op, options = {}) {
-  const actionIds = toIdSet(options?.actionIds)
+  // actionIds === null（或没传）表示壳还没上报动作目录：接受写入，由上层标记未校验。
+  // 传了 Set（包括空 Set）则严格校验，未知动作一律拒绝。
+  const actionIds = options?.actionIds == null ? null : toIdSet(options.actionIds)
+  const isKnownAction = (action) => actionIds === null || actionIds.has(action)
 
   if (!isPlainObject(op)) return bad('INVALID_OP')
   if (typeof op.op !== 'string' || !OPS.has(op.op)) return bad('UNKNOWN_OP')
-  if (typeof op.mode !== 'string' || !AMBIENT_MODES.includes(op.mode)) return bad('UNKNOWN_MODE')
 
   const { config: base } = normalizeAmbientConfig(config)
-  const mode = op.mode
   const errors = []
+
+  if (op.op === 'reset' && op.mode == null) {
+    base.modes = {}
+    base.revision = nonNegative(base.revision, 0) + 1
+    return { ok: true, config: base, errors }
+  }
+
+  if (typeof op.mode !== 'string' || !AMBIENT_MODES.includes(op.mode)) {
+    return bad('UNKNOWN_MODE')
+  }
+  const mode = op.mode
 
   if (op.op === 'reset') {
     if (basePolicy(base, defaults, mode) === undefined) return bad('NO_BASE_POLICY', errors)
@@ -249,10 +284,10 @@ export function applyAmbientOp(config, defaults, op, options = {}) {
     policy = normalizePolicy(op.policy, errors, `modes.${mode}`)
     const known = []
     for (const item of policy.items) {
-      if (actionIds.has(item.action)) known.push(item)
+      if (isKnownAction(item.action)) known.push(item)
       else errors.push(`unknown item action: ${item.action}`)
     }
-    policy.items = known
+    policy.items = dedupeItems(known)
   } else {
     const source = basePolicy(base, defaults, mode)
     if (source === undefined) return bad('NO_BASE_POLICY', errors)
@@ -274,7 +309,7 @@ export function applyAmbientOp(config, defaults, op, options = {}) {
         policy.frequency.intervalMaxSec = min
       }
     } else if (op.op === 'add-item') {
-      if (typeof op.action !== 'string' || !actionIds.has(op.action)) {
+      if (typeof op.action !== 'string' || !isKnownAction(op.action)) {
         return bad('UNKNOWN_ACTION', errors)
       }
       if (policy.items.some((item) => item.action === op.action)) {
@@ -290,7 +325,7 @@ export function applyAmbientOp(config, defaults, op, options = {}) {
       policy.items.push(item)
     } else if (op.op === 'set-item') {
       if (!isPlainObject(op.patch)) return bad('INVALID_OP', errors)
-      if (typeof op.action !== 'string' || !actionIds.has(op.action)) {
+      if (typeof op.action !== 'string' || !isKnownAction(op.action)) {
         return bad('UNKNOWN_ACTION', errors)
       }
       const item = policy.items.find((entry) => entry.action === op.action)
@@ -298,8 +333,10 @@ export function applyAmbientOp(config, defaults, op, options = {}) {
       for (const field of ITEM_FIELDS) {
         if (op.patch[field] === undefined) continue
         if (field === 'weight') item.weight = normalizeWeight(op.patch.weight)
-        else if (field === 'enabled') item.enabled = op.patch.enabled !== false
-        else item[field] = clampNonNegative(op.patch[field], item[field])
+        else if (field === 'enabled') {
+          // 只有真正的布尔才改动开关；0 / null / "false" 一律忽略，保留原值。
+          if (typeof op.patch.enabled === 'boolean') item.enabled = op.patch.enabled
+        } else item[field] = clampNonNegative(op.patch[field], item[field])
       }
     } else if (op.op === 'remove-item') {
       if (typeof op.action !== 'string') return bad('UNKNOWN_ACTION', errors)
