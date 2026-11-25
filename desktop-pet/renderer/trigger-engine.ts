@@ -9,6 +9,7 @@ import {
   pickTriggerAction,
   type TriggerDefinition,
 } from '../shared/trigger-model.ts'
+import type { AmbientModePolicy } from '../shared/ambient-model.ts'
 import {
   isPetMotion,
   type PetState,
@@ -25,10 +26,17 @@ export interface TriggerQuietHours {
   startMinute: number
   /** 本地时间终点，不含；可小于起点表示跨午夜。 */
   endMinute: number
+  /** 安静时段结束后再额外等待的抖动秒数；缺省 0。 */
+  afterJitterSec?: number
 }
 
 export interface TriggerEngineConfig {
   quietHours?: TriggerQuietHours | null
+  /**
+   * 按 presence.mode 选出的氛围策略；缺省/null 时回落到旧 `ambient` trigger。
+   * 存在策略时由下面的调度字段驱动，旧 trigger 分支不再参与。
+   */
+  ambient?: AmbientModePolicy | null
 }
 
 export interface TriggerSeen {
@@ -42,7 +50,20 @@ export interface TriggerSeen {
   sceneLoopActive: boolean
   /** 旧 playback 已丢失/被打断；恢复前必须按当前 trigger 目录重新选择。 */
   sceneLoopNeedsRevalidation: boolean
+  /** 旧 `ambient` trigger 的一次性游标；策略存在时不参与。 */
   ambientConsumed: boolean
+  /** 当前策略 mode；变化时整套调度重置。 */
+  ambientMode: string | null
+  /** 下一次允许播放的本地时间戳；null 表示本段已结束/被压住。 */
+  ambientNextAt: number | null
+  ambientIdleSince: number | null
+  ambientIdleCount: number
+  /** 每日计数所属的本地日期（YYYY-MM-DD）。 */
+  ambientDayKey: string
+  ambientCountToday: number
+  ambientLastAt: number | null
+  /** `"<action>|<timestamp>"`；有界，按最后一次播放裁剪。 */
+  ambientActionKeys: string[]
 }
 
 export interface TriggerBubbleEffect {
@@ -86,6 +107,14 @@ export function emptyTriggerSeen(): TriggerSeen {
     sceneLoopActive: false,
     sceneLoopNeedsRevalidation: false,
     ambientConsumed: false,
+    ambientMode: null,
+    ambientNextAt: null,
+    ambientIdleSince: null,
+    ambientIdleCount: 0,
+    ambientDayKey: '',
+    ambientCountToday: 0,
+    ambientLastAt: null,
+    ambientActionKeys: [],
   }
 }
 
@@ -100,6 +129,15 @@ function boundedSeen(values: readonly string[]): string[] {
   return unique.slice(-TRIGGER_SEEN_LIMIT)
 }
 
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function countOf(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0
+  return Math.trunc(value)
+}
+
 function cloneSeen(seen: TriggerSeen): TriggerSeen {
   return {
     cueIds: boundedSeen(seen?.cueIds ?? []),
@@ -112,6 +150,14 @@ function cloneSeen(seen: TriggerSeen): TriggerSeen {
     sceneLoopActive: seen?.sceneLoopActive === true,
     sceneLoopNeedsRevalidation: seen?.sceneLoopNeedsRevalidation === true,
     ambientConsumed: seen?.ambientConsumed === true,
+    ambientMode: typeof seen?.ambientMode === 'string' ? seen.ambientMode : null,
+    ambientNextAt: finiteOrNull(seen?.ambientNextAt),
+    ambientIdleSince: finiteOrNull(seen?.ambientIdleSince),
+    ambientIdleCount: countOf(seen?.ambientIdleCount),
+    ambientDayKey: typeof seen?.ambientDayKey === 'string' ? seen.ambientDayKey : '',
+    ambientCountToday: countOf(seen?.ambientCountToday),
+    ambientLastAt: finiteOrNull(seen?.ambientLastAt),
+    ambientActionKeys: boundedSeen(seen?.ambientActionKeys ?? []),
   }
 }
 
@@ -132,16 +178,43 @@ function localDay(now: number): { monthDay: string; dayKey: string; minute: numb
   }
 }
 
-function inQuietHours(config: TriggerEngineConfig | undefined, minute: number): boolean {
+function validQuietHours(config: TriggerEngineConfig | undefined): TriggerQuietHours | null {
   const quiet = config?.quietHours
-  if (!quiet) return false
+  if (!quiet) return null
   const start = quiet.startMinute
   const end = quiet.endMinute
-  if (!Number.isInteger(start) || !Number.isInteger(end)) return false
-  if (start < 0 || start > 1440 || end < 0 || end > 1440 || start === end) return false
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return null
+  if (start < 0 || start > 1440 || end < 0 || end > 1440 || start === end) return null
+  return quiet
+}
+
+function minuteInQuietHours(quiet: TriggerQuietHours, minute: number): boolean {
+  const start = quiet.startMinute
+  const end = quiet.endMinute
   return start < end
     ? minute >= start && minute < end
     : minute >= start || minute < end
+}
+
+function inQuietHours(config: TriggerEngineConfig | undefined, minute: number): boolean {
+  const quiet = validQuietHours(config)
+  return quiet !== null && minuteInQuietHours(quiet, minute)
+}
+
+/** 当前安静时段结束的本地时间；跨午夜时落到次日。 */
+function quietEndAt(quiet: TriggerQuietHours, now: number): number {
+  const date = new Date(now)
+  const end = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+    Math.floor(quiet.endMinute / 60),
+    quiet.endMinute % 60,
+    0,
+    0,
+  )
+  if (end.getTime() <= now) end.setDate(end.getDate() + 1)
+  return end.getTime()
 }
 
 function fireMarker(when: string, now: number): string {
@@ -250,22 +323,210 @@ function isAmbientState(state: PetState | null): boolean {
     && state.presence?.on !== true
 }
 
+/** 策略路径的空闲判定：presence 用 enabled 表达，不要求 presence.on === false。 */
+function ambientPolicyEligible(state: PetState | null, policy: AmbientModePolicy): boolean {
+  if (policy.enabled !== true) return false
+  if (state === null) return true
+  return state.scene === null && state.activity === null
+}
+
+function endAmbientIdle(seen: TriggerSeen): void {
+  seen.ambientNextAt = null
+  seen.ambientIdleSince = null
+  seen.ambientIdleCount = 0
+}
+
+function ambientSeconds(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return value < 0 ? 0 : value
+}
+
+function ambientCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0
+  return Math.trunc(value)
+}
+
+/** 权重：非法/负数按 1；0 表示永不选中。 */
+function ambientWeight(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 1
+  return value
+}
+
+function clampRoll(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  if (value < 0) return 0
+  return value > 1 ? 1 : value
+}
+
+/** 进入空闲/每次播放后抽下一次间隔；intervalMinSec === intervalMaxSec 时是固定值。 */
+function drawAmbientIntervalMs(policy: AmbientModePolicy, rng: () => number): number {
+  const frequency = policy.frequency
+  const min = ambientSeconds(frequency?.intervalMinSec)
+  const max = Math.max(min, ambientSeconds(frequency?.intervalMaxSec))
+  return Math.round((min + clampRoll(rng()) * (max - min)) * 1000)
+}
+
+function lastAmbientActionAt(seen: TriggerSeen, actionId: string, now: number): number | null {
+  const prefix = `${actionId}|`
+  let latest: number | null = null
+  for (const key of seen.ambientActionKeys) {
+    if (!key.startsWith(prefix)) continue
+    const timestamp = Number(key.slice(prefix.length))
+    if (!Number.isFinite(timestamp) || timestamp < 0 || timestamp > now) continue
+    if (latest === null || timestamp > latest) latest = timestamp
+  }
+  return latest
+}
+
+/**
+ * 策略路径的一拍调度。
+ *
+ * 只在 `ambientPolicyEligible` 为真时调用；`seen` 原位更新。
+ * 返回要播放的一次性动作，或 null。所有随机性都走注入的 rng。
+ */
+function ambientPolicyAction(
+  policy: AmbientModePolicy,
+  seen: TriggerSeen,
+  now: number,
+  actions: readonly PlaybackAction[],
+  rng: () => number,
+  quiet: TriggerQuietHours | null,
+  minute: number,
+): PlaybackAction | null {
+  const frequency = policy.frequency
+
+  if (seen.ambientIdleSince === null) {
+    seen.ambientIdleSince = now
+    seen.ambientIdleCount = 0
+    const settleMs = ambientSeconds(frequency?.settleSec) * 1000
+    seen.ambientNextAt = now + Math.max(settleMs, drawAmbientIntervalMs(policy, rng))
+  }
+
+  // 安静时段优先于 nextAt：每次空闲拍都把下一次推到结束后，并叠加一次抖动。
+  if (quiet !== null && minuteInQuietHours(quiet, minute)) {
+    const target = quietEndAt(quiet, now) + ambientSeconds(quiet.afterJitterSec) * 1000
+    seen.ambientNextAt = Math.max(seen.ambientNextAt ?? target, target)
+    return null
+  }
+
+  if (seen.ambientNextAt === null || now < seen.ambientNextAt) return null
+
+  const maxPerIdle = ambientCount(frequency?.maxPerIdle)
+  if (maxPerIdle > 0 && seen.ambientIdleCount >= maxPerIdle) {
+    seen.ambientNextAt = null
+    return null
+  }
+  const maxPerDay = ambientCount(frequency?.maxPerDay)
+  if (maxPerDay > 0 && seen.ambientCountToday >= maxPerDay) {
+    seen.ambientNextAt = null
+    return null
+  }
+
+  const minGapMs = ambientSeconds(frequency?.minGapSec) * 1000
+  if (seen.ambientLastAt !== null && minGapMs > 0) {
+    const earliest = seen.ambientLastAt + minGapMs
+    if (now < earliest) {
+      seen.ambientNextAt = earliest
+      return null
+    }
+  }
+
+  const idleMs = Math.max(0, now - (seen.ambientIdleSince ?? now))
+  const actionIds = new Set(actions.map((entry) => entry.id))
+  const eligible = policy.items.filter((item) => {
+    if (item === null || item.enabled === false) return false
+    if (ambientWeight(item.weight) <= 0) return false
+    if (!actionIds.has(item.action)) return false
+    if (idleMs < ambientSeconds(item.minIdleSec) * 1000) return false
+
+    const explicitCooldown = item.cooldownSec
+    const cooldownSec = typeof explicitCooldown === 'number' && Number.isFinite(explicitCooldown)
+      ? Math.max(0, explicitCooldown)
+      : ambientSeconds(frequency?.actionCooldownSec)
+    if (cooldownSec <= 0) return true
+    const last = lastAmbientActionAt(seen, item.action, now)
+    return last === null || now - last >= cooldownSec * 1000
+  })
+
+  if (eligible.length === 0) {
+    seen.ambientNextAt = now + 60_000
+    return null
+  }
+
+  const weights = eligible.map((item) => ambientWeight(item.weight))
+  const total = weights.reduce((sum, weight) => sum + weight, 0)
+  if (total <= 0) {
+    seen.ambientNextAt = now + 60_000
+    return null
+  }
+
+  let roll = clampRoll(rng()) * total
+  let index = weights.length - 1
+  for (let i = 0; i < weights.length; i += 1) {
+    roll -= weights[i]
+    if (roll < 0) {
+      index = i
+      break
+    }
+  }
+  const chosen = eligible[index]
+  const action = actions.find((entry) => entry.id === chosen.action)
+  if (action === undefined) {
+    seen.ambientNextAt = now + 60_000
+    return null
+  }
+
+  seen.ambientIdleCount += 1
+  seen.ambientCountToday += 1
+  seen.ambientLastAt = now
+  seen.ambientActionKeys = boundedSeen([
+    ...seen.ambientActionKeys,
+    `${chosen.action}|${Math.max(0, Math.trunc(now))}`,
+  ])
+  seen.ambientNextAt = now + drawAmbientIntervalMs(policy, rng)
+  return action
+}
+
 /** 归约一拍：高优先级事件先消费，低优先级状态留到后续拍继续处理。 */
 export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
   const seen = cloneSeen(input.seen)
   const steady = steadyMotion(input.state)
   const rng = input.rng ?? Math.random
   const now = Number.isFinite(input.now) ? input.now : 0
-  const ambientEligible = isAmbientState(input.state)
   const local = localDay(now)
+  const policy = input.config?.ambient ?? null
+  const quiet = validQuietHours(input.config)
+
+  if (policy !== null) {
+    if (seen.ambientMode !== policy.mode) {
+      seen.ambientMode = policy.mode
+      seen.ambientNextAt = null
+      seen.ambientIdleSince = null
+      seen.ambientIdleCount = 0
+      seen.ambientLastAt = null
+      seen.ambientActionKeys = []
+    }
+    if (seen.ambientDayKey !== local.dayKey) {
+      seen.ambientDayKey = local.dayKey
+      seen.ambientCountToday = 0
+    }
+  }
+
+  const ambientEligible = policy !== null
+    ? ambientPolicyEligible(input.state, policy)
+    : isAmbientState(input.state)
 
   // 任何非 ambient 状态都算一次离开空闲；提前返回也要重新武装下一次 ambient。
-  if (!ambientEligible) seen.ambientConsumed = false
+  if (!ambientEligible) {
+    seen.ambientConsumed = false
+    if (policy !== null) endAmbientIdle(seen)
+  }
 
   if (input.manualBusy) {
     // 用户手动动作先占据播放器；只暂时卸下 scene loop，事件游标保持待消费。
     if (seen.sceneLoopActive) seen.sceneLoopActive = false
     seen.ambientConsumed = false
+    if (policy !== null) endAmbientIdle(seen)
     return { steady, seen }
   }
 
@@ -291,6 +552,7 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     }
 
     seen.ambientConsumed = false
+    if (policy !== null) endAmbientIdle(seen)
     rememberCue(seen, id)
     const action = when === null
       ? null
@@ -417,7 +679,10 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     }
   }
 
-  if (ambientEligible && inQuietHours(input.config, local.minute)) return { steady, seen }
+  // 安静时段只压旧 ambient 分支；策略路径在调度里推进 nextAt。
+  if (policy === null && ambientEligible && inQuietHours(input.config, local.minute)) {
+    return { steady, seen }
+  }
 
   // 日期触发优先占用空闲拍；inAmbient 日期只在真正空闲时参与。
   for (const trigger of input.triggers) {
@@ -428,7 +693,8 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     if (hasDate(seen, trigger.when, local.dayKey)) continue
 
     rememberDate(seen, trigger.when, local.dayKey)
-    if (ambientEligible) seen.ambientConsumed = true
+    // 旧游标只在 legacy 路径维护；策略路径不碰它。
+    if (policy === null && ambientEligible) seen.ambientConsumed = true
     if (!triggerCooldownElapsed(trigger, seen, now)) return { steady, seen }
     const action = actionForTrigger(trigger, input.actions, rng)
     if (action === null) return { steady, seen }
@@ -437,6 +703,25 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
       steady,
       seen,
       action: { type: 'startAction', actionId: action.id, loop: false },
+    }
+  }
+
+  if (policy !== null) {
+    if (!ambientEligible) return { steady, seen }
+    const ambientAction = ambientPolicyAction(
+      policy,
+      seen,
+      now,
+      input.actions,
+      rng,
+      quiet,
+      local.minute,
+    )
+    if (ambientAction === null) return { steady, seen }
+    return {
+      steady,
+      seen,
+      action: { type: 'startAction', actionId: ambientAction.id, loop: false },
     }
   }
 
