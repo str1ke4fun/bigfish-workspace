@@ -5,10 +5,13 @@
  * 判定顺序按 spec 固定，调用方只需要拿结果做事。
  */
 
+import { displayName } from './name.js'
+
 const str = (v) => String(v ?? '').trim()
-const collapse = (v) => str(v).replace(/\s+/g, ' ')
 const asciiLower = (v) => v.replace(/[A-Z]/g, (c) => c.toLowerCase())
-const nameKey = (v) => asciiLower(collapse(v))
+// 服务号名单只做 ASCII 小写：Tencent News 这类英文名保持历史行为，
+// 不被 emoji/Unicode 折叠影响。
+const serviceNameKey = (v) => asciiLower(displayName(v))
 
 /** spec §7：服务号、系统会话。用户可在 policy.ignoreChats 覆盖。 */
 export const DEFAULT_IGNORE_CHATS = [
@@ -71,9 +74,9 @@ export function captureSettings(raw) {
 
 /** 服务号判定：trim + 压空格 + ASCII 小写后精确比较，避免前缀误伤正常群。 */
 export function isIgnoredChat(name, ignoreChats = []) {
-  const key = nameKey(name)
+  const key = serviceNameKey(name)
   if (!key) return false
-  return (Array.isArray(ignoreChats) ? ignoreChats : []).some((n) => nameKey(n) === key)
+  return (Array.isArray(ignoreChats) ? ignoreChats : []).some((n) => serviceNameKey(n) === key)
 }
 
 /** 侧栏预览指纹：只用来判断有没有变化，不进入台账。 */
@@ -99,7 +102,7 @@ export function shouldEnqueue({
   ignoreChats = [],
 } = {}) {
   const name = str(row?.name)
-  const allowed = (Array.isArray(allowChats) ? allowChats : []).some((n) => nameKey(n) === nameKey(name))
+  const allowed = (Array.isArray(allowChats) ? allowChats : []).some((n) => serviceNameKey(n) === serviceNameKey(name))
   if (!allowed) return { enqueue: false, reason: 'not-allowed' }
   if (isIgnoredChat(name, ignoreChats)) return { enqueue: false, reason: 'ignored' }
   if (row?.draft) return { enqueue: false, reason: 'draft' }

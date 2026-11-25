@@ -3,10 +3,11 @@
 import { el, clear, card, local, hint } from '../lib.js'
 
 function chipText(row) {
-  const who = String(row.chat || '')
-    .replace(/^wx:/, '微信·')
-    .replace(/^group:/, 'QQ群·')
-    .replace(/^private:/, 'QQ·')
+  const raw = String(row.chat || '')
+  // 微信状态键是 wx:<chatId>；后端已按目录映射成展示名，别把内部 id 显示出来。
+  const who = raw.startsWith('wx:')
+    ? `微信·${row.name || '（目录里没这个会话）'}`
+    : raw.replace(/^group:/, 'QQ群·').replace(/^private:/, 'QQ·')
   const quiet = row.quietSeconds < 60 ? '刚刚' : `${Math.round(row.quietSeconds / 60)} 分钟前`
   return `${who || '—'}：一小时 ${row.lastHour ?? 0} 条 · ${quiet}`
 }

@@ -116,6 +116,24 @@ wx_history { "chat": "测试群A", "query": "排期", "hours": 24, "limit": 10 }
 - 当前打开的会话最多每 `ocrEveryMs` 做一次 OCR 补名；OCR 前后在 GUI 锁内复核会话，已经切走就跳过；只对台账里发言人仍为空的记录追加 repair，不覆盖已有记录。
 - 读不出就如实标未识别，不从正文猜。
 
+## 群名与 emoji
+
+- 群名/会话名支持任意合法字符：汉字、字母、数字、标点，以及 emoji 的完整序列，包括旗帜（`🇨🇳`）、keycap（`1️⃣`）、ZWJ 组合（`👨‍👩‍👧`）、肤色修饰符（`👍🏽`）和 tag 序列（`🏴󠁧󠁢󠁳󠁣󠁴󠁿`）。入口会清掉不可见控制符、孤立代理对和 `U+FFFD`，合法 emoji 原样保留。
+- 发送目标只认 `exact` 和 `folded` 两层：`exact` 比较展示名（大小写敏感），`folded` 额外忽略变体选择符和零宽格式符，所以 `❤️读书群` 和 `❤读书群` 会落到同一个群。不做前缀、后缀、包含、拼音或编辑距离匹配。
+- 长名字被微信截断时会用全名做前缀解析；那是把截断名补回全名，不属于模糊发送。解析不出唯一全名就不发送。
+- 目录里两个不同群折叠后撞名、或截断名解析不唯一时，返回 `WX_CHAT_AMBIGUOUS`，拒绝发送和叫醒，不点第一行、不猜。
+- OCR 回退不保证识别 emoji：屏幕上的 emoji 可能只是方框，tesseract 读不出。树不健康时只认明确的 `@我` 角标，不拿 OCR 名字当身份或发送目标；纯 emoji 群名在 OCR 下可能完全不出现，这时 fail closed。
+- 工作台保存 `allowChats` / `noMentionChats` / `proactiveChats` 时逐条校验，坏条目按条返回 `bad` 和原因；默认整份拒绝并高亮，不静默丢弃，避免悄悄改变她的说话范围。截断/歧义名不能保存为发送目标；目录里还没见过的名字会提示可能发不出去。
+- 运行环境字体：本机 Linux 显示 emoji 需要彩色 emoji 字体，缺字体时微信侧栏、消息区和工作台候选会显示方框。字体安装是系统变更，需用户明确批准后手动执行：
+
+```bash
+sudo apt-get install -y fonts-noto-color-emoji
+sudo fc-cache -f
+sudo systemctl restart wechat-fish
+```
+
+  验证：`fc-list ':charset=1f3d6' | head` 应至少列出一行 Noto Color Emoji。装字体只影响人眼显示，不改变树路径的正确性，也不会让 OCR 学会读 emoji。
+
 ## 验收边界
 
 - 单测覆盖纯函数（解析、名册、队列、编排、OCR 对齐），`node --test` 不启动微信。

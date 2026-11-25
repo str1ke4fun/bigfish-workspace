@@ -56,6 +56,7 @@ console.log('服务号过滤')
 t('trim、压空格、ASCII 小写后精确比较', () => {
   assert.equal(isIgnoredChat(' tencent   news ', DEFAULT_IGNORE_CHATS), true)
   assert.equal(isIgnoredChat('TENCENT NEWS', DEFAULT_IGNORE_CHATS), true)
+  assert.equal(isIgnoredChat('Tencent News', DEFAULT_IGNORE_CHATS), true)
   assert.equal(isIgnoredChat('微信团队', DEFAULT_IGNORE_CHATS), true)
 })
 t('前缀相同的正常群不误伤', () => {

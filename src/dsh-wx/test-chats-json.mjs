@@ -11,10 +11,13 @@ const rows = [
 
 const result = chatsJson(JSON.stringify({ ok: true, reliable: true, rows }))
 assert.equal(result.ok, true)
-assert.deepEqual(result.chats.map((chat) => chat.name), ['内部赤石群', 'cat不到flag的cat', 'File Transfer'])
+// © 是 \p{Emoji}，按共享的 hasNameCharacter 判定保留；纯符号的 `?` 仍会被拒。
+assert.deepEqual(result.chats.map((chat) => chat.name), ['内部赤石群', 'cat不到flag的cat', 'File Transfer', '©'])
 assert.equal(result.chats[0].mention, true)
 assert.equal(result.chats[1].preview, '你能看到测试吗')
 assert.equal(result.current, '', 'OCR must not guess the current conversation')
+assert.equal(result.source, 'ocr', 'snapshot rows are labelled as OCR candidates')
 assert.equal(chatsJson(JSON.stringify({ ok: true, reliable: false, rows })).ok, false)
+assert.equal(chatsJson('').source, 'tree', 'non-snapshot input is the accessibility-tree branch')
 
-console.log('chats JSON: 6 assertions passed')
+console.log('chats JSON: 8 assertions passed')

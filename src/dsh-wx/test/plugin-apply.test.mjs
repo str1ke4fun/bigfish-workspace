@@ -44,7 +44,8 @@ test('apply() 能挂上全部微信工具，不会在注册前因初始化顺序
   const registered = []
   let dispose
   assert.doesNotThrow(() => {
-    dispose = apply(fakeCtx(registered), { pollSeconds: 3600 })
+    // migrateState:false：冒烟测试不能顺手迁移线上 ~/.dsh-wx 的状态文件。
+    dispose = apply(fakeCtx(registered), { pollSeconds: 3600, migrateState: false })
   })
   try {
     assert.deepEqual([...new Set(registered)].sort(), EXPECTED_TOOLS)

@@ -155,18 +155,25 @@ let wxScopeState = null
 function renderWxScope(s) {
   wxScopeState = s
   const p = s.policy || {}
-  // 坏成问号的名字不当候选摆出来（摆出来就是用户看到的那一排 ????），改成下面一行提醒
-  const isBad = (n) => /\?\?|�/.test(String(n))
-  const garbled = [...new Set([...(p.allowChats || []), ...(p.noMentionChats || [])].filter(isBad))]
+  // 坏名字由后端逐条返回，前端不再自己判 ?? / U+FFFD。
+  const bad = Array.isArray(s.bad) ? s.bad : []
+  const badNames = new Set(bad.map((b) => b.name).filter(Boolean))
+  const candidates = new Map((s.candidates || []).map((c) => [c.name, c]))
+  const labelFor = (n) => {
+    const status = candidates.get(n)?.matchStatus
+    if (status === 'ambiguous') return `${n}（撞名，需确认）`
+    if (status === 'truncated') return `${n}（截断）`
+    return n
+  }
   const names = [...(s.labels || [])]
-  for (const n of p.allowChats || []) if (!names.includes(n) && !isBad(n)) names.push(n)
+  for (const n of p.allowChats || []) if (!names.includes(n) && !badNames.has(n)) names.push(n)
   $('#wx-scope-chats').replaceChildren(...(names.length
-    ? names.map((n) => chip(n, n, (p.allowChats || []).includes(n), () => {}))
+    ? names.map((n) => chip(n, labelFor(n), (p.allowChats || []).includes(n), () => {}))
     : [Object.assign(document.createElement('span'), { className: 'hint meta', textContent: s.ok ? '窗口里没读到会话名（先让微信停在有对话的界面）' : `微信检测没返回候选${s.err ? '：' + s.err : '（看一下工作台日志）'}` })]))
   const exempt = Array.isArray(p.noMentionChats) ? p.noMentionChats : []
-  const names2 = [...new Set([...(s.labels || []), ...(p.allowChats || []), ...exempt])].filter((n) => !isBad(n))
+  const names2 = [...new Set([...(s.labels || []), ...(p.allowChats || []), ...exempt])].filter((n) => !badNames.has(n))
   $('#wx-nomention-chats').replaceChildren(...(names2.length
-    ? names2.map((n) => chip(n, n, exempt.includes(n), () => {}))
+    ? names2.map((n) => chip(n, labelFor(n), exempt.includes(n), () => {}))
     : [Object.assign(document.createElement('span'), { className: 'hint meta', textContent: s.ok ? '还没有不用 @ 的会话（微信读到会话后这里会出现候选）' : '微信检测没读到会话，候选暂时为空' })]))
   $('#wx-enabled').checked = p.enabled === true
   const sp = s.speaking || null
@@ -180,10 +187,15 @@ function renderWxScope(s) {
     : '关着'
   const bits = []
   if (s.current) bits.push(`微信当前停在「${s.current}」`)
+  if (s.source === 'ocr') bits.push('候选来自 OCR 读取，可能不含 emoji')
   const tr = s.health?.tree
   if (tr && tr.status !== 'ok') bits.push(`⚠ ${tr.alert || `无障碍树状态 ${tr.status}（元素 ${tr.elements}、会话 ${tr.chats}）`}`)
   if (s.health?.stale) bits.push(`⚠ 树落后于屏幕（自 ${new Date(s.health.stale.since).toLocaleTimeString()}）`)
-  if (garbled.length) bits.push(`⚠ 名单里有 ${garbled.length} 个会话名已坏成问号（${garbled.join('、')}），她对不上这些群。请在上面重新勾选真名后保存，坏的会被一并清掉`)
+  const used = Array.isArray(s.proactiveUsedChats)
+    ? s.proactiveUsedChats.filter((x) => Number(x.used) > 0)
+    : Object.entries(s.proactiveUsed || {}).filter(([, v]) => Number(v) > 0).map(([name, v]) => ({ name, used: Number(v) }))
+  if (used.length) bits.push(`今天主动额度已用：${used.map((x) => `${x.name} ${x.used} 条`).join('、')}`)
+  if (bad.length) bits.push(`⚠ 名单里有 ${bad.length} 个会话名有问题（${bad.map((b) => `${b.name || '（空）'}：${b.why}`).join('、')}），请在上面重新勾选真名后保存`)
   $('#wx-scope-msg').textContent = bits.join(' · ')
 }
 
@@ -309,7 +321,11 @@ async function loadSpeech() {
     : stats.map((s) => {
       const el = document.createElement('span')
       el.className = 'chip'
-      const who = s.chat.replace(/^wx:/, '微信·').replace(/^group:/, 'QQ群·').replace(/^private:/, 'QQ·')
+      const raw = String(s.chat || '')
+      // 微信键是 wx:<chatId>，后端已按目录映射 name；不要再把内部 id 拼给用户看。
+      const who = raw.startsWith('wx:')
+        ? `微信·${s.name || '（目录里没这个会话）'}`
+        : raw.replace(/^group:/, 'QQ群·').replace(/^private:/, 'QQ·')
       el.textContent = `${who}：一小时 ${s.lastHour} 条 · ${s.quietSeconds < 60 ? '刚刚' : Math.round(s.quietSeconds / 60) + ' 分钟前'}`
       return el
     })))
@@ -434,10 +450,14 @@ export function initChannels({ isActive = () => false } = {}) {
       }
       const r = await api('/api/wx/scope', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       if (r.error) { alert(r.error); return }
-      renderWxScope({ ...(wxScopeState || {}), policy: r.policy })
-      $('#wx-scope-msg').textContent = r.policy.enabled
+      // 用 POST 响应重画（policy + bad），不再沿用保存前的旧坏名。
+      renderWxScope({ ...(wxScopeState || {}), policy: r.policy, bad: Array.isArray(r.bad) ? r.bad : [] })
+      const warn = Array.isArray(r.warnings) && r.warnings.length
+        ? ` · 提示：${r.warnings.map((w) => `${w.name}（${w.why}）`).join('、')}`
+        : ''
+      $('#wx-scope-msg').textContent = (r.policy.enabled
         ? `已保存：${r.policy.allowChats.length} 个会话可以开口，立刻生效（她在下一轮就能读到）`
-        : '已保存：微信这边关着'
+        : '已保存：微信这边关着') + warn
     } finally { btn.disabled = false; btn.textContent = '保存' }
   })
 

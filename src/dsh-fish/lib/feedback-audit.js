@@ -547,7 +547,9 @@ function comparableText(text) {
   return String(text)
     .normalize('NFKC')
     .toLowerCase()
-    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    // 只删空白/标点/符号里非 emoji 的部分，保留 \p{Extended_Pictographic}：
+    // 两端同样的表情是工具回声的一部分，不能因为落在 \p{S} 里就被当成没说过。
+    .replace(/(?:(?!\p{Extended_Pictographic})[\s\p{P}\p{S}])+/gu, '')
 }
 
 function fourGramOverlap(projection, reply) {

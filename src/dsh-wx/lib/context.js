@@ -21,6 +21,7 @@ import { join } from 'node:path'
 import { archiveLedger, DEFAULT_RETENTION_DAYS } from './archive.js'
 import { isIgnoredChat } from './capture.js'
 import { chatIdFor, createLedger, dedupeKeyOf, msgIdOf, normalizeText } from './ledger.js'
+import { chatIdSeed } from './name.js'
 import { attributeMessages, parsePreviewSender, requesterOf } from './speaker.js'
 import { searchSummaryDocs, writeDailySummaries } from './summaries.js'
 import { createTaskBoard } from './tasks.js'
@@ -113,7 +114,7 @@ export function createContextStore({
     if (given) return given
     const hit = typeof resolveChat === 'function' ? resolveChat(str(chatName)) : null
     if (hit?.chatId) return str(hit.chatId)
-    return chatIdFor(chatName)
+    return chatIdFor(chatIdSeed(chatName))
   }
 
   function chatMeta(chatName) {

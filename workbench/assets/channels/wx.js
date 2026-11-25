@@ -331,19 +331,27 @@ function proactiveChatsFromDom() {
 
 function renderScopeNow(s) {
   const p = s.policy || {}
-  const isBad = (n) => /\?\?|�/.test(String(n))
-  const garbled = [...new Set([...(p.allowChats || []), ...(p.noMentionChats || []), ...Object.keys(p.proactiveChats || {})].filter(isBad))]
+  // 坏名字由后端逐条返回；前端不再自己按 ?? / U+FFFD 猜。
+  const bad = Array.isArray(s.bad) ? s.bad : []
+  const badNames = new Set(bad.map((b) => b.name).filter(Boolean))
+  const candidates = new Map((s.candidates || []).map((c) => [c.name, c]))
+  const labelFor = (name) => {
+    const status = candidates.get(name)?.matchStatus
+    if (status === 'ambiguous') return `${name}（撞名，需确认）`
+    if (status === 'truncated') return `${name}（截断）`
+    return name
+  }
   const names = [...(s.labels || [])]
-  for (const n of p.allowChats || []) if (!names.includes(n) && !isBad(n)) names.push(n)
+  for (const n of p.allowChats || []) if (!names.includes(n) && !badNames.has(n)) names.push(n)
   const exempt = Array.isArray(p.noMentionChats) ? p.noMentionChats : []
-  const names2 = [...new Set([...(s.labels || []), ...(p.allowChats || []), ...exempt])].filter((n) => !isBad(n))
+  const names2 = [...new Set([...(s.labels || []), ...(p.allowChats || []), ...exempt])].filter((n) => !badNames.has(n))
 
   clear(SPEC.wxAllow)
   if (!names.length) SPEC.wxAllow.append(hint(s.ok ? '窗口里没读到会话名（先让微信停在有对话的界面）' : `微信检测没返回候选${s.err ? '：' + s.err : ''}`))
-  for (const n of names) SPEC.wxAllow.append(scopeChip({ id: n, label: n, checked: (p.allowChats || []).includes(n) }))
+  for (const n of names) SPEC.wxAllow.append(scopeChip({ id: n, label: labelFor(n), checked: (p.allowChats || []).includes(n) }))
   clear(SPEC.wxNoMention)
   if (!names2.length) SPEC.wxNoMention.append(hint(s.ok ? '还没有不用 @ 的会话' : '微信检测没读到会话，候选暂时为空'))
-  for (const n of names2) SPEC.wxNoMention.append(scopeChip({ id: n, label: n, checked: exempt.includes(n) }))
+  for (const n of names2) SPEC.wxNoMention.append(scopeChip({ id: n, label: labelFor(n), checked: exempt.includes(n) }))
 
   SPEC.wxEnabled.checked = p.enabled === true
   SPEC.wxMention.checked = p.requireMention !== false
@@ -361,13 +369,18 @@ function renderScopeNow(s) {
     ? ((p.allowChats || []).length ? `开 · ${(p.allowChats || []).length} 个会话` : '开 · 名单空着（她开不了口）')
     : '关着')
   if (s.current) bits.push(`当前停在「${s.current}」`)
+  const matchLabel = { exact: '精确', folded: '折叠匹配', ambiguous: '撞名', truncated: '截断', unknown: '目录里没见到' }
+  if (s.currentMatch && s.currentMatch !== 'exact') bits.push(`当前会话匹配：${matchLabel[s.currentMatch] || s.currentMatch}`)
+  if (s.source === 'ocr') bits.push('候选来自 OCR 读取，可能不含 emoji')
   const tr = s.health?.tree
   if (tr && tr.status !== 'ok') bits.push(`⚠ ${tr.alert || `无障碍树状态 ${tr.status}`}`)
   if (s.health?.stale) bits.push(`⚠ 树落后于屏幕（自 ${fmtTime(s.health.stale.since)}）`)
-  const used = Object.entries(s.proactiveUsed || {}).filter(([, v]) => Number(v) > 0)
-  if (used.length) bits.push(`今天主动额度已用：${used.map(([name, v]) => `${name} ${v} 条`).join('、')}`)
-  if (garbled.length) {
-    bits.push(`⚠ 名单里有 ${garbled.length} 个会话名已坏成问号（${garbled.join('、')}），请重新勾选真名后保存`)
+  const used = Array.isArray(s.proactiveUsedChats)
+    ? s.proactiveUsedChats.filter((x) => Number(x.used) > 0)
+    : Object.entries(s.proactiveUsed || {}).filter(([, v]) => Number(v) > 0).map(([name, v]) => ({ name, used: Number(v) }))
+  if (used.length) bits.push(`今天主动额度已用：${used.map((x) => `${x.name} ${x.used} 条`).join('、')}`)
+  if (bad.length) {
+    bits.push(`⚠ 名单里有 ${bad.length} 个会话名有问题（${bad.map((b) => `${b.name || '（空）'}：${b.why}`).join('、')}），请重新勾选真名后保存`)
   }
   SPEC.wxMsg.textContent = bits.join(' · ')
 
@@ -393,10 +406,15 @@ async function saveScope() {
   })
   const d = r.data || {}
   if (d.error || !r.ok) { SPEC.wxMsg.textContent = `没存上：${d.error || d.err || '接口没回话'}`; return }
-  renderScopeNow({ ...SPEC.scopeData, policy: d.policy })
-  SPEC.wxMsg.textContent = d.policy?.enabled
+  // 用服务端 POST 响应里的 policy/bad 重画，避免继续显示保存前的旧坏名。
+  SPEC.scopeData = { ...SPEC.scopeData, policy: d.policy, bad: Array.isArray(d.bad) ? d.bad : [] }
+  renderScopeNow(SPEC.scopeData)
+  const warn = Array.isArray(d.warnings) && d.warnings.length
+    ? ` · 提示：${d.warnings.map((w) => `${w.name}（${w.why}）`).join('、')}`
+    : ''
+  SPEC.wxMsg.textContent = (d.policy?.enabled
     ? `已保存：${(d.policy.allowChats || []).length} 个会话可以开口，立刻生效`
-    : '已保存：微信这边关着'
+    : '已保存：微信这边关着') + warn
 }
 
 // ---------- 维护 ----------

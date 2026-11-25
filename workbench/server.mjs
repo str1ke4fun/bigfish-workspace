@@ -11,6 +11,10 @@ import { createHost } from './host/index.mjs'
 import { createFishBff } from './fish/bff.mjs'
 import { createTaskBoard, overdueVisibilityEnabled } from '../src/dsh-wx/lib/tasks.js'
 import { loadState as loadWxProactiveState } from '../src/dsh-wx/lib/proactive.js'
+import { chatIdFor } from '../src/dsh-wx/lib/ledger.js'
+import {
+  canonicalizePolicyName, describePolicyName, loadNameModule, matchPolicyName, sanitizePolicyList,
+} from './wx-names.mjs'
 
 const PORT = Number(process.env.WORKBENCH_PORT || 8788)
 const VERSION = process.env.WORKBENCH_VERSION || '0.1.0'
@@ -29,6 +33,10 @@ const setHold = (sec) => asHer(`mkdir -p ${H}/.dsh-wx && printf '{"until":%s,"re
 // 微信"眼睛和手"。关多余界面复用耳朵自己的 clean（浮层、弹出的会话窗、黑框一套判断），
 // 免得工作台和耳朵各写一份、还各漏一种。
 const WX_SH = process.env.WX_SH || `${H}/dsh-plugins/dsh-wx/lib/wx.sh`
+// 名字工具以插件部署目录里的 name.js 为准；WX_LIB 可指向目录或直接是 name.js。
+// 加载失败时 wx-names.mjs 保留仓库副本并记日志。
+const WX_LIB = process.env.WX_LIB || dirname(WX_SH)
+const WX_DIRECTORY = process.env.WX_DIRECTORY || `${H}/.dsh-wx/directory.json`
 
 // 工作台只读任务摘要。任务文件仍是 dsh-wx 的追加式事实源；这里只投影计数，
 // 不把 taskId、会话名、正文或 blockedWhy 带出进程。按 mtime/size 复用重放结果，
@@ -263,10 +271,12 @@ export function wxSpeakingState({
 } = {}) {
   if (!policy.enabled) return { ok: false, why: '「允许说话」关着，微信的工具全部拒绝' }
   if (!current) return { ok: false, why: '微信没停在任何会话上（先点开一个）' }
-  if ((policy.noMentionChats || []).includes(current)) {
+  // 名单按名字配置：切成 exact/folded 比较，`❤️读书群` 与 `❤读书群` 不该因为
+  // 少一个变体选择符就变权限。折叠撞名时 matchPolicyName 返回空，按不在名单处理。
+  if (matchPolicyName(current, policy.noMentionChats)) {
     return { ok: true, why: `「${current}」在免 @ 白名单里（最高权限，随时能说）` }
   }
-  if (!(policy.allowChats || []).includes(current)) {
+  if (!matchPolicyName(current, policy.allowChats)) {
     return { ok: false, why: `「${current}」不在允许名单里` }
   }
   if (policy.requireMention === false) return { ok: true, why: '没开 @ 规则，现在能说' }
@@ -276,8 +286,10 @@ export function wxSpeakingState({
   if (leftMin > 0) return { ok: true, why: `被 @ 的窗口还开着，能说（还剩 ${leftMin} 分钟）` }
 
   const usedCount = Math.max(0, Math.round(Number(used) || 0))
+  const proactiveKeys = Object.keys(policy.proactiveChats || {})
+  const proactiveKey = matchPolicyName(current, proactiveKeys)
   const softLimit = clampNum(
-    policy.proactiveChats?.[current] ?? policy.proactivePerDay ?? policy.softLimit,
+    (proactiveKey ? policy.proactiveChats[proactiveKey] : undefined) ?? policy.proactivePerDay ?? policy.softLimit,
     0,
     0,
     PROACTIVE_MAX,
@@ -313,12 +325,19 @@ async function speechStats() {
   try { state = JSON.parse(String(r.out).trim() || '{}') } catch { state = {} }
   const now = Date.now()
   const chats = state && typeof state.chats === 'object' && state.chats !== null ? state.chats : {}
+  // 微信的 speech key 是 `wx:<chatId>`；直接回给前端会显示成「微信·c_012345…」。
+  // 这里按目录映射回展示名，认不出的不把内部 id 漏出去。
+  const nameById = new Map(
+    wxDirectoryEntries().map((e) => [e.chatId, e.displayName || e.fullName || e.chatId]),
+  )
   const out = []
   for (const [chat, times] of Object.entries(chats)) {
     const t = (Array.isArray(times) ? times : []).filter((x) => Number.isFinite(x) && now - x < 3600_000)
     if (t.length === 0) continue
+    const wxChatId = chat.startsWith('wx:') ? chat.slice(3).trim() : ''
     out.push({
       chat,
+      name: wxChatId ? (nameById.get(wxChatId) || '') : '',
       lastHour: t.length,
       lastMinute: t.filter((x) => now - x < 60_000).length,
       quietSeconds: Math.round((now - Math.max(...t)) / 1000),
@@ -392,6 +411,50 @@ async function wxPolicy() {
   }
 }
 
+/** 会话目录条目（只读派生索引；读不到就当空目录，不挡住工作台）。 */
+function wxDirectoryEntries() {
+  try {
+    const raw = JSON.parse(readFileSync(WX_DIRECTORY, 'utf8'))
+    const chats = Array.isArray(raw?.chats) ? raw.chats : []
+    return chats
+      .filter((c) => c && typeof c === 'object' && String(c.chatId ?? '').trim())
+      .map((c) => ({
+        chatId: String(c.chatId).trim(),
+        displayName: String(c.displayName ?? ''),
+        fullName: String(c.fullName ?? ''),
+        aliases: Array.isArray(c.aliases) ? c.aliases.map((a) => String(a ?? '')) : [],
+        nameConfidence: String(c.nameConfidence ?? '').trim(),
+      }))
+  } catch {
+    return []
+  }
+}
+
+/** 与 dsh-wx 的 chatIdSeed 一致：只 trim + 把连续空白压成一个空格。 */
+const stateSeed = (value) => String(value ?? '').trim().replace(/\s+/g, ' ')
+
+/**
+ * 会话状态键：目录里认识这个名字就用目录 chatId；不认识就按原始名字种子派生
+ * 同一个 id（与 ledger/mention/proactive 的旧种子一致）。ambiguous 没有身份。
+ */
+function wxStateKey(name, entries = wxDirectoryEntries()) {
+  const info = describePolicyName(name, entries)
+  if (!info.name || info.status === 'ambiguous') return ''
+  if (info.chatId) return info.chatId
+  return chatIdFor(stateSeed(name))
+}
+
+/** 同一份名单里折叠后撞名的第二个名字；没有返回空串。 */
+function foldedDuplicate(names) {
+  const seen = []
+  for (const name of names) {
+    if (!name) continue
+    if (matchPolicyName(name, seen)) return name
+    seen.push(name)
+  }
+  return ''
+}
+
 /** 会话候选：从无障碍树的标签里捞，去重后给她勾 */
 async function wxScope() {
   const policy = await wxPolicy()
@@ -400,6 +463,7 @@ async function wxScope() {
   // 要么把 Weixin / Contacts / Moments 这些按钮名当成"会话名"摆给人勾。
   const r = await asHer(`bash ${H}/dsh-plugins/dsh-wx/lib/wx.sh chats`, { timeout: 90_000 })
   let chats = []
+  let source = 'tree'
   let current = ''
   let readOk = false
   try {
@@ -407,13 +471,20 @@ async function wxScope() {
     const j = JSON.parse(line)
     readOk = j.ok === true
     current = String(j.current || '')
-    chats = (j.chats || []).map((c) => String(c.name)).filter(Boolean)
+    source = j.source === 'ocr' ? 'ocr' : 'tree'
+    chats = (Array.isArray(j.chats) ? j.chats : [])
+      .map((c) => String(c?.name ?? '').trim())
+      .filter(Boolean)
   } catch { /* 读不出就当微信没起来 */ }
+  const entries = wxDirectoryEntries()
+  const labels = [...new Set(chats)].slice(0, 80)
   // 现在这个会话到底能不能说？把几层闸合起来算给人看——不然「允许说话」勾着却发不出去，很像按钮接反了。
   const m = await asHer(`cat ${H}/.dsh-wx/mentions.json 2>/dev/null || echo '{}'`)
   let mentions = {}
   try { mentions = JSON.parse(String(m.out).trim() || '{}') } catch { mentions = {} }
-  const last = Number(mentions[current]) || 0
+  // 状态文件按会话 chatId 记账；当前会话先解析出同一个 key 再读提及窗口。
+  const currentKey = current ? wxStateKey(current, entries) : ''
+  const last = Number(currentKey ? mentions[currentKey] : 0) || 0
   // 今天的主动额度：状态文件是 dsh-wx 写的。直接复用运行时的 loadState：
   // ENOENT（第一天还没主动说过话）按空账本；坏 JSON/权限/形状才返回 ok:false。
   // 不能再退回 `cat || echo '{}'`，那会把权限错误也伪装成合法空账本。
@@ -424,48 +495,191 @@ async function wxScope() {
     policy,
     current,
     lastMention: last,
-    used: proactiveUsed[current],
+    used: currentKey ? proactiveUsed[currentKey] : undefined,
     stateOk: proactiveStateOk,
   })
   const h = await asHer(`cat ${H}/.dsh-wx/health.json 2>/dev/null || echo '{}'`)
   let health = {}
   try { health = JSON.parse(String(h.out).trim() || '{}') } catch { health = {} }
-  // 名单里已经坏掉的名字：前端会挑出来提醒，并且不当成会话候选摆出来
-  const garbled = [...new Set([...policy.allowChats, ...policy.noMentionChats, ...Object.keys(policy.proactiveChats || {})].filter(looksGarbled))]
+  // 名单里的坏名字/折叠撞名：前端只展示这里返回的 bad，不再自己判。
+  const bad = [
+    ...sanitizePolicyList(policy.allowChats).bad,
+    ...sanitizePolicyList(policy.noMentionChats).bad,
+    ...sanitizePolicyList(Object.keys(policy.proactiveChats || {})).bad,
+  ].filter((v, i, all) => all.findIndex((x) => x.name === v.name && x.why === v.why) === i)
+  const nameByKey = new Map(entries.map((e) => [e.chatId, e.displayName || e.fullName || e.chatId]))
+  // 内部键是 chatId；目录里查不到时不要把裸 c_012345… 直接展示。
+  const INTERNAL_ID = /^c_(?:tmp_)?[0-9a-f]+$/i
+  const proactiveUsedChats = Object.entries(proactiveUsed)
+    .filter(([, v]) => Number(v) > 0)
+    .map(([key, v]) => ({
+      name: nameByKey.get(key) ||
+        (currentKey && key === currentKey ? current : INTERNAL_ID.test(key) ? '未知会话' : key),
+      used: Number(v),
+    }))
+  const candidates = labels.map((name) => {
+    const info = describePolicyName(name, entries)
+    return {
+      name,
+      source,
+      nameConfidence: info.nameConfidence || 'unknown',
+      matchStatus: info.status,
+    }
+  })
   return {
     ok: r.ok && readOk,
     policy,
-    labels: [...new Set(chats)].slice(0, 80),
+    labels,
+    candidates,
+    source,
     current,
+    currentKey,
+    currentMatch: current ? describePolicyName(current, entries).status : '',
     health,
     speaking,
-    garbled,
+    bad,
+    // 旧字段保留给还没升级的调用方；新前端只看 bad。
+    garbled: [...new Set(bad.map((b) => b.name).filter(Boolean))],
     proactiveUsed,
+    proactiveUsedChats,
     proactiveStateOk,
     err: r.err,
   }
 }
 
-/** 名字坏了：编码丢字时每个汉字会变成一个 "?"（或 U+FFFD）。真会话名里几乎不会出现连着的问号。 */
-const looksGarbled = (s) => /\?\?|\uFFFD/.test(String(s))
-
 async function saveWxScope(body) {
   const clean = (a) => (Array.isArray(a) ? [...new Set(a.map((x) => String(x).trim()).filter(Boolean))] : [])
   const before = await wxPolicy()
+  const entries = wxDirectoryEntries()
   const pro = normalizeWxProactive(body, before)
+  const proProvided = body.proactiveChats !== undefined
+  const proSource = proProvided && body.proactiveChats && typeof body.proactiveChats === 'object' && !Array.isArray(body.proactiveChats)
+    ? body.proactiveChats
+    : {}
+
   // 2026-10-30：名单文件被某次写入弄成了一排 "?"（汉字全丢），她从此对不上任何群名。
-  // 这里宁可拒存，也不把坏名字再写进真源；主动额度的群名同样要过这道检查。
-  const bad = [...clean(body.allowChats), ...clean(body.noMentionChats), ...Object.keys(body.proactiveChats || {})].filter(looksGarbled)
-  if (bad.length) {
-    return { ok: false, error: `这几个会话名是乱码（汉字变成了问号），没有保存：${bad.join('、')}。去掉它们，或在候选里重新勾选真名后再存。`, policy: before }
+  // 现在逐条校验，坏条目整份拒绝并回传 bad；不自动丢掉任何一条。
+  const allow = sanitizePolicyList(body.allowChats)
+  const noMention = sanitizePolicyList(body.noMentionChats)
+  const proactive = sanitizePolicyList(proProvided ? Object.keys(proSource) : [])
+  const badInput = [...allow.bad, ...noMention.bad, ...proactive.bad]
+  const describeBad = (list) => list.map((b) => `${b.name || '（空）'}（${b.why}）`).join('、')
+  if (badInput.length) {
+    return {
+      ok: false,
+      error: `这几个会话名有问题，没有保存：${describeBad(badInput)}。改好后再存。`,
+      bad: badInput,
+      policy: before,
+    }
   }
+
+  // 名称规范化：只把 exact/folded 且目录条目 exact/resolved 的名字改写成规范名。
+  // truncated/ambiguous 拒绝该条；unknown 原样保留但回传 warning。
+  const warnings = []
+  const canonicalizeList = (list) => {
+    const names = []
+    const refused = []
+    for (const name of list) {
+      const r = canonicalizePolicyName(name, entries)
+      if (r.status === 'ambiguous') refused.push({ name, why: '目录里这个名字撞名，确定不了是哪一个会话' })
+      else if (r.status === 'truncated') refused.push({ name, why: '目录里这个名字还是截断的，还没解析全' })
+      else {
+        if (r.status === 'unknown') warnings.push({ name: r.name, why: '目录里还没见到这个名字，可能发不出去' })
+        names.push(r.name)
+      }
+    }
+    return { names, refused }
+  }
+  const allowOut = canonicalizeList(allow.kept)
+  const noMentionOut = canonicalizeList(noMention.kept)
+  const proactiveOut = canonicalizeList(proactive.kept)
+  const refused = [...allowOut.refused, ...noMentionOut.refused, ...proactiveOut.refused]
+  if (refused.length) {
+    return {
+      ok: false,
+      error: `这几个会话名还确定不了对象，没有保存：${refused.map((r) => `${r.name}（${r.why}）`).join('、')}。先点开会话或在候选里选真名。`,
+      bad: refused,
+      policy: before,
+    }
+  }
+
+  // 主动额度按规范化后的名字重建，值原样保留（空 = 默认，0 = 静音）。
+  const proactiveChats = {}
+  if (proProvided) {
+    for (const [rawName, value] of Object.entries(proSource)) {
+      const r = canonicalizePolicyName(rawName, entries)
+      if (r.name) proactiveChats[r.name] = clampNum(value, 0, 0, PROACTIVE_MAX)
+    }
+  } else {
+    Object.assign(proactiveChats, pro.proactiveChats)
+  }
+  const proactiveNames = Object.keys(proactiveChats)
+
+  // 规范化后可能把两种写法折成同一个会话：同一份名单里再撞名就拒绝。
+  const dupBad = []
+  for (const [field, names] of [
+    ['允许名单', allowOut.names],
+    ['免 @ 名单', noMentionOut.names],
+    ['主动额度名单', proactiveNames],
+  ]) {
+    const dup = foldedDuplicate(names)
+    if (dup) dupBad.push({ name: dup, why: `${field}里有两条折叠后是同一个会话` })
+  }
+  if (dupBad.length) {
+    return {
+      ok: false,
+      error: `名单里有重复的会话，没有保存：${describeBad(dupBad)}。`,
+      bad: dupBad,
+      policy: before,
+    }
+  }
+
+  // 跨名单折叠撞名：运行时发送闸把 allowChats 和 noMentionChats 合在一起看，
+  // 同一个会话在两份名单里各出现一次（哪怕写法相同）都会让发送变成 ambiguous。
+  // proactiveChats 与 allow/noMention 同名是正常配置（额度覆盖），但换成另一种
+  // 折叠写法同样说明身份没对上，一并拒绝，避免存下运行时发不出去的配置。
+  const crossBad = []
+  const lists = [
+    { field: '允许名单', names: allowOut.names },
+    { field: '免 @ 名单', names: noMentionOut.names },
+    { field: '主动额度名单', names: proactiveNames },
+  ]
+  for (let i = 0; i < lists.length; i++) {
+    for (let j = i + 1; j < lists.length; j++) {
+      const a = lists[i]
+      const b = lists[j]
+      const proactivePair = a.field === '主动额度名单' || b.field === '主动额度名单'
+      for (const x of a.names) {
+        for (const y of b.names) {
+          if (!matchPolicyName(x, [y])) continue
+          // 主动额度本来就会和允许名单里的同一个会话同名；相同写法不算冲突。
+          if (proactivePair && x === y) continue
+          crossBad.push({
+            name: `${x} / ${y}`,
+            why: `${a.field}和${b.field}里有折叠后相同的会话，运行时分不清是哪一个`,
+          })
+        }
+      }
+    }
+  }
+  if (crossBad.length) {
+    return {
+      ok: false,
+      error: `名单之间有重复的会话，没有保存：${describeBad(crossBad)}。每个会话只能在允许名单和免 @ 名单里出现一次。`,
+      bad: crossBad,
+      policy: before,
+    }
+  }
+
   const next = {
     enabled: body.enabled === true,
-    allowChats: clean(body.allowChats),
+    allowChats: allowOut.names,
     requireMention: body.requireMention !== false,
     mentionWindowMinutes: clampNum(body.mentionWindowMinutes, 3, 1, 120),
-    noMentionChats: clean(body.noMentionChats),
-    ...pro,
+    noMentionChats: noMentionOut.names,
+    proactivePerDay: pro.proactivePerDay,
+    proactiveChats,
+    hardBreaker: pro.hardBreaker,
     watch: typeof body.watch === 'boolean' ? body.watch : before.watch,
     trigger: clean(body.trigger).length ? clean(body.trigger) : before.trigger,
     overdueVisibility: typeof body.overdueVisibility === 'boolean' ? body.overdueVisibility : before.overdueVisibility,
@@ -479,7 +693,7 @@ async function saveWxScope(body) {
     chown -R str1k3:str1k3 ${H}/.dsh-wx
     cat ${WX_POLICY}
   `)
-  return { ok: r.ok, err: r.err, policy: next }
+  return { ok: r.ok, err: r.err, policy: next, warnings, bad: [] }
 }
 
 /** OneBot action with params（在 WSL 里跑，参数走单引号 JSON） */async function onebotCall(action, params = {}, timeout = 30_000) {
@@ -1216,6 +1430,9 @@ export const server = createServer(async (req, res) => {
 
 export async function start(port = PORT) {
   await mkdir(FRAMES, { recursive: true })
+  // 名字语义与插件同源：优先加载 wx.sh 部署目录里的 name.js，失败时 wx-names
+  // 保留仓库副本；这里只负责把失败写进工作台日志，不阻断启动。
+  await loadNameModule({ wxLib: WX_LIB, log: (msg) => note('wx', msg, false) })
   host.keepalive.start()
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
     process.on(sig, () => { host.keepalive.stop(); process.exit(0) })

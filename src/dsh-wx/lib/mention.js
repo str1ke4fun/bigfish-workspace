@@ -23,15 +23,25 @@ export function parseWindowMinutes(v, def = DEFAULT_WINDOW_MINUTES) {
   return Math.min(120, Math.max(1, Math.round(n)))
 }
 
-/** 盖上时间戳（同一个会话后来的 @ 直接覆盖，窗口重新算）。 */
-export function grant(state, chat, now) {
-  if (!chat) return state ?? {}
-  return { ...(state ?? {}), [String(chat)]: now }
+/**
+ * 会话身份键。默认用会话名；生产传入目录的 stateKey，让 VS 变体/别名
+ * 落到同一个 chatId 上，不再各记一个 @ 窗口。
+ */
+const identity = (v) => v
+const stateKeyOf = (chat, keyOf) => String((keyOf ?? identity)(chat) ?? '').trim()
+
+/** 盖上时间戳（同一个会话后来的 @ 直接覆盖，窗口重新算）。空身份不写。 */
+export function grant(state, chat, now, keyOf = identity) {
+  const key = stateKeyOf(chat, keyOf)
+  if (!key) return state ?? {}
+  return { ...(state ?? {}), [key]: now }
 }
 
-/** 现在能不能在这个会话里说话。 */
-export function canSpeak(state, chat, now, windowMinutes) {
-  const at = Number((state ?? {})[String(chat)])
+/** 现在能不能在这个会话里说话。身份对不上唯一会话时 fail closed。 */
+export function canSpeak(state, chat, now, windowMinutes, keyOf = identity) {
+  const key = stateKeyOf(chat, keyOf)
+  if (!key) return { ok: false, reason: '没有有效的会话身份' }
+  const at = Number((state ?? {})[key])
   if (!Number.isFinite(at)) return { ok: false, reason: '最近没人 @ 你' }
   const win = parseWindowMinutes(windowMinutes)
   const leftMs = at + win * 60_000 - now
@@ -55,10 +65,10 @@ export function prune(state, now) {
 }
 
 /** 给一段文字里点到的会话盖戳（手动 poke 用：`echo '测试群A …' > ~/.dsh-wx/poke`）。 */
-export function grantMentioned(state, text, chats, now) {
+export function grantMentioned(state, text, chats, now, keyOf = identity) {
   let next = state ?? {}
   for (const c of chats ?? []) {
-    if (c && String(text ?? '').includes(String(c))) next = grant(next, c, now)
+    if (c && String(text ?? '').includes(String(c))) next = grant(next, c, now, keyOf)
   }
   return next
 }

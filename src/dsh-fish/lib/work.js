@@ -44,6 +44,28 @@ export function isTrustedSayTurn(agent) {
   return false
 }
 
+/** dispatchChats 的默认比较口径：trim + 压空白，不猜 emoji / VS 变体。 */
+function defaultSameChat(a, b) {
+  const norm = (value) => String(value ?? '').trim().replace(/\s+/g, ' ')
+  const left = norm(a)
+  return Boolean(left) && left === norm(b)
+}
+
+/**
+ * 某个微信会话是否在派活名单里。
+ *
+ * `same` 由 wxService.sameChatName 注入（目录 exact/folded）；注入不了时回退到
+ * trim + 压空白，保持不依赖 dsh-wx 也能跑。
+ */
+export function sameDispatchChat(chat, list, same = defaultSameChat) {
+  const name = String(chat ?? '').trim()
+  if (!name || !Array.isArray(list)) return false
+  const compare = typeof same === 'function' ? same : defaultSameChat
+  return list.some((item) => {
+    try { return compare(chat, String(item ?? '')) === true } catch { return false }
+  })
+}
+
 const INSPECT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -233,6 +255,13 @@ export function createWorkService({
   function wxService() {
     if (wx) return wx
     try { return ctx?.get?.('wx') ?? null } catch { return null }
+  }
+
+  /** 目录级名字比较：dsh-wx 在时用 sameChatName，不在时交给 sameDispatchChat 的默认口径。 */
+  function sameChatName() {
+    const svc = wxService()
+    const fn = svc?.sameChatName
+    return typeof fn === 'function' ? (a, b) => fn.call(svc, a, b) : undefined
   }
 
   function surfaceOf(agent) {
@@ -547,7 +576,7 @@ export function createWorkService({
       } else if (surface === 'wx') {
         const list = getPath(cfg(), 'work.wx.dispatchChats') ?? []
         const chat = String(wxService()?.currentChat?.(sessionId) ?? '')
-        if (!chat || !Array.isArray(list) || !list.includes(chat)) {
+        if (!chat || !sameDispatchChat(chat, list, sameChatName())) {
           return { ok: false, code: 'NOT_TRUSTED_CHAT', note: whyText('NOT_TRUSTED_CHAT') }
         }
         origin = { surface: 'wx', chat }

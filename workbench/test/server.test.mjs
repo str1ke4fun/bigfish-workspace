@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, rmSync, symlinkSync, wr
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { chatIdFor } from '../../src/dsh-wx/lib/ledger.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'fish-workbench-'))
 const home = join(tmp, 'home')
@@ -479,6 +480,8 @@ test('微信策略保存保留 mechanicalReminderDelivery:false、returnEnvelope
 
 test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上限/熔断展示', async () => {
   const current = '测试群A'
+  // dsh-wx 的提及/主动状态按 chatId 记账；工作台也用同一个状态键读取。
+  const ledgerKey = chatIdFor(current)
   const ledger = join(home, '.dsh-wx', 'proactive.json')
   const today = serverModule.localDateKey()
   mkdirSync(join(home, '.dsh-wx'), { recursive: true })
@@ -505,19 +508,19 @@ test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上�
     else if (value === 'directory') mkdirSync(ledger)
   }
 
-  putLedger(JSON.stringify({ day: today, used: { [current]: 2 } }))
+  putLedger(JSON.stringify({ day: today, used: { [ledgerKey]: 2 } }))
   const overSoft = await readScope()
   assert.equal(overSoft.ok, true)
   assert.equal(overSoft.current, current)
   assert.deepEqual(overSoft.labels, [current])
   assert.equal(overSoft.policy.proactivePerDay, 2)
   assert.equal(overSoft.policy.hardBreaker, 4)
-  assert.deepEqual(overSoft.proactiveUsed, { [current]: 2 })
+  assert.deepEqual(overSoft.proactiveUsed, { [ledgerKey]: 2 })
   assert.equal(overSoft.proactiveStateOk, true)
   assert.equal(overSoft.speaking.ok, true)
   assert.match(overSoft.speaking.why, /软上限/)
 
-  putLedger(JSON.stringify({ day: today, used: { [current]: 4 } }))
+  putLedger(JSON.stringify({ day: today, used: { [ledgerKey]: 4 } }))
   const breaker = await readScope()
   assert.equal(breaker.proactiveStateOk, true)
   assert.equal(breaker.speaking.ok, false)
@@ -537,8 +540,8 @@ test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上�
     ['malformed JSON', '{not json'],
     ['missing used', JSON.stringify({ day: today })],
     ['used array', JSON.stringify({ day: today, used: [] })],
-    ['invalid count', JSON.stringify({ day: today, used: { [current]: '2' } })],
-    ['negative count', JSON.stringify({ day: today, used: { [current]: -1 } })],
+    ['invalid count', JSON.stringify({ day: today, used: { [ledgerKey]: '2' } })],
+    ['negative count', JSON.stringify({ day: today, used: { [ledgerKey]: -1 } })],
   ]
   for (const [name, value] of bad) {
     putLedger(value)
@@ -551,4 +554,170 @@ test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上�
     assert.match(scope.speaking.why, /状态读不出来/, name)
     assert.equal(JSON.stringify(scope.speaking).includes('现在能说'), false, name)
   }
+})
+
+test('工作台保存按目录规范化，坏名/截断/撞名/折叠重复整份拒绝，未知名带 warning 保存', async () => {
+  mkdirSync(join(home, '.dsh-wx'), { recursive: true })
+  const policyFile = join(home, '.dsh-wx', 'policy.json')
+  const directoryFile = join(home, '.dsh-wx', 'directory.json')
+  const basePolicy = {
+    enabled: true, allowChats: [], noMentionChats: [], requireMention: true,
+    mentionWindowMinutes: 3, proactivePerDay: 0, proactiveChats: {}, hardBreaker: 50,
+  }
+  writeFileSync(policyFile, JSON.stringify(basePolicy) + '\n')
+  writeFileSync(directoryFile, JSON.stringify({
+    version: 1,
+    chats: [
+      { chatId: 'c_read', displayName: '❤️读书群', fullName: '❤️读书群', aliases: [], nameConfidence: 'exact' },
+      { chatId: 'c_long', displayName: '长名字...', fullName: '', aliases: [], nameConfidence: 'truncated' },
+      { chatId: 'c_amb', displayName: '撞名群', fullName: '撞名群', aliases: [], nameConfidence: 'ambiguous' },
+      { chatId: 'c_hike', displayName: '北京周末徒步群...', fullName: '', aliases: [], nameConfidence: 'truncated' },
+    ],
+  }) + '\n')
+  const readPolicy = () => JSON.parse(readFileSync(policyFile, 'utf8'))
+  const save = async (body) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/wx/scope`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: `http://127.0.0.1:${port}`,
+        'sec-fetch-site': 'same-origin',
+      },
+      body: JSON.stringify({ ...basePolicy, ...body }),
+    })
+    return { status: response.status, body: await response.json() }
+  }
+
+  const garbled = await save({ allowChats: ['????'] })
+  assert.equal(garbled.status, 500)
+  assert.equal(garbled.body.ok, false)
+  assert.equal(garbled.body.bad[0].name, '????')
+  assert.deepEqual(readPolicy().allowChats, [])
+
+  const truncated = await save({ allowChats: ['长名字'] })
+  assert.equal(truncated.status, 500)
+  assert.equal(truncated.body.bad[0].name, '长名字')
+  assert.match(truncated.body.bad[0].why, /截断/)
+
+  const ambiguous = await save({ allowChats: ['撞名群'] })
+  assert.equal(ambiguous.status, 500)
+  assert.equal(ambiguous.body.bad[0].name, '撞名群')
+  assert.match(ambiguous.body.bad[0].why, /撞名/)
+
+  const folded = await save({ allowChats: ['❤️读书群', '❤读书群'] })
+  assert.equal(folded.status, 500)
+  assert.equal(folded.body.bad.length, 1)
+  assert.equal(folded.body.bad[0].name, '❤读书群')
+  assert.match(folded.body.bad[0].why, /折叠/)
+
+  // 跨名单折叠撞名：运行时发送闸把 allow 和 noMention 合起来看，保存时必须拒绝。
+  const crossList = await save({ allowChats: ['❤️读书群'], noMentionChats: ['❤️读书群'] })
+  assert.equal(crossList.status, 500)
+  assert.equal(crossList.body.ok, false)
+  assert.match(crossList.body.bad[0].why, /折叠|分不清/)
+  assert.deepEqual(readPolicy().allowChats, [])
+
+  // 主动额度与允许名单的同一会话同名是正常配置；只差折叠写法则拒绝。
+  const proSame = await save({ allowChats: ['全新群'], proactiveChats: { 全新群: 3 } })
+  assert.equal(proSame.status, 200)
+  assert.deepEqual(proSame.body.policy.proactiveChats, { 全新群: 3 })
+  const proCollision = await save({ allowChats: ['全新❤️群'], proactiveChats: { '全新❤群': 3 } })
+  assert.equal(proCollision.status, 500)
+  assert.match(proCollision.body.bad[0].why, /折叠|分不清/)
+
+  // 未知名字保留并回传 warning；更长的输入不能被反向缩成旧的截断前缀。
+  const unknown = await save({ allowChats: ['全新群', '北京周末徒步群2'] })
+  assert.equal(unknown.status, 200)
+  assert.equal(unknown.body.ok, true)
+  assert.deepEqual(unknown.body.bad, [])
+  assert.deepEqual(
+    unknown.body.warnings.map((w) => w.name).sort(),
+    ['全新群', '北京周末徒步群2'].sort(),
+  )
+  assert.deepEqual(readPolicy().allowChats, ['全新群', '北京周末徒步群2'])
+
+  // exact/folded 命中的 exact 条目改写成目录 display name。
+  const canonical = await save({ allowChats: ['❤读书群'] })
+  assert.equal(canonical.status, 200)
+  assert.deepEqual(canonical.body.warnings, [])
+  assert.deepEqual(canonical.body.policy.allowChats, ['❤️读书群'])
+  assert.deepEqual(readPolicy().allowChats, ['❤️读书群'])
+})
+
+test('GET /api/wx/scope 用目录 chatId 读取提及窗口和主动额度，折叠写法也认', async () => {
+  const current = '❤读书群'
+  const today = serverModule.localDateKey()
+  mkdirSync(join(home, '.dsh-wx'), { recursive: true })
+  fixtureWxChats(current)
+  writeFileSync(join(home, '.dsh-wx', 'directory.json'), JSON.stringify({
+    version: 1,
+    chats: [
+      { chatId: 'c_read', displayName: '❤️读书群', fullName: '❤️读书群', aliases: [], nameConfidence: 'exact' },
+    ],
+  }) + '\n')
+  writeFileSync(join(home, '.dsh-wx', 'policy.json'), JSON.stringify({
+    enabled: true,
+    allowChats: ['❤️读书群'],
+    noMentionChats: [],
+    requireMention: true,
+    mentionWindowMinutes: 3,
+    proactivePerDay: 2,
+    proactiveChats: {},
+    hardBreaker: 4,
+  }) + '\n')
+  writeFileSync(join(home, '.dsh-wx', 'mentions.json'), JSON.stringify({ c_read: Date.now() }) + '\n')
+  writeFileSync(join(home, '.dsh-wx', 'proactive.json'), JSON.stringify({ day: today, used: { c_read: 1 } }) + '\n')
+
+  const response = await fetch(`http://127.0.0.1:${port}/api/wx/scope`)
+  assert.equal(response.status, 200)
+  const scope = await response.json()
+  assert.equal(scope.ok, true)
+  assert.equal(scope.current, current)
+  assert.equal(scope.currentKey, 'c_read')
+  assert.equal(scope.currentMatch, 'folded')
+  assert.deepEqual(scope.proactiveUsed, { c_read: 1 })
+  assert.deepEqual(scope.proactiveUsedChats, [{ name: '❤️读书群', used: 1 }])
+  assert.equal(scope.speaking.ok, true)
+  assert.match(scope.speaking.why, /窗口/)
+  assert.deepEqual(scope.candidates, [{
+    name: current,
+    source: 'tree',
+    nameConfidence: 'exact',
+    matchStatus: 'folded',
+  }])
+
+  // 目录里查不到的 chatId 不能把裸 c_… 直接摆到工作台上。
+  writeFileSync(join(home, '.dsh-wx', 'proactive.json'),
+    JSON.stringify({ day: today, used: { c_read: 1, c_deadbeef1234: 2 } }) + '\n')
+  const withUnknown = await (await fetch(`http://127.0.0.1:${port}/api/wx/scope`)).json()
+  assert.deepEqual(
+    withUnknown.proactiveUsedChats.find((x) => x.name === '未知会话'),
+    { name: '未知会话', used: 2 },
+  )
+})
+
+test('GET /api/speech 把 wx:<chatId> 映射成目录展示名，不漏内部 id', async () => {
+  const speechDir = join(home, 'dsh-plugins', 'speech')
+  mkdirSync(speechDir, { recursive: true })
+  mkdirSync(join(home, '.dsh-wx'), { recursive: true })
+  writeFileSync(join(home, '.dsh-wx', 'directory.json'), JSON.stringify({
+    version: 1,
+    chats: [
+      { chatId: 'c_read', displayName: '❤️读书群', fullName: '❤️读书群', aliases: [], nameConfidence: 'exact' },
+    ],
+  }) + '\n')
+  const now = Date.now()
+  writeFileSync(join(speechDir, 'speech-state.json'), JSON.stringify({
+    chats: {
+      'wx:c_read': [now],
+      'wx:c_0123456789ab': [now],
+    },
+  }) + '\n')
+  const response = await fetch(`http://127.0.0.1:${port}/api/speech`)
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  const known = body.stats.find((x) => x.chat === 'wx:c_read')
+  assert.equal(known.name, '❤️读书群')
+  const unknown = body.stats.find((x) => x.chat === 'wx:c_0123456789ab')
+  assert.equal(unknown.name, '', '未知 chatId 不返回内部 id 当展示名')
 })

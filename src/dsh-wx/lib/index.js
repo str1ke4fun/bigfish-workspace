@@ -23,14 +23,14 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, planChatNavigation, reconcileChatName, restartEpisode, sameName, sidebarRegion, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
+import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, planChatNavigation, reconcileChatName, restartEpisode, sameName, sidebarRegion, targetMatches, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { isContactWhy } from './contact.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
-import { consume as consumeProactive, decideProactive, loadState, normalizeProactive, saveState } from './proactive.js'
+import { consume as consumeProactive, decideProactive, loadState, normalizeProactive, saveState, STATE_FILE as PROACTIVE_STATE_FILE } from './proactive.js'
 import { dropRecentContent, freshHits, forgetReadChats, noteContent, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { openChatHit } from './ear-open.js'
 import {
@@ -50,6 +50,9 @@ import { createContextStore } from './context.js'
 import { overdueVisibilityEnabled } from './tasks.js'
 import { createReminderBackoff, runOverdueReminderPass } from './overdue.js'
 import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
+import { chatIdFor } from './ledger.js'
+import { chatIdSeed, sanitizeName } from './name.js'
+import { isChatIdKey, migrateMentions, migrateProactive, migrateRecent } from './state-key.js'
 import { createPeople } from './people.js'
 import { normalizeMessages } from './transcript.js'
 import { createSessionPool } from './sessions.js'
@@ -108,6 +111,10 @@ export function denyWxSurface(exec) {
 const SH = fileURLToPath(new URL('./wx.sh', import.meta.url))
 const SHOT_DIR = '/home/str1k3/.dsh-fish/home/.wx'
 const POLICY = '/home/str1k3/.dsh-wx/policy.json'
+const WX_STATE_DIR = '/home/str1k3/.dsh-wx'
+// 旧文件的键是会话名；一次性迁移后统一用目录 chatId。
+const MENTIONS_FILE = `${WX_STATE_DIR}/mentions.json`
+const RECENT_FILE_PATH = `${WX_STATE_DIR}/recent-chats.json`
 const HEALTH = '/home/str1k3/.dsh-wx/health.json'
 // 耳朵的流水账：看见什么、投没投进去。只追加，排查时不用靠 grep 宿主日志。
 const INBOX = '/home/str1k3/.dsh-wx/inbound.jsonl'
@@ -115,6 +122,119 @@ const HER_DIR = '/home/str1k3/.dsh-fish/home'
 // 说话频率的判定放在两个通道共用的一个文件里（QQ 那边是 vendor 补丁，用的是同一份）
 const SPEECH = '/home/str1k3/dsh-plugins/speech/speech.mjs'
 const KEEP = 20
+
+const shortError = (err) => String(err?.message ?? err).slice(0, 120)
+
+/**
+ * 一次性状态迁移：`mentions.json` / `proactive.json` / `recent-chats.json`
+ * 过去用会话名作键。名字的 VS 变体和别名会让同一个群各记一份，现在统一改 chatId。
+ *
+ * 幂等靠「键形状」，不靠备份文件：
+ *   - 键已经全是 chatId 的文件直接跳过，即使没有标记（新代码自己写出的文件不会再被哈希一遍）；
+ *   - 文件名键混合时，`state-key` 只改写不是 chatId 的键；
+ *   - `<file>.migrated` 只是写成功后的排查标记，存在也不会阻止一个重新变回名字键的文件再迁移；
+ *   - `<file>.v1.bak` 只放旧内容，写前先落盘并 chmod 0o600；备份失败就保持原文件、下次再试；
+ *   - 旧文件不存在时什么都不写，之后出现的旧文件仍然会迁移。
+ *
+ * @param {object} [opts]
+ * @param {(name:string)=>string} [opts.keyOf]
+ * @param {{mentions?:string, proactive?:string, recent?:string}} [opts.files]
+ * @param {(msg:string)=>void} [opts.log]
+ * @returns {Array<{kind:string, file:string, status:string}>}
+ */
+export function migrateStateFiles({ keyOf = (v) => v, files = {}, log = () => {} } = {}) {
+  const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+  const allChatIds = (keys) => keys.length === 0 || keys.every(isChatIdKey)
+  // 迁移会跳过 stateKey 为空的条目（撞名/空名没有稳定身份）。只影响临时状态，
+  // 但必须在日志里说清楚丢了几条，不能静默吞掉（spec §5.2）。
+  const droppedByEmptyKey = (kind, raw) => {
+    const emptyKey = (name) => {
+      try { return !String(keyOf(name) ?? '').trim() } catch { return true }
+    }
+    if (kind === 'mentions') {
+      return Object.entries(raw)
+        .filter(([name, value]) => Number.isFinite(Number(value)) && !isChatIdKey(name) && emptyKey(name)).length
+    }
+    if (kind === 'proactive') {
+      const used = isObject(raw.used) ? raw.used : {}
+      return Object.entries(used)
+        .filter(([name, value]) => Number.isFinite(Number(value)) && !isChatIdKey(name) && emptyKey(name)).length
+    }
+    if (kind === 'recent') {
+      return (Array.isArray(raw) ? raw : []).filter((item) => {
+        const name = String(item?.chat ?? '').trim()
+        return Boolean(name) && Number.isFinite(Number(item?.at)) && !isChatIdKey(name) && emptyKey(name)
+      }).length
+    }
+    return 0
+  }
+  const migrateOne = (kind, file, migrate, valid, keyedByChatId) => {
+    const backup = `${file}.v1.bak`
+    const marker = `${file}.migrated`
+    let text
+    try {
+      text = readFileSync(file, 'utf8')
+    } catch (err) {
+      const status = err?.code === 'ENOENT' ? 'missing' : 'read-failed'
+      if (status === 'read-failed') log(`状态迁移跳过 ${kind}（${file}）：` + shortError(err))
+      return { kind, file, status }
+    }
+    let raw
+    try {
+      raw = JSON.parse(text)
+    } catch {
+      log(`状态迁移跳过 ${kind}（${file}）：JSON 读不出来，保留原文件`)
+      return { kind, file, status: 'bad-json' }
+    }
+    if (!valid(raw)) {
+      log(`状态迁移跳过 ${kind}（${file}）：形状不认识，保留原文件`)
+      return { kind, file, status: 'bad-shape' }
+    }
+    if (keyedByChatId(raw)) return { kind, file, status: 'already-chat-id' }
+    // 备份只归档，不兼任“迁移过”的标记：写失败就保持原文件，下次启动重试。
+    if (!existsSync(backup)) {
+      try {
+        const btmp = `${backup}.tmp`
+        writeFileSync(btmp, text, { mode: 0o600 })
+        chmodSync(btmp, 0o600)
+        renameSync(btmp, backup)
+      } catch (err) {
+        log(`状态迁移失败 ${kind}（${file}）：备份写不下去，原文件未动：` + shortError(err))
+        return { kind, file, status: 'backup-failed' }
+      }
+    }
+    const dropped = droppedByEmptyKey(kind, raw)
+    try {
+      const next = migrate(raw, keyOf)
+      const tmp = `${file}.migrate.tmp`
+      writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 })
+      renameSync(tmp, file)
+    } catch (err) {
+      log(`状态迁移失败 ${kind}（${file}）：写入失败，原文件保留：` + shortError(err))
+      return { kind, file, status: 'write-failed' }
+    }
+    try {
+      writeFileSync(marker, JSON.stringify({ kind, file, at: new Date().toISOString() }), { mode: 0o600 })
+    } catch (err) {
+      // 已经迁移成功；键形状本身幂等，标记写不下只影响排查，但必须留下日志。
+      log(`状态迁移已写入 ${kind}（${file}），但标记写不下去：` + shortError(err))
+    }
+    log(`状态迁移：${kind}（${file}）改用 chatId 键，旧文件备份在 ${backup}` +
+      (dropped ? `；${dropped} 个条目因为没有稳定会话身份（stateKey 为空）被丢弃` : ''))
+    return { kind, file, status: 'migrated' }
+  }
+
+  return [
+    migrateOne('mentions', files.mentions ?? MENTIONS_FILE, migrateMentions, isObject,
+      (raw) => allChatIds(Object.keys(raw))),
+    migrateOne('proactive', files.proactive ?? PROACTIVE_STATE_FILE,
+      migrateProactive,
+      (raw) => isObject(raw) && isObject(raw.used),
+      (raw) => allChatIds(Object.keys(raw.used))),
+    migrateOne('recent', files.recent ?? RECENT_FILE_PATH, migrateRecent, Array.isArray,
+      (raw) => raw.every((item) => item && isChatIdKey(item.chatId))),
+  ]
+}
 
 /**
  * 只有主机亲手打的字才算「主机在说话」。
@@ -558,6 +678,13 @@ export function apply(ctx, config = {}) {
   const directory = createDirectory({
     log: (m) => logLine('[dsh-wx] 会话目录：' + String(m ?? '').slice(0, 160)),
   })
+  // 冒烟测试（test/plugin-apply）只验证工具注册，不能顺手改线上的 ~/.dsh-wx。
+  if (config.migrateState !== false) {
+    migrateStateFiles({
+      keyOf: (name) => directory.stateKey(name),
+      log: (m) => logLine('[dsh-wx] ' + m),
+    })
+  }
   const sessions = createSessionPool({
     log: (m) => logLine('[dsh-wx] 会话池：' + String(m ?? '').slice(0, 160)),
   })
@@ -570,11 +697,32 @@ export function apply(ctx, config = {}) {
     if (!e) return null
     return { chatId: e.chatId, isDM: e.kind === 'dm', displayName: e.fullName || e.displayName }
   }
-  /** 能当发送目标的规范名：只有 exact / resolved；其余原样返回，交给上层拒绝。 */
+  /**
+   * 非精确解析的排查记录：folded / skeleton / chatId 命中时记一条，只在日志里，
+   * 不进模型文案。exact 或没有任何改写时不写。
+   */
+  const logNameMatch = (from, to, tier, chatId = '') => {
+    const a = String(from ?? '').trim()
+    const b = String(to ?? '').trim()
+    const t = String(tier ?? '')
+    if (!a || !b || !t || t === 'exact' || a === b) return
+    logLine('[dsh-wx] name-match ' + JSON.stringify({ from: a, to: b, tier: t, chatId: String(chatId ?? '') }))
+  }
+  /**
+   * 能当发送目标的规范名：
+   *   exact / folded / resolved（截断名唯一补全）→ 目录保留的 display name；
+   *   unknown / truncated → 原样 trim（配置里还没出现过的群照旧能用）；
+   *   ambiguous → null，发送侧必须拒绝；不能和 unknown 共用空串。
+   */
   const canonicalName = (name) => {
-    const e = directory.entry(name)
-    if (e && (e.nameConfidence === 'exact' || e.nameConfidence === 'resolved') && e.fullName) return e.fullName
-    return String(name ?? '').trim()
+    const raw = String(name ?? '').trim()
+    if (!raw) return ''
+    const r = directory.lookupName(raw, { tiers: ['exact', 'folded'] })
+    if (r.status === 'ambiguous') return null
+    if (r.match && (r.status === 'exact' || r.status === 'folded' || r.status === 'resolved')) {
+      return r.displayName || r.match.fullName || r.match.displayName || raw
+    }
+    return raw
   }
   let lastDirSig = ''
   let lastDirMerge = 0
@@ -680,15 +828,20 @@ export function apply(ctx, config = {}) {
     people,
     log: (line) => logLine('[dsh-wx] ' + line),
   })
-  const RECENT_FILE = '/home/str1k3/.dsh-wx/recent-chats.json'
+  const RECENT_FILE = RECENT_FILE_PATH
   const RECENT_MS = 30 * 60_000
+  // 读兼容新旧两种形状：迁移过的 `{chatId, chat, at}`，以及没迁成的旧 `{chat, at}`。
   let recent = []
   try {
     const raw = JSON.parse(readFileSync(RECENT_FILE, 'utf8'))
     if (Array.isArray(raw)) {
       recent = raw
-        .map((x) => ({ chat: String(x?.chat ?? '').trim(), at: Number(x?.at) || 0 }))
-        .filter((x) => x.chat && Date.now() - x.at <= RECENT_MS)
+        .map((x) => ({
+          chatId: String(x?.chatId ?? '').trim(),
+          chat: sanitizeName(String(x?.chat ?? '').trim()),
+          at: Number(x?.at) || 0,
+        }))
+        .filter((x) => (x.chatId || x.chat) && Date.now() - x.at <= RECENT_MS)
     }
   } catch { /* 没有就没有：第一次收到微信通知时会写 */ }
 
@@ -702,10 +855,15 @@ export function apply(ctx, config = {}) {
   /** 记下这一轮把哪些会话递给了她。定时提醒只能定到这些会话。 */
   const noteRecent = (chats, at = Date.now()) => {
     const map = new Map()
-    for (const x of recent) if (at - x.at <= RECENT_MS) map.set(x.chat, x)
+    // 身份键优先 chatId；旧形状没有 chatId 时退回展示名，保持可读。
+    for (const x of recent) if (at - x.at <= RECENT_MS) map.set(x.chatId || x.chat, x)
     for (const c of chats ?? []) {
       const name = String(c ?? '').trim()
-      if (name) map.set(name, { chat: name, at })
+      if (!name) continue
+      const chatId = directory.stateKey(name)
+      const chat = sanitizeName(name)
+      if (!chat) continue
+      map.set(chatId || chat, { chatId, chat, at })
     }
     recent = [...map.values()].slice(-20)
     saveRecent()
@@ -714,10 +872,16 @@ export function apply(ctx, config = {}) {
   /** 最近叫醒过她的会话名（去重，最近的在后）。 */
   const recentChats = (withinMs = RECENT_MS) => {
     const now = Date.now()
-    return [...new Set(recent.filter((x) => now - x.at <= withinMs).map((x) => x.chat))]
+    return [...new Set(recent.filter((x) => now - x.at <= withinMs).map((x) => x.chat).filter(Boolean))]
   }
 
-  const isRecentChat = (chat, withinMs = RECENT_MS) => recentChats(withinMs).some((n) => sameName(n, chat))
+  /** 判断「最近叫醒过」按目录 stateKey 比身份，名字只是展示。 */
+  const isRecentChat = (chat, withinMs = RECENT_MS) => {
+    const now = Date.now()
+    const key = directory.stateKey(chat)
+    return recent.some((x) => now - x.at <= withinMs &&
+      (sameName(x.chat, chat) || (key && x.chatId === key)))
+  }
 
   // 通道隔离：工具名单是全局的，QQ 会话里也看得到 wx_*。QQ 里的对话不该顺手去操作微信，这里在执行层拦住。
   // （主机自己在 web 界面里和她对话时放行，调试要用。）
@@ -1040,7 +1204,7 @@ export function apply(ctx, config = {}) {
   // ---- @ 才回：谁最近被 @ 过 ----
   // 耳朵看见侧栏有人 @ 她 → 盖戳；发送前查这里。手动 poke 也会盖。
   // 必须在发送闸之前声明：createSendGate 立刻读这个函数引用，放在后面会触发 TDZ。
-  const MENTIONS = '/home/str1k3/.dsh-wx/mentions.json'
+  const MENTIONS = MENTIONS_FILE
   const readMentions = () => {
     try { return JSON.parse(readFileSync(MENTIONS, 'utf8')) || {} } catch { return {} }
   }
@@ -1062,8 +1226,11 @@ export function apply(ctx, config = {}) {
     staleDetail: () => fresh.notice(),
     allowedCurrent,
     sameName,
+    lookupName: (name) => directory.lookupName(name, { tiers: ['exact', 'folded'] }),
+    targetMatches,
     canSpeak,
     readMentions,
+    stateKey: (name) => directory.stateKey(name),
     loadState,
     decideProactive,
     consumeProactive,
@@ -1084,10 +1251,10 @@ export function apply(ctx, config = {}) {
     }
     return speechMod
   }
-  async function speechGate(chatName) {
+  async function speechGate(speechKey) {
     const mod = await speech()
     if (!mod) return
-    const v = await mod.waitAndAdmit('wx:' + chatName, 45_000)
+    const v = await mod.waitAndAdmit('wx:' + speechKey, 45_000)
     if (!v.ok) throw new WxToolError('WX_RATE_LIMIT', '[说得太密了，等一下]')
   }
 
@@ -1104,6 +1271,13 @@ export function apply(ctx, config = {}) {
     sendLock = p.then(() => {}, () => {})
     return p.finally(() => { sendBusy -= 1 })
   }
+
+  /** 侧栏多行折叠等价：导航必须失败关闭，绝不点第一行（发送、表情、收藏共用）。 */
+  const ambiguousChatError = (chat, nav, action = '发送') => new WxToolError(
+    'WX_CHAT_AMBIGUOUS',
+    '[这个会话名对不上唯一的群，先确认]',
+    `${action}：侧栏有 ${nav?.matches?.length ?? 0} 行与「${chat}」等价（${nav?.chatCount ?? 0} 个会话），不点第一行。`,
+  )
 
   /**
    * 把一句话发到指定会话。预期失败返回 ok:false；意外异常仍抛出，让调用方如实说。
@@ -1134,8 +1308,37 @@ export function apply(ctx, config = {}) {
     if ([...body].length > 500) throw new WxToolError('WX_INVALID_TEXT', '[这句话发不出去]', `要发送的正文过长：${[...body].length} 字。`)
 
     const allowed = canSendWithPolicy(p, want)
-    if (!allowed.ok) throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]', allowed.why)
-    const gateTarget = { chat: allowed.chat, canonicalChat: navigateTo, chatId: String(targetChatId ?? '').trim() }
+    if (!allowed.ok) {
+      if (allowed.code === 'WX_CHAT_AMBIGUOUS') {
+        throw new WxToolError(
+          'WX_CHAT_AMBIGUOUS',
+          '[这个会话名对不上唯一的群，先确认]',
+          `发送闸：${allowed.why}（策略名单里有多个折叠等价的名字）`,
+        )
+      }
+      throw new WxToolError('WX_NOT_ALLOWED', '[这个会话现在说不了]', allowed.why)
+    }
+    // 目标稳定身份：调用方显式给的优先；目录认识这个名字就用目录 id；
+    // 目录不认识时按 chatIdSeed 派生同一个 id（与台账旧种子一致）。
+    const resolvedTargetId = String(targetChatId ?? '').trim() ||
+      (typeof directory.idFor === 'function' ? String(directory.idFor(navigateTo) ?? '').trim() : '') ||
+      chatIdFor(chatIdSeed(navigateTo))
+    const gateTarget = { chat: allowed.chat, canonicalChat: navigateTo, chatId: resolvedTargetId }
+    const lookupName = (name) => directory.lookupName(name, { tiers: ['exact', 'folded'] })
+    let identityLogged = false
+    /** 当前会话（或侧栏行）是不是这个目标：比 chatId，不比字符串。 */
+    const matchesTarget = (current) => {
+      const ok = targetMatches(current, resolvedTargetId, { lookupName })
+      if (ok && !identityLogged && !sameName(current, navigateTo)) {
+        const truth = lookupName(current)
+        // 目录在 folded/skeleton 命中时已经记过 name-match；这里只补 chatId 命中。
+        if (truth.status === 'unknown' || truth.status === 'truncated') {
+          logNameMatch(current, navigateTo, 'chatId', resolvedTargetId)
+        }
+        identityLogged = true
+      }
+      return ok
+    }
 
     const token = String(permit ?? '').trim()
     if (token) {
@@ -1163,6 +1366,14 @@ export function apply(ctx, config = {}) {
         `发送闸：侧栏里没有「${navigateTo}」（树健康，${nav.chatCount} 个会话）。`,
       )
     }
+    if (nav.action === 'ambiguous') {
+      // 侧栏有多行折叠等价：名字对不上唯一的群，绝不点第一行。
+      throw new WxToolError(
+        'WX_CHAT_AMBIGUOUS',
+        '[这个会话名对不上唯一的群，先确认]',
+        `发送闸：侧栏有 ${nav.matches?.length ?? 0} 行与「${navigateTo}」等价（${nav.chatCount} 个会话），不点第一行。`,
+      )
+    }
     if (nav.action === 'navigate') {
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset()
@@ -1170,7 +1381,7 @@ export function apply(ctx, config = {}) {
       await sleep(700)
       s = await look({ confirm: false })
       if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
-      if (!sameName(s.parsed.current, navigateTo)) {
+      if (!matchesTarget(s.parsed.current)) {
         throw new WxToolError(
           'WX_CHAT_CHANGED',
           '[没做成，过会儿再试]',
@@ -1196,7 +1407,7 @@ export function apply(ctx, config = {}) {
     fresh.reset()
     s = await look({ confirm: false })
     if (fresh.stale) throw new WxToolError('WX_TREE_STALE', '[没看清。屏幕可能慢半拍]')
-    if (!sameName(s.parsed.current, navigateTo)) {
+    if (!matchesTarget(s.parsed.current)) {
       throw new WxToolError(
         'WX_CHAT_CHANGED',
         '[没做成，过会儿再试]',
@@ -1215,7 +1426,7 @@ export function apply(ctx, config = {}) {
       const again = permitStore.check({ id: token, chat: allowed.chat, text: body })
       if (!again.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
       const now = await look({ confirm: false })
-      if (!sameName(now.parsed.current, navigateTo)) {
+      if (!matchesTarget(now.parsed.current)) {
         throw new WxToolError(
           'WX_CHAT_CHANGED',
           '[没做成，过会儿再试]',
@@ -1243,7 +1454,7 @@ export function apply(ctx, config = {}) {
       const still = permitStore.check({ id: token, chat: allowed.chat, text: body })
       if (!still.ok) throw new WxToolError('WX_PERMIT_INVALID', '[这句和你当时定的不一样，没发出去]')
       const last = await look({ confirm: false })
-      if (!sameName(last.parsed.current, navigateTo)) {
+      if (!matchesTarget(last.parsed.current)) {
         throw new WxToolError(
           'WX_CHAT_CHANGED',
           '[没做成，过会儿再试]',
@@ -1280,7 +1491,7 @@ export function apply(ctx, config = {}) {
     const typed = body.replace(/\s+/g, ' ').replace(/"/g, '＂')
     const head = typed.slice(0, 14)
     const inMsgs = after.parsed.messages.slice(-4).some((m) => m.text.includes(head))
-    const chatRow = after.parsed.chats.find((c) => sameName(c.name, navigateTo))
+    const chatRow = after.parsed.chats.find((c) => matchesTarget(c.name))
     const inPreview = !!chatRow && chatRow.preview.includes(head.slice(0, 10))
     const receipt = inMsgs
       ? '末尾那儿已经出现了。'
@@ -1369,6 +1580,9 @@ export function apply(ctx, config = {}) {
     if (nav.action === 'missing') {
       throw new Error(`会话列表里没有「${allowed.chat}」，不发送。`)
     }
+    if (nav.action === 'ambiguous') {
+      throw ambiguousChatError(allowed.chat, nav, '发送表情')
+    }
     if (nav.action === 'navigate') {
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset()
@@ -1395,7 +1609,9 @@ export function apply(ctx, config = {}) {
     const before = s.parsed.messages ?? []
 
     // 频率闸只记一次；等完再看一眼会话，别在等待期间被切走。
-    await speechGate(allowed.chat)
+    await speechGate(resolveSendKeys({
+      chat: allowed.chat, canonicalChat: allowed.chat, chatId: directory.stateKey(allowed.chat),
+    }).speech)
     // 最后一道闸：表情点下去就发送，主动额度也在这里扣。
     const last = await gateSend({ consume: true, expected: allowed.chat })
     if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
@@ -1463,6 +1679,9 @@ export function apply(ctx, config = {}) {
       if (nav.action === 'missing') {
         throw new Error(`会话列表里没有「${allowed.chat}」，不采集。`)
       }
+      if (nav.action === 'ambiguous') {
+        throw ambiguousChatError(allowed.chat, nav, '收藏表情')
+      }
       if (nav.action === 'navigate') {
         await run(['clean'], 30_000).catch(() => '')
         fresh.reset()
@@ -1523,6 +1742,9 @@ export function apply(ctx, config = {}) {
     if (nav.action === 'missing') {
       throw new Error(`会话列表里没有「${allowed.chat}」，不搜索。`)
     }
+    if (nav.action === 'ambiguous') {
+      throw ambiguousChatError(allowed.chat, nav, '搜索表情')
+    }
     if (nav.action === 'navigate') {
       await run(['clean'], 30_000).catch(() => '')
       fresh.reset()
@@ -1539,7 +1761,9 @@ export function apply(ctx, config = {}) {
     if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不搜索。`)
 
     // 频率闸只记一次；等完再确认会话。
-    await speechGate(allowed.chat)
+    await speechGate(resolveSendKeys({
+      chat: allowed.chat, canonicalChat: allowed.chat, chatId: directory.stateKey(allowed.chat),
+    }).speech)
     // 最后一道闸：搜索结果点下去就发送，主动额度也在这里扣。
     const last = await gateSend({ consume: true, expected: allowed.chat })
     if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不搜索。`)
@@ -1866,7 +2090,7 @@ export function apply(ctx, config = {}) {
           if (!chat) throw new Error('会话名当前解析不到')
           const sessionId = await deliverToChat(chat, t.chatId, overdueText(t, level))
           // 提醒本身也算叫了她一次：这个会话的 @ 窗口重新打开，才允许回。
-          saveMentions(grant(readMentions(), chat, Date.now()))
+          saveMentions(grant(readMentions(), chat, Date.now(), directory.stateKey))
           noteRecent([chat])
           return { ok: true, chat, sessionId }
         },
@@ -1940,6 +2164,10 @@ export function apply(ctx, config = {}) {
     // 派活闸用：只认这条会话真正归属的聊天，不拿 recentChats 猜。
     // 群 worker 在名字尚未落账时宁可返回空（拒绝派活），也不能蹭到最近私聊。
     currentChat: (sessionId) => (isWxSession(sessionId) ? (chatNameOfSession(sessionId) || '') : ''),
+    // 跨模块名字口径：派活名单用它比较会话名（exact/folded；ambiguous 为 false）。
+    sameChatName: (a, b) => directory.sameEntry(a, b),
+    // exact/folded/resolved 返回目录里的 display name；unknown 原样 trim；ambiguous 为 null。
+    canonicalChatName: (name) => canonicalName(name),
     isRecentChat: (sessionId, chat, withinMs) => isWxSession(sessionId) && isRecentChat(chat, withinMs),
     // 工作汇总回到固定的主人私聊：走正常发送闸和串行锁，不跟随派活来源。
     notifyOwner: async ({ text, chat } = {}) => {
@@ -2049,7 +2277,7 @@ export function apply(ctx, config = {}) {
    */
   const makeCaptureIo = () => {
     const findRow = (parsed, chat) => (parsed?.chats ?? []).find(
-      (c) => sameName(c.name, chat) || canonicalName(c.name) === canonicalName(chat),
+      (c) => sameName(c.name, chat) || directory.sameEntry(c.name, chat),
     ) ?? null
     const clickRow = async (box) => {
       await run(['clean'])
@@ -2095,7 +2323,7 @@ export function apply(ctx, config = {}) {
         return sameName(s.parsed?.current, chat)
       },
       onMention: (hit) => {
-        saveMentions(grant(readMentions(), hit.chat, Date.now()))
+        saveMentions(grant(readMentions(), hit.chat, Date.now(), directory.stateKey))
         pendingCaptureHits.push(hit)
         if (pendingCaptureHits.length > 20) pendingCaptureHits.shift() // 上限 20，超出丢最旧
         logInbound({ type: 'capture-mention', chat: hit.chat, msgId: hit.msgId })
@@ -2330,7 +2558,14 @@ export function apply(ctx, config = {}) {
       for (const m of [...baseMentions, ...deliverableCaptureHits]) mergedHits.set(m.key, m)
       const mentionsRaw = [...mergedHits.values()]
       // 截断名解析到全名后再记 @ 窗口和任务，否则发送闸会拿两个不同的键互相比。
-      const mentions = mentionsRaw.map((m) => ({ ...m, chat: canonicalName(m.chat) }))
+      // canonicalName 对撞名返回 null：对不上唯一会话的命中不投递（fail closed）。
+      const mentions = mentionsRaw
+        .map((m) => ({ ...m, chat: canonicalName(m.chat) }))
+        .filter((m) => {
+          if (m.chat) return true
+          logLine('[dsh-wx] 耳朵：会话名对不上唯一的会话，跳过一条命中')
+          return false
+        })
       // 当前会话被 @：侧栏预览可能被微信截成「…」。先看整屏这一轮有没有全文；
       // 没有就立刻 OCR 右侧消息区补全，再交给她。已经投过/刚投过的不用再 OCR。
       if (tree.ok && !ocrRecovered && parsed.current) {
@@ -2363,7 +2598,7 @@ export function apply(ctx, config = {}) {
       // 有人 @ 她 → 这个会话在窗口内可以开口（@ 才回）。挂着的未读 @ 会一直续窗口。
       if (mentions.length > 0) {
         let st = readMentions()
-        for (const m of mentions) st = grant(st, m.chat, Date.now())
+        for (const m of mentions) st = grant(st, m.chat, Date.now(), directory.stateKey)
         saveMentions(st)
       }
       const now = new Map(mentions.map((m) => [m.key, m]))
@@ -2381,7 +2616,7 @@ export function apply(ctx, config = {}) {
       if (poke) {
         rmSync(POKE, { force: true })
         // 手动叫醒也算一次 @：poke 里点到的会话照样可以开口
-        saveMentions(grantMentioned(readMentions(), poke, p.allowChats, Date.now()))
+        saveMentions(grantMentioned(readMentions(), poke, p.allowChats, Date.now(), directory.stateKey))
         // poke 里点到的允许会话，同样算「最近叫醒过」；她随后说「提醒我」时才有目标。
         noteRecent(p.allowChats.filter((n) => String(poke).includes(n)))
         await deliver(await ensureWxSession(), `[微信·叫你] ${poke}`)
@@ -2412,14 +2647,14 @@ export function apply(ctx, config = {}) {
       // 只记正文重复；被回声判断拦下的不记，等回声窗口过去还能重新考虑。
       if (suppressed.length) {
         for (const m of suppressed) {
-          seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat), text: String(m.preview ?? '') })
+          seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat) ?? String(m.chat ?? ''), text: String(m.preview ?? '') })
         }
         saveSeen()
       }
       const hits = dropRecentContent(fresh1, recentContent)
       if (hits.length < fresh1.length) {
         // 内容重复的命中记账，不再每轮重试：key 记进 seen，之后同 key 也不会再来。
-        for (const m of fresh1) if (!hits.includes(m)) seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat), text: String(m.preview ?? '') })
+        for (const m of fresh1) if (!hits.includes(m)) seen.set(m.key, { at: Date.now(), chat: canonicalName(m.chat) ?? String(m.chat ?? ''), text: String(m.preview ?? '') })
         saveSeen()
         logLine('[dsh-wx] 耳朵：内容近期已投过，跳过 ' + (fresh1.length - hits.length) + ' 条')
       }
@@ -2453,6 +2688,7 @@ export function apply(ctx, config = {}) {
       const ids = new Map()
       for (const h of hits) {
         const chat = canonicalName(h.chat)
+        if (!chat) { logLine('[dsh-wx] 耳朵：会话名对不上唯一的会话，跳过一条投递'); continue }
         const chatId = directory.idFor(chat)
         ids.set(h.key, chatId)
         const entry = directory.entry(chat)
@@ -2473,6 +2709,7 @@ export function apply(ctx, config = {}) {
       const sentChats = []
       for (const h of hits) {
         const chat = canonicalName(h.chat)
+        if (!chat) continue
         const chatId = ids.get(h.key)
         const note = formatEarNote([{ ...h, chat }], p.allowChats, null, { requester: reqs, recent: recents })
         try {
@@ -2626,7 +2863,7 @@ export function apply(ctx, config = {}) {
             // 树里没有"发送"按钮（截图上有）；发送等价于回车，走同一道闸，扣一次主动额度。
             // 先过频率闸，再扣额度：频率拒绝时不能白扣一条。
             const g = await gateSend()
-            await speechGate(g.chat)
+            await speechGate(g.speech)
             await gateSend({ consume: true, expected: g.chat })
             await run(['key', 'Return'])
             return { ok: true, text: '已经按下回车发送了。' + fresh.notice() }
@@ -2699,7 +2936,7 @@ export function apply(ctx, config = {}) {
       // enter=true 是真正发送。先过频率闸，再扣主动额度：
       // 频率拒绝 / 等完切走时，这条话没发出去，不能白扣。
       const second = await gateSend()
-      await speechGate(second.chat)
+      await speechGate(second.speech)
       await gateSend({ consume: true, expected: second.chat })
       await run(['key', 'Return'])
       await sleep(900)
@@ -2901,7 +3138,7 @@ export function apply(ctx, config = {}) {
       if (/(^|\+)(return|kp_enter|enter)$/i.test(keys)) {
         // 回车视同发送：先过频率闸，再扣一次主动额度，频率拒绝时不白扣。
         const g = await gateSend()
-        await speechGate(g.chat)
+        await speechGate(g.speech)
         await gateSend({ consume: true, expected: g.chat })
         where = `当前会话：“${g.chat}”。`
       }

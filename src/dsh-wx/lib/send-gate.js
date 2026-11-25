@@ -20,8 +20,14 @@ export function createSendGate({
   staleDetail,
   allowedCurrent,
   sameName,
+  // 可选的稳定身份注入：目录可用时按 chatId 核对当前会话；没有注入时退回名字比较。
+  lookupName,
+  targetMatches,
   canSpeak,
   readMentions,
+  // 会话身份键：生产传入目录 stateKey，让 VS 变体/别名共用同一个 @ 窗口。
+  // 不注入时保留按名字记账，既有调用点和测试不需要跟着改。
+  stateKey = (v) => v,
   loadState,
   decideProactive,
   consumeProactive,
@@ -61,13 +67,17 @@ export function createSendGate({
     // 且当前窗口已经切到 canonicalChat，才把策略名当作 hit。
     const policyChat = String(target?.chat ?? '').trim()
     const canonicalChat = String(target?.canonicalChat ?? '').trim()
+    const targetChatId = String(target?.chatId ?? '').trim()
     const policyHit = policyChat
       ? (p.allowChats.find((n) => sameName(n, policyChat)) ??
         p.noMentionChats.find((n) => sameName(n, policyChat)) ?? null)
       : null
-    const targetHit = policyHit && canonicalChat && sameName(s.parsed.current, canonicalChat)
-      ? policyHit
-      : null
+    // 注入 targetMatches 时按 chatId 核对（折叠写法、目录别名都能对上）；
+    // 没注入时保留原来的名字比较，旧调用点与测试不需要跟着改。
+    const currentIsTarget = targetChatId && typeof targetMatches === 'function'
+      ? targetMatches(s.parsed.current, targetChatId, typeof lookupName === 'function' ? { lookupName } : {})
+      : Boolean(canonicalChat) && sameName(s.parsed.current, canonicalChat)
+    const targetHit = policyHit && currentIsTarget ? policyHit : null
     // 「这些会话不用 @」是最高权限：既不用等 @，也不用先进允许名单——它自己就是白名单。
     const exempt = p.noMentionChats.find((n) => sameName(n, s.parsed.current)) ??
       (targetHit && p.noMentionChats.some((n) => sameName(n, targetHit)) ? targetHit : null)
@@ -100,10 +110,16 @@ export function createSendGate({
     // 没被 @ 时还可以用当天主动额度，由 proactive.js 统一判定。
     const mentionChat = targetHit && canonicalChat ? canonicalChat : hit
     const verdict = p.requireMention && !exempt
-      ? canSpeak(readMentions(), mentionChat, now(), p.mentionWindowMinutes)
+      ? canSpeak(readMentions(), mentionChat, now(), p.mentionWindowMinutes, stateKey)
       : { ok: true }
     const state = loadState()
-    const sendKeys = resolveSendKeys({ chat: hit, canonicalChat, chatId: target?.chatId })
+    // 有显式目标 chatId 就用它；没有时（wx_click/wx_type/wx_key 只知道当前会话）
+    // 让注入的 stateKey 从会话名解析稳定身份，额度/频率才不会随 VS 变体漂移。
+    const sendKeys = resolveSendKeys({
+      chat: hit,
+      canonicalChat,
+      chatId: target?.chatId || stateKey(hit),
+    })
     const dec = decideProactive({
       policy: p, state, chat: sendKeys.quota, policyChat: hit, mention: verdict, exempt, now: now(),
     })
@@ -170,6 +186,7 @@ export function createSendGate({
     return {
       chat: hit,
       account: sendKeys.quota,
+      speech: sendKeys.speech,
       snap: s,
       proactive: dec.proactive,
       proactiveLeft: left,

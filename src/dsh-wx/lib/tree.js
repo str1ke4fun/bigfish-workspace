@@ -15,6 +15,9 @@
  *   发消息的闸、耳朵、工作台的候选名单，以前都是在一整串文字里 includes / 按括号切，
  *   结果"微信别处的字"被当成群名。现在名字只来自会话行的第一行，别处的字不可能是群名。
  */
+import { sanitizeName, nameKey, foldedKey, graphemeLength, hasNameCharacter, matchOne, chatIdSeed } from './name.js'
+import { chatIdFor } from './ledger.js'
+
 const AT = /中心\((-?\d+),(-?\d+)\) (\d+)x(\d+)\s*$/
 
 function at(line) {
@@ -41,11 +44,12 @@ export function parseTree(text) {
   }
   for (const line of lines) {
     let m
-    if ((m = line.match(/^当前会话："(.*)"\s*$/))) { out.current = m[1]; continue }
+    if ((m = line.match(/^当前会话："(.*)"\s*$/))) { out.current = sanitizeName(m[1]); continue }
     if (line.startsWith('会话 "')) {
       const box = at(line)
-      const name = line.match(/^会话 "([^"]*)"/)?.[1]
-      if (!box || name == null) continue
+      const rawName = line.match(/^会话 "([^"]*)"/)?.[1]
+      if (!box || rawName == null) continue
+      const name = sanitizeName(rawName)
       const rest = line.slice(line.indexOf('"', 4) + 1)
       out.chats.push({
         name,
@@ -54,7 +58,7 @@ export function parseTree(text) {
         draft: / 草稿(?= |$)/.test(rest),
         pinned: / 置顶(?= |$)/.test(rest),
         time: rest.match(/ 时间="([^"]*)"/)?.[1] ?? '',
-        preview: rest.match(/ 预览="([^"]*)"/)?.[1] ?? '',
+        preview: sanitizeName(rest.match(/ 预览="([^"]*)"/)?.[1] ?? ''),
         box,
       })
       continue
@@ -73,8 +77,36 @@ export function parseTree(text) {
   return out
 }
 
-/** 名字比较：只做首尾空白和全/半角空格的归一，不做任何"包含"判断。 */
-export const sameName = (a, b) => String(a ?? '').trim().replace(/\s+/g, ' ') === String(b ?? '').trim().replace(/\s+/g, ' ')
+/** 名字比较：只做展示层归一（NFC、首尾空白、连续空白压成一个、清不可见字符），不做任何"包含"判断。 */
+export const sameName = (a, b) => nameKey(a) === nameKey(b)
+
+/**
+ * 当前会话是不是指定的发送目标。
+ *
+ * 比的是稳定 chatId，不是名字字符串：侧栏显示「❤读书群」、目录/名单写「❤️读书群」
+ * 时仍指向同一个群。`lookupName` 由调用方注入（directory.lookupName），避免 tree.js
+ * 依赖目录；目录不认识当前会话时按 `chatIdSeed` 派生同一个 id（与 ledger 的旧种子一致）。
+ * 当前会话在目录里撞名（ambiguous）或目标 id 为空时一律 false，绝不猜。
+ *
+ * @param {string} current 树里的当前会话名
+ * @param {string} targetChatId 目标稳定 id
+ * @param {{lookupName?: (name:string)=>object, deriveId?: (name:string)=>string}} [opts]
+ * @returns {boolean}
+ */
+export function targetMatches(current, targetChatId, { lookupName, deriveId } = {}) {
+  const want = String(targetChatId ?? '').trim()
+  if (!want) return false
+  const derive = typeof deriveId === 'function'
+    ? deriveId
+    : (name) => chatIdFor(chatIdSeed(name))
+  let hit = null
+  if (typeof lookupName === 'function') {
+    try { hit = lookupName(current) } catch { hit = null }
+  }
+  if (hit?.status === 'ambiguous') return false
+  const got = String(hit?.chatId ?? '').trim() || String(derive(current) ?? '').trim()
+  return Boolean(got) && got === want
+}
 
 /**
  * 无障碍树的健康状态（只看树本身，不看 OCR 回退）。
@@ -108,7 +140,10 @@ export function treeHealth(raw, parsed) {
  * 树 partial（窗口在、会话列表 0 行）时按名字找不到目标，不是「不能发」，
  * 而是「这次没看清」，调用方应该按可重试错误处理，而不是报名单拒绝。
  *
- * @returns {{action:'current'}|{action:'navigate',target:object,chatCount:number}|{action:'unreadable',reason:string,treeStatus:string,chatCount:number}|{action:'missing',chatCount:number}}
+ * 侧栏里折叠等价的写法（`❤️群` / `❤群`）都算命中。命中多行说明名字对不上唯一的群，
+ * 返回 `ambiguous`，绝不点第一行。
+ *
+ * @returns {{action:'current'}|{action:'navigate',target:object,chatCount:number}|{action:'ambiguous',matches:object[],chatCount:number}|{action:'unreadable',reason:string,treeStatus:string,chatCount:number}|{action:'missing',chatCount:number}}
  */
 export function planChatNavigation({ parsed, target, tree } = {}) {
   const want = String(target ?? '').trim()
@@ -118,8 +153,13 @@ export function planChatNavigation({ parsed, target, tree } = {}) {
   if (sameName(parsed.current, want)) return { action: 'current' }
 
   const chats = Array.isArray(parsed.chats) ? parsed.chats : []
-  const hit = chats.find((chat) => sameName(chat?.name, want)) ?? null
-  if (hit) return { action: 'navigate', target: hit, chatCount: chats.length }
+  const wantFolded = foldedKey(want)
+  const matches = chats.filter((chat) => {
+    if (sameName(chat?.name, want)) return true
+    return Boolean(wantFolded) && foldedKey(chat?.name) === wantFolded
+  })
+  if (matches.length === 1) return { action: 'navigate', target: matches[0], chatCount: chats.length }
+  if (matches.length > 1) return { action: 'ambiguous', matches, chatCount: chats.length }
 
   const health = tree ?? treeHealth('', null)
   if (health?.ok !== true || chats.length === 0) {
@@ -133,21 +173,42 @@ export function planChatNavigation({ parsed, target, tree } = {}) {
   return { action: 'missing', chatCount: chats.length }
 }
 
+const TRUNCATED = /(?:\.{2,}|…)\s*$/u
+
 /**
  * OCR 名字对账：微信侧栏会把长名字截断成「星晓家园10号楼13...」，OCR 只能读到前一段。
- * 只在名单里找到**唯一**一个以它开头的名字时才改写成全名；找不到或撞名就原样返回。
- * 不做模糊匹配、不做包含匹配——对不上宁可不动，也不把消息递到错的会话。
+ * 依次按 exact → folded（只差 VS 变体）→ skeleton（只留字母/数字）匹配；
+ * 只有唯一命中时才改写成全名，找不到或撞名都原样返回。
+ * 不做包含匹配——对不上宁可不动，也不把消息递到错的会话。
  */
 export function reconcileChatName(name, names = []) {
   const clean = String(name ?? '').trim().replace(/\s+/g, ' ')
   if (!clean) return ''
   const list = (names ?? []).map((n) => String(n ?? '').trim()).filter(Boolean)
-  const exact = list.find((n) => sameName(n, clean))
-  if (exact) return exact
-  const base = clean.replace(/\s*(?:\.{2,}|…)\s*$/u, '').trim()
-  if (base.length < 2) return clean
-  const hits = [...new Set(list.filter((n) => String(n).startsWith(base)))]
-  return hits.length === 1 ? hits[0] : clean
+  // 只允许「候选全名以 OCR 输入开头」（候选比输入长）；反向前缀会把「家庭群(2)」
+  // 缩成白名单里的「家庭群」，导致递错会话，必须 fail closed。
+  // 带省略号的输入还必须对应严格更长的候选：`家人...` 不能认成 `家人`。
+  const hit = matchOne(clean, list, {
+    tiers: ['exact', 'folded', 'skeleton'],
+    prefix: 'candidate',
+    requireLonger: TRUNCATED.test(clean),
+  })
+  if (hit.status === 'unknown' || hit.status === 'ambiguous' || !hit.match) return clean
+  return hit.match
+}
+
+const GRAPHEMES = new Intl.Segmenter('zh', { granularity: 'grapheme' })
+
+/** short 是不是 long 的字素级前缀（按整字素比，不切开旗帜/keycap/ZWJ 序列）。 */
+function isGraphemePrefix(short, long) {
+  if (graphemeLength(short) < 2) return false
+  let offset = 0
+  for (const { segment } of GRAPHEMES.segment(long)) {
+    if (offset >= short.length) break
+    if (!short.startsWith(segment, offset)) return false
+    offset += segment.length
+  }
+  return offset === short.length
 }
 
 /**
@@ -157,6 +218,8 @@ export function reconcileChatName(name, names = []) {
  *
  * 只在刚判成「落后」时用一次：直接按像素判的"落后"有可能是外部改动造成的假警报，
  * 而真落后（列表重排/新消息）会让顺序或名字对不上。
+ *
+ * 前缀匹配按字素："半个旗帜"（单个 regional indicator）不算名字前缀，长度也按字素。
  */
 export function treeMatchesOcr(treeParsed, ocrParsed, { minRows = 3, ratio = 0.6 } = {}) {
   const tree = (treeParsed?.chats ?? []).map((c) => String(c?.name ?? '').trim()).filter(Boolean)
@@ -167,8 +230,8 @@ export function treeMatchesOcr(treeParsed, ocrParsed, { minRows = 3, ratio = 0.6
   for (const row of rows) {
     for (let i = cursor + 1; i < tree.length; i++) {
       const name = tree[i]
-      const short = name.length >= row.length ? row : name
-      const prefix = short.length >= 2 && (name.startsWith(row) || row.startsWith(name))
+      const [short, long] = graphemeLength(name) >= graphemeLength(row) ? [row, name] : [name, row]
+      const prefix = isGraphemePrefix(short, long)
       if (sameName(name, row) || prefix) { cursor = i; hit++; break }
     }
   }
@@ -298,6 +361,18 @@ export function allowedCurrent(parsed, allowChats) {
 }
 
 /**
+ * 单聊预览没有「发送者:」前缀。
+ * 发送者头按字素计数：昵称可以是一串旗帜/emoji，按码元算会把 11 面旗（22 个码元）
+ * 误判成「不是发送者」，进而当成单聊。超过 20 个字素就不当作发送者前缀。
+ */
+export function looksDM(row) {
+  const preview = String(row?.preview ?? '')
+  if (!preview) return false
+  const m = preview.match(/^([^:：]+)[:：]\s/)
+  return !m || graphemeLength(m[1]) > 20
+}
+
+/**
  * 侧栏里「有人在叫她」的会话。
  * 三种判据：
  *   1. 微信自己标的 `@我`；
@@ -305,11 +380,15 @@ export function allowedCurrent(parsed, allowChats) {
  *   3. 单聊：群里预览是「发送者: 内容」，单聊没有这个前缀。所以
  *      - 免 @ 名单里的会话，只要有未读就算叫她（她自己点名的私聊白名单，最高权限）；
  *      - 允许名单里的会话，未读 + 预览没有「发送者:」前缀，也当单聊。
+ *
+ * 名单匹配接受 VS 变体（`❤️群` / `❤群`），但仍不做前缀/包含。
  */
 export function mentionHits(parsed, trigger, exempt = [], allow = []) {
   const out = []
-  const looksDM = (c) => Boolean(c.preview) && !/^[^:：]{1,20}[:：]\s/.test(c.preview)
-  const inList = (list, name) => list.some((n) => sameName(n, name))
+  const inList = (list, name) => {
+    const key = foldedKey(name)
+    return list.some((n) => sameName(n, name) || (Boolean(key) && foldedKey(n) === key))
+  }
   for (const c of parsed?.chats ?? []) {
     const byTrigger = c.unread > 0 && trigger.some((t) => t && c.preview.includes(t))
     const byExempt = c.unread > 0 && inList(exempt, c.name)
@@ -337,7 +416,7 @@ export function mentionHits(parsed, trigger, exempt = [], allow = []) {
 export function ocrMentionHits(parsed) {
   return (parsed?.chats ?? [])
     .filter((chat) => chat.source === 'ocr' && chat.mention === true && Number(chat.nameConfidence) >= 55 &&
-      !/^[\p{P}\p{S}\s]+$/u.test(String(chat.name ?? '')))
+      hasNameCharacter(chat.name))
     .map((chat) => ({
       chat: chat.name,
       unread: chat.unread,
