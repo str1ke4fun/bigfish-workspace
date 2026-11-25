@@ -2139,6 +2139,10 @@ export function apply(ctx, config = {}) {
     // 派活闸用：只认这条会话真正归属的聊天，不拿 recentChats 猜。
     // 群 worker 在名字尚未落账时宁可返回空（拒绝派活），也不能蹭到最近私聊。
     currentChat: (sessionId) => (isWxSession(sessionId) ? (chatNameOfSession(sessionId) || '') : ''),
+    // 跨模块名字口径：派活名单用它比较会话名（exact/folded；ambiguous 为 false）。
+    sameChatName: (a, b) => directory.sameEntry(a, b),
+    // exact/folded/resolved 返回目录里的 display name；unknown 原样 trim；ambiguous 为 null。
+    canonicalChatName: (name) => canonicalName(name),
     isRecentChat: (sessionId, chat, withinMs) => isWxSession(sessionId) && isRecentChat(chat, withinMs),
     // 工作汇总回到固定的主人私聊：走正常发送闸和串行锁，不跟随派活来源。
     notifyOwner: async ({ text, chat } = {}) => {
