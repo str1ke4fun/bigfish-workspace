@@ -15,6 +15,7 @@
 !/scripts/test_fish_watchdog.py
 !/scripts/systemd/
 !/scripts/ops/
+!/scripts/cua-acceptance/
 /.tmp/
 /logs/
 /payload/house/
