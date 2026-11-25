@@ -40,7 +40,7 @@ assert.equal(mentionHits(noisyBadge, [], [], []).length, 0, 'low-confidence OCR 
 assert.equal(ocrMentionHits(noisyBadge).length, 0, 'low-confidence OCR name cannot wake the recovered ear')
 const symbolName = ocrSnapshot({
   ok: true,
-  rows: [{ name: '©', lines: ['©', '[You were mentioned]', 'new message'], confidence: 82, nameConfidence: 73 }],
+  rows: [{ name: '???', lines: ['???', '[You were mentioned]', 'new message'], confidence: 82, nameConfidence: 73 }],
 })
 assert.equal(ocrMentionHits(symbolName).length, 0, 'symbol-shaped OCR names are rejected even with high confidence')
 assert.deepEqual(mentionHits(scan, ['大肥鱼'], [], ['项目群', '普通群']).map((x) => x.chat), ['项目群'])

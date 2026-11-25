@@ -20,16 +20,13 @@
  * capture 返回的 dropped 是已经入过账的 preview 副本，不是新消息，不参与。
  */
 import { parsePreviewSender, samePreviewText } from './speaker.js'
-import { sameName } from './tree.js'
+import { sameName, looksDM } from './tree.js'
 
 /** 新记录最多能有多旧还叫。当前会话的树时间通常精确到分钟，留足余量。 */
 export const OPEN_HIT_MAX_AGE_MS = 15 * 60_000
 
-/** 单聊预览没有「发送者:」前缀。和 tree.js 里 looksDM 同一条规则。 */
-export function looksDM(row) {
-  const preview = String(row?.preview ?? '')
-  return Boolean(preview) && !/^[^:：]{1,20}[:：]\s/.test(preview)
-}
+/** 单聊预览没有「发送者:」前缀。规则和 tree.js 的 looksDM 共用一份，避免两处漂移。 */
+export { looksDM }
 
 /**
  * 当前打开会话这一轮有没有该投的入站消息。

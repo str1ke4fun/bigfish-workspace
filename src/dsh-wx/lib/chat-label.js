@@ -5,7 +5,12 @@
  *   名字 \n [未读数] \n [You were mentioned] \n 预览 \n 时间 \n
  * 第一行永远是名字，其余行的写法固定，所以按行认，不靠"在哪个括号前断开"去猜。
  * （以前把换行抹成空格再切，名字和预览糊在一起，没有括号的行连名字都切不出来。）
+ *
+ * 名字和预览先过 sanitizeName：去掉孤立代理、U+FFFD、控制符和 bidi 覆盖，
+ * 但保留完整的 emoji 序列（旗帜、keycap、ZWJ 家庭、VS16）。字段识别仍按原始行。
  */
+import { sanitizeName } from './name.js'
+
 const MENTION = /^\[(?:you were mentioned|you were @ed|有人@我|有人@你)\]$/i
 const DRAFT = /^\[(?:draft|草稿)\]$/i
 const PINNED = /^(?:pinned to top|置顶)$/i
@@ -24,7 +29,7 @@ const TIME = new RegExp(
 
 export function parseChatLabel(raw) {
   const lines = String(raw ?? '').split('\n').map((s) => s.trim())
-  const name = lines[0] ?? ''
+  const name = sanitizeName(lines[0] ?? '')
   const out = { name, unread: 0, muted: false, mention: false, draft: false, pinned: false, time: '', preview: '' }
   const preview = []
   const rest = lines.slice(1).filter(Boolean)
@@ -39,6 +44,6 @@ export function parseChatLabel(raw) {
     if (PINNED.test(l)) { out.pinned = true; continue }
     preview.push(l)
   }
-  out.preview = preview.join(' ')
+  out.preview = sanitizeName(preview.join(' '))
   return out
 }
