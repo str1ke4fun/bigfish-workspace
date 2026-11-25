@@ -182,8 +182,8 @@ POST /api/fish/host-cua/mode
 只使用 5 个 MCP 工具：`list_windows`、`get_window_state`、`click`、`type_text`、`press_key`。内置客户端维护 `ALLOWED_DRIVER_TOOLS`，其它名字（`move_cursor`、`bring_to_front`、`set_window_frame`、`set_agent_cursor_*` 等）在客户端直接拒绝，不发给驱动。
 
 - `list_windows`：`{ on_screen_only: false }`；结果按 allowlist 过滤。
-- `get_window_state`：按 `detail` 选参数——`full` 为 `{ pid, window_id, include_accessibility_tree:true, include_screenshot:true, max_elements:200, max_image_dimension:1280 }`；`structure` 为 `{ ..., include_screenshot:false, tree_format:'elements' }`；`image` 为 `{ ..., include_accessibility_tree:false, include_screenshot:true }`；`none` 不调用。结果里的 `snapshot_id` 由 `host_look` 作为 `snapshotId` 返回。
-- `click`：`{ pid, window_id, element_token?|x,y, capture_id?, button?, count?, delivery_mode: "background" }`；`captureId` 原样进 `capture_id`。
+- `get_window_state`：按 `detail` 选参数——`full` 为 `{ pid, window_id, include_accessibility_tree:true, include_screenshot:true, max_elements:200, max_image_dimension:1280 }`；`structure` 为 `{ ..., include_screenshot:false, tree_format:'elements' }`；`image` 为 `{ ..., include_accessibility_tree:false, include_screenshot:true }`；`none` 不调用。结果里的 `snapshot_id` 由 `host_look` 作为 `snapshotId` 返回；有截图时 `capture_id` 作为 `captureId` 返回。
+- `click`：`{ pid, window_id, element_token?|x,y, capture_id?, button?, count?, delivery_mode: "background" }`；`captureId` 原样进 `capture_id`；带 `capture_id` 的 `x,y` 是**截图图像像素坐标**，不是屏幕绝对坐标。没有 `captureId` 的坐标点击由上层拒绝。
 - `type_text`：`{ pid, window_id, element_token?, text, delivery_mode: "background" }`。
 - `press_key`：`{ pid, window_id, element_token?, key, modifiers?, delivery_mode: "background" }`。
 - 任何调用都不传 `foreground`；不自动重试前台。

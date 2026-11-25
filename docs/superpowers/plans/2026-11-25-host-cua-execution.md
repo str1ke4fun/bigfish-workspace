@@ -303,6 +303,7 @@ journalctl -u dsh-web -n 100 --no-pager
 - [ ] 她的工具面只多出 5 个名字；驱动 62 个工具没有进宿主工具表。
 - [ ] `host_look` Code（full）返回图 + 树；structure 应用无图、正文脱敏、标题隐藏；none 应用不调 `get_window_state`。
 - [ ] `host_click` / `host_type` / `host_key` 在 Notepad/Code/Terminal/Chrome 上按 `input` 许可后台执行；点/输入前后 `GetCursorPos`、`GetForegroundWindow` 不变。
+- [ ] 坐标点击必须先 `host_look` 拿 `captureId`，x/y 用截图图像像素；没有 `captureId` 返回 `CAPTURE_REQUIRED`。
 - [ ] 显式接受：Terminal 输入等价于 shell、Chrome 输入等价于网页操作；工作台确认框点明这两项，审计/台账可追溯。
 - [ ] 动作预算：超过 40 次/会话、8 次/10 秒或 5000 字符/会话时返回 `ACTION_BUDGET`/`RATE_LIMITED`，不静默继续。
 - [ ] 客户端工具名白名单：`move_cursor`/`bring_to_front`/`set_window_frame` 等调用直接 `TOOL_NOT_ALLOWED`。
