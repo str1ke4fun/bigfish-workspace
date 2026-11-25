@@ -326,6 +326,8 @@ function isAmbientState(state: PetState | null): boolean {
 /** 策略路径的空闲判定：presence 用 enabled 表达，不要求 presence.on === false。 */
 function ambientPolicyEligible(state: PetState | null, policy: AmbientModePolicy): boolean {
   if (policy.enabled !== true) return false
+  // event 模式只消费事实事件；即使配置误写 enabled:true 也不播氛围动作。
+  if (policy.mode === 'event') return false
   if (state === null) return true
   return state.scene === null && state.activity === null
 }
@@ -433,7 +435,8 @@ function ambientPolicyAction(
 
   const idleMs = Math.max(0, now - (seen.ambientIdleSince ?? now))
   const actionIds = new Set(actions.map((entry) => entry.id))
-  const eligible = policy.items.filter((item) => {
+  const items = Array.isArray(policy.items) ? policy.items : []
+  const eligible = items.filter((item) => {
     if (item === null || item.enabled === false) return false
     if (ambientWeight(item.weight) <= 0) return false
     if (!actionIds.has(item.action)) return false
@@ -509,6 +512,14 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
     if (seen.ambientDayKey !== local.dayKey) {
       seen.ambientDayKey = local.dayKey
       seen.ambientCountToday = 0
+      // 跨日时若正处在空闲段但已被每日上限压住，重新武装一次，避免要等下一次交互。
+      if (
+        seen.ambientIdleSince !== null
+        && seen.ambientNextAt === null
+        && ambientPolicyEligible(input.state, policy)
+      ) {
+        seen.ambientNextAt = now + drawAmbientIntervalMs(policy, rng)
+      }
     }
   }
 
@@ -685,10 +696,13 @@ export function reduceTriggers(input: ReduceTriggersInput): TriggerEffects {
   }
 
   // 日期触发优先占用空闲拍；inAmbient 日期只在真正空闲时参与。
+  // 安静时段对 date 同样生效（旧路径在上面已提前返回，这里覆盖策略路径）。
+  const quietNow = inQuietHours(input.config, local.minute)
   for (const trigger of input.triggers) {
     if (!trigger.when.startsWith('date:') || trigger.when.slice('date:'.length) !== local.monthDay) {
       continue
     }
+    if (quietNow) continue
     if (trigger.inAmbient && !ambientEligible) continue
     if (hasDate(seen, trigger.when, local.dayKey)) continue
 

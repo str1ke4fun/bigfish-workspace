@@ -1360,3 +1360,175 @@ test('跨本地日重置每日计数', () => {
   assert.equal(rollover.seen.ambientCountToday, 1)
   assert.equal(rollover.seen.ambientDayKey, '2026-11-19')
 })
+
+test('策略路径下 quiet hours 也压住 inAmbient 日期，非安静时段仍会播', () => {
+  const config = {
+    ambient: ambientPolicy(),
+    quietHours: { startMinute: 23 * 60, endMinute: 7 * 60, afterJitterSec: 0 },
+  }
+  const triggers = [trigger('date:12-25', ['xmas-loop'], [1], { inAmbient: true })]
+  const actions = [action('xmas-loop'), action('a')]
+  const base = { state: state(), triggers, actions, manualBusy: false, config, rng: () => 0 }
+  const midnightRun = new Date(2026, 11, 25, 23, 30, 0, 0).getTime()
+
+  const quiet = reduceTriggers({ ...base, seen: emptyTriggerSeen(), now: midnightRun })
+  assert.equal(quiet.action, undefined)
+  assert.ok(quiet.seen.occurrenceKeys.every((key) => !key.includes('date:12-25')))
+
+  const daytime = reduceTriggers({
+    ...base,
+    seen: quiet.seen,
+    now: new Date(2026, 11, 25, 10, 0, 0, 0).getTime(),
+  })
+  assert.deepEqual(daytime.action, { type: 'startAction', actionId: 'xmas-loop', loop: false })
+})
+
+test('event 模式即使误写 enabled:true 也不播 ambient', () => {
+  const policy = ambientPolicy({ mode: 'event', enabled: true })
+  const base = {
+    state: state(),
+    triggers: [],
+    actions: [action('a')],
+    manualBusy: false,
+    config: { ambient: policy },
+    rng: () => 0,
+  }
+
+  const entered = reduceTriggers({ ...base, seen: emptyTriggerSeen(), now: AMBIENT_T0 })
+  const later = reduceTriggers({
+    ...base,
+    seen: entered.seen,
+    now: AMBIENT_T0 + 60 * MINUTE,
+  })
+  assert.equal(entered.action, undefined)
+  assert.equal(later.action, undefined)
+  assert.equal(later.seen.ambientIdleSince, null)
+})
+
+test('跨日重置每日上限后，空闲段无需重新交互即可再播', () => {
+  const policy = ambientPolicy({ frequency: ambientFrequency({ maxPerDay: 1 }) })
+  const nextDay = new Date(2026, 10, 19, 0, 0, 1, 0).getTime()
+  const base = {
+    state: state(),
+    triggers: [],
+    actions: [action('a')],
+    manualBusy: false,
+    config: { ambient: policy },
+    rng: () => 0,
+  }
+
+  const entered = reduceTriggers({ ...base, seen: emptyTriggerSeen(), now: AMBIENT_T0 })
+  const fired = reduceTriggers({
+    ...base,
+    seen: entered.seen,
+    now: AMBIENT_T0 + 20 * MINUTE,
+  })
+  const capped = reduceTriggers({
+    ...base,
+    seen: fired.seen,
+    now: AMBIENT_T0 + 40 * MINUTE,
+  })
+  assert.equal(capped.action, undefined)
+  assert.equal(capped.seen.ambientNextAt, null)
+  assert.equal(capped.seen.ambientCountToday, 1)
+
+  const rollover = reduceTriggers({ ...base, seen: capped.seen, now: nextDay })
+  assert.equal(rollover.action, undefined)
+  assert.equal(rollover.seen.ambientCountToday, 0)
+  assert.equal(rollover.seen.ambientIdleSince, AMBIENT_T0)
+  assert.equal(rollover.seen.ambientNextAt, nextDay + 20 * MINUTE)
+
+  const rearmed = reduceTriggers({
+    ...base,
+    seen: rollover.seen,
+    now: nextDay + 20 * MINUTE,
+  })
+  assert.deepEqual(rearmed.action, { type: 'startAction', actionId: 'a', loop: false })
+  assert.equal(rearmed.seen.ambientCountToday, 1)
+})
+
+test('items 非法（非数组）时不抛错也不播', () => {
+  const malformed = { ...ambientPolicy(), items: null } as unknown as AmbientModePolicy
+  const base = {
+    state: state(),
+    triggers: [],
+    actions: [action('a')],
+    manualBusy: false,
+    config: { ambient: malformed },
+    rng: () => 0,
+  }
+
+  const entered = reduceTriggers({ ...base, seen: emptyTriggerSeen(), now: AMBIENT_T0 })
+  const due = reduceTriggers({
+    ...base,
+    seen: entered.seen,
+    now: AMBIENT_T0 + 20 * MINUTE,
+  })
+  assert.equal(due.action, undefined)
+  assert.equal(due.seen.ambientNextAt, AMBIENT_T0 + 21 * MINUTE)
+})
+
+test('work 模式下 presence.on 不是 blanket 阻断，空闲仍可播', () => {
+  const presence = { on: true, mode: 'work', busy: false, snapshot: null, recent: [] }
+  const base = {
+    state: state({ presence }),
+    triggers: [],
+    actions: [action('a')],
+    manualBusy: false,
+    config: { ambient: ambientPolicy() },
+    rng: () => 0,
+  }
+
+  const entered = reduceTriggers({ ...base, seen: emptyTriggerSeen(), now: AMBIENT_T0 })
+  assert.equal(entered.steady, 'thinking')
+  assert.equal(entered.seen.ambientIdleSince, AMBIENT_T0)
+
+  const fired = reduceTriggers({
+    ...base,
+    seen: entered.seen,
+    now: AMBIENT_T0 + 20 * MINUTE,
+  })
+  assert.deepEqual(fired.action, { type: 'startAction', actionId: 'a', loop: false })
+})
+
+test('minGapSec 大于 interval 时，第二次触发被推迟到 minGap 满足', () => {
+  const policy = ambientPolicy({
+    frequency: ambientFrequency({
+      intervalMinSec: 600,
+      intervalMaxSec: 600,
+      minGapSec: 1800,
+      settleSec: 0,
+    }),
+  })
+  const base = {
+    state: state(),
+    triggers: [],
+    actions: [action('a')],
+    manualBusy: false,
+    config: { ambient: policy },
+    rng: () => 0,
+  }
+
+  const entered = reduceTriggers({ ...base, seen: emptyTriggerSeen(), now: AMBIENT_T0 })
+  const first = reduceTriggers({
+    ...base,
+    seen: entered.seen,
+    now: AMBIENT_T0 + 10 * MINUTE,
+  })
+  assert.deepEqual(first.action, { type: 'startAction', actionId: 'a', loop: false })
+
+  const gapped = reduceTriggers({
+    ...base,
+    seen: first.seen,
+    now: AMBIENT_T0 + 20 * MINUTE,
+  })
+  assert.equal(gapped.action, undefined)
+  assert.equal(gapped.seen.ambientNextAt, AMBIENT_T0 + 40 * MINUTE)
+
+  const second = reduceTriggers({
+    ...base,
+    seen: gapped.seen,
+    now: AMBIENT_T0 + 40 * MINUTE,
+  })
+  assert.deepEqual(second.action, { type: 'startAction', actionId: 'a', loop: false })
+})
