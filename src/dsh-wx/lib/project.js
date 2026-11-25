@@ -58,11 +58,11 @@ export function shouldNoteWxEcho(sent) {
 const sameChatName = (a, b) => String(a ?? '').trim().replace(/\s+/g, ' ') ===
   String(b ?? '').trim().replace(/\s+/g, ' ')
 
-/** 同一会话的额度/频率必须落在规范键上，不能让别名各记一份。 */
+/** 同一会话的额度/频率必须落在稳定身份上，不能让别名或 VS 变体各记一份。 */
 export function resolveSendKeys({ chat = '', canonicalChat = '', chatId = '' } = {}) {
   const fallback = String(chat ?? '').trim()
   const id = String(chatId ?? '').trim()
-  const quota = String(canonicalChat ?? '').trim() || id || fallback
+  const quota = id || String(canonicalChat ?? '').trim() || fallback
   return { quota, speech: id || quota }
 }
 

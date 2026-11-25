@@ -25,6 +25,9 @@ export function createSendGate({
   targetMatches,
   canSpeak,
   readMentions,
+  // 会话身份键：生产传入目录 stateKey，让 VS 变体/别名共用同一个 @ 窗口。
+  // 不注入时保留按名字记账，既有调用点和测试不需要跟着改。
+  stateKey = (v) => v,
   loadState,
   decideProactive,
   consumeProactive,
@@ -107,10 +110,16 @@ export function createSendGate({
     // 没被 @ 时还可以用当天主动额度，由 proactive.js 统一判定。
     const mentionChat = targetHit && canonicalChat ? canonicalChat : hit
     const verdict = p.requireMention && !exempt
-      ? canSpeak(readMentions(), mentionChat, now(), p.mentionWindowMinutes)
+      ? canSpeak(readMentions(), mentionChat, now(), p.mentionWindowMinutes, stateKey)
       : { ok: true }
     const state = loadState()
-    const sendKeys = resolveSendKeys({ chat: hit, canonicalChat, chatId: target?.chatId })
+    // 有显式目标 chatId 就用它；没有时（wx_click/wx_type/wx_key 只知道当前会话）
+    // 让注入的 stateKey 从会话名解析稳定身份，额度/频率才不会随 VS 变体漂移。
+    const sendKeys = resolveSendKeys({
+      chat: hit,
+      canonicalChat,
+      chatId: target?.chatId || stateKey(hit),
+    })
     const dec = decideProactive({
       policy: p, state, chat: sendKeys.quota, policyChat: hit, mention: verdict, exempt, now: now(),
     })
@@ -177,6 +186,7 @@ export function createSendGate({
     return {
       chat: hit,
       account: sendKeys.quota,
+      speech: sendKeys.speech,
       snap: s,
       proactive: dec.proactive,
       proactiveLeft: left,

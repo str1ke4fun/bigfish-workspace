@@ -23,14 +23,14 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, planChatNavigation, reconcileChatName, restartEpisode, sameName, sidebarRegion, targetMatches, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
 import { ocrSnapshot } from './ocr.js'
 import { isContactWhy } from './contact.js'
 import { canSpeak, grant, grantMentioned, parseWindowMinutes, prune as pruneMentions } from './mention.js'
-import { consume as consumeProactive, decideProactive, loadState, normalizeProactive, saveState } from './proactive.js'
+import { consume as consumeProactive, decideProactive, loadState, normalizeProactive, saveState, STATE_FILE as PROACTIVE_STATE_FILE } from './proactive.js'
 import { dropRecentContent, freshHits, forgetReadChats, noteContent, ownEcho, parseSeen, pruneSeen, serializeSeen } from './ear-seen.js'
 import { openChatHit } from './ear-open.js'
 import {
@@ -51,7 +51,8 @@ import { overdueVisibilityEnabled } from './tasks.js'
 import { createReminderBackoff, runOverdueReminderPass } from './overdue.js'
 import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
 import { chatIdFor } from './ledger.js'
-import { chatIdSeed } from './name.js'
+import { chatIdSeed, sanitizeName } from './name.js'
+import { migrateMentions, migrateProactive, migrateRecent } from './state-key.js'
 import { createPeople } from './people.js'
 import { normalizeMessages } from './transcript.js'
 import { createSessionPool } from './sessions.js'
@@ -110,6 +111,10 @@ export function denyWxSurface(exec) {
 const SH = fileURLToPath(new URL('./wx.sh', import.meta.url))
 const SHOT_DIR = '/home/str1k3/.dsh-fish/home/.wx'
 const POLICY = '/home/str1k3/.dsh-wx/policy.json'
+const WX_STATE_DIR = '/home/str1k3/.dsh-wx'
+// 旧文件的键是会话名；一次性迁移后统一用目录 chatId。
+const MENTIONS_FILE = `${WX_STATE_DIR}/mentions.json`
+const RECENT_FILE_PATH = `${WX_STATE_DIR}/recent-chats.json`
 const HEALTH = '/home/str1k3/.dsh-wx/health.json'
 // 耳朵的流水账：看见什么、投没投进去。只追加，排查时不用靠 grep 宿主日志。
 const INBOX = '/home/str1k3/.dsh-wx/inbound.jsonl'
@@ -560,6 +565,53 @@ export function apply(ctx, config = {}) {
   const directory = createDirectory({
     log: (m) => logLine('[dsh-wx] 会话目录：' + String(m ?? '').slice(0, 160)),
   })
+  /**
+   * 一次性状态迁移：`mentions.json` / `proactive.json` / `recent-chats.json`
+   * 过去用会话名作键。名字的 VS 变体和别名会让同一个群各记一份，现在统一改 chatId。
+   *
+   * 每个文件只迁一次：`<file>.v1.bak` 存在就跳过（源文件本来不存在时也留一个空
+   * 备份当标记，避免新代码写出的 chatId 键在下次启动被再迁一遍）。
+   * 写前先备份，写失败保留原文件；不删除任何历史。
+   */
+  const migrateStateFiles = () => {
+    const keyOf = (name) => directory.stateKey(name)
+    const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+    const migrateOne = (file, migrate, valid) => {
+      const backup = `${file}.v1.bak`
+      if (existsSync(backup)) return
+      let raw
+      try {
+        raw = JSON.parse(readFileSync(file, 'utf8'))
+      } catch (err) {
+        if (err?.code === 'ENOENT') {
+          // 没有旧文件也要留下「迁移已看过」的标记，否则新键文件下次会被误迁。
+          try { writeFileSync(backup, '', { mode: 0o600 }) } catch { /* 标记写不下就下次再看，不影响主流程 */ }
+          return
+        }
+        logLine('[dsh-wx] 状态迁移跳过 ' + file + '：' + String(err?.message ?? err).slice(0, 120))
+        return
+      }
+      if (!valid(raw)) {
+        logLine('[dsh-wx] 状态迁移跳过 ' + file + '：形状不认识，保留原文件')
+        return
+      }
+      try {
+        copyFileSync(file, backup)
+        const next = migrate(raw, keyOf)
+        const tmp = `${file}.migrate.tmp`
+        writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 })
+        renameSync(tmp, file)
+        logLine('[dsh-wx] 状态迁移：' + file + ' 改用 chatId 键（备份 ' + backup + '）')
+      } catch (err) {
+        logLine('[dsh-wx] 状态迁移失败，保留原文件 ' + file + '：' + String(err?.message ?? err).slice(0, 120))
+      }
+    }
+    migrateOne(MENTIONS_FILE, migrateMentions, isObject)
+    migrateOne(PROACTIVE_STATE_FILE, migrateProactive, (v) => isObject(v) && isObject(v.used))
+    migrateOne(RECENT_FILE_PATH, migrateRecent, (v) => Array.isArray(v))
+  }
+  // 冒烟测试（test/plugin-apply）只验证工具注册，不能顺手改线上的 ~/.dsh-wx。
+  if (config.migrateState !== false) migrateStateFiles()
   const sessions = createSessionPool({
     log: (m) => logLine('[dsh-wx] 会话池：' + String(m ?? '').slice(0, 160)),
   })
@@ -703,15 +755,20 @@ export function apply(ctx, config = {}) {
     people,
     log: (line) => logLine('[dsh-wx] ' + line),
   })
-  const RECENT_FILE = '/home/str1k3/.dsh-wx/recent-chats.json'
+  const RECENT_FILE = RECENT_FILE_PATH
   const RECENT_MS = 30 * 60_000
+  // 读兼容新旧两种形状：迁移过的 `{chatId, chat, at}`，以及没迁成的旧 `{chat, at}`。
   let recent = []
   try {
     const raw = JSON.parse(readFileSync(RECENT_FILE, 'utf8'))
     if (Array.isArray(raw)) {
       recent = raw
-        .map((x) => ({ chat: String(x?.chat ?? '').trim(), at: Number(x?.at) || 0 }))
-        .filter((x) => x.chat && Date.now() - x.at <= RECENT_MS)
+        .map((x) => ({
+          chatId: String(x?.chatId ?? '').trim(),
+          chat: sanitizeName(String(x?.chat ?? '').trim()),
+          at: Number(x?.at) || 0,
+        }))
+        .filter((x) => (x.chatId || x.chat) && Date.now() - x.at <= RECENT_MS)
     }
   } catch { /* 没有就没有：第一次收到微信通知时会写 */ }
 
@@ -725,10 +782,15 @@ export function apply(ctx, config = {}) {
   /** 记下这一轮把哪些会话递给了她。定时提醒只能定到这些会话。 */
   const noteRecent = (chats, at = Date.now()) => {
     const map = new Map()
-    for (const x of recent) if (at - x.at <= RECENT_MS) map.set(x.chat, x)
+    // 身份键优先 chatId；旧形状没有 chatId 时退回展示名，保持可读。
+    for (const x of recent) if (at - x.at <= RECENT_MS) map.set(x.chatId || x.chat, x)
     for (const c of chats ?? []) {
       const name = String(c ?? '').trim()
-      if (name) map.set(name, { chat: name, at })
+      if (!name) continue
+      const chatId = directory.stateKey(name)
+      const chat = sanitizeName(name)
+      if (!chat) continue
+      map.set(chatId || chat, { chatId, chat, at })
     }
     recent = [...map.values()].slice(-20)
     saveRecent()
@@ -737,10 +799,16 @@ export function apply(ctx, config = {}) {
   /** 最近叫醒过她的会话名（去重，最近的在后）。 */
   const recentChats = (withinMs = RECENT_MS) => {
     const now = Date.now()
-    return [...new Set(recent.filter((x) => now - x.at <= withinMs).map((x) => x.chat))]
+    return [...new Set(recent.filter((x) => now - x.at <= withinMs).map((x) => x.chat).filter(Boolean))]
   }
 
-  const isRecentChat = (chat, withinMs = RECENT_MS) => recentChats(withinMs).some((n) => sameName(n, chat))
+  /** 判断「最近叫醒过」按目录 stateKey 比身份，名字只是展示。 */
+  const isRecentChat = (chat, withinMs = RECENT_MS) => {
+    const now = Date.now()
+    const key = directory.stateKey(chat)
+    return recent.some((x) => now - x.at <= withinMs &&
+      (sameName(x.chat, chat) || (key && x.chatId === key)))
+  }
 
   // 通道隔离：工具名单是全局的，QQ 会话里也看得到 wx_*。QQ 里的对话不该顺手去操作微信，这里在执行层拦住。
   // （主机自己在 web 界面里和她对话时放行，调试要用。）
@@ -1063,7 +1131,7 @@ export function apply(ctx, config = {}) {
   // ---- @ 才回：谁最近被 @ 过 ----
   // 耳朵看见侧栏有人 @ 她 → 盖戳；发送前查这里。手动 poke 也会盖。
   // 必须在发送闸之前声明：createSendGate 立刻读这个函数引用，放在后面会触发 TDZ。
-  const MENTIONS = '/home/str1k3/.dsh-wx/mentions.json'
+  const MENTIONS = MENTIONS_FILE
   const readMentions = () => {
     try { return JSON.parse(readFileSync(MENTIONS, 'utf8')) || {} } catch { return {} }
   }
@@ -1089,6 +1157,7 @@ export function apply(ctx, config = {}) {
     targetMatches,
     canSpeak,
     readMentions,
+    stateKey: (name) => directory.stateKey(name),
     loadState,
     decideProactive,
     consumeProactive,
@@ -1109,10 +1178,10 @@ export function apply(ctx, config = {}) {
     }
     return speechMod
   }
-  async function speechGate(chatName) {
+  async function speechGate(speechKey) {
     const mod = await speech()
     if (!mod) return
-    const v = await mod.waitAndAdmit('wx:' + chatName, 45_000)
+    const v = await mod.waitAndAdmit('wx:' + speechKey, 45_000)
     if (!v.ok) throw new WxToolError('WX_RATE_LIMIT', '[说得太密了，等一下]')
   }
 
@@ -1467,7 +1536,9 @@ export function apply(ctx, config = {}) {
     const before = s.parsed.messages ?? []
 
     // 频率闸只记一次；等完再看一眼会话，别在等待期间被切走。
-    await speechGate(allowed.chat)
+    await speechGate(resolveSendKeys({
+      chat: allowed.chat, canonicalChat: allowed.chat, chatId: directory.stateKey(allowed.chat),
+    }).speech)
     // 最后一道闸：表情点下去就发送，主动额度也在这里扣。
     const last = await gateSend({ consume: true, expected: allowed.chat })
     if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不发送。`)
@@ -1617,7 +1688,9 @@ export function apply(ctx, config = {}) {
     if (!sameName(g.chat, allowed.chat)) throw new Error(`当前会话变成了「${g.chat}」，不是「${allowed.chat}」，不搜索。`)
 
     // 频率闸只记一次；等完再确认会话。
-    await speechGate(allowed.chat)
+    await speechGate(resolveSendKeys({
+      chat: allowed.chat, canonicalChat: allowed.chat, chatId: directory.stateKey(allowed.chat),
+    }).speech)
     // 最后一道闸：搜索结果点下去就发送，主动额度也在这里扣。
     const last = await gateSend({ consume: true, expected: allowed.chat })
     if (!sameName(last.chat, allowed.chat)) throw new Error(`等待发送期间当前会话变成了「${last.chat}」，不搜索。`)
@@ -1944,7 +2017,7 @@ export function apply(ctx, config = {}) {
           if (!chat) throw new Error('会话名当前解析不到')
           const sessionId = await deliverToChat(chat, t.chatId, overdueText(t, level))
           // 提醒本身也算叫了她一次：这个会话的 @ 窗口重新打开，才允许回。
-          saveMentions(grant(readMentions(), chat, Date.now()))
+          saveMentions(grant(readMentions(), chat, Date.now(), directory.stateKey))
           noteRecent([chat])
           return { ok: true, chat, sessionId }
         },
@@ -2173,7 +2246,7 @@ export function apply(ctx, config = {}) {
         return sameName(s.parsed?.current, chat)
       },
       onMention: (hit) => {
-        saveMentions(grant(readMentions(), hit.chat, Date.now()))
+        saveMentions(grant(readMentions(), hit.chat, Date.now(), directory.stateKey))
         pendingCaptureHits.push(hit)
         if (pendingCaptureHits.length > 20) pendingCaptureHits.shift() // 上限 20，超出丢最旧
         logInbound({ type: 'capture-mention', chat: hit.chat, msgId: hit.msgId })
@@ -2448,7 +2521,7 @@ export function apply(ctx, config = {}) {
       // 有人 @ 她 → 这个会话在窗口内可以开口（@ 才回）。挂着的未读 @ 会一直续窗口。
       if (mentions.length > 0) {
         let st = readMentions()
-        for (const m of mentions) st = grant(st, m.chat, Date.now())
+        for (const m of mentions) st = grant(st, m.chat, Date.now(), directory.stateKey)
         saveMentions(st)
       }
       const now = new Map(mentions.map((m) => [m.key, m]))
@@ -2466,7 +2539,7 @@ export function apply(ctx, config = {}) {
       if (poke) {
         rmSync(POKE, { force: true })
         // 手动叫醒也算一次 @：poke 里点到的会话照样可以开口
-        saveMentions(grantMentioned(readMentions(), poke, p.allowChats, Date.now()))
+        saveMentions(grantMentioned(readMentions(), poke, p.allowChats, Date.now(), directory.stateKey))
         // poke 里点到的允许会话，同样算「最近叫醒过」；她随后说「提醒我」时才有目标。
         noteRecent(p.allowChats.filter((n) => String(poke).includes(n)))
         await deliver(await ensureWxSession(), `[微信·叫你] ${poke}`)
@@ -2713,7 +2786,7 @@ export function apply(ctx, config = {}) {
             // 树里没有"发送"按钮（截图上有）；发送等价于回车，走同一道闸，扣一次主动额度。
             // 先过频率闸，再扣额度：频率拒绝时不能白扣一条。
             const g = await gateSend()
-            await speechGate(g.chat)
+            await speechGate(g.speech)
             await gateSend({ consume: true, expected: g.chat })
             await run(['key', 'Return'])
             return { ok: true, text: '已经按下回车发送了。' + fresh.notice() }
@@ -2786,7 +2859,7 @@ export function apply(ctx, config = {}) {
       // enter=true 是真正发送。先过频率闸，再扣主动额度：
       // 频率拒绝 / 等完切走时，这条话没发出去，不能白扣。
       const second = await gateSend()
-      await speechGate(second.chat)
+      await speechGate(second.speech)
       await gateSend({ consume: true, expected: second.chat })
       await run(['key', 'Return'])
       await sleep(900)
@@ -2988,7 +3061,7 @@ export function apply(ctx, config = {}) {
       if (/(^|\+)(return|kp_enter|enter)$/i.test(keys)) {
         // 回车视同发送：先过频率闸，再扣一次主动额度，频率拒绝时不白扣。
         const g = await gateSend()
-        await speechGate(g.chat)
+        await speechGate(g.speech)
         await gateSend({ consume: true, expected: g.chat })
         where = `当前会话：“${g.chat}”。`
       }

@@ -163,11 +163,11 @@ test('别名上的 proactiveChats 覆盖仍按规范会话记额度', async () =
 test('两个别名生成同一组规范额度/频率键', () => {
   assert.deepEqual(
     resolveSendKeys({ chat: '别名一', canonicalChat: '规范群', chatId: 'c_canonical' }),
-    { quota: '规范群', speech: 'c_canonical' },
+    { quota: 'c_canonical', speech: 'c_canonical' },
   )
   assert.deepEqual(
     resolveSendKeys({ chat: '别名二', canonicalChat: '规范群', chatId: 'c_canonical' }),
-    { quota: '规范群', speech: 'c_canonical' },
+    { quota: 'c_canonical', speech: 'c_canonical' },
   )
 })
 
@@ -183,7 +183,7 @@ test('发送闸：软上限后的主动发送放行，并在台账留下分层�
     proactiveChats: {},
     hardBreaker: 4,
   }
-  let state = { ok: true, day: dateKey(now), used: { 群A: 2 } }
+  let state = { ok: true, day: dateKey(now), used: { c_group_a: 2 } }
   const logged = []
   const gate = createSendGate({
     policy: () => sendPolicy,
@@ -206,10 +206,10 @@ test('发送闸：软上限后的主动发送放行，并在台账留下分层�
   const result = await gate({ consume: true, target: { chat: '群A', canonicalChat: '群A', chatId: 'c_group_a' } })
   assert.equal(result.proactive, true)
   assert.equal(result.proactiveOverSoftLimit, true)
-  assert.equal(state.used['群A'], 3)
+  assert.equal(state.used['c_group_a'], 3)
   assert.equal(logged.length, 1)
   assert.equal(logged[0].type, 'proactive-send')
-  assert.equal(logged[0].chat, '群A')
+  assert.equal(logged[0].chat, 'c_group_a')
   assert.equal(logged[0].used, 3)
   assert.equal(logged[0].softLimit, 2)
   assert.equal(logged[0].hardBreaker, 4)
@@ -240,7 +240,7 @@ test('发送闸：硬熔断拒绝时留下完整数字，软上限本身不再�
     sameName,
     canSpeak: () => ({ ok: false, reason: '最近没人 @ 你' }),
     readMentions: () => ({}),
-    loadState: () => ({ ok: true, day: dateKey(now), used: { 群A: 4 } }),
+    loadState: () => ({ ok: true, day: dateKey(now), used: { c_group_a: 4 } }),
     decideProactive,
     consumeProactive,
     saveState: () => true,
@@ -254,7 +254,7 @@ test('发送闸：硬熔断拒绝时留下完整数字，软上限本身不再�
   )
   assert.equal(logged.length, 1)
   assert.equal(logged[0].type, 'proactive-breaker')
-  assert.equal(logged[0].chat, '群A')
+  assert.equal(logged[0].chat, 'c_group_a')
   assert.equal(logged[0].used, 4)
   assert.equal(logged[0].softLimit, 2)
   assert.equal(logged[0].hardBreaker, 4)

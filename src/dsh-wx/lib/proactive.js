@@ -13,6 +13,8 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
+import { matchOne } from './name.js'
+
 export const STATE_FILE = process.env.WX_PROACTIVE_STATE || '/home/str1k3/.dsh-wx/proactive.json'
 export const MAX_PER_DAY = 50
 export const DEFAULT_HARD_BREAKER = MAX_PER_DAY
@@ -51,14 +53,21 @@ export function normalizeProactive(raw = {}) {
 
 /**
  * 这个群今天先按几条正常主动。请求别名上的覆盖优先，其次才是规范名覆盖和默认值；
- * 0 也是有效覆盖。额度记账仍由调用方放在规范键上，别让别名各记一份。
+ * 0 也是有效覆盖。额度记账仍由调用方放在 chatId 上，别让别名各记一份。
+ *
+ * 额度表按会话名配置，查找走 exact/folded：`❤️读书群` 与 `❤读书群` 的覆盖
+ * 不该因为少一个 VS 就落回默认值。折叠撞名（两个不同群只差 VS）时 matchOne
+ * 返回 ambiguous，这里按没有覆盖处理，交给调用方 fail closed 或走默认额度。
  */
 export function quotaFor(policy, chat, policyChat = chat) {
   const map = policy?.proactiveChats
-  if (map && typeof map === 'object') {
+  const keys = map && typeof map === 'object' ? Object.keys(map) : []
+  if (keys.length) {
     for (const candidate of [policyChat, chat]) {
-      const key = String(candidate ?? '')
-      if (Object.prototype.hasOwnProperty.call(map, key)) return parseQuota(map[key])
+      const name = String(candidate ?? '').trim()
+      if (!name) continue
+      const hit = matchOne(name, keys, { tiers: ['exact', 'folded'] })
+      if (hit.match && (hit.status === 'exact' || hit.status === 'folded')) return parseQuota(map[hit.match])
     }
   }
   return parseQuota(policy?.proactivePerDay ?? policy?.softLimit)
