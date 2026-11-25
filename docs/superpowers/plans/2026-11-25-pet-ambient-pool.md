@@ -479,7 +479,7 @@ git commit -m "feat(desktop-pet): parse ambient policy catalogs"
   - `main` hello payload includes `ambient: ambientCatalog`
   - IPC `pet:get-ambient-catalog` → `AmbientCatalog`
   - IPC event `pet:ambient-catalog` → `AmbientCatalog`
-  - preload `onAmbientCatalog`, `getAmbientCatalog`, `reloadAmbient`
+  - preload `onAmbientCatalog`, `getAmbientCatalog` (reload folds into existing `reloadActions`)
 
 - [ ] **Step 1: Write the failing test**
 
