@@ -202,6 +202,8 @@ export const DEFAULTS = {
     skin: '',               // '' = 内置默认；否则 [a-z0-9-]{1,32}
     bubbleOpacity: 90,      // 气泡不透明度 %（40–100）
     bubbleWidth: 0,         // 气泡最大宽度 px（220–420）；0 = 跟随桌宠大小
+    // 壳上报的默认环境策略；revision 由壳自增，这里只是持久化的起点。
+    ambient: { version: 1, revision: 0, quietHours: null, modes: {} },
   },
 
   // 界面（2026-10-25 加）
@@ -411,6 +413,14 @@ export function normalizeConfig(raw = {}) {
   cfg.chat = { ...DEFAULTS.chat, ...cfg.chat }
   cfg.ui = { ...DEFAULTS.ui, ...cfg.ui }
   cfg.ui.ownerHintDismissed = Boolean(cfg.ui.ownerHintDismissed)
+
+  // 桌宠窗口：只补全 pet 段，保留用户已存的 size / skin / 气泡设置。
+  // ambient 必须是普通对象；坏值回落到默认空策略，避免把字符串带进策略层。
+  const rawPet = cfg.pet && typeof cfg.pet === 'object' && !Array.isArray(cfg.pet) ? cfg.pet : {}
+  cfg.pet = { ...DEFAULTS.pet, ...rawPet }
+  if (!cfg.pet.ambient || typeof cfg.pet.ambient !== 'object' || Array.isArray(cfg.pet.ambient)) {
+    cfg.pet.ambient = { ...DEFAULTS.pet.ambient }
+  }
 
   // 工作委派：嵌套组逐层补全；名单去重；枚举/数值只接受明确值。
   cfg.work = { ...DEFAULTS.work, ...(cfg.work && typeof cfg.work === 'object' ? cfg.work : {}) }

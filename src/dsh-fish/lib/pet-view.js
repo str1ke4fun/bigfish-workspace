@@ -141,6 +141,8 @@ export function createPetView({ now = Date.now, log } = {}) {
   let version = ''
   let skins = []
   let actionCatalog = new Map()
+  /** 壳在自己 ambient.json 里带的默认策略；null = 还没上报过。 */
+  let ambientDefaults = null
   let cues = []
   let scheduleRest = false
   let scheduleRestAt = null
@@ -306,7 +308,7 @@ export function createPetView({ now = Date.now, log } = {}) {
    * 桌宠窗口启动时报到。version 只收字符串，skins 只收数组；
    * 非法项直接丢弃，不抛错，也不影响 helloAt（窗口确实活着）。
    */
-  function noteHello({ version: v, skins: s, actions } = {}, at = now()) {
+  function noteHello({ version: v, skins: s, actions, ambient } = {}, at = now()) {
     helloAt = Number(at)
     if (typeof v === 'string') version = v
     if (Array.isArray(s)) {
@@ -315,6 +317,12 @@ export function createPetView({ now = Date.now, log } = {}) {
         .map((x) => ({ id: x.id, name: x.name }))
         .filter((x) => x.name.trim() !== '')
         .slice(0, 64)
+    }
+
+    // 壳的默认策略只接受普通对象；缺省/坏值保留上一次的值。
+    // 旧客户端定时 hello 不带 ambient，不能因此抹掉已上报的默认目录。
+    if (ambient && typeof ambient === 'object' && !Array.isArray(ambient)) {
+      ambientDefaults = JSON.parse(JSON.stringify(ambient))
     }
 
     // 目录永远跟随最近一次 hello：缺省或非法 actions 都清空旧目录。
@@ -395,6 +403,14 @@ export function createPetView({ now = Date.now, log } = {}) {
     }
   }
 
+  /**
+   * 壳上报的默认策略副本；null = 还没收到过带 ambient 的 hello。
+   * 返回深拷贝，调用方改了也不会污染下次 hello 前的状态。
+   */
+  function ambientDefaultsCopy() {
+    return ambientDefaults === null ? null : JSON.parse(JSON.stringify(ambientDefaults))
+  }
+
   /** 清空易失状态；动作序号保持单调，避免同一进程内 id 复用。 */
   function clear() {
     sessions.clear()
@@ -404,6 +420,7 @@ export function createPetView({ now = Date.now, log } = {}) {
     version = ''
     skins = []
     actionCatalog.clear()
+    ambientDefaults = null
     cues = []
     scheduleRest = false
     scheduleRestAt = null
@@ -417,5 +434,6 @@ export function createPetView({ now = Date.now, log } = {}) {
   return {
     noteSessionEvent, act, markPolled, noteHello, noteCue,
     setScheduleRest, setOuting, setRestOverride, exportRestState, restoreRestState, snapshot, clear,
+    ambientDefaults: ambientDefaultsCopy,
   }
 }

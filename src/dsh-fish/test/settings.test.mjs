@@ -137,3 +137,17 @@ test('白名单校验：拼错的名字与不存在的工具都不许过，拿�
   // 空输入永远合法（留空 = 不额外给）
   assert.equal(validateToolNames('', known).ok, true)
 })
+
+test('pet.ambient 保留用户策略，pet 其他键不被重置', () => {
+  const cfg = normalizeConfig({
+    pet: { size: 320, ambient: { version: 1, revision: 4, modes: { work: { enabled: false } } } },
+  })
+  assert.equal(cfg.pet.size, 320)
+  assert.equal(cfg.pet.ambient.revision, 4)
+  assert.equal(cfg.pet.ambient.modes.work.enabled, false)
+})
+
+test('pet.ambient 坏值回落到空策略', () => {
+  const cfg = normalizeConfig({ pet: { ambient: 'nope' } })
+  assert.deepEqual(cfg.pet.ambient, { version: 1, revision: 0, quietHours: null, modes: {} })
+})

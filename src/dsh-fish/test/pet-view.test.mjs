@@ -380,3 +380,13 @@ test('MOTIONS 白名单与 dsh-pet-component 一致', () => {
   ])
   assert.equal(PET_ACTION_MOTIONS.includes('dragging'), false)
 })
+
+test('noteHello 保存壳上报的 ambient 默认策略，clear 清空', () => {
+  const pv = createPetView({ now: () => 1000 })
+  const ambient = { version: 1, quietHours: null, modes: { work: { enabled: true } } }
+  pv.noteHello({ ambient })
+  assert.deepEqual(pv.ambientDefaults(), ambient)
+  assert.notEqual(pv.ambientDefaults(), ambient)
+  pv.clear()
+  assert.equal(pv.ambientDefaults(), null)
+})
