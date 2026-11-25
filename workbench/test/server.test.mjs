@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, rmSync, symlinkSync, wr
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { chatIdFor } from '../../src/dsh-wx/lib/ledger.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'fish-workbench-'))
 const home = join(tmp, 'home')
@@ -479,6 +480,8 @@ test('微信策略保存保留 mechanicalReminderDelivery:false、returnEnvelope
 
 test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上限/熔断展示', async () => {
   const current = '测试群A'
+  // dsh-wx 的提及/主动状态按 chatId 记账；工作台也用同一个状态键读取。
+  const ledgerKey = chatIdFor(current)
   const ledger = join(home, '.dsh-wx', 'proactive.json')
   const today = serverModule.localDateKey()
   mkdirSync(join(home, '.dsh-wx'), { recursive: true })
@@ -505,19 +508,19 @@ test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上�
     else if (value === 'directory') mkdirSync(ledger)
   }
 
-  putLedger(JSON.stringify({ day: today, used: { [current]: 2 } }))
+  putLedger(JSON.stringify({ day: today, used: { [ledgerKey]: 2 } }))
   const overSoft = await readScope()
   assert.equal(overSoft.ok, true)
   assert.equal(overSoft.current, current)
   assert.deepEqual(overSoft.labels, [current])
   assert.equal(overSoft.policy.proactivePerDay, 2)
   assert.equal(overSoft.policy.hardBreaker, 4)
-  assert.deepEqual(overSoft.proactiveUsed, { [current]: 2 })
+  assert.deepEqual(overSoft.proactiveUsed, { [ledgerKey]: 2 })
   assert.equal(overSoft.proactiveStateOk, true)
   assert.equal(overSoft.speaking.ok, true)
   assert.match(overSoft.speaking.why, /软上限/)
 
-  putLedger(JSON.stringify({ day: today, used: { [current]: 4 } }))
+  putLedger(JSON.stringify({ day: today, used: { [ledgerKey]: 4 } }))
   const breaker = await readScope()
   assert.equal(breaker.proactiveStateOk, true)
   assert.equal(breaker.speaking.ok, false)
@@ -537,8 +540,8 @@ test('GET /api/wx/scope 对不可信主动账本失败关闭，并保留软上�
     ['malformed JSON', '{not json'],
     ['missing used', JSON.stringify({ day: today })],
     ['used array', JSON.stringify({ day: today, used: [] })],
-    ['invalid count', JSON.stringify({ day: today, used: { [current]: '2' } })],
-    ['negative count', JSON.stringify({ day: today, used: { [current]: -1 } })],
+    ['invalid count', JSON.stringify({ day: today, used: { [ledgerKey]: '2' } })],
+    ['negative count', JSON.stringify({ day: today, used: { [ledgerKey]: -1 } })],
   ]
   for (const [name, value] of bad) {
     putLedger(value)
