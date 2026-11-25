@@ -1,8 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   parseAmbientCatalog,
   mergeAmbientCatalogs,
@@ -10,6 +12,13 @@ import {
   readAmbientCatalog,
 } from '../electron/ambient.ts'
 import { selectAmbientPolicy } from '../shared/ambient-model.ts'
+
+const ASSETS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'assets')
+const ALL_ACTION_IDS = new Set(
+  (JSON.parse(readFileSync(join(ASSETS_ROOT, 'actions.json'), 'utf8')) as {
+    actions: { id: string }[]
+  }).actions.map((entry) => entry.id),
+)
 
 const ids = new Set(['asset-109', 'asset-087'])
 const base = {
@@ -147,4 +156,13 @@ test('readAmbientCatalog：默认文件必填、皮肤文件可选、非法 skin
   assert.deepEqual(withSkin.quietHours, base.quietHours)
 
   await assert.rejects(() => readAmbientCatalog(root, '../escape', ids, () => {}))
+})
+
+test('仓库默认 ambient.json 解析出 4 个模式，event 默认关闭', async () => {
+  const raw = JSON.parse(await readFile(join(ASSETS_ROOT, 'ambient.json'), 'utf8'))
+  const { catalog, errors } = parseAmbientCatalog(raw, { actionIds: ALL_ACTION_IDS, log: () => {} })
+  assert.deepEqual(Object.keys(catalog.modes).sort(), ['ambient', 'event', 'off', 'work'])
+  assert.equal(catalog.modes.event.enabled, false)
+  assert.equal(catalog.modes.work.items.length, 19)
+  assert.equal(errors.length, 0)
 })

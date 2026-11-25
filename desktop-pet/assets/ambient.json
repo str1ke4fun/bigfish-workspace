@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "quietHours": {
+    "start": "23:00",
+    "end": "07:00",
+    "afterJitterSec": 600
+  },
+  "modes": {
+    "off": {
+      "enabled": true,
+      "items": [
+        { "action": "asset-109", "weight": 3 },
+        { "action": "asset-087", "weight": 3 },
+        { "action": "asset-070", "weight": 3 },
+        { "action": "asset-063", "weight": 3 },
+        { "action": "asset-069", "weight": 3 },
+        { "action": "asset-112", "weight": 3 },
+        { "action": "asset-110", "weight": 3 },
+        { "action": "asset-099", "weight": 3 },
+        { "action": "asset-018", "weight": 2 },
+        { "action": "asset-002", "weight": 2 },
+        { "action": "asset-001", "weight": 2 },
+        { "action": "asset-066", "weight": 2 },
+        { "action": "asset-047", "weight": 2 },
+        { "action": "asset-113", "weight": 2 },
+        { "action": "asset-054", "weight": 1 },
+        { "action": "asset-064", "weight": 1 },
+        { "action": "asset-114", "weight": 1 },
+        { "action": "asset-102", "weight": 1 },
+        { "action": "asset-027", "weight": 1 }
+      ],
+      "frequency": {
+        "intervalMinSec": 480,
+        "intervalMaxSec": 1200,
+        "minGapSec": 300,
+        "maxPerIdle": 10,
+        "maxPerDay": 30
+      }
+    },
+    "ambient": {
+      "enabled": true,
+      "items": [
+        { "action": "asset-109", "weight": 3 },
+        { "action": "asset-087", "weight": 3 },
+        { "action": "asset-070", "weight": 3 },
+        { "action": "asset-063", "weight": 3 },
+        { "action": "asset-069", "weight": 3 },
+        { "action": "asset-112", "weight": 3 },
+        { "action": "asset-110", "weight": 3 },
+        { "action": "asset-099", "weight": 3 },
+        { "action": "asset-018", "weight": 2 },
+        { "action": "asset-002", "weight": 2 },
+        { "action": "asset-001", "weight": 2 },
+        { "action": "asset-066", "weight": 2 },
+        { "action": "asset-047", "weight": 2 },
+        { "action": "asset-113", "weight": 2 },
+        { "action": "asset-054", "weight": 1 },
+        { "action": "asset-064", "weight": 1 },
+        { "action": "asset-114", "weight": 1 },
+        { "action": "asset-102", "weight": 1 },
+        { "action": "asset-027", "weight": 1 }
+      ],
+      "frequency": {
+        "intervalMinSec": 720,
+        "intervalMaxSec": 1500,
+        "minGapSec": 300,
+        "maxPerIdle": 6,
+        "maxPerDay": 20
+      }
+    },
+    "work": {
+      "enabled": true,
+      "items": [
+        { "action": "asset-109", "weight": 3 },
+        { "action": "asset-087", "weight": 3 },
+        { "action": "asset-070", "weight": 3 },
+        { "action": "asset-063", "weight": 3 },
+        { "action": "asset-069", "weight": 3 },
+        { "action": "asset-112", "weight": 3 },
+        { "action": "asset-110", "weight": 3 },
+        { "action": "asset-099", "weight": 3 },
+        { "action": "asset-018", "weight": 2 },
+        { "action": "asset-002", "weight": 2 },
+        { "action": "asset-001", "weight": 2 },
+        { "action": "asset-066", "weight": 2 },
+        { "action": "asset-047", "weight": 2 },
+        { "action": "asset-113", "weight": 2 },
+        { "action": "asset-054", "weight": 1 },
+        { "action": "asset-064", "weight": 1 },
+        { "action": "asset-114", "weight": 1 },
+        { "action": "asset-102", "weight": 1 },
+        { "action": "asset-027", "weight": 1 }
+      ],
+      "frequency": {
+        "intervalMinSec": 1200,
+        "intervalMaxSec": 2400,
+        "minGapSec": 300,
+        "maxPerIdle": 4,
+        "maxPerDay": 16
+      }
+    },
+    "event": {
+      "enabled": false,
+      "items": []
+    }
+  }
+}
