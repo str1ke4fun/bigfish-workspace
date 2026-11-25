@@ -15,7 +15,8 @@
  *   发消息的闸、耳朵、工作台的候选名单，以前都是在一整串文字里 includes / 按括号切，
  *   结果"微信别处的字"被当成群名。现在名字只来自会话行的第一行，别处的字不可能是群名。
  */
-import { sanitizeName, nameKey, foldedKey, graphemeLength, hasNameCharacter, matchOne } from './name.js'
+import { sanitizeName, nameKey, foldedKey, graphemeLength, hasNameCharacter, matchOne, chatIdSeed } from './name.js'
+import { chatIdFor } from './ledger.js'
 
 const AT = /中心\((-?\d+),(-?\d+)\) (\d+)x(\d+)\s*$/
 
@@ -78,6 +79,34 @@ export function parseTree(text) {
 
 /** 名字比较：只做展示层归一（NFC、首尾空白、连续空白压成一个、清不可见字符），不做任何"包含"判断。 */
 export const sameName = (a, b) => nameKey(a) === nameKey(b)
+
+/**
+ * 当前会话是不是指定的发送目标。
+ *
+ * 比的是稳定 chatId，不是名字字符串：侧栏显示「❤读书群」、目录/名单写「❤️读书群」
+ * 时仍指向同一个群。`lookupName` 由调用方注入（directory.lookupName），避免 tree.js
+ * 依赖目录；目录不认识当前会话时按 `chatIdSeed` 派生同一个 id（与 ledger 的旧种子一致）。
+ * 当前会话在目录里撞名（ambiguous）或目标 id 为空时一律 false，绝不猜。
+ *
+ * @param {string} current 树里的当前会话名
+ * @param {string} targetChatId 目标稳定 id
+ * @param {{lookupName?: (name:string)=>object, deriveId?: (name:string)=>string}} [opts]
+ * @returns {boolean}
+ */
+export function targetMatches(current, targetChatId, { lookupName, deriveId } = {}) {
+  const want = String(targetChatId ?? '').trim()
+  if (!want) return false
+  const derive = typeof deriveId === 'function'
+    ? deriveId
+    : (name) => chatIdFor(chatIdSeed(name))
+  let hit = null
+  if (typeof lookupName === 'function') {
+    try { hit = lookupName(current) } catch { hit = null }
+  }
+  if (hit?.status === 'ambiguous') return false
+  const got = String(hit?.chatId ?? '').trim() || String(derive(current) ?? '').trim()
+  return Boolean(got) && got === want
+}
 
 /**
  * 无障碍树的健康状态（只看树本身，不看 OCR 回退）。

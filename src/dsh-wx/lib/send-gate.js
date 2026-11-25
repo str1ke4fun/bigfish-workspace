@@ -20,6 +20,9 @@ export function createSendGate({
   staleDetail,
   allowedCurrent,
   sameName,
+  // 可选的稳定身份注入：目录可用时按 chatId 核对当前会话；没有注入时退回名字比较。
+  lookupName,
+  targetMatches,
   canSpeak,
   readMentions,
   loadState,
@@ -61,13 +64,17 @@ export function createSendGate({
     // 且当前窗口已经切到 canonicalChat，才把策略名当作 hit。
     const policyChat = String(target?.chat ?? '').trim()
     const canonicalChat = String(target?.canonicalChat ?? '').trim()
+    const targetChatId = String(target?.chatId ?? '').trim()
     const policyHit = policyChat
       ? (p.allowChats.find((n) => sameName(n, policyChat)) ??
         p.noMentionChats.find((n) => sameName(n, policyChat)) ?? null)
       : null
-    const targetHit = policyHit && canonicalChat && sameName(s.parsed.current, canonicalChat)
-      ? policyHit
-      : null
+    // 注入 targetMatches 时按 chatId 核对（折叠写法、目录别名都能对上）；
+    // 没注入时保留原来的名字比较，旧调用点与测试不需要跟着改。
+    const currentIsTarget = targetChatId && typeof targetMatches === 'function'
+      ? targetMatches(s.parsed.current, targetChatId, typeof lookupName === 'function' ? { lookupName } : {})
+      : Boolean(canonicalChat) && sameName(s.parsed.current, canonicalChat)
+    const targetHit = policyHit && currentIsTarget ? policyHit : null
     // 「这些会话不用 @」是最高权限：既不用等 @，也不用先进允许名单——它自己就是白名单。
     const exempt = p.noMentionChats.find((n) => sameName(n, s.parsed.current)) ??
       (targetHit && p.noMentionChats.some((n) => sameName(n, targetHit)) ? targetHit : null)

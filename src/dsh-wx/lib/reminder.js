@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { sameName } from './tree.js'
+import { foldedKey, matchOne } from './name.js'
 
 /** 许可文件。和 policy.json / session.json 放在一起，便于运维时一起看。 */
 export const PERMIT_FILE = '/home/str1k3/.dsh-wx/reminder-permits.json'
@@ -420,8 +421,25 @@ export function newPermitId() {
 }
 
 /**
+ * 名单里与输入折叠等价（只差 VS 变体）的条目。
+ * 两张名单合起来看：允许名单里一个、免 @ 名单里另一个，也是撞名。
+ */
+function foldedClashes(p, want) {
+  const list = [
+    ...(Array.isArray(p?.allowChats) ? p.allowChats : []),
+    ...(Array.isArray(p?.noMentionChats) ? p.noMentionChats : []),
+  ]
+  const fk = foldedKey(want)
+  if (!fk) return []
+  return list.filter((n) => foldedKey(n) === fk)
+}
+
+/**
  * 允许发送的会话名（返回策略文件里的标准写法）。
  * 只在允许名单和免 @ 名单里找；两张都不在就是不能发。
+ *
+ * 折叠撞名优先：名单里有多个条目只差 VS 变体时无法确定是哪一个群，
+ * 即使其中一个与输入完全相等也不放行（返回 null，由 canSendWithPolicy 报歧义）。
  *
  * @param {object} p policy() 的返回值
  * @param {string} chat
@@ -430,19 +448,28 @@ export function newPermitId() {
 export function findAllowedChat(p, chat) {
   const want = String(chat ?? '').trim()
   if (!want) return null
+  // 名单内部撞名比「exact 命中」更权威：两个真群共用一个折叠键时不许挑一个发。
+  if (foldedClashes(p, want).length > 1) return null
   const allow = Array.isArray(p?.allowChats) ? p.allowChats : []
   const exempt = Array.isArray(p?.noMentionChats) ? p.noMentionChats : []
-  return allow.find((n) => sameName(n, want)) ?? exempt.find((n) => sameName(n, want)) ?? null
+  const hit = matchOne(want, allow, { tiers: ['exact', 'folded'] })
+  if (hit.match) return hit.match
+  const ex = matchOne(want, exempt, { tiers: ['exact', 'folded'] })
+  return ex.match ?? null
 }
 
 /**
  * 这个会话能不能发（只看名单和总开关，不看 @ / 主机闸）。
- * @returns {{ok:boolean, chat?:string, why?:string}}
+ * 名单内部折叠撞名时返回 WX_CHAT_AMBIGUOUS，不猜是哪一个群。
+ * @returns {{ok:boolean, chat?:string, code?:string, why?:string}}
  */
 export function canSendWithPolicy(p, chat) {
   if (!p?.enabled) return { ok: false, why: '微信通道已关闭。' }
   const want = String(chat ?? '').trim()
   if (!want) return { ok: false, why: '没有指定要发到哪个会话。' }
+  if (foldedClashes(p, want).length > 1) {
+    return { ok: false, code: 'WX_CHAT_AMBIGUOUS', why: `「${want}」对不上唯一的会话。` }
+  }
   const hit = findAllowedChat(p, want)
   if (!hit) return { ok: false, why: `「${want}」不在允许发送的会话里。` }
   return { ok: true, chat: hit }
