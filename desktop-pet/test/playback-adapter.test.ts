@@ -495,6 +495,72 @@ test('持久化 Seen 兼容旧记录，并把 cue/occurrence 游标限制为有�
   assert.deepEqual(parsePetSeen(null), emptyPetSeen())
 })
 
+test('旧 Seen 没有 ambient 调度字段时补 0/null，新字段可往返', () => {
+  const parsed = parsePetSeen({
+    lastActionId: '', lastCommentAt: '',
+    cueIds: [], occurrenceKeys: [],
+    lastActivityState: null, lastSceneKind: null,
+    sceneLoopActionId: null, sceneLoopActive: false,
+    sceneLoopNeedsRevalidation: false,
+  })
+  assert.equal(parsed.ambientNextAt, null)
+  assert.equal(parsed.ambientCountToday, 0)
+  assert.deepEqual(parsed.ambientActionKeys, [])
+  const round = parsePetSeen({ ...parsed, ambientActionKeys: ['a|1000'], ambientNextAt: 123 })
+  assert.equal(round.ambientNextAt, 123)
+  assert.deepEqual(round.ambientActionKeys, ['a|1000'])
+})
+
+test('mergePetSeen 保留 reducer 的 ambient 调度字段', () => {
+  const next = {
+    ...emptyTriggerSeen(),
+    ambientMode: 'restful',
+    ambientNextAt: 5000,
+    ambientIdleSince: 1000,
+    ambientIdleCount: 2,
+    ambientDayKey: '2026-11-25',
+    ambientCountToday: 3,
+    ambientLastAt: 4000,
+    ambientActionKeys: ['wave|4000'],
+  }
+
+  const merged = mergePetSeen(emptyPetSeen(), next)
+
+  assert.equal(merged.ambientMode, 'restful')
+  assert.equal(merged.ambientNextAt, 5000)
+  assert.equal(merged.ambientIdleSince, 1000)
+  assert.equal(merged.ambientIdleCount, 2)
+  assert.equal(merged.ambientDayKey, '2026-11-25')
+  assert.equal(merged.ambientCountToday, 3)
+  assert.equal(merged.ambientLastAt, 4000)
+  assert.deepEqual(merged.ambientActionKeys, ['wave|4000'])
+})
+
+test('parsePetSeen 丢弃损坏的 ambient 字段并约束 actionKeys', () => {
+  const keys = Array.from({ length: 70 }, (_, index) => `a|${index}`)
+  const parsed = parsePetSeen({
+    ...emptyPetSeen(),
+    ambientMode: 7,
+    ambientNextAt: Number.NaN,
+    ambientIdleSince: 'later',
+    ambientIdleCount: -3,
+    ambientDayKey: 42,
+    ambientCountToday: 2.7,
+    ambientLastAt: Number.POSITIVE_INFINITY,
+    ambientActionKeys: [...keys, 9, '', '  ', 'a|69'],
+  })
+
+  assert.equal(parsed.ambientMode, null)
+  assert.equal(parsed.ambientNextAt, null)
+  assert.equal(parsed.ambientIdleSince, null)
+  assert.equal(parsed.ambientIdleCount, 0)
+  assert.equal(parsed.ambientDayKey, '')
+  assert.equal(parsed.ambientCountToday, 2)
+  assert.equal(parsed.ambientLastAt, null)
+  assert.equal(parsed.ambientActionKeys.length, 64)
+  assert.deepEqual(parsed.ambientActionKeys.slice(-1), ['a|69'])
+})
+
 test('mergePetSeen 写回 reducer 产生的 date/ambient occurrence 游标', () => {
   const previous = { ...emptyPetSeen(), occurrenceKeys: ['fire|ambient|1000'] }
   const next = {

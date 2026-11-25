@@ -135,6 +135,16 @@ function boundedKeys(values: unknown): string[] {
   return unique.slice(-PET_SEEN_LIMIT)
 }
 
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** 计数只接受非负整数；损坏值回落 0，避免旧记录把调度算偏。 */
+function countOf(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0
+  return Math.trunc(value)
+}
+
 export function emptyPetSeen(): PetSeen {
   return {
     lastActionId: '',
@@ -147,6 +157,14 @@ export function emptyPetSeen(): PetSeen {
     sceneLoopActive: false,
     sceneLoopNeedsRevalidation: false,
     ambientConsumed: false,
+    ambientMode: null,
+    ambientNextAt: null,
+    ambientIdleSince: null,
+    ambientIdleCount: 0,
+    ambientDayKey: '',
+    ambientCountToday: 0,
+    ambientLastAt: null,
+    ambientActionKeys: [],
   }
 }
 
@@ -169,6 +187,14 @@ export function parsePetSeen(raw: unknown): PetSeen {
     sceneLoopActive: false,
     sceneLoopNeedsRevalidation: sceneLoopActionId !== null,
     ambientConsumed: record.ambientConsumed === true,
+    ambientMode: typeof record.ambientMode === 'string' ? record.ambientMode : null,
+    ambientNextAt: finiteOrNull(record.ambientNextAt),
+    ambientIdleSince: finiteOrNull(record.ambientIdleSince),
+    ambientIdleCount: countOf(record.ambientIdleCount),
+    ambientDayKey: typeof record.ambientDayKey === 'string' ? record.ambientDayKey : '',
+    ambientCountToday: countOf(record.ambientCountToday),
+    ambientLastAt: finiteOrNull(record.ambientLastAt),
+    ambientActionKeys: boundedKeys(record.ambientActionKeys),
   }
 }
 
@@ -179,6 +205,7 @@ export function mergePetSeen(previous: PetSeen, next: TriggerSeen): PetSeen {
     ...next,
     cueIds: boundedKeys(next.cueIds),
     occurrenceKeys: boundedKeys(next.occurrenceKeys ?? previous.occurrenceKeys),
+    ambientActionKeys: boundedKeys(next.ambientActionKeys ?? previous.ambientActionKeys),
   }
 }
 
