@@ -226,7 +226,10 @@ Windows Terminal / VS Code 用用户已开的窗口；不主动启动微信/飞�
 3. `type_text`（`element_token` 或窗口，`text:'host-cua verify 123'`，`delivery_mode:'background'`）；
 4. `get_window_state` 复核文本是否出现；
 5. 对 Notepad 额外测一次 `click`（点 Edit 区或按钮）；
-6. 记录 `isError`、`structuredContent.errorCode`、耗时。
+6. 每次动作前后用 PowerShell 取 `GetCursorPos` 与 `GetForegroundWindow`，记录是否变化；预期都不变；
+7. 记录 `isError`、`structuredContent.errorCode`、耗时。
+
+只输入 `host-cua verify 123` 这类无意义串；不在 Terminal/Chrome 里输入任何会执行的命令或真实网址。
 
 Expected（待实测，不预设成功）：
 - Notepad：type/click 成功，文本可复核；
@@ -236,12 +239,12 @@ Expected（待实测，不预设成功）：
 
 - [ ] **Step 3: 写矩阵**
 
-| 应用 | type_text | click | 复核 | 备注 |
-| --- | --- | --- | --- | --- |
-| notepad.exe | 待测 | 待测 | 待测 | |
-| WindowsTerminal.exe | 待测 | 待测 | 待测 | |
-| Code.exe | 待测 | 待测 | 待测 | |
-| chrome.exe | 待测 | 待测 | 待测 | |
+| 应用 | type_text | click | 光标/焦点变化 | 复核 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| notepad.exe | 待测 | 待测 | 待测 | 待测 | |
+| WindowsTerminal.exe | 待测 | 待测 | 待测 | 待测 | |
+| Code.exe | 待测 | 待测 | 待测 | 待测 | |
+| chrome.exe | 待测 | 待测 | 待测 | 待测 | |
 
 - [ ] **Step 4: 不做前台重试**
 
@@ -479,7 +482,7 @@ git commit -m "docs: record PrintWindow window matrix"
 | 编号 | 决定 | 依据 |
 | --- | --- | --- |
 | D1 | 生产用 dsh-fish 内置最小 MCP 客户端，不用 DSH MCP 挂载 | V2：62 工具全局注册、无过滤；内置客户端可控窄面 |
-| D2 | v1 白名单保留哪些应用，以及各应用的 `detail`（full/structure/image/none） | V3 矩阵 + Task 6 测试；后台不可用的应用只保留观察/结构 |
+| D2 | v1 白名单保留哪些应用，以及各应用的 `detail`（full/structure/image/none）和 `input`（allow/deny）；终端/浏览器明确 allow | V3 矩阵 + Task 6 测试；后台不可用的应用只保留观察/结构 |
 | D3 | `max_elements` / `max_image_dimension` 默认值 | V4 体积/耗时/可读性 |
 | D4 | TTL 15 分钟是否合适 | V5 + 实际使用感受 |
 | D5 | G2 是否通过，能否进入 P1 实现 | V0–V7 全部有结论；任何 P0 阻塞项单列 |
