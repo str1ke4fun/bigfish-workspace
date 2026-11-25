@@ -7,6 +7,7 @@
   - `docs/research/2026-11-24-window-capture-and-managed-mode.md`
   - `docs/superpowers/plans/2026-11-25-host-cua-managed-mode.md`
   - `docs/superpowers/plans/2026-11-25-host-cua-technical-verification.md`
+  - `docs/superpowers/plans/2026-11-25-host-cua-execution.md`
 
 ## 1. 定稿结论
 
