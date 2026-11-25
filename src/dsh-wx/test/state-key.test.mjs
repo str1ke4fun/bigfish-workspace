@@ -1,9 +1,21 @@
 // 状态键改 chatId 与一次性迁移：合成数据，不读 ~/.dsh-wx。
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { migrateMentions, migrateProactive, migrateRecent } from '../lib/state-key.js'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { isChatIdKey, migrateMentions, migrateProactive, migrateRecent } from '../lib/state-key.js'
+import { migrateStateFiles } from '../lib/index.js'
 import { grant, canSpeak } from '../lib/mention.js'
 import { quotaFor, consume, remaining } from '../lib/proactive.js'
+
+const DIRS = []
+const tempDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wx-state-migrate-'))
+  DIRS.push(dir)
+  return dir
+}
+after(() => { for (const dir of DIRS) rmSync(dir, { recursive: true, force: true }) })
 
 test('mentions 旧名字键迁到 chatId，撞键取最大时间戳', () => {
   const keyOf = (n) => (n === '❤️读书群' || n === '❤读书群' ? 'c_heart' : 'c_' + n)
@@ -33,4 +45,118 @@ test('proactive 的 used 以 chatId 记账，额度按名字折叠查', () => {
   const next = consume(policy, state, 'c_heart', '2026-11-25', '❤读书群')
   assert.deepEqual(next.state.used, { c_heart: 1 })
   assert.equal(remaining(policy, next.state, 'c_heart', '2026-11-25', '❤读书群'), 1)
+})
+
+test('chatId 形状识别只认目录分配的 c_ + 12 hex', () => {
+  assert.equal(isChatIdKey('c_0123456789ab'), true)
+  assert.equal(isChatIdKey(' c_0123456789ab '), true)
+  assert.equal(isChatIdKey('c_heart'), false)
+  assert.equal(isChatIdKey('❤️读书群'), false)
+  assert.equal(isChatIdKey(''), false)
+})
+
+// ---- 迁移 I/O：只碰临时目录 ----
+
+test('迁移 I/O：旧名字键写回 chatId，留 0600 备份；再跑一次不重复哈希', () => {
+  const dir = tempDir()
+  const file = join(dir, 'mentions.json')
+  const files = { mentions: file, proactive: join(dir, 'proactive.json'), recent: join(dir, 'recent-chats.json') }
+  const legacy = { '❤️读书群': 10, '别群': 20 }
+  writeFileSync(file, JSON.stringify(legacy))
+  const logs = []
+  const keyOf = (n) => (n === '❤️读书群' ? 'c_0123456789ab' : 'c_ba9876543210')
+  const first = migrateStateFiles({ keyOf, files, log: (m) => logs.push(m) })
+
+  assert.equal(first[0].status, 'migrated')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { c_0123456789ab: 10, c_ba9876543210: 20 })
+  const backup = file + '.v1.bak'
+  assert.equal(existsSync(backup), true)
+  assert.deepEqual(JSON.parse(readFileSync(backup, 'utf8')), legacy, '备份必须是旧内容')
+  assert.equal(statSync(backup).mode & 0o777, 0o600)
+  assert.equal(existsSync(file + '.migrated'), true)
+  assert.match(logs.join('\n'), /改用 chatId 键/)
+
+  const afterFirst = readFileSync(file, 'utf8')
+  let keyOfCalls = 0
+  const second = migrateStateFiles({
+    keyOf: () => { keyOfCalls += 1; return 'c_deadbeef0000' },
+    files,
+    log: () => {},
+  })
+  assert.equal(second[0].status, 'already-chat-id')
+  assert.equal(keyOfCalls, 0, '已是 chatId 的文件不能再走 keyOf')
+  assert.equal(readFileSync(file, 'utf8'), afterFirst)
+})
+
+test('迁移 I/O：已是 chatId 键且没有标记也跳过；有标记但键变回名字仍会迁移', () => {
+  const dir = tempDir()
+  const file = join(dir, 'mentions.json')
+  const files = { mentions: file, proactive: join(dir, 'proactive.json'), recent: join(dir, 'recent-chats.json') }
+  writeFileSync(file, JSON.stringify({ c_0123456789ab: 1 }))
+  const first = migrateStateFiles({ keyOf: () => 'c_ba9876543210', files, log: () => {} })
+  assert.equal(first[0].status, 'already-chat-id')
+  assert.equal(existsSync(file + '.v1.bak'), false, '跳过时不该产生备份')
+
+  // 标记存在，但文件又被写成名字键：标记不能压制迁移。
+  writeFileSync(file + '.migrated', '{}')
+  writeFileSync(file, JSON.stringify({ 旧群: 5 }))
+  const second = migrateStateFiles({ keyOf: () => 'c_ba9876543210', files, log: () => {} })
+  assert.equal(second[0].status, 'migrated')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { c_ba9876543210: 5 })
+})
+
+test('迁移 I/O：旧文件不存在时不留标记，之后出现的旧文件仍会迁移', () => {
+  const dir = tempDir()
+  const file = join(dir, 'mentions.json')
+  const files = { mentions: file, proactive: join(dir, 'proactive.json'), recent: join(dir, 'recent-chats.json') }
+  const first = migrateStateFiles({ keyOf: () => 'c_0123456789ab', files, log: () => {} })
+  assert.equal(first[0].status, 'missing')
+  assert.equal(existsSync(file + '.migrated'), false)
+  assert.equal(existsSync(file + '.v1.bak'), false)
+
+  writeFileSync(file, JSON.stringify({ 后来群: 7 }))
+  const second = migrateStateFiles({ keyOf: () => 'c_0123456789ab', files, log: () => {} })
+  assert.equal(second[0].status, 'migrated')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { c_0123456789ab: 7 })
+})
+
+test('迁移 I/O：备份写不下去时原文件不动，失败写日志且下次可重试', () => {
+  const dir = tempDir()
+  const file = join(dir, 'mentions.json')
+  const files = { mentions: file, proactive: join(dir, 'proactive.json'), recent: join(dir, 'recent-chats.json') }
+  const original = JSON.stringify({ 旧群: 3 })
+  writeFileSync(file, original)
+  // 备份临时路径被目录占住 → writeFileSync 必然失败。
+  mkdirSync(file + '.v1.bak.tmp')
+  const logs = []
+  const first = migrateStateFiles({ keyOf: () => 'c_0123456789ab', files, log: (m) => logs.push(m) })
+  assert.equal(first[0].status, 'backup-failed')
+  assert.equal(readFileSync(file, 'utf8'), original, '备份失败不能改源文件')
+  assert.equal(existsSync(file + '.migrated'), false)
+  assert.match(logs.join('\n'), /备份写不下去/)
+
+  // 障碍移除后，同一个源文件能再次迁移。
+  rmSync(file + '.v1.bak.tmp', { recursive: true, force: true })
+  const second = migrateStateFiles({ keyOf: () => 'c_0123456789ab', files, log: () => {} })
+  assert.equal(second[0].status, 'migrated')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { c_0123456789ab: 3 })
+})
+
+test('迁移 I/O：proactive 与 recent 旧形状也按 chatId 写回', () => {
+  const dir = tempDir()
+  const proactive = join(dir, 'proactive.json')
+  const recent = join(dir, 'recent-chats.json')
+  writeFileSync(proactive, JSON.stringify({ day: '2026-11-25', used: { '❤️读书群': 2 } }))
+  writeFileSync(recent, JSON.stringify([{ chat: '❤️读书群', at: 9 }]))
+  const out = migrateStateFiles({
+    keyOf: () => 'c_0123456789ab',
+    files: { mentions: join(dir, 'mentions.json'), proactive, recent },
+    log: () => {},
+  })
+  assert.equal(out[1].status, 'migrated')
+  assert.equal(out[2].status, 'migrated')
+  assert.deepEqual(JSON.parse(readFileSync(proactive, 'utf8')).used, { c_0123456789ab: 2 })
+  assert.deepEqual(JSON.parse(readFileSync(recent, 'utf8')), [
+    { chatId: 'c_0123456789ab', chat: '❤️读书群', at: 9 },
+  ])
 })

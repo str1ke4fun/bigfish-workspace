@@ -13,6 +13,19 @@ import { sanitizeName } from './name.js'
 
 const identity = (v) => v
 const keyString = (value) => String(value ?? '')
+const CHAT_ID_KEY = /^c_[0-9a-f]{12}$/
+
+/** 目录 chatId 的形状。迁移必须先认形状再认标记，否则二次迁移会把 chatId 再哈希一遍。 */
+export function isChatIdKey(value) {
+  return CHAT_ID_KEY.test(keyString(value).trim())
+}
+
+/** 迁移用的键：已经是 chatId 的原样保留（幂等），否则走 keyOf。 */
+const migrateKey = (name, keyOf) => {
+  const raw = keyString(name).trim()
+  if (isChatIdKey(raw)) return raw
+  return keyString((keyOf ?? identity)(name)).trim()
+}
 
 /** mentions：`{ 名字: 时间戳 }` → `{ chatId: 时间戳 }`；撞键取最大时间戳。 */
 export function migrateMentions(raw, keyOf = identity) {
@@ -21,7 +34,7 @@ export function migrateMentions(raw, keyOf = identity) {
   for (const [name, value] of Object.entries(raw)) {
     const at = Number(value)
     if (!Number.isFinite(at)) continue
-    const key = keyString(keyOf(name)).trim()
+    const key = migrateKey(name, keyOf)
     if (!key) continue
     out[key] = Math.max(out[key] ?? at, at)
   }
@@ -37,7 +50,7 @@ export function migrateProactive(raw, keyOf = identity) {
   for (const [name, value] of Object.entries(used)) {
     const count = Number(value)
     if (!Number.isFinite(count)) continue
-    const key = keyString(keyOf(name)).trim()
+    const key = migrateKey(name, keyOf)
     if (!key) continue
     out.used[key] = Math.max(out.used[key] ?? 0, count)
   }
@@ -51,7 +64,7 @@ export function migrateRecent(raw, keyOf = identity) {
     const name = String(item?.chat ?? '').trim()
     const at = Number(item?.at)
     if (!name || !Number.isFinite(at)) continue
-    const key = keyString(keyOf(name)).trim()
+    const key = migrateKey(name, keyOf)
     if (!key) continue
     const chat = String(sanitizeName(name)).trim()
     if (!chat) continue

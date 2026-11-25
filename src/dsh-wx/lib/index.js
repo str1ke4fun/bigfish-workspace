@@ -23,7 +23,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allowedCurrent, contentDigest, mentionHits, ocrMentionHits, parseTree, planChatNavigation, reconcileChatName, restartEpisode, sameName, sidebarRegion, targetMatches, treeAction, treeHealth, treeMatchesOcr } from './tree.js'
@@ -52,7 +52,7 @@ import { createReminderBackoff, runOverdueReminderPass } from './overdue.js'
 import { createDirectory, mergeScanned, scanSidebar } from './directory.js'
 import { chatIdFor } from './ledger.js'
 import { chatIdSeed, sanitizeName } from './name.js'
-import { migrateMentions, migrateProactive, migrateRecent } from './state-key.js'
+import { isChatIdKey, migrateMentions, migrateProactive, migrateRecent } from './state-key.js'
 import { createPeople } from './people.js'
 import { normalizeMessages } from './transcript.js'
 import { createSessionPool } from './sessions.js'
@@ -122,6 +122,94 @@ const HER_DIR = '/home/str1k3/.dsh-fish/home'
 // 说话频率的判定放在两个通道共用的一个文件里（QQ 那边是 vendor 补丁，用的是同一份）
 const SPEECH = '/home/str1k3/dsh-plugins/speech/speech.mjs'
 const KEEP = 20
+
+const shortError = (err) => String(err?.message ?? err).slice(0, 120)
+
+/**
+ * 一次性状态迁移：`mentions.json` / `proactive.json` / `recent-chats.json`
+ * 过去用会话名作键。名字的 VS 变体和别名会让同一个群各记一份，现在统一改 chatId。
+ *
+ * 幂等靠「键形状」，不靠备份文件：
+ *   - 键已经全是 chatId 的文件直接跳过，即使没有标记（新代码自己写出的文件不会再被哈希一遍）；
+ *   - 文件名键混合时，`state-key` 只改写不是 chatId 的键；
+ *   - `<file>.migrated` 只是写成功后的排查标记，存在也不会阻止一个重新变回名字键的文件再迁移；
+ *   - `<file>.v1.bak` 只放旧内容，写前先落盘并 chmod 0o600；备份失败就保持原文件、下次再试；
+ *   - 旧文件不存在时什么都不写，之后出现的旧文件仍然会迁移。
+ *
+ * @param {object} [opts]
+ * @param {(name:string)=>string} [opts.keyOf]
+ * @param {{mentions?:string, proactive?:string, recent?:string}} [opts.files]
+ * @param {(msg:string)=>void} [opts.log]
+ * @returns {Array<{kind:string, file:string, status:string}>}
+ */
+export function migrateStateFiles({ keyOf = (v) => v, files = {}, log = () => {} } = {}) {
+  const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+  const allChatIds = (keys) => keys.length === 0 || keys.every(isChatIdKey)
+  const migrateOne = (kind, file, migrate, valid, keyedByChatId) => {
+    const backup = `${file}.v1.bak`
+    const marker = `${file}.migrated`
+    let text
+    try {
+      text = readFileSync(file, 'utf8')
+    } catch (err) {
+      const status = err?.code === 'ENOENT' ? 'missing' : 'read-failed'
+      if (status === 'read-failed') log(`状态迁移跳过 ${kind}（${file}）：` + shortError(err))
+      return { kind, file, status }
+    }
+    let raw
+    try {
+      raw = JSON.parse(text)
+    } catch {
+      log(`状态迁移跳过 ${kind}（${file}）：JSON 读不出来，保留原文件`)
+      return { kind, file, status: 'bad-json' }
+    }
+    if (!valid(raw)) {
+      log(`状态迁移跳过 ${kind}（${file}）：形状不认识，保留原文件`)
+      return { kind, file, status: 'bad-shape' }
+    }
+    if (keyedByChatId(raw)) return { kind, file, status: 'already-chat-id' }
+    // 备份只归档，不兼任“迁移过”的标记：写失败就保持原文件，下次启动重试。
+    if (!existsSync(backup)) {
+      try {
+        const btmp = `${backup}.tmp`
+        writeFileSync(btmp, text, { mode: 0o600 })
+        chmodSync(btmp, 0o600)
+        renameSync(btmp, backup)
+      } catch (err) {
+        log(`状态迁移失败 ${kind}（${file}）：备份写不下去，原文件未动：` + shortError(err))
+        return { kind, file, status: 'backup-failed' }
+      }
+    }
+    try {
+      const next = migrate(raw, keyOf)
+      const tmp = `${file}.migrate.tmp`
+      writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 })
+      renameSync(tmp, file)
+    } catch (err) {
+      log(`状态迁移失败 ${kind}（${file}）：写入失败，原文件保留：` + shortError(err))
+      return { kind, file, status: 'write-failed' }
+    }
+    try {
+      writeFileSync(marker, JSON.stringify({ kind, file, at: new Date().toISOString() }), { mode: 0o600 })
+    } catch (err) {
+      // 已经迁移成功；键形状本身幂等，标记写不下只影响排查，但必须留下日志。
+      log(`状态迁移已写入 ${kind}（${file}），但标记写不下去：` + shortError(err))
+    }
+    log(`状态迁移：${kind}（${file}）改用 chatId 键，旧文件备份在 ${backup}`)
+    return { kind, file, status: 'migrated' }
+  }
+
+  return [
+    migrateOne('mentions', files.mentions ?? MENTIONS_FILE, migrateMentions, isObject,
+      (raw) => allChatIds(Object.keys(raw))),
+    migrateOne('proactive', files.proactive ?? PROACTIVE_STATE_FILE,
+      migrateProactive,
+      (raw) => isObject(raw) && isObject(raw.used),
+      (raw) => allChatIds(Object.keys(raw.used))),
+    migrateOne('recent', files.recent ?? RECENT_FILE_PATH, migrateRecent, Array.isArray,
+      (raw) => raw.every((item) => item && isChatIdKey(item.chatId))),
+  ]
+}
 
 /**
  * 只有主机亲手打的字才算「主机在说话」。
@@ -565,53 +653,13 @@ export function apply(ctx, config = {}) {
   const directory = createDirectory({
     log: (m) => logLine('[dsh-wx] 会话目录：' + String(m ?? '').slice(0, 160)),
   })
-  /**
-   * 一次性状态迁移：`mentions.json` / `proactive.json` / `recent-chats.json`
-   * 过去用会话名作键。名字的 VS 变体和别名会让同一个群各记一份，现在统一改 chatId。
-   *
-   * 每个文件只迁一次：`<file>.v1.bak` 存在就跳过（源文件本来不存在时也留一个空
-   * 备份当标记，避免新代码写出的 chatId 键在下次启动被再迁一遍）。
-   * 写前先备份，写失败保留原文件；不删除任何历史。
-   */
-  const migrateStateFiles = () => {
-    const keyOf = (name) => directory.stateKey(name)
-    const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
-    const migrateOne = (file, migrate, valid) => {
-      const backup = `${file}.v1.bak`
-      if (existsSync(backup)) return
-      let raw
-      try {
-        raw = JSON.parse(readFileSync(file, 'utf8'))
-      } catch (err) {
-        if (err?.code === 'ENOENT') {
-          // 没有旧文件也要留下「迁移已看过」的标记，否则新键文件下次会被误迁。
-          try { writeFileSync(backup, '', { mode: 0o600 }) } catch { /* 标记写不下就下次再看，不影响主流程 */ }
-          return
-        }
-        logLine('[dsh-wx] 状态迁移跳过 ' + file + '：' + String(err?.message ?? err).slice(0, 120))
-        return
-      }
-      if (!valid(raw)) {
-        logLine('[dsh-wx] 状态迁移跳过 ' + file + '：形状不认识，保留原文件')
-        return
-      }
-      try {
-        copyFileSync(file, backup)
-        const next = migrate(raw, keyOf)
-        const tmp = `${file}.migrate.tmp`
-        writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 })
-        renameSync(tmp, file)
-        logLine('[dsh-wx] 状态迁移：' + file + ' 改用 chatId 键（备份 ' + backup + '）')
-      } catch (err) {
-        logLine('[dsh-wx] 状态迁移失败，保留原文件 ' + file + '：' + String(err?.message ?? err).slice(0, 120))
-      }
-    }
-    migrateOne(MENTIONS_FILE, migrateMentions, isObject)
-    migrateOne(PROACTIVE_STATE_FILE, migrateProactive, (v) => isObject(v) && isObject(v.used))
-    migrateOne(RECENT_FILE_PATH, migrateRecent, (v) => Array.isArray(v))
-  }
   // 冒烟测试（test/plugin-apply）只验证工具注册，不能顺手改线上的 ~/.dsh-wx。
-  if (config.migrateState !== false) migrateStateFiles()
+  if (config.migrateState !== false) {
+    migrateStateFiles({
+      keyOf: (name) => directory.stateKey(name),
+      log: (m) => logLine('[dsh-wx] ' + m),
+    })
+  }
   const sessions = createSessionPool({
     log: (m) => logLine('[dsh-wx] 会话池：' + String(m ?? '').slice(0, 160)),
   })
