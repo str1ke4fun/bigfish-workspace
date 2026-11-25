@@ -1048,8 +1048,9 @@ export function registerObserve(ctx, deps = {}) {
       if (!result.ok) {
         return send(res, 400, { ok: false, why: result.why, errors: result.errors ?? [] })
       }
-      // 只替换 ambient，保留 size / skin / 气泡等其它 pet 键。
-      const patch = { pet: { ...(cfg?.pet ?? {}), ambient: result.config } }
+      // 只替换 ambient，保留 size / skin / 气泡等其它 pet 键（settings.updateConfig 深合并其它键）。
+      // 不在这里展开整个 cfg.pet：那会覆盖并发的 size/skin 改动，而且删掉的 mode 会被深合并捡回。
+      const patch = { pet: { ambient: result.config } }
       const r = await (ctx.get?.('fishCore')?.config?.patch?.(patch))
       if (!r?.ok) return send(res, 200, { ok: false, note: '配置没写进去。' })
       return send(res, 200, {

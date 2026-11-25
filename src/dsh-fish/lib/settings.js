@@ -521,6 +521,13 @@ export async function loadConfig(root) {
 export async function updateConfig(patch, root) {
   const { config: cur } = await loadConfig(root)
   const merged = deepMerge(cur, patch && typeof patch === 'object' ? patch : {})
+  // pet.ambient 是**替换单元**，不参与深合并：氛围策略的操作会删除某个 mode 的覆盖，
+  // 深合并会把旧配置里的键又捡回来（写成功但读回旧值）。
+  if (patch && typeof patch === 'object' && patch.pet && typeof patch.pet === 'object'
+    && !Array.isArray(patch.pet) && patch.pet.ambient !== undefined) {
+    if (!merged.pet || typeof merged.pet !== 'object' || Array.isArray(merged.pet)) merged.pet = {}
+    merged.pet.ambient = patch.pet.ambient
+  }
   const next = normalizeConfig(merged)
   await writeConfig(next, root)
   return next

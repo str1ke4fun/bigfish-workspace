@@ -10,11 +10,23 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import { existsSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { registerObserve } from '../lib/observe.js'
 import { createPetView } from '../lib/pet-view.js'
+import { createConfigService } from '../lib/config-service.js'
+
+function deepMerge(base, patch) {
+  const out = { ...base }
+  for (const [k, v] of Object.entries(patch)) {
+    out[k] = v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])
+      ? deepMerge(base[k], v)
+      : v
+  }
+  return out
+}
 
 function fakeCtx() {
   const routes = []
@@ -24,7 +36,8 @@ function fakeCtx() {
     config: {
       get: async () => config,
       patch: async (input) => {
-        config = { ...config, ...input }
+        // 与 settings.updateConfig 一样做深合并（ambient 的替换单元语义由真实服务测试覆盖）。
+        config = deepMerge(config, input)
         return { ok: true, config }
       },
     },
@@ -431,4 +444,93 @@ test('/pet/ambient 拒绝未知 op / 未知 mode / 非 JSON', async () => {
   assert.equal((await callRoute(ctx.routes, '/pet/ambient', 'POST', { op: 'nope' })).status, 400)
   assert.equal((await callRoute(ctx.routes, '/pet/ambient', 'POST', { op: 'reset', mode: 'boss' })).status, 400)
   assert.equal((await callRoute(ctx.routes, '/pet/ambient', 'GET')).status, 200)
+})
+
+test('/pet/ambient reset 走真实配置语义：删掉的 mode 不会在重新加载后复活', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-pet-ambient-'))
+  try {
+    const service = createConfigService({ root })
+    const ctx = fakeCtx()
+    ctx.cfg.connection = { requestRejection: () => null }
+    const baseGet = ctx.get
+    // 真实 config-service：深合并 + pet.ambient 替换单元都由 settings.updateConfig 提供。
+    ctx.get = (k) => (k === 'fishCore' ? { config: service } : baseGet(k))
+    const petView = createPetView({ now: () => 1000 })
+    petView.noteHello({
+      actions: [{ id: 'asset-109', label: '伸懒腰', group: '日常' }, { id: 'asset-087', label: '照镜子', group: '日常' }],
+      ambient: { version: 1, quietHours: null, modes: { work: { enabled: true, items: [{ action: 'asset-109', weight: 1 }] } } },
+    })
+    registerObserve(ctx, { root, petView })
+
+    const added = await callRoute(ctx.routes, '/pet/ambient', 'POST', {
+      op: 'add-item', mode: 'work', action: 'asset-087', weight: 2,
+    })
+    assert.equal(added.status, 200)
+    assert.equal(added.body.ok, true)
+    assert.equal((await service.get()).pet.ambient.modes.work.items.length, 2)
+
+    const reset = await callRoute(ctx.routes, '/pet/ambient', 'POST', { op: 'reset', mode: 'work' })
+    assert.equal(reset.status, 200)
+    assert.equal(reset.body.ok, true)
+
+    // 关键：从磁盘重新加载，被删掉的 work 覆盖必须真的没了（深合并会把它捡回来）。
+    const cfg = await service.get()
+    assert.equal(cfg.pet.ambient.modes.work, undefined, 'reset 后的 mode 覆盖必须落盘消失')
+    const got = await callRoute(ctx.routes, '/pet/ambient', 'GET')
+    assert.equal(got.body.overrides.modes.work, undefined)
+    // effective 仍然从壳默认里拿到 work，说明只是覆盖被清掉，不是默认丢了。
+    assert.equal(got.body.effective.work.enabled, true)
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+test('/pet/ambient 壳未上报动作目录时接受未校验写入', async () => {
+  const ctx = fakeCtx()
+  ctx.cfg.connection = { requestRejection: () => null }
+  const petView = createPetView({ now: () => 1000 })
+  petView.noteHello({
+    ambient: { version: 1, quietHours: null, modes: { work: { enabled: true, items: [{ action: 'asset-109', weight: 1 }] } } },
+  })
+  registerObserve(ctx, { root: '/tmp/fish-pet-unused', petView })
+
+  // actions 为空 → actionIds 传 null，未上报目录的新动作也接受写入。
+  const r = await callRoute(ctx.routes, '/pet/ambient', 'POST', {
+    op: 'add-item', mode: 'work', action: 'asset-new', weight: 2,
+  })
+  assert.equal(r.status, 200)
+  assert.equal(r.body.ok, true)
+  assert.equal(r.body.modes.work.items.some((item) => item.action === 'asset-new'), true)
+})
+
+test('/pet/state.settings.ambient 回显持久化覆盖，气泡设置与其它 pet 键不丢', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-pet-ambient-state-'))
+  try {
+    const service = createConfigService({ root })
+    const ctx = fakeCtx()
+    ctx.cfg.connection = { requestRejection: () => null }
+    const baseGet = ctx.get
+    // 真实 config-service：深合并 + pet.ambient 替换单元都由 settings.updateConfig 提供。
+    ctx.get = (k) => (k === 'fishCore' ? { config: service } : baseGet(k))
+    const petView = createPetView({ now: () => 1000 })
+    petView.noteHello({
+      ambient: { version: 1, quietHours: null, modes: { work: { enabled: true, items: [{ action: 'asset-109', weight: 1 }] } } },
+    })
+    registerObserve(ctx, { root, petView })
+
+    const conf = await callRoute(ctx.routes, '/pet/config', 'POST', { size: 320, bubbleOpacity: 70, bubbleWidth: 300 })
+    assert.equal(conf.status, 200)
+
+    const ambient = await callRoute(ctx.routes, '/pet/ambient', 'POST', { op: 'set-enabled', mode: 'work', enabled: false })
+    assert.equal(ambient.status, 200)
+    assert.equal(ambient.body.ok, true)
+
+    const state = await callRoute(ctx.routes, '/pet/state', 'GET')
+    assert.equal(state.body.settings.ambient.modes.work.enabled, false)
+    assert.equal(state.body.settings.size, 320)
+    assert.equal(state.body.settings.bubbleOpacity, 70)
+    assert.equal(state.body.settings.bubbleWidth, 300)
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
 })

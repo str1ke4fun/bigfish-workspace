@@ -91,6 +91,46 @@ test('updateConfig 是合并而不是覆盖，且落盘后能被 loadConfig 读�
   }
 })
 
+test('updateConfig 把 pet.ambient 当替换单元：删掉的 mode 不会在深合并里复活', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fish-cfg-ambient-'))
+  try {
+    await updateConfig({
+      pet: {
+        size: 320,
+        bubbleOpacity: 70,
+        ambient: {
+          version: 1,
+          revision: 1,
+          quietHours: null,
+          modes: {
+            work: { enabled: true, items: [{ action: 'asset-109', weight: 1 }] },
+            event: { enabled: false, items: [] },
+          },
+        },
+      },
+    }, root)
+    await updateConfig({
+      pet: {
+        ambient: {
+          version: 1,
+          revision: 2,
+          quietHours: null,
+          modes: { event: { enabled: false, items: [] } },
+        },
+      },
+    }, root)
+
+    const { config } = await loadConfig(root)
+    assert.equal(config.pet.ambient.modes.work, undefined, '被删掉的 work 覆盖必须真的消失')
+    assert.ok(config.pet.ambient.modes.event, '保留下来的 mode 仍在')
+    assert.equal(config.pet.ambient.revision, 2)
+    assert.equal(config.pet.size, 320, '其它 pet 键仍按深合并保留')
+    assert.equal(config.pet.bubbleOpacity, 70)
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
 test('配置文件不存在时返回默认值，且不主动写盘', async () => {
   const root = await mkdtemp(join(tmpdir(), 'fish-cfg2-'))
   try {
