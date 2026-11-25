@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { groupTimestampAnchoredRows } from '../lib/ocr-snapshot.mjs'
+import { groupTimestampAnchoredRows, parseTsv, snapshotFromTsv } from '../lib/ocr-snapshot.mjs'
 import { parseOcrChats } from '../lib/ocr.js'
 import { chatsJson } from '../lib/chats-json.mjs'
 
@@ -22,6 +22,19 @@ test('emoji 和汉字被 OCR 分成两个词时不留空格', () => {
 
 test('拉丁词之间的真实空格要保留', () => {
   assert.deepEqual(rows([word('File', 150), word('Transfer', 200)]).map(r => r.name), ['File Transfer'])
+})
+
+const tsvWord = (line, left, text) =>
+  [5, 1, 1, 1, line, 1, left, 100, 60, 18, 95, text].join('\t')
+const emojiTsv = ['header', tsvWord(1, 100, '🏖️'), tsvWord(1, 150, '周末海边'), tsvWord(1, 600, '13:59')].join('\n')
+
+test('parseTsv 行文本把 astral emoji 和汉字连起来，但不粘住时间', () => {
+  assert.equal(parseTsv(emojiTsv)[0].text, '🏖️周末海边 13:59')
+})
+
+test('groupChatRows 回退路径保留 emoji 名字并剥掉时间', () => {
+  const snap = snapshotFromTsv(emojiTsv, { x: 0, y: 0, width: 916, height: 666 })
+  assert.deepEqual(snap.rows.map(r => r.name), ['🏖️周末海边'])
 })
 
 test('纯问号噪声仍被拒', () => {

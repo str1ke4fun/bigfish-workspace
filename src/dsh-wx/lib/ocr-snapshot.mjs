@@ -11,7 +11,8 @@ const run = (file, args, input) => execFileSync(file, args, {
 })
 
 const ASCII_NAME_CHARACTER = /^[A-Za-z0-9]$/
-const NON_ASCII_CHARACTER = /^[^\x00-\x7f]$/
+const ASCII_DIGIT = /^[0-9]$/
+const NON_ASCII_CHARACTER = /^[^\x00-\x7f]$/u
 /** 不单独算名字字符的 emoji 组合尾巴：VS15/VS16、keycap、ZWJ、tag 字符。 */
 const EMOJI_MODIFIER = /^[︎️⃣‍\u{E0020}-\u{E007F}]$/u
 
@@ -41,13 +42,15 @@ const joinNameWords = (text) => joinWithoutSpaces(text,
     !(ASCII_NAME_CHARACTER.test(previous) && ASCII_NAME_CHARACTER.test(character)))
 
 /**
- * 整行 OCR 文本拼接：行内还混着时间戳，只把两侧都是非 ASCII 名字字符
- * 的空格去掉（汉字/emoji/CJK 之间）；标题与 ASCII 时间之间必须留空格，
- * 后面的 cleanRowLabel 才剥得掉时间。
+ * 整行 OCR 文本拼接：和标题词一样，两侧只要不都是 ASCII 名字字符就去空格
+ * （汉字、emoji、拉丁词之间都能连）；唯一的例外是「非 ASCII 名字字符 +
+ * ASCII 数字」——那通常是时间戳（`内部赤石群 13:59`、`🏖️周末海边 13:59`），
+ * 必须留空格给 cleanRowLabel 剥掉时间。拉丁字符之间的空格照旧保留。
  */
 const joinLineWords = (text) => joinWithoutSpaces(text,
   (previous, character) => hasNameCharacter(previous) && hasNameCharacter(character) &&
-    NON_ASCII_CHARACTER.test(previous) && NON_ASCII_CHARACTER.test(character))
+    !(ASCII_NAME_CHARACTER.test(previous) && ASCII_NAME_CHARACTER.test(character)) &&
+    !(NON_ASCII_CHARACTER.test(previous) && ASCII_DIGIT.test(character)))
 
 export function parseTsv(tsv, { minConfidence = 25, scale = 1 } = {}) {
   const lines = new Map()
