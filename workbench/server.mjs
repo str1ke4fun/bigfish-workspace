@@ -325,12 +325,19 @@ async function speechStats() {
   try { state = JSON.parse(String(r.out).trim() || '{}') } catch { state = {} }
   const now = Date.now()
   const chats = state && typeof state.chats === 'object' && state.chats !== null ? state.chats : {}
+  // 微信的 speech key 是 `wx:<chatId>`；直接回给前端会显示成「微信·c_012345…」。
+  // 这里按目录映射回展示名，认不出的不把内部 id 漏出去。
+  const nameById = new Map(
+    wxDirectoryEntries().map((e) => [e.chatId, e.displayName || e.fullName || e.chatId]),
+  )
   const out = []
   for (const [chat, times] of Object.entries(chats)) {
     const t = (Array.isArray(times) ? times : []).filter((x) => Number.isFinite(x) && now - x < 3600_000)
     if (t.length === 0) continue
+    const wxChatId = chat.startsWith('wx:') ? chat.slice(3).trim() : ''
     out.push({
       chat,
+      name: wxChatId ? (nameById.get(wxChatId) || '') : '',
       lastHour: t.length,
       lastMinute: t.filter((x) => now - x < 60_000).length,
       quietSeconds: Math.round((now - Math.max(...t)) / 1000),
@@ -501,10 +508,13 @@ async function wxScope() {
     ...sanitizePolicyList(Object.keys(policy.proactiveChats || {})).bad,
   ].filter((v, i, all) => all.findIndex((x) => x.name === v.name && x.why === v.why) === i)
   const nameByKey = new Map(entries.map((e) => [e.chatId, e.displayName || e.fullName || e.chatId]))
+  // 内部键是 chatId；目录里查不到时不要把裸 c_012345… 直接展示。
+  const INTERNAL_ID = /^c_(?:tmp_)?[0-9a-f]+$/i
   const proactiveUsedChats = Object.entries(proactiveUsed)
     .filter(([, v]) => Number(v) > 0)
     .map(([key, v]) => ({
-      name: nameByKey.get(key) || (currentKey && key === currentKey ? current : key),
+      name: nameByKey.get(key) ||
+        (currentKey && key === currentKey ? current : INTERNAL_ID.test(key) ? '未知会话' : key),
       used: Number(v),
     }))
   const candidates = labels.map((name) => {
@@ -593,12 +603,24 @@ async function saveWxScope(body) {
     }
   }
 
+  // 主动额度按规范化后的名字重建，值原样保留（空 = 默认，0 = 静音）。
+  const proactiveChats = {}
+  if (proProvided) {
+    for (const [rawName, value] of Object.entries(proSource)) {
+      const r = canonicalizePolicyName(rawName, entries)
+      if (r.name) proactiveChats[r.name] = clampNum(value, 0, 0, PROACTIVE_MAX)
+    }
+  } else {
+    Object.assign(proactiveChats, pro.proactiveChats)
+  }
+  const proactiveNames = Object.keys(proactiveChats)
+
   // 规范化后可能把两种写法折成同一个会话：同一份名单里再撞名就拒绝。
   const dupBad = []
   for (const [field, names] of [
     ['允许名单', allowOut.names],
     ['免 @ 名单', noMentionOut.names],
-    ['主动额度名单', proactiveOut.names],
+    ['主动额度名单', proactiveNames],
   ]) {
     const dup = foldedDuplicate(names)
     if (dup) dupBad.push({ name: dup, why: `${field}里有两条折叠后是同一个会话` })
@@ -612,15 +634,41 @@ async function saveWxScope(body) {
     }
   }
 
-  // 主动额度按规范化后的名字重建，值原样保留（空 = 默认，0 = 静音）。
-  const proactiveChats = {}
-  if (proProvided) {
-    for (const [rawName, value] of Object.entries(proSource)) {
-      const r = canonicalizePolicyName(rawName, entries)
-      if (r.name) proactiveChats[r.name] = clampNum(value, 0, 0, PROACTIVE_MAX)
+  // 跨名单折叠撞名：运行时发送闸把 allowChats 和 noMentionChats 合在一起看，
+  // 同一个会话在两份名单里各出现一次（哪怕写法相同）都会让发送变成 ambiguous。
+  // proactiveChats 与 allow/noMention 同名是正常配置（额度覆盖），但换成另一种
+  // 折叠写法同样说明身份没对上，一并拒绝，避免存下运行时发不出去的配置。
+  const crossBad = []
+  const lists = [
+    { field: '允许名单', names: allowOut.names },
+    { field: '免 @ 名单', names: noMentionOut.names },
+    { field: '主动额度名单', names: proactiveNames },
+  ]
+  for (let i = 0; i < lists.length; i++) {
+    for (let j = i + 1; j < lists.length; j++) {
+      const a = lists[i]
+      const b = lists[j]
+      const proactivePair = a.field === '主动额度名单' || b.field === '主动额度名单'
+      for (const x of a.names) {
+        for (const y of b.names) {
+          if (!matchPolicyName(x, [y])) continue
+          // 主动额度本来就会和允许名单里的同一个会话同名；相同写法不算冲突。
+          if (proactivePair && x === y) continue
+          crossBad.push({
+            name: `${x} / ${y}`,
+            why: `${a.field}和${b.field}里有折叠后相同的会话，运行时分不清是哪一个`,
+          })
+        }
+      }
     }
-  } else {
-    Object.assign(proactiveChats, pro.proactiveChats)
+  }
+  if (crossBad.length) {
+    return {
+      ok: false,
+      error: `名单之间有重复的会话，没有保存：${describeBad(crossBad)}。每个会话只能在允许名单和免 @ 名单里出现一次。`,
+      bad: crossBad,
+      policy: before,
+    }
   }
 
   const next = {

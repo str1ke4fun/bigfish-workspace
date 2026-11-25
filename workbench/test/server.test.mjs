@@ -610,6 +610,21 @@ test('工作台保存按目录规范化，坏名/截断/撞名/折叠重复整�
   assert.equal(folded.body.bad[0].name, '❤读书群')
   assert.match(folded.body.bad[0].why, /折叠/)
 
+  // 跨名单折叠撞名：运行时发送闸把 allow 和 noMention 合起来看，保存时必须拒绝。
+  const crossList = await save({ allowChats: ['❤️读书群'], noMentionChats: ['❤️读书群'] })
+  assert.equal(crossList.status, 500)
+  assert.equal(crossList.body.ok, false)
+  assert.match(crossList.body.bad[0].why, /折叠|分不清/)
+  assert.deepEqual(readPolicy().allowChats, [])
+
+  // 主动额度与允许名单的同一会话同名是正常配置；只差折叠写法则拒绝。
+  const proSame = await save({ allowChats: ['全新群'], proactiveChats: { 全新群: 3 } })
+  assert.equal(proSame.status, 200)
+  assert.deepEqual(proSame.body.policy.proactiveChats, { 全新群: 3 })
+  const proCollision = await save({ allowChats: ['全新❤️群'], proactiveChats: { '全新❤群': 3 } })
+  assert.equal(proCollision.status, 500)
+  assert.match(proCollision.body.bad[0].why, /折叠|分不清/)
+
   // 未知名字保留并回传 warning；更长的输入不能被反向缩成旧的截断前缀。
   const unknown = await save({ allowChats: ['全新群', '北京周末徒步群2'] })
   assert.equal(unknown.status, 200)
@@ -670,4 +685,39 @@ test('GET /api/wx/scope 用目录 chatId 读取提及窗口和主动额度，折
     nameConfidence: 'exact',
     matchStatus: 'folded',
   }])
+
+  // 目录里查不到的 chatId 不能把裸 c_… 直接摆到工作台上。
+  writeFileSync(join(home, '.dsh-wx', 'proactive.json'),
+    JSON.stringify({ day: today, used: { c_read: 1, c_deadbeef1234: 2 } }) + '\n')
+  const withUnknown = await (await fetch(`http://127.0.0.1:${port}/api/wx/scope`)).json()
+  assert.deepEqual(
+    withUnknown.proactiveUsedChats.find((x) => x.name === '未知会话'),
+    { name: '未知会话', used: 2 },
+  )
+})
+
+test('GET /api/speech 把 wx:<chatId> 映射成目录展示名，不漏内部 id', async () => {
+  const speechDir = join(home, 'dsh-plugins', 'speech')
+  mkdirSync(speechDir, { recursive: true })
+  mkdirSync(join(home, '.dsh-wx'), { recursive: true })
+  writeFileSync(join(home, '.dsh-wx', 'directory.json'), JSON.stringify({
+    version: 1,
+    chats: [
+      { chatId: 'c_read', displayName: '❤️读书群', fullName: '❤️读书群', aliases: [], nameConfidence: 'exact' },
+    ],
+  }) + '\n')
+  const now = Date.now()
+  writeFileSync(join(speechDir, 'speech-state.json'), JSON.stringify({
+    chats: {
+      'wx:c_read': [now],
+      'wx:c_0123456789ab': [now],
+    },
+  }) + '\n')
+  const response = await fetch(`http://127.0.0.1:${port}/api/speech`)
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  const known = body.stats.find((x) => x.chat === 'wx:c_read')
+  assert.equal(known.name, '❤️读书群')
+  const unknown = body.stats.find((x) => x.chat === 'wx:c_0123456789ab')
+  assert.equal(unknown.name, '', '未知 chatId 不返回内部 id 当展示名')
 })

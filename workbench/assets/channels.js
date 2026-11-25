@@ -321,7 +321,11 @@ async function loadSpeech() {
     : stats.map((s) => {
       const el = document.createElement('span')
       el.className = 'chip'
-      const who = s.chat.replace(/^wx:/, '微信·').replace(/^group:/, 'QQ群·').replace(/^private:/, 'QQ·')
+      const raw = String(s.chat || '')
+      // 微信键是 wx:<chatId>，后端已按目录映射 name；不要再把内部 id 拼给用户看。
+      const who = raw.startsWith('wx:')
+        ? `微信·${s.name || '（目录里没这个会话）'}`
+        : raw.replace(/^group:/, 'QQ群·').replace(/^private:/, 'QQ·')
       el.textContent = `${who}：一小时 ${s.lastHour} 条 · ${s.quietSeconds < 60 ? '刚刚' : Math.round(s.quietSeconds / 60) + ' 分钟前'}`
       return el
     })))
