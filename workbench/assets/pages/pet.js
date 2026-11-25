@@ -495,6 +495,7 @@ async function loadHostCuaMeta() {
 }
 
 function renderHostCua(s = {}) {
+  SPEC.hostCuaData = s
   const mode = String(s.mode ?? 'off')
   const phase = String(s.phase ?? 'off')
   const on = mode !== 'off'
@@ -528,7 +529,7 @@ async function setHostCua(mode) {
 }
 
 function startHostCua() {
-  const apps = Array.isArray(SPEC.state?.hostCua?.apps) ? SPEC.state.hostCua.apps : []
+  const apps = Array.isArray(SPEC.hostCuaData?.apps) ? SPEC.hostCuaData.apps : []
   const names = apps.length ? apps.map((a) => a.app).join(' / ') : '白名单应用'
   const ok = window.confirm(
     `开启后她可以在 ${names} 里后台点击和打字；终端输入等于 shell，浏览器输入等于网页操作。15 分钟自动结束。继续？`,
